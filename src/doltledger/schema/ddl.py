@@ -52,6 +52,7 @@ __all__ = [
     "CORE_VIEWS",
     "Statement",
     "core_statements",
+    "field_sql_type",
     "kind_statements",
     "schema_statements",
     "slot_rows",
@@ -125,13 +126,19 @@ class Statement:
     ``object`` is the kind of database object the statement creates —
     ``table``, ``fk`` or ``view`` — and ``name`` is its name (table, constraint
     or view).  ``table`` names the owning table for constraints, so a diff can
-    regroup statements per table without parsing SQL.
+    regroup statements per table without parsing SQL.  ``columns``,
+    ``target`` and ``target_columns`` are filled for foreign keys so
+    :mod:`doltledger.schema.diff` can compare them semantically instead of
+    re-parsing the SQL.
     """
 
     sql: str
     object: str
     name: str
     table: str | None = None
+    columns: tuple[str, ...] | None = None
+    target: str | None = None
+    target_columns: tuple[str, ...] | None = None
 
 
 def to_sql(statements: Iterable[Statement]) -> str:
@@ -226,6 +233,17 @@ def _base_field_type(field: Field) -> str:
     if t is FieldType.ref:
         return _ID_TYPE
     raise SchemaError(f"unsupported field type {t!r}")  # pragma: no cover
+
+
+def field_sql_type(field: Field) -> str:
+    """The SQL type of a field's column, including computed columns.
+
+    Public so the schema diff (ticket 09) can build ``ADD``/``MODIFY COLUMN``
+    statements from the same rules as table creation.
+    """
+    if field.type is FieldType.computed:
+        return _sql_type(field.sql_type, field)
+    return _base_field_type(field)
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +467,9 @@ def _fk_statement(
         object="fk",
         name=name,
         table=table,
+        columns=tuple(columns),
+        target=target,
+        target_columns=tuple(target_columns),
     )
 
 

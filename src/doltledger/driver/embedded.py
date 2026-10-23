@@ -95,8 +95,10 @@ class EmbeddedDriver(Driver):
         rendered = render_sql(sql, params)
         if self._pending is not None:
             if _DDL.match(rendered):
-                # Dolt 2.3.5 does not roll DDL back, so deferring it would make
-                # it appear twice (once in the query preview, once on exit).
+                # Dolt 2.3.5 does not roll DDL back, so it must run outside the
+                # deferred DML transaction.  Flush the DML that logically came
+                # first; otherwise a schema change would see the old rows.
+                self._flush()
                 self._run(rendered)
                 return
             self._pending.append(rendered)
@@ -109,7 +111,9 @@ class EmbeddedDriver(Driver):
 
         ``query`` inside the context replays the buffer in a rolled-back
         transaction, so it previews the final state; the buffer is executed for
-        real when the context exits without an exception.
+        real when the context exits without an exception.  A DDL statement
+        flushes the DML buffered before it, because Dolt commits DDL
+        immediately and statement order must be preserved.
         """
         if self._pending is not None:
             raise LedgerError("nested transactions are not supported")
@@ -120,10 +124,22 @@ class EmbeddedDriver(Driver):
             self._pending = None  # discard: the body failed
             raise
         else:
-            pending = self._pending
+            self._flush()
             self._pending = None
-            if pending:
-                self._run("START TRANSACTION;\n" + ";\n".join(pending) + ";\nCOMMIT")
+
+    def _flush(self) -> None:
+        """Execute the currently buffered DML in one transaction."""
+        pending = self._pending
+        if not pending:
+            return
+        self._pending = []
+        try:
+            self._run(
+                "START TRANSACTION;\n" + ";\n".join(pending) + ";\nCOMMIT"
+            )
+        except BaseException:
+            self._pending = pending
+            raise
 
     # -- history ----------------------------------------------------------
     def commit(self, message: str, author: str | None = None) -> str | None:
