@@ -30,8 +30,6 @@ available.
 
 from __future__ import annotations
 
-import importlib
-import inspect
 import json
 import re
 from dataclasses import dataclass, field, replace
@@ -65,6 +63,7 @@ from doltledger.schema.model import (
     FieldType,
     ObjectType,
 )
+from doltledger.schema.tests_gen import install_tests
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from doltledger.core.ledger import Ledger
@@ -1771,41 +1770,6 @@ def _meta_values(ledger: "Ledger") -> dict[str, str]:
     }
 
 
-def _install_generated_tests(ledger: "Ledger") -> bool:
-    """Hook for ticket 08's ``dolt_tests`` installer.
-
-    The validation ticket owns test generation and exposes an installer in
-    ``doltledger.schema.tests_gen``.  Until it is merged this is a no-op;
-    once present it is called with ``(driver, schema)`` (or ``(ledger)`` for a
-    one-argument installer) so ``schema apply`` replaces generated tests
-    wholesale instead of leaving stale ones behind.
-    """
-    try:
-        module = importlib.import_module("doltledger.schema.tests_gen")
-    except ImportError:
-        return False
-
-    installer = None
-    for name in ("install_tests", "install", "replace_tests", "write_tests"):
-        candidate = getattr(module, name, None)
-        if callable(candidate):
-            installer = candidate
-            break
-    if installer is None:
-        return False
-
-    try:
-        parameters = list(inspect.signature(installer).parameters.values())
-    except (TypeError, ValueError):  # pragma: no cover - exotic callables
-        parameters = []
-    if len(parameters) >= 2:
-        first = parameters[0].name.lower()
-        if "ledger" in first:
-            installer(ledger, ledger.schema)
-        else:
-            installer(ledger.driver, ledger.schema)
-    elif len(parameters) == 1:
-        installer(ledger)
-    else:  # pragma: no cover - unlikely installer shape
-        installer()
-    return True
+def _install_generated_tests(ledger: "Ledger") -> None:
+    """Replace generated ``dolt_tests`` wholesale (spec §4) for ``schema apply``."""
+    install_tests(ledger.driver, ledger.schema)

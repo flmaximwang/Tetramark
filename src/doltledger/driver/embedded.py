@@ -124,8 +124,10 @@ class EmbeddedDriver(Driver):
             self._pending = None  # discard: the body failed
             raise
         else:
-            self._flush()
-            self._pending = None
+            try:
+                self._flush()
+            finally:
+                self._pending = None  # a failed final flush must not leave us "in" a transaction
 
     def _flush(self) -> None:
         """Execute the currently buffered DML in one transaction."""
@@ -133,13 +135,7 @@ class EmbeddedDriver(Driver):
         if not pending:
             return
         self._pending = []
-        try:
-            self._run(
-                "START TRANSACTION;\n" + ";\n".join(pending) + ";\nCOMMIT"
-            )
-        except BaseException:
-            self._pending = pending
-            raise
+        self._run("START TRANSACTION;\n" + ";\n".join(pending) + ";\nCOMMIT")
 
     # -- history ----------------------------------------------------------
     def commit(self, message: str, author: str | None = None) -> str | None:
