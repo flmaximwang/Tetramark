@@ -1,0 +1,5 @@
+preset: bad_range
+kinds:
+  grid:
+    object: box
+    geometry: {type: grid, rows: "J-A", cols: "1-9"}

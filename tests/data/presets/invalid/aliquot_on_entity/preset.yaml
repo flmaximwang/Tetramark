@@ -1,0 +1,6 @@
+preset: aliquot_on_entity
+kinds:
+  item:
+    object: entity
+    aliquot_fields:
+      glycerol_pct: {type: decimal}

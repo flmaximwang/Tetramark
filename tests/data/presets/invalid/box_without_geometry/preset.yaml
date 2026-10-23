@@ -1,0 +1,4 @@
+preset: box_without_geometry
+kinds:
+  plain:
+    object: box

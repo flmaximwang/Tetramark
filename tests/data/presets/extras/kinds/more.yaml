@@ -1,0 +1,4 @@
+kinds:
+  extra_box:
+    object: box
+    geometry: {type: named, slots: [a, b]}

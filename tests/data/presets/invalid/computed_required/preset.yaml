@@ -1,0 +1,6 @@
+preset: computed_required
+kinds:
+  item:
+    object: entity
+    fields:
+      size: {type: computed, expr: "CHAR_LENGTH(name)", sql_type: int, required: true}

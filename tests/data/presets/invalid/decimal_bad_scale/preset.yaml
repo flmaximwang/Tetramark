@@ -1,0 +1,6 @@
+preset: decimal_bad_scale
+kinds:
+  item:
+    object: entity
+    fields:
+      amount: {type: decimal, precision: 4, scale: 9}

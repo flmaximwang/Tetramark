@@ -1,0 +1,6 @@
+preset: reserved_field
+kinds:
+  item:
+    object: entity
+    fields:
+      select: {type: string}

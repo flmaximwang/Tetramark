@@ -1,0 +1,6 @@
+preset: reserved_id
+kinds:
+  item:
+    object: entity
+    fields:
+      id: {type: string}

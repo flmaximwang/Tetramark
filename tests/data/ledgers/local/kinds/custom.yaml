@@ -1,0 +1,5 @@
+kinds:
+  custom_entity:
+    object: entity
+    fields:
+      label: {type: string, required: true}

@@ -1,0 +1,4 @@
+preset: collision_b
+kinds:
+  dup:
+    object: entity

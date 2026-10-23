@@ -1,0 +1,6 @@
+preset: ref_unknown
+kinds:
+  item:
+    object: entity
+    fields:
+      other: {type: ref, to: ghost}

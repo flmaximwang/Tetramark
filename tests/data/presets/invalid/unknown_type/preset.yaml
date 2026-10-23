@@ -1,0 +1,6 @@
+preset: unknown_type
+kinds:
+  item:
+    object: entity
+    fields:
+      name: {type: blob}

@@ -1,0 +1,6 @@
+preset: enum_bad_default
+kinds:
+  item:
+    object: entity
+    fields:
+      color: {type: enum, values: [red, blue], default: green}

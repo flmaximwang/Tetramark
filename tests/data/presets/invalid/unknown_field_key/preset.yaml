@@ -1,0 +1,6 @@
+preset: unknown_field_key
+kinds:
+  item:
+    object: entity
+    fields:
+      name: {type: string, requiredd: true}

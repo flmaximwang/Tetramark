@@ -1,0 +1,6 @@
+preset: rule_bad_expect
+rules:
+  - id: BAD
+    description: two expectations
+    sql: "SELECT 1"
+    expect: {single_value: 1, rows: 0}

@@ -1,0 +1,10 @@
+preset: mixin_collision
+mixins:
+  one:
+    name: {type: string}
+  two:
+    name: {type: string}
+kinds:
+  item:
+    object: entity
+    mixins: [one, two]

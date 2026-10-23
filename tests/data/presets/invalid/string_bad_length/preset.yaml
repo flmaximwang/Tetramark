@@ -1,0 +1,6 @@
+preset: string_bad_length
+kinds:
+  item:
+    object: entity
+    fields:
+      name: {type: string, length: 0}

@@ -1,0 +1,5 @@
+- id: LOCAL01
+  description: local rule from rules_dir
+  severity: info
+  sql: "SELECT COUNT(*) FROM entity_custom_entity"
+  expect: {single_value: 0}

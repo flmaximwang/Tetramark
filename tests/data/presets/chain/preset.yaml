@@ -1,0 +1,36 @@
+preset: chain
+version: 3
+description: Includes base and adds molbio-like kinds and rules.
+include: [base]
+mixins:
+  measured:
+    measured_at: {type: datetime}
+    amount: {type: decimal, precision: 10, scale: 2, default: 0}
+kinds:
+  plasmid:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      sequence: {type: sequence, unique: true}
+      length_bp: {type: computed, expr: "CHAR_LENGTH(sequence)", sql_type: int}
+      backbone: {type: enum, values: [puc, pbr, custom], default: puc}
+  bacterial:
+    object: stock
+    entity_kinds: [item, plasmid]
+    mixins: [measured]
+    fields:
+      strain: {type: string, required: true}
+      medium: {type: enum, values: [lb, tb, soc]}
+    aliquot_fields:
+      glycerol_pct: {type: decimal, default: 15}
+rules:
+  - id: CH01
+    description: plasmids should have a sequence
+    severity: fail
+    sql: "SELECT COUNT(*) FROM entity_plasmid WHERE sequence IS NULL"
+    expect: {single_value: 0}
+  - id: CH02
+    description: informational row count
+    severity: info
+    sql: "SELECT id FROM entity_plasmid"
+    expect: {rows_at_most: 100}

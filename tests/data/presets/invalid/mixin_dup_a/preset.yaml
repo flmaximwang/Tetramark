@@ -1,0 +1,4 @@
+preset: mixin_dup_a
+mixins:
+  shared:
+    a: {type: string}

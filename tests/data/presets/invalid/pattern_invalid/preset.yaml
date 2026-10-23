@@ -1,0 +1,6 @@
+preset: pattern_invalid
+kinds:
+  item:
+    object: entity
+    fields:
+      name: {type: string, pattern: "["}

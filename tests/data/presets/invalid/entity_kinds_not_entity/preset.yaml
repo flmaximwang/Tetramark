@@ -1,0 +1,8 @@
+preset: entity_kinds_not_entity
+kinds:
+  box_a:
+    object: box
+    geometry: {type: slotless}
+  lot:
+    object: stock
+    entity_kinds: [box_a]

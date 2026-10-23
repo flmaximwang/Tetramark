@@ -1,0 +1,28 @@
+preset: base
+version: 2
+description: Base fixture preset used by the schema loader tests.
+mixins:
+  named_fields:
+    name: {type: string, required: true, unique: true}
+    description: {type: text}
+kinds:
+  item:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      category: {type: string, length: 32}
+  lot:
+    object: stock
+    entity_kinds: [item]
+    fields:
+      supplier: {type: string, default: unknown}
+      received_on: {type: date}
+  grid96:
+    object: box
+    geometry: {type: grid, rows: "A-H", cols: "1-12"}
+  rack:
+    object: box
+    geometry: {type: named, slots: [top, middle, bottom]}
+  shelf:
+    object: box
+    geometry: {type: slotless, capacity: 4}
