@@ -603,10 +603,17 @@ def _norm_type(value: str) -> str:
     return re.sub(r"\s+", "", value).lower()
 
 
+#: Dolt rewrites ``CAST(x AS T)`` as ``convert(x, t)`` in ``SHOW CREATE TABLE``.
+_CAST_RE = re.compile(
+    r"cast\((.+?)as(decimal\([0-9]+,[0-9]+\)|signed|unsigned|char\([0-9]+\)|date|datetime)\)"
+)
+
+
 def _norm_expr(expr: str) -> str:
     """Canonical form for comparison against Dolt's rewritten expressions."""
     text = expr.replace("`", "").replace("_utf8mb4", "").lower()
     text = re.sub(r"\s+", "", text)
+    text = _CAST_RE.sub(r"convert(\1,\2)", text)
     while text.startswith("(") and text.endswith(")") and _balanced(text):
         text = text[1:-1]
     return text
