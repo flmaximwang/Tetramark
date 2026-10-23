@@ -1,0 +1,93 @@
+preset: library
+version: 1
+description: >-
+  A small library catalogue: one entity per book title and one stock per
+  physical copy, proving that the core model is not biology-specific.
+
+include: [base]
+
+kinds:
+  book:
+    object: entity
+    description: A book title in the catalogue (one row per edition).
+    mixins: [named_fields]
+    fields:
+      title:
+        type: string
+        length: 255
+        required: true
+        description: Full title of the book as printed on the title page.
+      authors:
+        type: string
+        length: 255
+        description: Author names, semicolon-separated when there are several.
+      isbn:
+        type: string
+        length: 20
+        unique: true
+        pattern: "^[0-9Xx][0-9Xx-]{8,16}$"
+        description: ISBN-10 or ISBN-13 (hyphens allowed; X accepted as a check digit).
+      year:
+        type: int
+        description: Year of publication.
+      publisher:
+        type: string
+        length: 128
+        description: Publishing house of this edition.
+
+  copy:
+    object: stock
+    description: A physical copy of a book held by the library.
+    entity_kinds: [book]
+    fields:
+      acquired_on:
+        type: date
+        description: Date the copy was acquired (ISO yyyy-mm-dd).
+      condition:
+        type: enum
+        values: [new, good, fair, poor]
+        default: good
+        description: Physical condition of the copy.
+      source:
+        type: string
+        length: 128
+        description: Where the copy came from (bookshop, donation, transfer).
+      price:
+        type: decimal
+        precision: 10
+        scale: 2
+        description: Purchase price of the copy, in the ledger's currency.
+
+rules:
+  - id: LIB01
+    description: a book cannot be published in the future
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM entity_book
+      WHERE year IS NOT NULL AND year > YEAR(CURRENT_DATE)
+    expect: {single_value: 0}
+
+  - id: LIB02
+    description: a copy cannot be acquired before its book was published
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_copy c
+      JOIN stock s ON s.id = c.id
+      JOIN entity_book b ON b.id = s.entity_id
+      WHERE c.acquired_on IS NOT NULL AND b.year IS NOT NULL
+        AND YEAR(c.acquired_on) < b.year
+    expect: {single_value: 0}
+
+  - id: LIB03
+    description: books without any copy (informational)
+    severity: info
+    sql: >-
+      SELECT COUNT(*) FROM entity_book b
+      WHERE NOT EXISTS (SELECT 1 FROM stock s WHERE s.entity_id = b.id)
+    expect: {single_value: 0}
+
+  - id: LIB04
+    description: copies without an acquisition date (informational)
+    severity: info
+    sql: "SELECT COUNT(*) FROM stock_copy WHERE acquired_on IS NULL"
+    expect: {single_value: 0}
