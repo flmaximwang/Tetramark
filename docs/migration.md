@@ -1,7 +1,7 @@
 # Migrating an old zsqlab ledger
 
 This is the rulebook for moving a hand-written zsqlab Dolt database (the `Lookup-XX.xlsx` era) onto
-DoltLedger. Migration is **manual and guided**, not automatic: old databases encode project-specific
+Tetramark. Migration is **manual and guided**, not automatic: old databases encode project-specific
 conventions, so every column gets an explicit landing place or an explicit decision to drop it.
 
 The worked example uses **zsqlab08** because its tables are documented in
@@ -12,7 +12,7 @@ The worked example uses **zsqlab08** because its tables are documented in
 
 - No generator converts the old DB; do not build one.
 - Do not migrate views (`box_01`, `box_map_all`, `checks`, …), triggers, generated-formula columns,
-  registries or `dolt_tests`: all are derived state in DoltLedger (`v_box_slots`,
+  registries or `dolt_tests`: all are derived state in Tetramark (`v_box_slots`,
   `v_aliquot_location`, `v_stock_status`, generated `*_sha256`/computed columns, generated tests).
 - Do not keep two writable copies of the same inventory.
 
@@ -28,15 +28,15 @@ The worked example uses **zsqlab08** because its tables are documented in
 ```sh
 mkdir -p ~/migration/zsqlab08
 cd ~/migration/zsqlab08
-ledger workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>"
-ledger init zsqlab08 --preset molbio --id-prefix 08
-ledger schema show                 # confirm construct/plasmid/bacterial/plasmid_prep/pellet exist
-ledger box add grid9x9 WFL-08-01
-ledger box add grid9x9 WFL-08-02
+tm workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>"
+tm init zsqlab08 --preset molbio --id-prefix 08
+tm schema show                 # confirm construct/plasmid/bacterial/plasmid_prep/pellet exist
+tm box add grid9x9 WFL-08-01
+tm box add grid9x9 WFL-08-02
 ```
 
 If you need columns the preset does not have, add a local kind/field first
-(`skills/doltledger-schema/SKILL.md`), apply it, and only then import.
+(`skills/tetramark-schema/SKILL.md`), apply it, and only then import.
 
 ## 1. Inventory the old database
 
@@ -69,7 +69,7 @@ done
 
 | Old table (zsqlab08) | Rows | New object | New kind | Notes |
 |---|---:|---|---|---|
-| `entity_registry` | 42 | — | — | Discriminator half of the old FK; DoltLedger `entity` + kind tables replace it. |
+| `entity_registry` | 42 | — | — | Discriminator half of the old FK; Tetramark `entity` + kind tables replace it. |
 | `entity_constructs` | 27 | entity | `construct` | `entity_uuid` → `id`; `sequence`, `mature_sequence`, `aliases`, MW, pI, ε columns, `tag`, `notes`. |
 | `entity_plasmids` | 15 | entity | `plasmid` | `entity_uuid` → `id`; `sequence`, `plasmid_backbone` → `backbone`, `construct_uuid` → `construct`, `description`, `notes`. |
 | `stock_registry` | 42 | — | — | Same tube as the kind table below; the registry disappears (stock + aliquot carry the position). |
@@ -80,7 +80,7 @@ done
 
 Columns that do **not** migrate:
 
-- `name_concat`, `file_name_concat`, `marker`, `sequence_sha256`, `*_0p1pct` → derived; DoltLedger
+- `name_concat`, `file_name_concat`, `marker`, `sequence_sha256`, `*_0p1pct` → derived; Tetramark
   computes `sequence_sha256`, `length_bp` and the ε columns. Re-typing them would create a second
   source of truth.
 - `entity_kind`/`stock_kind` discriminators → replaced by the kind table.
@@ -97,8 +97,8 @@ Columns that do **not** migrate:
   single old tube becomes stock `0826FP02` with one aliquot `0826FP02.1`.
 - **UIDs that do not fit the strategy** (pellet short codes such as `4a334ac2`, per-table schemes,
   IDs from another project) must not be forced into `--id`. Create the object with a generated ID
-  and attach the old UID as an alias: `ledger alias add stock <new-id> 4a334ac2`. Search with
-  `ledger find 4a334ac2` then continues to work.
+  and attach the old UID as an alias: `tm alias add stock <new-id> 4a334ac2`. Search with
+  `tm find 4a334ac2` then continues to work.
 - If one ledger must hold tubes from several project prefixes, either use one ledger per project or
   keep the old UID as an alias; a date-code strategy pins one prefix.
 
@@ -146,15 +146,15 @@ Old `stock_pellets` + `stock_pellets_aliquots`: one pellet (culture) with N tube
 - one aliquot per old pellet aliquot (`<stock_id>.1`, `.2`, …);
 - `volume_ml` → aliquot `quantity`, unit `ml`;
 - the old pellet short code (`4a334ac2`) → alias on the stock;
-- old volume-usage records → `ledger aliquot use <aliquot> <amount> ml --purpose ...` on the matching
+- old volume-usage records → `tm aliquot use <aliquot> <amount> ml --purpose ...` on the matching
   aliquot, or a `consumed` status with a note if only the end state is known.
 
 Do not keep a stock-level scalar volume next to the aliquot volumes: the tubes are the inventory.
 
 ## 7. Load it
 
-Recommended path for a few hundred rows: transform the old CSVs into the `ledger export` column
-layout, then `ledger import all`.
+Recommended path for a few hundred rows: transform the old CSVs into the `tm export` column
+layout, then `tm import all`.
 
 1. Produce one CSV per kind plus `boxes.csv` and (if needed) `aliquots.csv`:
 
@@ -169,14 +169,14 @@ exports/
 ```
 
 The easiest way to get the exact headers is to create one object of each kind in a scratch ledger and
-run `ledger export all --out layout/`; use those headers as the template.
+run `tm export all --out layout/`; use those headers as the template.
 
 2. Validate and load:
 
 ```sh
-ledger --dry-run import all exports/     # nothing written; errors name the file and row
-ledger import all exports/               # all-or-nothing, one commit
-ledger check
+tm --dry-run import all exports/     # nothing written; errors name the file and row
+tm import all exports/               # all-or-nothing, one commit
+tm check
 ```
 
 `import all` reads entities first, then boxes, stocks, aliquots and aliases, so forward references
@@ -186,14 +186,14 @@ empty ledger.
 For a handful of rows, explicit single commands are fine:
 
 ```sh
-ledger entity add construct --id cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 \
+tm entity add construct --id cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 \
   --name '0801_4_Ori_6H.1@pZET043' --set sequence=ATGC --set tag=6H
-ledger entity add plasmid --id 5fe23f35-21fe-4274-bae8-168a3225ac3c \
+tm entity add plasmid --id 5fe23f35-21fe-4274-bae8-168a3225ac3c \
   --name '0801_5_Ori_6H.1@pZET043' --set sequence=ATGC --set backbone=pZET043 \
   --set construct=cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 --alias 0801_5
-ledger stock add bacterial --id 0826FP02 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
+tm stock add bacterial --id 0826FP02 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
   --set strain=Top10 --set batch=01 --box WFL-08-01 --slot A2
-ledger stock add plasmid_prep --id 0826FP21 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
+tm stock add plasmid_prep --id 0826FP21 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
   --set prep_method=miniprep --box WFL-08-02 --slot A1
 ```
 
@@ -204,39 +204,39 @@ Run all of these; keep the output with the migration record.
 1. **Row counts per kind** match the old table counts:
 
 ```sh
-ledger --format csv entity ls construct | wc -l      # header + 27
-ledger --format csv entity ls plasmid | wc -l        # header + 15
-ledger --format csv stock ls bacterial | wc -l       # header + 27
-ledger --format csv stock ls plasmid_prep | wc -l    # header + 15
+tm --format csv entity ls construct | wc -l      # header + 27
+tm --format csv entity ls plasmid | wc -l        # header + 15
+tm --format csv stock ls bacterial | wc -l       # header + 27
+tm --format csv stock ls plasmid_prep | wc -l    # header + 15
 ```
 
 2. **Every old UID resolves** to the same entity/stock:
 
 ```sh
-ledger find 0826FP02
-ledger find cd0ae0ea-363f-4409-a432-bd50d5a2b7f3
+tm find 0826FP02
+tm find cd0ae0ea-363f-4409-a432-bd50d5a2b7f3
 ```
 
-3. **`ledger check` has no FAIL** (`info` lines such as "constructs without molecular weight" are
+3. **`tm check` has no FAIL** (`info` lines such as "constructs without molecular weight" are
    allowed; the exit code is 0):
 
 ```sh
-ledger check -v
-ledger check --group core
+tm check -v
+tm check --group core
 ```
 
 4. **Spot-check box grids** against the old `box_01`/`box_02` and `box_map_all`:
-   `ledger box show WFL-08-01` must show the same UIDs in the same slots; empty slots stay empty.
+   `tm box show WFL-08-01` must show the same UIDs in the same slots; empty slots stay empty.
 5. **Counts per slot**: empty + occupied = box slots (81 for `grid9x9`), no duplicate slot.
-6. **Lineage**: for a few plasmids, `ledger stock show` and `ledger find` show the same construct
+6. **Lineage**: for a few plasmids, `tm stock show` and `tm find` show the same construct
    link and box locations as the old `v_stock_all`.
-7. **History**: `ledger history 0826FP02` shows one `create` event and one commit per migrated tube
-   (imports are one commit for the batch, so use `ledger history` for events; the commit is the batch).
+7. **History**: `tm history 0826FP02` shows one `create` event and one commit per migrated tube
+   (imports are one commit for the batch, so use `tm history` for events; the commit is the batch).
 
 ## 9. Retire the old database
 
 Keep the old directory read-only until the new ledger has been in use for a while: copy it to an
-archive location and back up the new ledger (`ledger backup` / `ledger remote push`). To roll back,
+archive location and back up the new ledger (`tm backup` / `tm remote push`). To roll back,
 point the old server at the untouched copy; do not edit the old database in place after cut-over.
 Document in the new ledger's notes which old database and date it came from, and keep the exported old
 CSVs next to the migration record.
@@ -249,7 +249,7 @@ CSVs next to the migration record.
 - [ ] Entity counts: construct 27, plasmid 15 (zsqlab08).
 - [ ] Stock counts: bacterial 27, plasmid_prep 15, protein_prep 0.
 - [ ] Every old UID resolves (`find`) with the expected kind and box location.
-- [ ] `ledger check` exit 0, no FAIL (info acknowledged).
-- [ ] `ledger box show` matches the old grid for every box, including empty slots.
+- [ ] `tm check` exit 0, no FAIL (info acknowledged).
+- [ ] `tm box show` matches the old grid for every box, including empty slots.
 - [ ] Pellet volumes (zsqlab10) are per aliquot, no stock-level scalar left behind.
 - [ ] Backup/push done; old database archived read-only.

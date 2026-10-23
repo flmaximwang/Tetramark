@@ -1,4 +1,4 @@
-"""Validation: generated ``dolt_tests`` and ``ledger check`` (ticket 08).
+"""Validation: generated ``dolt_tests`` and ``tm check`` (ticket 08).
 
 Every test runs against a real ``dolt`` binary.  Violations of the app-enforced
 invariants are inserted with raw SQL, because the object commands of ticket 10
@@ -14,10 +14,10 @@ from typing import Any
 import pytest
 import yaml
 
-from doltledger.core.ledger import Ledger
-from doltledger.schema.loader import load_ledger_schema, load_schema
-from doltledger.schema.model import EffectiveSchema, LedgerConfig, Rule, RuleExpect
-from doltledger.schema.tests_gen import (
+from tetramark.core.ledger import Ledger
+from tetramark.schema.loader import load_ledger_schema, load_schema
+from tetramark.schema.model import EffectiveSchema, LedgerConfig, Rule, RuleExpect
+from tetramark.schema.tests_gen import (
     MAX_NESTING_DEPTH,
     generate_tests,
     install_tests,
@@ -125,7 +125,7 @@ def failed_names(report) -> set[str]:
 def write_local_rules(ledger: Ledger, rules: dict[str, str]) -> Any:
     """Add a ``rules_dir`` to a ledger and reinstall its generated tests.
 
-    ``ledger init`` has no ``--rules-dir`` flag (spec §6); local rules are a
+    ``tm init`` has no ``--rules-dir`` flag (spec §6); local rules are a
     ``ledger.yaml`` feature.  This helper mimics what ``schema apply`` will do
     in ticket 09: change the YAML, reload the schema, replace ``dolt_tests``.
     """
@@ -188,7 +188,7 @@ def cli_env(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -502,7 +502,7 @@ def test_rule_expectations_map_to_dolt_assertions_and_groups() -> None:
 
 
 def test_empty_entity_kinds_forbids_the_stock_kind() -> None:
-    from doltledger.schema.model import Kind
+    from tetramark.schema.model import Kind
 
     schema = EffectiveSchema(
         kinds={"orphan": Kind(object="stock", entity_kinds=[])},
@@ -562,7 +562,7 @@ def test_local_fail_rule_blocks(ledger_factory) -> None:
 def test_cli_check_exit_codes_formats_and_verbose(ledger_factory, cli_env) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     ledger = ledger_factory([FULL], name="cli-check")
     base = [
@@ -610,7 +610,7 @@ def test_cli_check_exit_codes_formats_and_verbose(ledger_factory, cli_env) -> No
 def test_cli_info_failure_does_not_change_the_exit_code(ledger_factory, cli_env) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     ledger = ledger_factory([FULL], name="cli-info")
     add_everything(ledger)

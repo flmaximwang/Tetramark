@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from doltledger.schema.loader import (
+from tetramark.schema.loader import (
     list_bundled_presets,
     load_ledger_config,
     load_ledger_schema,
     load_preset,
     load_schema,
 )
-from doltledger.schema.model import (
+from tetramark.schema.model import (
     DEFAULT_STATUSES,
     FieldType,
     LedgerConfig,

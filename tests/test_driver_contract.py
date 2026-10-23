@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from doltledger.driver import Driver, EmbeddedDriver, ServerDriver
-from doltledger.driver.workspace import Workspace
-from doltledger.errors import LedgerError, UnreachableError
+from tetramark.driver import Driver, EmbeddedDriver, ServerDriver
+from tetramark.driver.workspace import Workspace
+from tetramark.errors import LedgerError, UnreachableError
 
 from conftest import free_port, isolated_env
 
@@ -31,8 +31,8 @@ def server_workspace(tmp_path_factory: pytest.TempPathFactory, dolt_binary: str)
     base = tmp_path_factory.mktemp("server-workspace")
     env = isolated_env(base / "dolt-root", base / "home")
     for key, value in (
-        ("user.name", "DoltLedger Tests"),
-        ("user.email", "tests@doltledger.invalid"),
+        ("user.name", "Tetramark Tests"),
+        ("user.email", "tests@tetramark.invalid"),
     ):
         subprocess.run(
             [dolt_binary, "config", "--global", "--add", key, value],

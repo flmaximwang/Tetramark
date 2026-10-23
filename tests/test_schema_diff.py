@@ -19,16 +19,16 @@ from typing import Any
 import pytest
 import yaml
 
-from doltledger.core.ledger import Ledger, build_id_strategies
-from doltledger.errors import EXIT_ERROR, LedgerError
-from doltledger.schema.diff import (
+from tetramark.core.ledger import Ledger, build_id_strategies
+from tetramark.errors import EXIT_ERROR, LedgerError
+from tetramark.schema.diff import (
     ADDITIVE,
     DESTRUCTIVE,
     SchemaPlan,
     apply,
     plan,
 )
-from doltledger.schema.loader import load_ledger_schema
+from tetramark.schema.loader import load_ledger_schema
 
 from conftest import PRESETS
 
@@ -825,7 +825,7 @@ def test_apply_makes_one_commit_and_refreshes_ledger_meta(
     assert commit_count(ledger) == before + 1
     message = latest_commit(ledger)
     assert message["message"] == "apply(schema): 3 step(s)"
-    assert message["author_email"] == "factory@doltledger.invalid"
+    assert message["author_email"] == "factory@tetramark.invalid"
 
     ledger.read_meta()
     assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
@@ -870,7 +870,7 @@ def cli_isolated(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -882,7 +882,7 @@ def test_cli_schema_plan_text_and_json(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     kinds["sample"]["fields"]["note"] = {"type": "string"}
     preset.write(kinds)
@@ -923,7 +923,7 @@ def test_cli_schema_apply_refuses_destructive(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from doltledger.cli.app import main
+    from tetramark.cli.app import main
 
     kinds["sample"]["fields"]["must"] = {"type": "string", "required": True}
     preset.write(kinds)
@@ -931,7 +931,7 @@ def test_cli_schema_apply_refuses_destructive(
         sys,
         "argv",
         [
-            "ledger",
+            "tm",
             "--workspace",
             str(ledger.workspace.data_dir),
             "--ledger",
@@ -957,7 +957,7 @@ def test_cli_schema_apply_commits_and_plan_becomes_empty(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     before = commit_count(ledger)
     kinds["sample"]["fields"]["note"] = {"type": "string"}
@@ -991,7 +991,7 @@ def test_cli_schema_apply_honours_dry_run(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     kinds["sample"]["fields"]["note"] = {"type": "string"}
     preset.write(kinds)
@@ -1026,7 +1026,7 @@ def test_cli_schema_apply_allows_destructive_with_the_flag(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     kinds["sample"]["fields"]["must"] = {"type": "string", "required": True}
     preset.write(kinds)

@@ -13,8 +13,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app
-from doltledger.ops.io_csv import (
+from tetramark.cli.app import app
+from tetramark.ops.io_csv import (
     CsvImportError,
     export_csv,
     import_csv,
@@ -179,7 +179,7 @@ def cli_args(ledger) -> list[str]:
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 # ---------------------------------------------------------------------------

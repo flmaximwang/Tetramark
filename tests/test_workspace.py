@@ -8,13 +8,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from doltledger.driver import EmbeddedDriver, ServerDriver
-from doltledger.driver.workspace import (
+from tetramark.driver import EmbeddedDriver, ServerDriver
+from tetramark.driver.workspace import (
     DEFAULT_PORT,
     Workspace,
     WorkspaceConfig,
 )
-from doltledger.errors import LedgerError, UnreachableError, UsageError
+from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 
 def write_workspace(path: Path, **overrides: object) -> Workspace:
@@ -100,7 +100,7 @@ def test_discover_uses_environment_fallback(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path / "data")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    found = Workspace.discover(elsewhere, env={"DOLTLEDGER_WORKSPACE": str(workspace.data_dir)})
+    found = Workspace.discover(elsewhere, env={"TETRAMARK_WORKSPACE": str(workspace.data_dir)})
     assert found is not None
     assert found.data_dir == workspace.data_dir
 

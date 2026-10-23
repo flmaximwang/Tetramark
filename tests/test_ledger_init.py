@@ -14,15 +14,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from doltledger import Ledger, init_ledger, open as open_ledger
-from doltledger.core.ledger import InitPlan, WriteSession
-from doltledger.core.ids import DatecodeIds, UuidIds
-from doltledger.driver.workspace import Workspace
-from doltledger.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
+from tetramark import Ledger, init_ledger, open as open_ledger
+from tetramark.core.ledger import InitPlan, WriteSession
+from tetramark.core.ids import DatecodeIds, UuidIds
+from tetramark.driver.workspace import Workspace
+from tetramark.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
 
 from conftest import FACTORY_AUTHOR, PRESETS
 
-CLI_AUTHOR = "CLI User <cli@doltledger.invalid>"
+CLI_AUTHOR = "CLI User <cli@tetramark.invalid>"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def test_init_creates_database_schema_and_one_commit(
         "zsqlab12",
         [PRESETS / "full"],
         id_prefix="12",
-        author="Init Author <init@doltledger.invalid>",
+        author="Init Author <init@tetramark.invalid>",
     )
 
     assert isinstance(ledger, Ledger)
@@ -103,12 +103,12 @@ def test_init_creates_database_schema_and_one_commit(
     ):
         assert name in tables, name
 
-    # dolt init committed once; ledger init made exactly one more commit.
+    # dolt init committed once; tm init made exactly one more commit.
     assert commit_count(ledger) == 2
     message = latest_commit(ledger)
     assert message["message"] == "init(ledger): zsqlab12"
     assert message["author"] == "Init Author"
-    assert message["author_email"] == "init@doltledger.invalid"
+    assert message["author_email"] == "init@tetramark.invalid"
     # A completed init leaves no uncommitted changes.
     assert ledger.driver.query("SELECT * FROM dolt_status") == []
 
@@ -306,19 +306,19 @@ def test_open_prefers_ledger_author_then_workspace_author(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
     workspace = Workspace.create(
-        tmp_path / "data", author="Workspace <ws@doltledger.invalid>", env=dolt_env
+        tmp_path / "data", author="Workspace <ws@tetramark.invalid>", env=dolt_env
     )
     ledger = init_ledger(workspace, "authors", [PRESETS / "base"])
-    assert ledger.author == "Workspace <ws@doltledger.invalid>"
+    assert ledger.author == "Workspace <ws@tetramark.invalid>"
 
     config = read_config(ledger)
-    config["author"] = "Ledger <led@doltledger.invalid>"
+    config["author"] = "Ledger <led@tetramark.invalid>"
     write_config(ledger, config)
-    assert open_ledger(workspace, "authors").author == "Ledger <led@doltledger.invalid>"
+    assert open_ledger(workspace, "authors").author == "Ledger <led@tetramark.invalid>"
 
     config.pop("author")
     write_config(ledger, config)
-    assert open_ledger(workspace, "authors").author == "Workspace <ws@doltledger.invalid>"
+    assert open_ledger(workspace, "authors").author == "Workspace <ws@tetramark.invalid>"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -327,7 +327,7 @@ def test_open_falls_back_to_git_config(
 ) -> None:
     for key, value in (
         ("user.name", "Git User"),
-        ("user.email", "git@doltledger.invalid"),
+        ("user.email", "git@tetramark.invalid"),
     ):
         subprocess.run(
             ["git", "config", "--global", "--add", key, value],
@@ -338,9 +338,9 @@ def test_open_falls_back_to_git_config(
     workspace = make_workspace(tmp_path, dolt_env)
     ledger = init_ledger(workspace, "git", [PRESETS / "base"])
 
-    assert ledger.author == "Git User <git@doltledger.invalid>"
-    assert read_config(ledger)["author"] == "Git User <git@doltledger.invalid>"
-    assert open_ledger(workspace, "git").author == "Git User <git@doltledger.invalid>"
+    assert ledger.author == "Git User <git@tetramark.invalid>"
+    assert read_config(ledger)["author"] == "Git User <git@tetramark.invalid>"
+    assert open_ledger(workspace, "git").author == "Git User <git@tetramark.invalid>"
 
 
 def test_open_warns_when_the_live_fingerprint_differs(ledger_factory) -> None:
@@ -349,9 +349,9 @@ def test_open_warns_when_the_live_fingerprint_differs(ledger_factory) -> None:
         "UPDATE `ledger_meta` SET `value` = 'deadbeef' WHERE `key` = 'fingerprint'"
     )
 
-    with pytest.warns(UserWarning, match="ledger schema plan"):
+    with pytest.warns(UserWarning, match="tm schema plan"):
         reopened = open_ledger(ledger.workspace, "stale")
-    assert reopened.warnings and "ledger schema plan" in reopened.warnings[0]
+    assert reopened.warnings and "tm schema plan" in reopened.warnings[0]
     assert reopened.check_fingerprint(warn=False) is False
 
 
@@ -386,7 +386,7 @@ def test_write_is_one_transaction_and_one_commit(ledger_factory) -> None:
     assert ledger.driver.query("SELECT id FROM write_probe") == [{"id": 1}]
     latest = latest_commit(ledger)
     assert latest["message"] == "add(box): create probe"
-    assert latest["author_email"] == "factory@doltledger.invalid"
+    assert latest["author_email"] == "factory@tetramark.invalid"
 
 
 def test_write_rolls_back_when_the_body_raises(ledger_factory) -> None:
@@ -492,7 +492,7 @@ def cli_isolated(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -501,7 +501,7 @@ def test_cli_init_creates_a_ledger(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     runner = CliRunner()
     data = tmp_path / "data"
@@ -535,7 +535,7 @@ def test_cli_init_dry_run_prints_sql_and_writes_nothing(
 ) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     runner = CliRunner()
     data = tmp_path / "data"
@@ -565,14 +565,14 @@ def test_cli_init_requires_a_preset(
 ) -> None:
     import sys
 
-    from doltledger.cli.app import main
+    from tetramark.cli.app import main
 
     data = tmp_path / "data"
     Workspace.create(data)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["ledger", "--workspace", str(data), "init", "bare", "--author", CLI_AUTHOR],
+        ["tm", "--workspace", str(data), "init", "bare", "--author", CLI_AUTHOR],
     )
     with pytest.raises(SystemExit) as excinfo:
         main()
@@ -583,8 +583,8 @@ def test_cli_init_requires_a_preset(
 def test_cli_presets_list_and_show(cli_isolated: None) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
-    from doltledger.schema.loader import list_bundled_presets
+    from tetramark.cli.app import app
+    from tetramark.schema.loader import list_bundled_presets
 
     runner = CliRunner()
     listed = runner.invoke(app, ["presets", "list"])
@@ -607,7 +607,7 @@ def test_cli_presets_list_and_show(cli_isolated: None) -> None:
 def test_cli_schema_show(cli_isolated: None, ledger_factory) -> None:
     from typer.testing import CliRunner
 
-    from doltledger.cli.app import app
+    from tetramark.cli.app import app
 
     ledger = ledger_factory([PRESETS / "full"], name="shown")
     runner = CliRunner()

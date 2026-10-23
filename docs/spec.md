@@ -1,8 +1,8 @@
-# DoltLedger — Specification (v1)
+# Tetramark — Specification (v1)
 
 A general-purpose, version-controlled inventory ledger on [Dolt](https://www.dolthub.com/).
 Four core objects — **entity**, **stock**, **aliquot**, **box** — are extended per domain by
-declarative YAML **schemas** bundled into **presets**. Pick presets, run `ledger init`, and you have a
+declarative YAML **schemas** bundled into **presets**. Pick presets, run `tm init`, and you have a
 validated, versioned ledger. Biology is one preset (`molbio`), not the scope.
 
 Origin: generalises the hand-written zsqlab ledgers in `/Users/maxim/Documents/Lab/Dolt/cli`
@@ -137,7 +137,7 @@ Custom rule = `id`, `description`, `severity: fail|info`, `sql` (read-only SELEC
 
 ## 3. Physical model (generated DDL)
 
-Core tables (always present, created by `ledger init`):
+Core tables (always present, created by `tm init`):
 
 ```
 ledger_meta(key PK, value)                       -- schema hash, preset versions, ledger.yaml copy, spec version
@@ -180,7 +180,7 @@ No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in t
 
 ## 4. Validation
 
-`ledger check` runs Dolt's `dolt_tests` (same source as Workbench's Tests page). Exit 0 = all PASS,
+`tm check` runs Dolt's `dolt_tests` (same source as Workbench's Tests page). Exit 0 = all PASS,
 1 = any FAIL. `-v` prints offending rows (each generated test has a companion detail query).
 
 Tests are generated into `dolt_tests` on `init` / `schema apply`, grouped:
@@ -195,9 +195,9 @@ Generated tests are fully replaced on each apply (they are derived state); never
 
 ## 5. Schema evolution
 
-`ledger schema plan` diffs the effective YAML schema against the live DB (introspection via
+`tm schema plan` diffs the effective YAML schema against the live DB (introspection via
 `information_schema` + `ledger_meta`) and prints an ordered SQL plan, each step tagged
-`additive` or `destructive`. `ledger schema apply` executes it in one transaction + one Dolt commit.
+`additive` or `destructive`. `tm schema apply` executes it in one transaction + one Dolt commit.
 
 - Additive (applied freely): new kind, new nullable/defaulted field, new enum value, new view/rule/test,
   new aliquot_fields table, relaxing NOT NULL.
@@ -210,9 +210,9 @@ Generated tests are fully replaced on each apply (they are derived state); never
 
 ---
 
-## 6. CLI (`ledger`)
+## 6. CLI (`tm`)
 
-Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$DOLTLEDGER_WORKSPACE`),
+Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$TETRAMARK_WORKSPACE`),
 `--ledger NAME` (default from workspace), `--format table|json|csv` on reads, `--json` shorthand,
 `--dry-run` (print SQL, no write) and `--no-commit` on writes. Exit codes: 0 ok, 1 business/validation
 error, 2 usage error, 3 database unreachable.
@@ -222,35 +222,35 @@ non-ASCII user text is kept in the event/notes, never in the commit message (kno
 Author from `ledger.yaml` → `workspace.yaml` → git config.
 
 ```
-ledger workspace init [PATH] [--port 13308]
-ledger server start [-d] | stop | status
-ledger init NAME --preset base --preset molbio [--id-prefix 12]
-ledger presets [list|show NAME]
-ledger schema show [KIND] | plan | apply [--allow-destructive]
+tm workspace init [PATH] [--port 13308]
+tm server start [-d] | stop | status
+tm init NAME --preset base --preset molbio [--id-prefix 12]
+tm presets [list|show NAME]
+tm schema show [KIND] | plan | apply [--allow-destructive]
 
-ledger entity add KIND --set field=value ... [--name N] [--alias A]
-ledger entity show ID|ALIAS ; ledger entity edit ID --set f=v ; ledger entity ls [KIND] [--where f=v]
-ledger stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
+tm entity add KIND --set field=value ... [--name N] [--alias A]
+tm entity show ID|ALIAS ; tm entity edit ID --set f=v ; tm entity ls [KIND] [--where f=v]
+tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--box NAME --slot A1 [--slot A2 ...]] [--quantity 500 --unit ml]
-ledger stock show|edit|ls ...
-ledger aliquot add STOCK [--count N] [--box NAME --slot S ...] [--quantity Q --unit U]
-ledger aliquot move ALQ --box NAME [--slot S]
-ledger aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
-ledger aliquot status ALQ stored|missing|consumed|pending
-ledger aliquot purge ALQ                                  # hard delete, explicit only
-ledger box add KIND NAME [--in PARENT --slot S]
-ledger box show NAME            # terminal grid / list; --json gives {box, geometry, slots:[...]}
-ledger box ls ; ledger box move NAME --in PARENT --slot S
-ledger alias add OBJ_TYPE ID ALIAS ; ledger alias rm ...
-ledger find QUERY               # id → alias → name/text match across all objects and kinds
-ledger history ID               # aliquot_event + dolt_log entries touching the object
-ledger check [-v] [--group G]
-ledger import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
-ledger export KIND|all [--out DIR]
-ledger remote add NAME URL | push | pull ; ledger backup [DIR]
+tm stock show|edit|ls ...
+tm aliquot add STOCK [--count N] [--box NAME --slot S ...] [--quantity Q --unit U]
+tm aliquot move ALQ --box NAME [--slot S]
+tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
+tm aliquot status ALQ stored|missing|consumed|pending
+tm aliquot purge ALQ                                  # hard delete, explicit only
+tm box add KIND NAME [--in PARENT --slot S]
+tm box show NAME            # terminal grid / list; --json gives {box, geometry, slots:[...]}
+tm box ls ; tm box move NAME --in PARENT --slot S
+tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
+tm find QUERY               # id → alias → name/text match across all objects and kinds
+tm history ID               # aliquot_event + dolt_log entries touching the object
+tm check [-v] [--group G]
+tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
+tm export KIND|all [--out DIR]
+tm remote add NAME URL | push | pull ; tm backup [DIR]
 ```
 
-Python API mirrors the CLI (`doltledger.open(workspace, ledger)` → `Ledger` with `.entities`, `.stocks`,
+Python API mirrors the CLI (`tetramark.open(workspace, ledger)` → `Ledger` with `.entities`, `.stocks`,
 `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin layer over it.
 
 ### 6.1 ID strategies
@@ -273,7 +273,7 @@ Python API mirrors the CLI (`doltledger.open(workspace, ledger)` → `Ledger` wi
 - `EmbeddedDriver` — `dolt sql -r json -q` subprocess in the ledger dir. Used when no server runs and in tests.
   Must detect errors from output, not only exit codes (dolt can exit 0 on error).
 
-`ledger server start|stop|status` ports `dolt_start.sh`/`dolt_stop.sh`: pid/log in data_dir, readiness
+`tm server start|stop|status` ports `dolt_start.sh`/`dolt_stop.sh`: pid/log in data_dir, readiness
 probe, port-busy detection, lists ledgers (subdirs with `.dolt`).
 
 Target Dolt ≥ 2.3.5. All SQL must work on 2.3.5 (no multi-statement trigger bodies, no REGEXP in CHECK).
@@ -300,15 +300,15 @@ Target Dolt ≥ 2.3.5. All SQL must work on 2.3.5 (no multi-statement trigger bo
 
 ```
 pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
-src/doltledger/
+src/tetramark/
   driver/                 # base.py, server.py, embedded.py, workspace.py (server start/stop)
   schema/                 # model.py (pydantic), loader.py (presets/include/mixins), ddl.py, diff.py, tests_gen.py
   core/                   # ids.py, ledger.py (open/init), objects.py (entity/stock/aliquot/box ops), events.py
   ops/                    # find.py, render.py (grid), io_csv.py, remote.py
   cli/                    # app.py (Typer root) + one module per command group
   presets/                # base/, molbio/, library/ (package data)
-skills/doltledger/SKILL.md (+ references/)
-skills/doltledger-schema/SKILL.md (+ references/)
+skills/tetramark/SKILL.md (+ references/)
+skills/tetramark-schema/SKILL.md (+ references/)
 docs/spec.md, docs/migration.md, docs/tickets/
 tests/                    # pytest; fixtures create real dolt repos in tmp_path
 ```
@@ -319,11 +319,11 @@ random free port for ServerDriver tests. `uv run pytest` must pass after every t
 
 ## 10. Skills & docs
 
-- `skills/doltledger` — operating manual: concepts, find/query recipes, add/move/use/status flows, check,
+- `skills/tetramark` — operating manual: concepts, find/query recipes, add/move/use/status flows, check,
   history, what not to do (raw SQL writes, hand-editing dolt_tests). Chinese trigger words in description
   (台账, 样品, 盒, 冻存, 库存, 管).
-- `skills/doltledger-schema` — writing presets/kinds/rules, schema plan/apply, destructive changes.
+- `skills/tetramark-schema` — writing presets/kinds/rules, schema plan/apply, destructive changes.
 - `docs/migration.md` — rulebook for moving an old zsqlab DB: map old tables → kinds, keep old UIDs as
   explicit IDs (or aliases when they don't fit), `box/row/col` → box name + slot label, `status` 三态 →
-  status vocab, pellet aliquots → aliquots with quantity, export old tables to CSV → `ledger import`,
-  checklist (row counts per kind, `ledger check` all PASS, spot-check `box show` vs old grid views).
+  status vocab, pellet aliquots → aliquots with quantity, export old tables to CSV → `tm import`,
+  checklist (row counts per kind, `tm check` all PASS, spot-check `box show` vs old grid views).

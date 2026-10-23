@@ -7,7 +7,7 @@ import datetime as dt
 import pytest
 from pydantic import ValidationError
 
-from doltledger.schema.model import (
+from tetramark.schema.model import (
     DEFAULT_STATUSES,
     UNSET,
     EffectiveSchema,

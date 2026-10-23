@@ -14,8 +14,8 @@ from datetime import date
 
 import pytest
 
-from doltledger.core import ids as ids_module
-from doltledger.core.ids import (
+from tetramark.core import ids as ids_module
+from tetramark.core.ids import (
     DAY_LETTER_MARKERS,
     MONTH_MARKERS,
     DatecodeIds,
@@ -29,7 +29,7 @@ from doltledger.core.ids import (
     parse_aliquot_id,
     strategy_from_config,
 )
-from doltledger.errors import LedgerError, UsageError
+from tetramark.errors import LedgerError, UsageError
 
 # 2026-06-24 is the example date of the spec: prefix 08 → 0826FP01.
 TODAY = date(2026, 6, 24)

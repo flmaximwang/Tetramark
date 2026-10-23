@@ -1,4 +1,4 @@
-"""``ledger workspace init`` and ``ledger server ...`` through the CLI."""
+"""``tm workspace init`` and ``tm server ...`` through the CLI."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app, main
-from doltledger.errors import EXIT_USAGE, LedgerError
+from tetramark.cli.app import app, main
+from tetramark.errors import EXIT_USAGE, LedgerError
 
 runner = CliRunner()
 
@@ -26,7 +26,7 @@ def _isolated_process(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str],
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -75,7 +75,7 @@ def test_workspace_init_twice_fails(tmp_path: Path) -> None:
 
 
 def test_server_status_without_workspace_exits_2(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(sys, "argv", ["ledger", "server", "status"])
+    monkeypatch.setattr(sys, "argv", ["tm", "server", "status"])
     with pytest.raises(SystemExit) as excinfo:
         main()
     assert excinfo.value.code == EXIT_USAGE

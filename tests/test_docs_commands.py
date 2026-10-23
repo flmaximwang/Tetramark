@@ -21,11 +21,11 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app
+from tetramark.cli.app import app
 
 runner = CliRunner()
 
-AUTHOR = "Docs Test <docs@doltledger.invalid>"
+AUTHOR = "Docs Test <docs@tetramark.invalid>"
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ def docs_env(
     """Run the CLI from an empty lab directory with isolated Dolt/Git config."""
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     lab = tmp_path / "lab"
     lab.mkdir()
     monkeypatch.chdir(lab)
@@ -310,7 +310,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
 
     # Configuration.
     assert AUTHOR in run("config", "get", "author").output
-    new_author = "New Author <new@doltledger.invalid>"
+    new_author = "New Author <new@tetramark.invalid>"
     run("config", "set", "author", new_author)
     assert new_author in run("config", "get", "author").output
 
@@ -541,33 +541,33 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(docs_env: Path) -> None
 def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
     """Skills parse as frontmatter + body, with the promised triggers."""
     root = Path(__file__).resolve().parents[1]
-    skill_file = root / "skills" / "doltledger" / "SKILL.md"
+    skill_file = root / "skills" / "tetramark" / "SKILL.md"
     text = skill_file.read_text(encoding="utf-8")
     match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     assert match, "SKILL.md must start with YAML frontmatter"
     front = yaml.safe_load(match.group(1))
-    assert front["name"] == "doltledger"
+    assert front["name"] == "tetramark"
     assert front["description"].startswith("Use when")
     for trigger in ("台账", "样品", "盒", "冻存", "库存", "管", "分装"):
         assert trigger in front["description"]
     assert len(text.splitlines()) <= 150
 
     for relative in (
-        "skills/doltledger/references/commands.md",
-        "skills/doltledger/references/recipes.md",
-        "skills/doltledger-schema/SKILL.md",
+        "skills/tetramark/references/commands.md",
+        "skills/tetramark/references/recipes.md",
+        "skills/tetramark-schema/SKILL.md",
         "docs/migration.md",
         "README.md",
     ):
         assert (root / relative).is_file(), relative
 
-    schema_text = (root / "skills" / "doltledger-schema" / "SKILL.md").read_text(
+    schema_text = (root / "skills" / "tetramark-schema" / "SKILL.md").read_text(
         encoding="utf-8"
     )
     schema_front = yaml.safe_load(
         re.match(r"^---\n(.*?)\n---\n", schema_text, re.DOTALL).group(1)
     )
-    assert schema_front["name"] == "doltledger-schema"
+    assert schema_front["name"] == "tetramark-schema"
     assert schema_front["description"].startswith("Use when")
-    assert (root / "skills" / "doltledger-schema" / "references" / "presets.md").is_file()
-    assert (root / "skills" / "doltledger-schema" / "references" / "evolution.md").is_file()
+    assert (root / "skills" / "tetramark-schema" / "references" / "presets.md").is_file()
+    assert (root / "skills" / "tetramark-schema" / "references" / "evolution.md").is_file()

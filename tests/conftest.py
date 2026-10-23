@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from doltledger.core.ledger import Ledger, init_ledger, open as open_ledger
-from doltledger.driver.workspace import Workspace
+from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
+from tetramark.driver.workspace import Workspace
 
 DOLT_BINARY = shutil.which("dolt")
 
@@ -27,7 +27,7 @@ DOLT_BINARY = shutil.which("dolt")
 PRESETS = Path(__file__).parent / "data" / "presets"
 
 #: Author used by :func:`ledger_factory` so tests never read a global identity.
-FACTORY_AUTHOR = "Ledger Factory <factory@doltledger.invalid>"
+FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
 
 
 #: ``subprocess.run`` signature use in fixtures/tests: run_dolt("sql", "-q", "SELECT 1")
@@ -45,7 +45,7 @@ def isolated_env(root: Path, home: Path) -> dict[str, str]:
     env["GIT_CONFIG_GLOBAL"] = str(home / ".gitconfig")
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env.pop("GIT_CONFIG_NOSYSTEM", None)
-    env.pop("DOLTLEDGER_WORKSPACE", None)
+    env.pop("TETRAMARK_WORKSPACE", None)
     return env
 
 
@@ -149,8 +149,8 @@ def dolt_run(dolt_binary: str, dolt_env: dict[str, str], tmp_path: Path) -> RunD
 @pytest.fixture
 def dolt_conf(dolt_run: RunDolt) -> None:
     """Give the isolated global Dolt config a user name and email."""
-    dolt_run("config", "--global", "--add", "user.name", "DoltLedger Tests")
-    dolt_run("config", "--global", "--add", "user.email", "tests@doltledger.invalid")
+    dolt_run("config", "--global", "--add", "user.name", "Tetramark Tests")
+    dolt_run("config", "--global", "--add", "user.email", "tests@tetramark.invalid")
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ def ledger_factory(
     """Create real ledgers in a ``tmp_path`` workspace (embedded driver).
 
     ``ledger_factory(presets=[...], id_prefix="77")`` returns the opened
-    :class:`~doltledger.core.ledger.Ledger`.  The workspace is created once and
+    :class:`~tetramark.core.ledger.Ledger`.  The workspace is created once and
     reused; every call gets a fresh ledger name unless one is given.
     """
     counter = itertools.count(1)

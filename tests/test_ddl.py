@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from doltledger.driver.base import literal
-from doltledger.schema.ddl import (
+from tetramark.driver.base import literal
+from tetramark.schema.ddl import (
     CORE_TABLES,
     CORE_VIEWS,
     Statement,
@@ -28,8 +28,8 @@ from doltledger.schema.ddl import (
     to_sql,
     view_statements,
 )
-from doltledger.schema.loader import load_schema
-from doltledger.schema.model import (
+from tetramark.schema.loader import load_schema
+from tetramark.schema.model import (
     EffectiveSchema,
     Field,
     FieldType,

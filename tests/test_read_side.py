@@ -10,9 +10,9 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app
-from doltledger.errors import LedgerError
-from doltledger.ops.render import box_csv_rows, render_box_text
+from tetramark.cli.app import app
+from tetramark.errors import LedgerError
+from tetramark.ops.render import box_csv_rows, render_box_text
 
 from conftest import PRESETS
 
@@ -24,7 +24,7 @@ FULL = PRESETS / "full"
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 def base_args(ledger) -> list[str]:

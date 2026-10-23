@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from doltledger import __version__
-from doltledger.cli.app import app
-from doltledger.errors import (
+from tetramark import __version__
+from tetramark.cli.app import app
+from tetramark.errors import (
     EXIT_ERROR,
     EXIT_OK,
     EXIT_UNREACHABLE,
@@ -28,7 +28,7 @@ runner = CliRunner()
 def test_version_flag_prints_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == EXIT_OK
-    assert result.output.strip() == f"ledger {__version__}"
+    assert result.output.strip() == f"tetramark {__version__}"
 
 
 def test_help_lists_global_options() -> None:
@@ -40,12 +40,12 @@ def test_help_lists_global_options() -> None:
 
 
 def test_installed_console_script_prints_version() -> None:
-    script = Path(sys.executable).parent / "ledger"
+    script = Path(sys.executable).parent / "tm"
     if not script.exists():
-        pytest.skip("the 'ledger' console script is not installed in this environment")
+        pytest.skip("the 'tm' console script is not installed in this environment")
     result = subprocess.run([str(script), "--version"], capture_output=True, text=True)
     assert result.returncode == EXIT_OK
-    assert result.stdout.strip() == f"ledger {__version__}"
+    assert result.stdout.strip() == f"tetramark {__version__}"
 
 
 def test_exit_codes() -> None:
@@ -81,7 +81,7 @@ def test_dolt_repo_uses_isolated_global_config(
 
     config = dolt_run("config", "--global", "--list", cwd=dolt_repo)
     assert "user.name" in config.stdout
-    assert "DoltLedger Tests" in config.stdout
+    assert "Tetramark Tests" in config.stdout
 
     # The isolated root holds the config; the real one was never consulted.
     global_config = tmp_path / "dolt-root" / ".dolt" / "config_global.json"

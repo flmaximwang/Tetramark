@@ -10,9 +10,9 @@ import json
 
 import pytest
 
-from doltledger.schema.ddl import slot_rows
-from doltledger.schema.loader import list_bundled_presets, load_schema
-from doltledger.schema.model import (
+from tetramark.schema.ddl import slot_rows
+from tetramark.schema.loader import list_bundled_presets, load_schema
+from tetramark.schema.model import (
     FieldType,
     GeometryType,
     LedgerConfig,
@@ -271,7 +271,7 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
     missing = expected - tables
     assert not missing, f"missing generated objects: {sorted(missing)}"
 
-    # Dolt init made one commit; ledger init made exactly one more.
+    # Dolt init made one commit; tm init made exactly one more.
     assert commit_count(ledger) == 2
     assert ledger.driver.query("SELECT * FROM dolt_status") == []
 

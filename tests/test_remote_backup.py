@@ -13,11 +13,11 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app
-from doltledger.core.ledger import LEDGER_FILE, Ledger, open as open_ledger
-from doltledger.driver.embedded import EmbeddedDriver
-from doltledger.errors import LedgerError, UsageError
-from doltledger.ops import remote
+from tetramark.cli.app import app
+from tetramark.core.ledger import LEDGER_FILE, Ledger, open as open_ledger
+from tetramark.driver.embedded import EmbeddedDriver
+from tetramark.errors import LedgerError, UsageError
+from tetramark.ops import remote
 
 from conftest import FACTORY_AUTHOR, PRESETS
 
@@ -42,7 +42,7 @@ def cli_isolated(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -268,17 +268,17 @@ def test_set_author_updates_yaml_meta_and_commit_author(ledger_factory) -> None:
     previous = ledger.author
     assert previous == FACTORY_AUTHOR
 
-    session = ledger.set_author("New Author <new@doltledger.invalid>")
+    session = ledger.set_author("New Author <new@tetramark.invalid>")
 
     assert session.dry_run is False
     assert session.commit_hash
-    assert (ledger.path / LEDGER_FILE).read_text(encoding="utf-8").count("new@doltledger.invalid") == 1
+    assert (ledger.path / LEDGER_FILE).read_text(encoding="utf-8").count("new@tetramark.invalid") == 1
     payload = yaml.safe_load((ledger.path / LEDGER_FILE).read_text(encoding="utf-8"))
-    assert payload["author"] == "New Author <new@doltledger.invalid>"
+    assert payload["author"] == "New Author <new@tetramark.invalid>"
     meta = ledger.driver.query(
         "SELECT `value` FROM `ledger_meta` WHERE `key` = 'ledger_yaml'"
     )[0]["value"]
-    assert "New Author <new@doltledger.invalid>" in meta
+    assert "New Author <new@tetramark.invalid>" in meta
 
     after = int(
         ledger.driver.query("SELECT COUNT(*) AS `n` FROM `dolt_log`")[0]["n"]
@@ -290,23 +290,23 @@ def test_set_author_updates_yaml_meta_and_commit_author(ledger_factory) -> None:
     )[0]
     assert latest["message"] == "config(ledger): set author"
     assert latest["author"] == "New Author"
-    assert latest["author_email"] == "new@doltledger.invalid"
-    assert ledger.author == "New Author <new@doltledger.invalid>"
-    assert open_ledger(ledger.workspace, "authors").author == "New Author <new@doltledger.invalid>"
+    assert latest["author_email"] == "new@tetramark.invalid"
+    assert ledger.author == "New Author <new@tetramark.invalid>"
+    assert open_ledger(ledger.workspace, "authors").author == "New Author <new@tetramark.invalid>"
 
 
 def test_set_author_dry_run_and_validation(ledger_factory) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="authors")
     ledger.dry_run = True
     try:
-        session = ledger.set_author("Dry Run <dry@doltledger.invalid>")
+        session = ledger.set_author("Dry Run <dry@tetramark.invalid>")
     finally:
         ledger.dry_run = False
 
     assert session.dry_run is True
     assert session.statements and "ledger_meta" in session.statements[0]
     assert ledger.author == FACTORY_AUTHOR
-    assert "dry@doltledger.invalid" not in (ledger.path / LEDGER_FILE).read_text(
+    assert "dry@tetramark.invalid" not in (ledger.path / LEDGER_FILE).read_text(
         encoding="utf-8"
     )
 
@@ -367,7 +367,7 @@ def test_cli_config_get_and_set_author(
     assert got.exit_code == 0, got.output
     assert FACTORY_AUTHOR in got.output
 
-    new_author = "CLI Author <cli-author@doltledger.invalid>"
+    new_author = "CLI Author <cli-author@tetramark.invalid>"
     updated = runner.invoke(app, [*prefix, "config", "set", "author", new_author])
     assert updated.exit_code == 0, updated.output
     assert new_author in updated.output

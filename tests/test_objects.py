@@ -12,8 +12,8 @@ from decimal import Decimal
 
 import pytest
 
-from doltledger.core.ledger import open as open_ledger
-from doltledger.errors import LedgerError, UsageError
+from tetramark.core.ledger import open as open_ledger
+from tetramark.errors import LedgerError, UsageError
 
 from conftest import FACTORY_AUTHOR, PRESETS
 

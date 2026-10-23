@@ -8,7 +8,7 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
-from doltledger.cli.app import app, main
+from tetramark.cli.app import app, main
 
 from conftest import PRESETS
 
@@ -26,7 +26,7 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     """Run the CLI with the same isolated Dolt/Git environment as the ledger."""
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("DOLTLEDGER_WORKSPACE", raising=False)
+    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 def commit_count(ledger) -> int:
@@ -269,7 +269,7 @@ def test_cli_unknown_field_exits_usage(
 ) -> None:
     ledger = ledger_factory([BASE], name="cli-usage", id_prefix="77")
     args = [
-        "ledger",
+        "tm",
         *base_args(ledger),
         "entity",
         "add",

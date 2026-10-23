@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from doltledger.driver.base import (
+from tetramark.driver.base import (
     commit_statements,
     ensure_ascii,
     is_nothing_to_commit,
@@ -15,8 +15,8 @@ from doltledger.driver.base import (
     looks_like_error,
     render_sql,
 )
-from doltledger.driver.embedded import _check_output, _parse_result_sets
-from doltledger.errors import LedgerError
+from tetramark.driver.embedded import _check_output, _parse_result_sets
+from tetramark.errors import LedgerError
 
 
 @pytest.mark.parametrize(
