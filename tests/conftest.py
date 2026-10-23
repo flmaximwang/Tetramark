@@ -8,6 +8,7 @@ configuration is never read or written.
 
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import socket
@@ -17,7 +18,17 @@ from pathlib import Path
 
 import pytest
 
+from doltledger.core.ledger import Ledger, init_ledger
+from doltledger.driver.workspace import Workspace
+
 DOLT_BINARY = shutil.which("dolt")
+
+#: The presets from ticket 03's test data.
+PRESETS = Path(__file__).parent / "data" / "presets"
+
+#: Author used by :func:`ledger_factory` so tests never read a global identity.
+FACTORY_AUTHOR = "Ledger Factory <factory@doltledger.invalid>"
+
 
 #: ``subprocess.run`` signature use in fixtures/tests: run_dolt("sql", "-q", "SELECT 1")
 RunDolt = Callable[..., subprocess.CompletedProcess[str]]
@@ -119,3 +130,49 @@ def make_ledger(dolt_run: RunDolt, dolt_conf: None) -> Callable[[Path], Path]:
 def port() -> int:
     """A random free TCP port."""
     return free_port()
+
+
+@pytest.fixture
+def ledger_factory(
+    dolt_env: dict[str, str], tmp_path: Path
+) -> Iterator[Callable[..., Ledger]]:
+    """Create real ledgers in a ``tmp_path`` workspace (embedded driver).
+
+    ``ledger_factory(presets=[...], id_prefix="77")`` returns the opened
+    :class:`~doltledger.core.ledger.Ledger`.  The workspace is created once and
+    reused; every call gets a fresh ledger name unless one is given.
+    """
+    counter = itertools.count(1)
+    created: list[Ledger] = []
+
+    def factory(
+        presets: list[str | Path] | None = None,
+        *,
+        name: str | None = None,
+        id_prefix: str | None = "77",
+        author: str | None = FACTORY_AUTHOR,
+        statuses: list[str] | None = None,
+    ) -> Ledger:
+        workspace_dir = tmp_path / "workspace"
+        if (workspace_dir / "workspace.yaml").is_file():
+            workspace = Workspace.load(workspace_dir, env=dolt_env)
+        else:
+            workspace = Workspace.create(workspace_dir, env=dolt_env)
+        ledger_name = name or f"ledger{next(counter)}"
+        sources = list(presets) if presets else [PRESETS / "base"]
+        ledger = init_ledger(
+            workspace,
+            ledger_name,
+            sources,
+            id_prefix=id_prefix,
+            author=author,
+            statuses=statuses,
+        )
+        assert isinstance(ledger, Ledger)
+        created.append(ledger)
+        return ledger
+
+    yield factory
+    for ledger in created:
+        ledger.close()
+

@@ -12,7 +12,9 @@ from pathlib import Path
 import typer
 
 from doltledger import __version__
+from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
+from doltledger.cli.schema import schema_app
 from doltledger.cli.workspace import server_app, workspace_app
 from doltledger.errors import EXIT_OK, LedgerError
 
@@ -52,13 +54,31 @@ def root(
         "-l",
         help="Ledger name (default: the workspace's default ledger).",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print/collect the SQL of a write without executing it.",
+    ),
+    no_commit: bool = typer.Option(
+        False,
+        "--no-commit",
+        help="Execute a write but skip its Dolt commit.",
+    ),
 ) -> None:
     """A version-controlled inventory ledger on Dolt."""
-    ctx.obj = GlobalOptions(workspace=workspace, ledger=ledger)
+    ctx.obj = GlobalOptions(
+        workspace=workspace,
+        ledger=ledger,
+        dry_run=dry_run,
+        no_commit=no_commit,
+    )
 
 
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(server_app, name="server")
+app.add_typer(presets_app, name="presets")
+app.add_typer(schema_app, name="schema")
+app.command("init")(init_command)
 
 
 def main() -> None:

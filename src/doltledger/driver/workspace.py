@@ -97,6 +97,16 @@ class Workspace:
 
     # -- construction -----------------------------------------------------
     @property
+    def env(self) -> dict[str, str] | None:
+        """The environment every ``dolt``/``git`` subprocess should inherit.
+
+        Tests create workspaces with an isolated ``DOLT_ROOT_PATH``/``HOME``;
+        production workspaces leave it ``None`` and inherit the process
+        environment.  ``Ledger`` passes this to the embedded driver.
+        """
+        return self._env
+
+    @property
     def config_path(self) -> Path:
         return self.data_dir / WORKSPACE_FILE
 
