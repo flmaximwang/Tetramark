@@ -16,6 +16,7 @@ from doltledger.cli.alias import alias_app
 from doltledger.cli.aliquot import aliquot_app
 from doltledger.cli.box import box_app
 from doltledger.cli.check import check_command
+from doltledger.cli.csv_io import export_command, import_command
 from doltledger.cli.entity import entity_app
 from doltledger.cli.config import config_app
 from doltledger.cli.ledger import init_command, presets_app
@@ -99,6 +100,8 @@ app.add_typer(box_app, name="box")
 app.add_typer(alias_app, name="alias")
 app.command("init")(init_command)
 app.command("check")(check_command)
+app.command("import")(import_command)
+app.command("export")(export_command)
 app.add_typer(remote_app, name="remote")
 app.add_typer(config_app, name="config")
 app.command("backup")(backup_command)
