@@ -12,8 +12,10 @@ from pathlib import Path
 import typer
 
 from doltledger import __version__
+from doltledger.cli.config import config_app
 from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
+from doltledger.cli.remote import backup_command, remote_app
 from doltledger.cli.schema import schema_app
 from doltledger.cli.workspace import server_app, workspace_app
 from doltledger.errors import EXIT_OK, LedgerError
@@ -78,7 +80,10 @@ app.add_typer(workspace_app, name="workspace")
 app.add_typer(server_app, name="server")
 app.add_typer(presets_app, name="presets")
 app.add_typer(schema_app, name="schema")
+app.add_typer(remote_app, name="remote")
+app.add_typer(config_app, name="config")
 app.command("init")(init_command)
+app.command("backup")(backup_command)
 
 
 def main() -> None:
