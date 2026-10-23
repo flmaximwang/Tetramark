@@ -631,6 +631,20 @@ class Ledger:
     ) -> CheckReport:
         """Run the generated ``dolt_tests`` (spec §4)."""
         return run_check(self.driver, self.schema, group=group, verbose=verbose)
+
+    # -- reads ------------------------------------------------------------
+    def find(self, query: str) -> list[dict[str, Any]]:
+        """Search ids, aliases, names and kind string/text fields (ticket 11)."""
+        from doltledger.ops.find import find
+
+        return find(self, query)
+
+    def history(self, ref: str) -> dict[str, Any]:
+        """Aliquot events plus Dolt commits touching one object (ticket 11)."""
+        from doltledger.ops.history import history
+
+        return history(self, ref)
+
     # -- configuration ----------------------------------------------------
     def set_author(self, author: str) -> WriteSession:
         """Set the ledger's commit author (``ledger config set author``).

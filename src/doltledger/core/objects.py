@@ -1858,6 +1858,11 @@ class BoxOps:
     def move(self, ref: str, *, parent: str, slot: str | None = None) -> dict[str, Any]:
         return move_box(self.ledger, ref, parent=parent, slot=slot)
 
+    def show(self, ref: str) -> dict[str, Any]:
+        from doltledger.ops.render import box_view
+
+        return box_view(self.ledger, ref)
+
     def ls(
         self,
         kind: str | None = None,
