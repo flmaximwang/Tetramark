@@ -31,3 +31,6 @@ packages = ["src/doltledger"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "server: starts a real dolt sql-server on a random free port (slow; skip with -m 'not server')",
+]

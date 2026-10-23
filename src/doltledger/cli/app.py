@@ -7,12 +7,13 @@ Command groups are registered here as their tickets land; the core objects
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
 from doltledger import __version__
+from doltledger.cli.options import GlobalOptions
+from doltledger.cli.workspace import server_app, workspace_app
 from doltledger.errors import EXIT_OK, LedgerError
 
 app = typer.Typer(
@@ -21,14 +22,6 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-
-
-@dataclass
-class GlobalOptions:
-    """Values of the global options, passed to subcommands via ``ctx.obj``."""
-
-    workspace: Path | None = None
-    ledger: str | None = None
 
 
 def _version_callback(value: bool) -> None:
@@ -64,10 +57,16 @@ def root(
     ctx.obj = GlobalOptions(workspace=workspace, ledger=ledger)
 
 
+app.add_typer(workspace_app, name="workspace")
+app.add_typer(server_app, name="server")
+
+
 def main() -> None:
     """Console-script entry point; maps :class:`LedgerError` to its exit code."""
     try:
         app()
     except LedgerError as error:
         typer.echo(f"Error: {error}", err=True)
-        raise typer.Exit(error.exit_code) from error
+        # ``typer.Exit`` is only translated to an exit status inside Click's
+        # standalone runner; here we are outside it, so raise SystemExit.
+        raise SystemExit(error.exit_code) from error
