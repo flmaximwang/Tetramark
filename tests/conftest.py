@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from doltledger.core.ledger import Ledger, init_ledger
+from doltledger.core.ledger import Ledger, init_ledger, open as open_ledger
 from doltledger.driver.workspace import Workspace
 
 DOLT_BINARY = shutil.which("dolt")
@@ -176,3 +176,62 @@ def ledger_factory(
     for ledger in created:
         ledger.close()
 
+
+@pytest.fixture(scope="session")
+def template_workspaces(tmp_path_factory) -> dict[str, Path]:
+    """Two initialised workspaces (base and full) to copy per test.
+
+    ``dolt init`` plus the generated DDL dominates the runtime of tests that
+    only need a fresh empty ledger; copying a closed database directory is
+    safe and much faster.
+    """
+    root = tmp_path_factory.mktemp("ledger-templates")
+    env = isolated_env(root / "dolt-root", root / "home")
+    templates: dict[str, Path] = {}
+    for key, preset in (("base", PRESETS / "base"), ("full", PRESETS / "full")):
+        workspace_dir = root / key
+        workspace = Workspace.create(workspace_dir, env=env)
+        ledger = init_ledger(
+            workspace,
+            "template",
+            [preset],
+            id_prefix="77",
+            author=FACTORY_AUTHOR,
+        )
+        ledger.close()
+        templates[key] = workspace_dir
+    return templates
+
+
+@pytest.fixture
+def fast_ledger_factory(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    template_workspaces: dict[str, Path],
+) -> Iterator[Callable[..., Ledger]]:
+    """Like :func:`ledger_factory`, but copies a pre-initialised template."""
+    counter = itertools.count(1)
+    created: list[Ledger] = []
+
+    def factory(
+        presets: list[str | Path] | None = None,
+        *,
+        name: str | None = None,
+        id_prefix: str | None = "77",
+        author: str | None = FACTORY_AUTHOR,
+        statuses: list[str] | None = None,
+    ) -> Ledger:
+        del name, id_prefix, author, statuses  # fixed in the template
+        sources = list(presets) if presets else [PRESETS / "base"]
+        names = {Path(str(source)).name for source in sources}
+        key = "base" if names == {"base"} else "full"
+        target = tmp_path / f"workspace{next(counter)}"
+        shutil.copytree(template_workspaces[key], target)
+        workspace = Workspace.load(target, env=dolt_env)
+        ledger = open_ledger(workspace, "template")
+        created.append(ledger)
+        return ledger
+
+    yield factory
+    for ledger in created:
+        ledger.close()
