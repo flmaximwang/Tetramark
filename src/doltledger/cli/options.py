@@ -19,6 +19,7 @@ class GlobalOptions:
     dry_run: bool = False
     no_commit: bool = False
     json: bool = False
+    format: str | None = None
 
 
 def json_output(ctx: typer.Context, local: bool = False) -> bool:

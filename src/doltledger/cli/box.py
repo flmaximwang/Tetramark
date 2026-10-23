@@ -1,11 +1,14 @@
-"""``ledger box`` commands (spec §6; ``box show`` arrives with ticket 11)."""
+"""``ledger box`` commands (spec §6)."""
 
 from __future__ import annotations
 
 import typer
+from rich.console import Console
 
-from doltledger.cli.objects_common import emit_read, emit_write
+from doltledger.cli.objects_common import emit_write
 from doltledger.cli.options import json_output, resolve_ledger
+from doltledger.cli.output import emit_payload, emit_read, output_format
+from doltledger.ops.render import box_csv_rows, render_box
 
 box_app = typer.Typer(
     help="Boxes: containers with a geometry; they nest inside each other.",
@@ -66,6 +69,31 @@ def move_box_command(
         ledger.close()
 
 
+@box_app.command("show")
+def show_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """Show a box as a grid/list (or its JSON shape)."""
+    ledger = resolve_ledger(ctx)
+    try:
+        view = ledger.boxes.show(ref)
+        fmt = output_format(ctx, as_json)
+        if fmt == "json":
+            emit_payload(view, fmt=fmt)
+        elif fmt == "csv":
+            emit_read(
+                box_csv_rows(view),
+                fmt="csv",
+                columns=["slot", "row", "col", "occupants"],
+            )
+        else:
+            Console().print(render_box(view))
+    finally:
+        ledger.close()
+
+
 @box_app.command("ls")
 def list_boxes_command(
     ctx: typer.Context,
@@ -79,6 +107,10 @@ def list_boxes_command(
     ledger = resolve_ledger(ctx)
     try:
         rows = ledger.boxes.ls(kind, where=where)
-        emit_read(rows, as_json=json_output(ctx, as_json), columns=["name", "kind", "path"])
+        emit_read(
+            rows,
+            fmt=output_format(ctx, as_json),
+            columns=["name", "kind", "path"],
+        )
     finally:
         ledger.close()

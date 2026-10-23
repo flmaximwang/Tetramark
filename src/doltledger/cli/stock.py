@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import typer
 
-from doltledger.cli.objects_common import emit_read, emit_write
+from doltledger.cli.objects_common import emit_write
 from doltledger.cli.options import json_output, resolve_ledger
+from doltledger.cli.output import emit_read, output_format
 
 stock_app = typer.Typer(
     help="Stocks: logical batches/preparations of one entity.",
@@ -110,7 +111,9 @@ def show_stock_command(
     """Show one stock, its kind fields and its aliquots."""
     ledger = resolve_ledger(ctx)
     try:
-        emit_read(ledger.stocks.show(ref), as_json=json_output(ctx, as_json))
+        emit_read(
+            ledger.stocks.show(ref), fmt=output_format(ctx, as_json)
+        )
     finally:
         ledger.close()
 
@@ -128,6 +131,10 @@ def list_stocks_command(
     ledger = resolve_ledger(ctx)
     try:
         rows = ledger.stocks.ls(kind, where=where)
-        emit_read(rows, as_json=json_output(ctx, as_json), columns=["id", "kind", "entity_id"])
+        emit_read(
+            rows,
+            fmt=output_format(ctx, as_json),
+            columns=["id", "kind", "entity_id"],
+        )
     finally:
         ledger.close()

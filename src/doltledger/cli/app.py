@@ -16,8 +16,10 @@ from doltledger.cli.alias import alias_app
 from doltledger.cli.aliquot import aliquot_app
 from doltledger.cli.box import box_app
 from doltledger.cli.check import check_command
-from doltledger.cli.entity import entity_app
 from doltledger.cli.config import config_app
+from doltledger.cli.entity import entity_app
+from doltledger.cli.find import find_command
+from doltledger.cli.history import history_command
 from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
 from doltledger.cli.remote import backup_command, remote_app
@@ -77,14 +79,29 @@ def root(
         "--json",
         help="Print read results and created/changed objects as JSON.",
     ),
+    output_format: str | None = typer.Option(
+        None,
+        "--format",
+        "-f",
+        help="Read output format: table, json or csv.",
+    ),
 ) -> None:
     """A version-controlled inventory ledger on Dolt."""
+    if output_format is not None and output_format.lower() not in (
+        "table",
+        "json",
+        "csv",
+    ):
+        raise typer.BadParameter(
+            "expected one of table, json, csv", param_hint="--format"
+        )
     ctx.obj = GlobalOptions(
         workspace=workspace,
         ledger=ledger,
         dry_run=dry_run,
         no_commit=no_commit,
         json=as_json,
+        format=None if output_format is None else output_format.lower(),
     )
 
 
@@ -102,6 +119,8 @@ app.command("check")(check_command)
 app.add_typer(remote_app, name="remote")
 app.add_typer(config_app, name="config")
 app.command("backup")(backup_command)
+app.command("find")(find_command)
+app.command("history")(history_command)
 
 
 def main() -> None:
