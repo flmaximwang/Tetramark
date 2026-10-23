@@ -960,6 +960,10 @@ class EffectiveSchema(BaseModel):
 
     kinds: dict[str, Kind] = PydanticField(default_factory=dict)
     rules: list[Rule] = PydanticField(default_factory=list)
+    #: Rule id → ``"preset"`` or ``"local"`` (``rules_dir``).  Drives the
+    #: ``rules:<preset|local>`` group of the generated dolt_tests; excluded
+    #: from the fingerprint because it does not change the physical schema.
+    rule_sources: dict[str, str] = PydanticField(default_factory=dict)
     statuses: list[str] = PydanticField(default_factory=lambda: list(DEFAULT_STATUSES))
     preset_versions: dict[str, int] = PydanticField(default_factory=dict)
 

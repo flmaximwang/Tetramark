@@ -58,6 +58,7 @@ from doltledger.schema.model import (
     EffectiveSchema,
     LedgerConfig,
 )
+from doltledger.schema.tests_gen import CheckReport, install_tests, run_check
 
 __all__ = [
     "LEDGER_FILE",
@@ -416,6 +417,9 @@ def init_ledger(
             for statement in plan.statements:
                 driver.execute(statement.sql)
             _write_meta(driver, plan.schema, plan.ledger_yaml)
+            # Generated dolt_tests are derived state (spec §4): install them
+            # with the schema so a fresh ledger is immediately checkable.
+            install_tests(driver, plan.schema)
         driver.commit(f"init(ledger): {name}", author=plan.author)
     except BaseException:
         # A half-initialised ledger is worse than none: never leave one behind.
@@ -597,6 +601,13 @@ class Ledger:
             warnings.warn(message, UserWarning, stacklevel=2)
             self.warnings.append(message)
         return False
+
+    # -- validation -------------------------------------------------------
+    def check(
+        self, *, group: str | None = None, verbose: bool = False
+    ) -> CheckReport:
+        """Run the generated ``dolt_tests`` (spec §4)."""
+        return run_check(self.driver, self.schema, group=group, verbose=verbose)
 
     # -- writes -----------------------------------------------------------
     def write(

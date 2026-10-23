@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 
 from doltledger import __version__
+from doltledger.cli.check import check_command
 from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
 from doltledger.cli.schema import schema_app
@@ -79,6 +80,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(presets_app, name="presets")
 app.add_typer(schema_app, name="schema")
 app.command("init")(init_command)
+app.command("check")(check_command)
 
 
 def main() -> None:

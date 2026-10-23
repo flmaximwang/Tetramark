@@ -409,6 +409,7 @@ class _MixinEntry:
 class _RuleEntry:
     rule: Rule
     display: str
+    source: str = "preset"
 
 
 class _Collector:
@@ -417,7 +418,7 @@ class _Collector:
         self.mixins: dict[str, _MixinEntry] = {}
         self.rules: dict[str, _RuleEntry] = {}
 
-    def add(self, doc: Preset, display: str) -> None:
+    def add(self, doc: Preset, display: str, *, source: str = "preset") -> None:
         for mixin_name, fields in doc.mixins.items():
             _check_identifier(mixin_name, display, f"mixins.{mixin_name}")
             if mixin_name in self.mixins:
@@ -486,7 +487,9 @@ class _Collector:
                     file=display,
                     path=f"rules[{index}].id",
                 )
-            self.rules[rule.id] = _RuleEntry(rule=rule, display=display)
+            self.rules[rule.id] = _RuleEntry(
+                rule=rule, display=display, source=source
+            )
 
 
 def _check_identifier(name: Any, display: str, path: str) -> None:
@@ -738,14 +741,14 @@ def load_schema(
         if not directory.is_absolute():
             directory = root / directory
         for display, doc in _load_local_dir(directory, config.kinds_dir, rules=False):
-            collector.add(doc, display)
+            collector.add(doc, display, source="local")
 
     if config.rules_dir:
         directory = Path(config.rules_dir).expanduser()
         if not directory.is_absolute():
             directory = root / directory
         for display, doc in _load_local_dir(directory, config.rules_dir, rules=True):
-            collector.add(doc, display)
+            collector.add(doc, display, source="local")
 
     resolved_kinds = _apply_mixins(collector)
     _validate_references(resolved_kinds, collector.kinds)
@@ -753,6 +756,9 @@ def load_schema(
     return EffectiveSchema(
         kinds=resolved_kinds,
         rules=[entry.rule for entry in collector.rules.values()],
+        rule_sources={
+            rule_id: entry.source for rule_id, entry in collector.rules.items()
+        },
         statuses=list(config.statuses),
         preset_versions=versions,
     )
