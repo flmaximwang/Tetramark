@@ -23,6 +23,7 @@ ledger = "doltledger.cli.app:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -30,7 +31,7 @@ packages = ["src/doltledger"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -n auto --dist loadfile"
 markers = [
     "server: starts a real dolt sql-server on a random free port (slow; skip with -m 'not server')",
 ]

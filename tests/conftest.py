@@ -56,6 +56,60 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _test_server_pids(under: str, orphans_only: bool) -> list[int]:
+    """Pids of ``dolt sql-server`` processes whose data dir lies under ``under``."""
+    out = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,command="], capture_output=True, text=True
+    ).stdout
+    pids = []
+    for line in out.splitlines():
+        pid, ppid, command = line.split(None, 2)
+        if "dolt sql-server" in command and f"--data-dir {under}" in command:
+            if not orphans_only or ppid == "1":
+                pids.append(int(pid))
+    return pids
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reap_test_servers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Never leak test ``dolt sql-server`` processes.
+
+    Servers are daemonised (own session), so they outlive a killed pytest.
+    At start, kill orphans (parent gone) left under the pytest temp root by
+    earlier runs; during the session, a watchdog shell kills this session's
+    servers as soon as this pytest process dies, however it dies.
+    """
+    basetemp = str(tmp_path_factory.getbasetemp().resolve())
+    temp_root = str(Path(basetemp).parent.parent)  # .../pytest-of-<user>
+    for pid in _test_server_pids(temp_root, orphans_only=True):
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
+    watchdog = subprocess.Popen(
+        [
+            "/bin/sh",
+            "-c",
+            'while kill -0 "$1" 2>/dev/null; do sleep 1; done; '
+            'pkill -f "dolt sql-server --data-dir $2"',
+            "reaper",
+            str(os.getpid()),
+            basetemp,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    yield
+    for pid in _test_server_pids(basetemp, orphans_only=False):
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
+    watchdog.kill()
+
+
 @pytest.fixture(scope="session")
 def dolt_binary() -> str:
     """Path to the real ``dolt`` binary; skips the test if it is not installed."""
