@@ -1,0 +1,685 @@
+"""DDL generation: pure statements, then execution against a real Dolt repo.
+
+Ticket 05: generate for the test presets from ticket 03, execute the script
+with plain ``dolt sql`` subprocesses (the embedded driver is not required
+here) and assert that the tables/views exist and the constraints bite.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from doltledger.driver.base import literal
+from doltledger.schema.ddl import (
+    CORE_TABLES,
+    CORE_VIEWS,
+    Statement,
+    core_statements,
+    kind_statements,
+    schema_statements,
+    slot_rows,
+    table_name,
+    to_sql,
+    view_statements,
+)
+from doltledger.schema.loader import load_schema
+from doltledger.schema.model import (
+    EffectiveSchema,
+    Field,
+    FieldType,
+    Kind,
+    LedgerConfig,
+    ObjectType,
+)
+
+DATA = Path(__file__).parent / "data"
+PRESETS = DATA / "presets"
+GOLDEN = DATA / "golden" / "ddl_full.sql"
+
+
+# ---------------------------------------------------------------------------
+# Pure generation
+# ---------------------------------------------------------------------------
+
+
+def full_schema(**overrides: Any) -> EffectiveSchema:
+    config = LedgerConfig(
+        name="ddl",
+        presets=[str(PRESETS / "full")],
+        **overrides,
+    )
+    return load_schema(config)
+
+
+def test_statements_are_tagged_and_ordered() -> None:
+    schema = full_schema()
+    statements = schema_statements(schema)
+
+    assert isinstance(statements[0], Statement)
+    assert statements[0].name == "ledger_meta"
+    assert {statement.object for statement in statements} == {"table", "fk", "view"}
+
+    # Every core table comes before any view; views are generated last.
+    table_names = [s.name for s in statements if s.object == "table"]
+    for core in CORE_TABLES:
+        assert core in table_names
+    last_table = max(i for i, s in enumerate(statements) if s.object == "table")
+    first_view = min(i for i, s in enumerate(statements) if s.object == "view")
+    assert last_table < first_view
+
+    # FKs are separate ALTER statements that point at their owning table.
+    for statement in statements:
+        if statement.object == "fk":
+            assert statement.table is not None
+            assert statement.name.startswith("fk_")
+            assert "ADD CONSTRAINT" in statement.sql
+
+    # Every kind has a table and a convenience view.
+    for kind_name, kind in schema.kinds.items():
+        table = table_name(kind.object, kind_name)
+        assert table in table_names
+        assert f"v_{kind.object.value}_{kind_name}" in {
+            s.name for s in statements if s.object == "view"
+        }
+
+    # Aliquot fields produce extension tables only for stock kinds that have them.
+    assert "aliquot_prep" in table_names
+    assert "aliquot_bacterial" in table_names
+    assert "aliquot_item" not in table_names  # `item` is an entity kind
+
+
+def test_generation_is_deterministic() -> None:
+    first = schema_statements(full_schema())
+    second = schema_statements(full_schema())
+    assert [(s.object, s.name, s.table, s.sql) for s in first] == [
+        (s.object, s.name, s.table, s.sql) for s in second
+    ]
+    assert to_sql(first) == to_sql(second)
+
+
+def test_statement_helpers_return_composable_lists() -> None:
+    schema = full_schema()
+    core = core_statements(schema.statuses)
+    kinds = kind_statements(schema)
+    views = view_statements(schema)
+
+    assert all(isinstance(statement, Statement) for statement in [*core, *kinds, *views])
+    assert [s.name for s in core[: len(CORE_TABLES)]] == list(CORE_TABLES)
+    assert all(name in {s.name for s in views} for name in CORE_VIEWS)
+    assert to_sql([]) == ""
+
+
+def test_slot_rows_for_every_geometry() -> None:
+    schema = full_schema()
+
+    grid = slot_rows("box-grid", schema.kinds["grid9x9"].geometry)
+    assert len(grid) == 81
+    assert grid[0] == {
+        "box_id": "box-grid",
+        "label": "A1",
+        "row_label": "A",
+        "col_label": "1",
+        "ordinal": 1,
+    }
+    assert grid[-1]["label"] == "J9"
+    assert grid[-1]["ordinal"] == 81
+    assert "I" not in {row["row_label"] for row in grid}
+
+    named = slot_rows("box-named", schema.kinds["namedbox"].geometry)
+    assert [row["label"] for row in named] == ["top", "middle", "bottom"]
+    assert all(row["row_label"] is None and row["col_label"] is None for row in named)
+
+    assert slot_rows("box-slotless", schema.kinds["slotlessbox"].geometry) == []
+
+
+def test_golden_ddl_snapshot() -> None:
+    rendered = to_sql(schema_statements(full_schema()))
+    assert GOLDEN.is_file(), f"missing golden file: {GOLDEN}"
+    assert rendered == GOLDEN.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt helpers
+# ---------------------------------------------------------------------------
+
+
+def install(run: Any, repo: Path, statements: list[Statement]) -> None:
+    result = run("sql", "-q", to_sql(statements), cwd=repo, check=False)
+    assert not _failed(result), _output(result)
+
+
+def execute(run: Any, repo: Path, sql: str) -> None:
+    result = run("sql", "-q", sql, cwd=repo, check=False)
+    assert not _failed(result), _output(result)
+
+
+def query(run: Any, repo: Path, sql: str) -> list[dict[str, Any]]:
+    result = run("sql", "-r", "json", "-q", sql, cwd=repo, check=False)
+    assert not _failed(result), _output(result)
+    rows: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line:
+            rows.extend(json.loads(line)["rows"])
+    return rows
+
+
+def reject(run: Any, repo: Path, sql: str, match: str) -> None:
+    result = run("sql", "-q", sql, cwd=repo, check=False)
+    text = _output(result)
+    assert _failed(result), f"statement unexpectedly succeeded: {sql}\n{text}"
+    assert match.lower() in text.lower(), text
+
+
+def _failed(result: subprocess.CompletedProcess[str]) -> bool:
+    # Dolt 2.3.5 can exit 0 on an SQL error, so inspect the output too.
+    text = _output(result)
+    return result.returncode != 0 or "error" in text.lower()
+
+
+def _output(result: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+
+@pytest.fixture
+def full_ledger(dolt_repo: Path, dolt_run: Any) -> Path:
+    """A real Dolt repo with the ``full`` preset's complete DDL installed."""
+    install(dolt_run, dolt_repo, schema_statements(full_schema()))
+    return dolt_repo
+
+
+def _insert_entity(run: Any, repo: Path, entity_id: str, name: str) -> None:
+    execute(
+        run,
+        repo,
+        f"INSERT INTO entity (id, kind, name) VALUES "
+        f"({literal(entity_id)}, 'item', {literal(name)});"
+        f"INSERT INTO entity_item (id, name) VALUES "
+        f"({literal(entity_id)}, {literal(name)});",
+    )
+
+
+def _insert_stock(run: Any, repo: Path, stock_id: str, entity_id: str) -> None:
+    execute(
+        run,
+        repo,
+        f"INSERT INTO stock (id, kind, entity_id) VALUES "
+        f"({literal(stock_id)}, 'bacterial', {literal(entity_id)});"
+        f"INSERT INTO stock_bacterial (id, strain) VALUES "
+        f"({literal(stock_id)}, 'MG1655');",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt: objects exist
+# ---------------------------------------------------------------------------
+
+
+def test_core_tables_views_and_kind_objects_exist(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    rows = query(
+        dolt_run,
+        full_ledger,
+        "SELECT table_name AS name, table_type AS kind "
+        "FROM information_schema.tables WHERE table_schema = DATABASE()",
+    )
+    objects = {row["name"]: row["kind"] for row in rows}
+
+    for table in CORE_TABLES:
+        assert objects.get(table) == "BASE TABLE", table
+    for view in CORE_VIEWS:
+        assert objects.get(view) == "VIEW", view
+
+    schema = full_schema()
+    for kind_name, kind in schema.kinds.items():
+        assert objects.get(table_name(kind.object, kind_name)) == "BASE TABLE"
+        assert objects.get(f"v_{kind.object.value}_{kind_name}") == "VIEW"
+
+    assert objects.get("aliquot_prep") == "BASE TABLE"
+    assert objects.get("aliquot_bacterial") == "BASE TABLE"
+
+    # Core DDL exposes the columns the spec names.
+    columns = {
+        row["name"]
+        for row in query(
+            dolt_run,
+            full_ledger,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'aliquot_event'",
+        )
+    }
+    assert {
+        "id",
+        "aliquot_id",
+        "event",
+        "amount",
+        "unit",
+        "from_box_id",
+        "from_slot",
+        "to_box_id",
+        "to_slot",
+        "old_status",
+        "new_status",
+        "actor",
+        "purpose",
+        "note",
+        "at",
+    } <= columns
+
+
+def test_aliquot_extension_requires_the_core_aliquot(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot_prep (id, volume_ul) VALUES ('missing.1', 10)",
+        "foreign key",
+    )
+
+
+def test_aliquot_field_ref_gets_a_foreign_key(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    schema = EffectiveSchema(
+        kinds={
+            "item": Kind(
+                object=ObjectType.entity,
+                fields={"name": Field(type=FieldType.string)},
+            ),
+            "prep": Kind(
+                object=ObjectType.stock,
+                entity_kinds=["item"],
+                fields={"batch": Field(type=FieldType.string)},
+                aliquot_fields={"source": Field(type=FieldType.ref, to="item")},
+            ),
+        }
+    )
+    statements = schema_statements(schema)
+    assert any(
+        s.object == "fk" and s.name == "fk_aliquot_prep_source" for s in statements
+    )
+    install(dolt_run, dolt_repo, statements)
+
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO entity (id, kind, name) VALUES ('ENT', 'item', 'Item');"
+        "INSERT INTO entity_item (id, name) VALUES ('ENT', 'Item');"
+        "INSERT INTO stock (id, kind, entity_id) VALUES ('STK', 'prep', 'ENT');"
+        "INSERT INTO stock_prep (id, batch) VALUES ('STK', 'B1');"
+        "INSERT INTO aliquot (id, stock_id, seq, status) "
+        "VALUES ('STK.1', 'STK', 1, 'pending');",
+    )
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot_prep (id, source) VALUES ('STK.1', 'ENT')",
+    )
+    reject(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot (id, stock_id, seq, status) "
+        "VALUES ('STK.2', 'STK', 2, 'pending');"
+        "INSERT INTO aliquot_prep (id, source) VALUES ('STK.2', 'MISSING')",
+        "foreign key",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt: constraints
+# ---------------------------------------------------------------------------
+
+
+def test_discriminator_fk_rejects_id_in_two_kind_tables(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    _insert_entity(dolt_run, full_ledger, "ENT-1", "Shared")
+
+    # The same id cannot also be a plasmid: (id, kind) must exist in entity.
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_plasmid (id, name) VALUES ('ENT-1', 'Shared plasmid')",
+        "foreign key",
+    )
+    # The discriminator itself rejects a hand-written wrong kind.
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity (id, kind, name) VALUES ('ENT-2', 'plasmid', 'P')",
+    )
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_plasmid (id, kind, name) VALUES ('ENT-2', 'item', 'P')",
+        "violat",
+    )
+
+
+def test_enum_check_rejects_bad_value(full_ledger: Path, dolt_run: Any) -> None:
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity (id, kind, name) VALUES ('E-1', 'everything', 'E')",
+    )
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_everything (id, name, color) VALUES ('E-1', 'E', 'blue')",
+    )
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_everything (id, name, color) VALUES ('E-2', 'E2', 'purple')",
+        "check constraint",
+    )
+
+
+def test_sequence_unique_rejects_duplicate(full_ledger: Path, dolt_run: Any) -> None:
+    for entity_id in ("E-1", "E-2"):
+        execute(
+            dolt_run,
+            full_ledger,
+            f"INSERT INTO entity (id, kind, name) VALUES ({literal(entity_id)}, "
+            f"'everything', {literal(entity_id)})",
+        )
+
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_everything (id, name, seq) VALUES ('E-1', 'E1', 'ACGT')",
+    )
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity_everything (id, name, seq) VALUES ('E-2', 'E2', 'ACGT')",
+        "duplicate unique key",
+    )
+
+    rows = query(
+        dolt_run,
+        full_ledger,
+        "SELECT seq_sha256 FROM entity_everything WHERE id = 'E-1'",
+    )
+    assert rows[0]["seq_sha256"] == hashlib.sha256(b"ACGT").hexdigest()
+
+
+def test_slot_fk_rejects_slot_not_in_geometry(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    _insert_entity(dolt_run, full_ledger, "ENT-1", "Item")
+    _insert_stock(dolt_run, full_ledger, "STK-1", "ENT-1")
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO box (id, kind, name) VALUES ('BOX-1', 'grid9x9', 'WFL-08-01');"
+        "INSERT INTO box_grid9x9 (id) VALUES ('BOX-1');"
+        "INSERT INTO slot (box_id, label, row_label, col_label, ordinal) VALUES "
+        "('BOX-1', 'A1', 'A', '1', 1);",
+    )
+
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot (id, stock_id, seq, box_id, slot, status) VALUES "
+        "('STK-1.1', 'STK-1', 1, 'BOX-1', 'A1', 'stored')",
+    )
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot (id, stock_id, seq, box_id, slot, status) VALUES "
+        "('STK-1.2', 'STK-1', 2, 'BOX-1', 'Z9', 'stored')",
+        "foreign key",
+    )
+    # The status CHECK comes from the schema vocabulary.
+    reject(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
+        "('STK-1.3', 'STK-1', 3, 'lost')",
+        "check constraint",
+    )
+
+
+def test_slot_rows_insert_into_the_materialised_geometry(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    install(dolt_run, dolt_repo, schema_statements(full_schema()))
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO box (id, kind, name) VALUES ('B', 'grid9x9', 'B');"
+        "INSERT INTO box_grid9x9 (id) VALUES ('B');",
+    )
+    rows = slot_rows("B", full_schema().kinds["grid9x9"].geometry)
+    values = ", ".join(
+        "("
+        + ", ".join(
+            literal(row[column])
+            for column in ("box_id", "label", "row_label", "col_label", "ordinal")
+        )
+        + ")"
+        for row in rows
+    )
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO slot (box_id, label, row_label, col_label, ordinal) "
+        f"VALUES {values}",
+    )
+    assert query(dolt_run, dolt_repo, "SELECT COUNT(*) AS n FROM slot")[0]["n"] == 81
+    assert (
+        query(
+            dolt_run,
+            dolt_repo,
+            "SELECT COUNT(*) AS n FROM slot WHERE row_label = 'I'",
+        )[0]["n"]
+        == 0
+    )
+    assert (
+        query(
+            dolt_run,
+            dolt_repo,
+            "SELECT ordinal FROM slot WHERE label = 'J9'",
+        )[0]["ordinal"]
+        == 81
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt: views
+# ---------------------------------------------------------------------------
+
+
+def _seed_boxes(run: Any, repo: Path) -> None:
+    execute(
+        run,
+        repo,
+        "INSERT INTO box (id, kind, name) VALUES "
+        "('B-FREEZER', 'shelf', 'Freezer-1'),"
+        "('B-SHELF', 'rack', 'Shelf-2'),"
+        "('B-BOX', 'grid9x9', 'WFL-08-01');"
+        "INSERT INTO box_shelf (id) VALUES ('B-FREEZER');"
+        "INSERT INTO box_rack (id) VALUES ('B-SHELF');"
+        "INSERT INTO box_grid9x9 (id) VALUES ('B-BOX');"
+        "UPDATE box SET parent_box_id = 'B-FREEZER' WHERE id = 'B-SHELF';"
+        "UPDATE box SET parent_box_id = 'B-SHELF', parent_slot = 'top' "
+        "WHERE id = 'B-BOX';",
+    )
+    schema = full_schema()
+    for box_id, kind in (("B-SHELF", "rack"), ("B-BOX", "grid9x9")):
+        rows = slot_rows(box_id, schema.kinds[kind].geometry)
+        values = ", ".join(
+            "("
+            + ", ".join(
+                literal(row[column])
+                for column in ("box_id", "label", "row_label", "col_label", "ordinal")
+            )
+            + ")"
+            for row in rows
+        )
+        execute(
+            run,
+            repo,
+            "INSERT INTO slot (box_id, label, row_label, col_label, ordinal) "
+            f"VALUES {values}",
+        )
+
+
+def test_views_report_location_status_and_slots(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    _insert_entity(dolt_run, full_ledger, "ENT-1", "Item")
+    _seed_boxes(dolt_run, full_ledger)
+    for stock_id in ("STK-1", "STK-2", "STK-3", "STK-4", "STK-5"):
+        _insert_stock(dolt_run, full_ledger, stock_id, "ENT-1")
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot (id, stock_id, seq, box_id, slot, status, quantity, unit) "
+        "VALUES ('STK-1.1', 'STK-1', 1, 'B-BOX', 'A1', 'stored', 500, 'ul');"
+        "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
+        "('STK-2.1', 'STK-2', 1, 'pending');"
+        "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
+        "('STK-3.1', 'STK-3', 1, 'consumed');"
+        "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
+        "('STK-4.1', 'STK-4', 1, 'missing'),"
+        "('STK-4.2', 'STK-4', 2, 'consumed');",
+    )
+
+    location = query(
+        dolt_run,
+        full_ledger,
+        "SELECT aliquot_id, box_path, location FROM v_aliquot_location "
+        "WHERE aliquot_id = 'STK-1.1'",
+    )[0]
+    assert location["box_path"] == "Freezer-1/Shelf-2/WFL-08-01"
+    assert location["location"] == "Freezer-1/Shelf-2/WFL-08-01:A1"
+    # JSON output omits NULL columns, so ask the question explicitly.
+    assert query(
+        dolt_run,
+        full_ledger,
+        "SELECT location IS NULL AS missing FROM v_aliquot_location "
+        "WHERE aliquot_id = 'STK-2.1'",
+    )[0]["missing"] in (1, True)
+
+    statuses = {
+        row["stock_id"]: row
+        for row in query(
+            dolt_run,
+            full_ledger,
+            "SELECT stock_id, status, aliquot_count, total_quantity, unit "
+            "FROM v_stock_status",
+        )
+    }
+    assert statuses["STK-1"]["status"] == "active"
+    assert statuses["STK-2"]["status"] == "pending"
+    assert statuses["STK-3"]["status"] == "depleted"
+    assert statuses["STK-4"]["status"] == "missing"
+    assert statuses["STK-5"]["status"] == "empty"
+    assert statuses["STK-4"]["aliquot_count"] == 2
+    assert float(statuses["STK-1"]["total_quantity"]) == 500.0
+    assert statuses["STK-1"]["unit"] == "ul"
+
+    slots = query(
+        dolt_run,
+        full_ledger,
+        "SELECT slot, occupant_type, occupant_id, aliquot_id, entity_id, "
+        "occupant_type IS NULL AS is_empty "
+        "FROM v_box_slots WHERE box_id = 'B-BOX' ORDER BY ordinal",
+    )
+    assert len(slots) == 81  # every slot of the geometry, empties included
+    assert slots[0]["slot"] == "A1"
+    assert slots[0]["occupant_type"] == "aliquot"
+    assert slots[0]["aliquot_id"] == "STK-1.1"
+    assert slots[0]["entity_id"] == "ENT-1"
+    assert slots[1]["slot"] == "A2"
+    assert slots[1]["is_empty"] in (1, True)
+    assert "occupant_type" not in slots[1]  # NULL keys are omitted by Dolt JSON
+
+    child = query(
+        dolt_run,
+        full_ledger,
+        "SELECT slot, occupant_type, occupant_id, child_box_name "
+        "FROM v_box_slots WHERE box_id = 'B-SHELF' AND slot = 'top'",
+    )[0]
+    assert child["occupant_type"] == "box"
+    assert child["occupant_id"] == "B-BOX"
+    assert child["child_box_name"] == "WFL-08-01"
+
+    item = query(
+        dolt_run,
+        full_ledger,
+        "SELECT id, kind, name FROM v_entity_item WHERE id = 'ENT-1'",
+    )[0]
+    assert item == {"id": "ENT-1", "kind": "item", "name": "Item"}
+
+
+def test_view_kind_projects_kind_fields_and_hides_shadowed_core_name(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO entity (id, kind, name) VALUES ('E-1', 'everything', 'core');"
+        "INSERT INTO entity_everything (id, name, code, seq) VALUES "
+        "('E-1', 'kind', 'ABC', 'acgt');",
+    )
+    row = query(
+        dolt_run,
+        full_ledger,
+        "SELECT id, kind, name, code, display FROM v_entity_everything",
+    )[0]
+    # The kind table's `name` wins; the core `name` is not duplicated.
+    assert row["name"] == "kind"
+    assert row["display"] == "kind-ABC"
+    columns = {
+        item["name"]
+        for item in query(
+            dolt_run,
+            full_ledger,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'v_entity_everything'",
+        )
+    }
+    # sha256 columns are an internal detail, not a view column.
+    assert "seq_sha256" not in columns
+    assert "name" in columns
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt: custom status vocabulary
+# ---------------------------------------------------------------------------
+
+
+def test_custom_status_vocabulary_is_used_by_the_check(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    schema = full_schema(
+        statuses=["pending", "stored", "missing", "consumed", "quarantined"]
+    )
+    install(dolt_run, dolt_repo, schema_statements(schema))
+
+    _insert_entity(dolt_run, dolt_repo, "ENT-1", "Item")
+    _insert_stock(dolt_run, dolt_repo, "STK-1", "ENT-1")
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot (id, stock_id, seq, status) "
+        "VALUES ('STK-1.1', 'STK-1', 1, 'quarantined')",
+    )
+    reject(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot (id, stock_id, seq, status) "
+        "VALUES ('STK-1.2', 'STK-1', 2, 'lost')",
+        "check constraint",
+    )
