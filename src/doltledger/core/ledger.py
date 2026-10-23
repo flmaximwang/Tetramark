@@ -631,6 +631,64 @@ class Ledger:
     ) -> CheckReport:
         """Run the generated ``dolt_tests`` (spec §4)."""
         return run_check(self.driver, self.schema, group=group, verbose=verbose)
+    # -- configuration ----------------------------------------------------
+    def set_author(self, author: str) -> WriteSession:
+        """Set the ledger's commit author (``ledger config set author``).
+
+        The new author goes into ``ledger.yaml``, into the ``ledger_yaml`` copy
+        stored in ``ledger_meta``, and into :attr:`author` so the commit that
+        records the change is made by the new identity.  Returns the (closed)
+        :class:`WriteSession` so callers can print its SQL on a dry run.
+        """
+        text = str(author).strip()
+        name, email = split_author(text)
+        if not name or not email:
+            raise UsageError(
+                f"invalid author {author!r}: use the form \"Name <email>\""
+            )
+
+        config_path = self.path / LEDGER_FILE
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as error:
+            raise UsageError(f"invalid {config_path}: {error}") from error
+        if not isinstance(payload, dict):  # pragma: no cover - defensive
+            raise UsageError(f"invalid {config_path}: expected a mapping")
+        payload["author"] = text
+        new_yaml = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+
+        previous_author = self.author
+        previous_config_author = self.config.author
+        self.author = text
+        self.config.author = text
+        try:
+            with self.write("set author", verb="config", object="ledger") as session:
+                exists = session.query(
+                    "SELECT 1 AS `present` FROM `ledger_meta` WHERE `key` = %s",
+                    (META_LEDGER_YAML,),
+                )
+                if exists:
+                    session.execute(
+                        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = %s",
+                        (new_yaml, META_LEDGER_YAML),
+                    )
+                else:
+                    session.execute(
+                        "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s)",
+                        (META_LEDGER_YAML, new_yaml),
+                    )
+        except BaseException:
+            self.author = previous_author
+            self.config.author = previous_config_author
+            raise
+
+        if session.dry_run:
+            self.author = previous_author
+            self.config.author = previous_config_author
+            return session
+        config_path.write_text(new_yaml, encoding="utf-8")
+        self.meta[META_LEDGER_YAML] = new_yaml
+        return session
 
     # -- writes -----------------------------------------------------------
     def write(

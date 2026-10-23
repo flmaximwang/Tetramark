@@ -17,8 +17,10 @@ from doltledger.cli.aliquot import aliquot_app
 from doltledger.cli.box import box_app
 from doltledger.cli.check import check_command
 from doltledger.cli.entity import entity_app
+from doltledger.cli.config import config_app
 from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
+from doltledger.cli.remote import backup_command, remote_app
 from doltledger.cli.schema import schema_app
 from doltledger.cli.stock import stock_app
 from doltledger.cli.workspace import server_app, workspace_app
@@ -97,6 +99,9 @@ app.add_typer(box_app, name="box")
 app.add_typer(alias_app, name="alias")
 app.command("init")(init_command)
 app.command("check")(check_command)
+app.add_typer(remote_app, name="remote")
+app.add_typer(config_app, name="config")
+app.command("backup")(backup_command)
 
 
 def main() -> None:
