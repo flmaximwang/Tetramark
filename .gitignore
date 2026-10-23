@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+*.egg-info/
+.worktrees/
+
+# deployed agent skills (managed by skills-manager)
+.claude/
+.codex/
+.copilot/
+.dsh/
+.hermes/
+.opencode/
+.workbuddy-ai/
