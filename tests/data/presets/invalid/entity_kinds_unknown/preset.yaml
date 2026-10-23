@@ -1,0 +1,5 @@
+preset: entity_kinds_unknown
+kinds:
+  lot:
+    object: stock
+    entity_kinds: [ghost]

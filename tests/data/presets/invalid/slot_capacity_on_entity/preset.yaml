@@ -1,0 +1,5 @@
+preset: slot_capacity_on_entity
+kinds:
+  item:
+    object: entity
+    slot_capacity: 2

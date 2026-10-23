@@ -1,0 +1,5 @@
+preset: missing_mixin
+kinds:
+  item:
+    object: entity
+    mixins: [ghost]

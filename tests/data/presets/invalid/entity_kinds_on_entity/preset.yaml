@@ -1,0 +1,5 @@
+preset: entity_kinds_on_entity
+kinds:
+  item:
+    object: entity
+    entity_kinds: [item]

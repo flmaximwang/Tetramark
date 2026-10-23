@@ -1,0 +1,6 @@
+preset: enum_no_values
+kinds:
+  item:
+    object: entity
+    fields:
+      color: {type: enum}

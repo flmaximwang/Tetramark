@@ -1,0 +1,4 @@
+preset: bad_kind_name
+kinds:
+  Bad-Name:
+    object: entity

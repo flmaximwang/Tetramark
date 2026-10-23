@@ -1,0 +1,6 @@
+preset: ref_no_to
+kinds:
+  item:
+    object: entity
+    fields:
+      other: {type: ref}

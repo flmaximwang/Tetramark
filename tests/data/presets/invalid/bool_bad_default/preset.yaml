@@ -1,0 +1,6 @@
+preset: bool_bad_default
+kinds:
+  item:
+    object: entity
+    fields:
+      active: {type: bool, default: yes please}

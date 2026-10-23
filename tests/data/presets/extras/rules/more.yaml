@@ -1,0 +1,5 @@
+- id: EX01
+  description: extra rule loaded from the preset's rules directory
+  severity: info
+  sql: "SELECT COUNT(*) FROM entity_local_entity"
+  expect: {single_value: 0}

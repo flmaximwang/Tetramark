@@ -1,0 +1,45 @@
+preset: full
+version: 1
+description: Exercises every field type, every geometry and every ref target form.
+include: [chain]
+kinds:
+  everything:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      code: {type: string, length: 12, pattern: "^[A-Z]{3}$", description: three uppercase letters}
+      blurb: {type: text}
+      count: {type: int, default: 0}
+      ratio: {type: decimal, precision: 8, scale: 3}
+      active: {type: bool, default: true}
+      born: {type: date, default: 2024-01-31}
+      seen_at: {type: datetime}
+      color: {type: enum, values: [red, green, blue], default: red}
+      seq: {type: sequence, unique: true}
+      parent: {type: ref, to: everything}
+      display: {type: computed, expr: "CONCAT(name, '-', code)", sql_type: string}
+      legacy: {type: string, renamed_from: old_legacy}
+  grid9x9:
+    object: box
+    slot_capacity: 2
+    geometry: {type: grid, rows: "A-J!I", cols: "1-9"}
+  namedbox:
+    object: box
+    geometry: {type: named, slots: [top, middle, bottom]}
+  slotlessbox:
+    object: box
+    geometry: {type: slotless, capacity: 5}
+  prep:
+    object: stock
+    entity_kinds: [everything]
+    fields:
+      batch: {type: string}
+    aliquot_fields:
+      volume_ul: {type: decimal, precision: 10, scale: 1}
+      used: {type: bool, default: false}
+rules:
+  - id: FULL01
+    description: no negative counts
+    severity: fail
+    sql: "SELECT COUNT(*) FROM entity_everything WHERE count < 0"
+    expect: {single_value: 0}

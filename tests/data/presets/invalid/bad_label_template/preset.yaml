@@ -1,0 +1,5 @@
+preset: bad_label_template
+kinds:
+  grid:
+    object: box
+    geometry: {type: grid, rows: "A-B", cols: "1-2", label: "{nope}"}

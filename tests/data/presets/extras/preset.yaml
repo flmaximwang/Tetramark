@@ -1,0 +1,9 @@
+preset: extras
+version: 1
+description: Preset whose directory also carries kinds/ and rules/ subdirectories.
+include: [base]
+kinds:
+  local_entity:
+    object: entity
+    fields:
+      note: {type: string}

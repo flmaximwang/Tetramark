@@ -1,0 +1,4 @@
+preset: mixin_bad_name
+mixins:
+  Bad-Mixin:
+    name: {type: string}

@@ -1,0 +1,6 @@
+preset: rule_not_select
+rules:
+  - id: WRITE
+    description: writes are not rules
+    sql: "UPDATE entity_item SET name = 'x'"
+    expect: {single_value: 0}

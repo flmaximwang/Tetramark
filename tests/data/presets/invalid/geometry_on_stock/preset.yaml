@@ -1,0 +1,5 @@
+preset: geometry_on_stock
+kinds:
+  lot:
+    object: stock
+    geometry: {type: slotless}

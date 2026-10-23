@@ -1,0 +1,10 @@
+preset: rule_duplicate
+rules:
+  - id: DUP
+    description: first
+    sql: "SELECT 1"
+    expect: {single_value: 1}
+  - id: DUP
+    description: second
+    sql: "SELECT 1"
+    expect: {single_value: 1}
