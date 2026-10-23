@@ -18,6 +18,13 @@ class GlobalOptions:
     ledger: str | None = None
     dry_run: bool = False
     no_commit: bool = False
+    json: bool = False
+
+
+def json_output(ctx: typer.Context, local: bool = False) -> bool:
+    """True when either the command's ``--json`` or the global one is set."""
+    options = ctx.obj
+    return bool(local or (isinstance(options, GlobalOptions) and options.json))
 
 
 def resolve_ledger(ctx: typer.Context) -> Ledger:

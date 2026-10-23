@@ -40,6 +40,13 @@ from typing import Any
 import yaml
 
 from doltledger.core.ids import IdStrategy, strategy_from_config
+from doltledger.core.objects import (
+    AliasOps,
+    AliquotOps,
+    BoxOps,
+    EntityOps,
+    StockOps,
+)
 from doltledger.driver.base import (
     Driver,
     Params,
@@ -528,6 +535,16 @@ class Ledger:
         self.no_commit = no_commit
         self.ids = build_id_strategies(config)
         self.meta: dict[str, str] = {}
+        #: Object-operation facades (spec §6): entities, stocks, aliquots,
+        #: boxes and aliases.  The CLI is a thin layer over these.
+        self.entities = EntityOps(self)
+        self.stocks = StockOps(self)
+        self.aliquots = AliquotOps(self)
+        self.boxes = BoxOps(self)
+        self.aliases = AliasOps(self)
+        #: The write session of the most recent command, so a CLI ``--dry-run``
+        #: can print the SQL the command would have run.
+        self.last_write: WriteSession | None = None
         #: Fingerprint warnings collected while opening (also emitted via
         #: :func:`warnings.warn`).  Useful for the CLI's non-fatal notices.
         self.warnings: list[str] = []
@@ -544,6 +561,12 @@ class Ledger:
     @property
     def fingerprint(self) -> str:
         return self.schema.fingerprint()
+
+    @property
+    def actor(self) -> str | None:
+        """The commit author's name, recorded in ``aliquot_event.actor``."""
+        name, _email = split_author(self.author)
+        return name[:255] if name else None
 
     def id_strategy(self, object_type: str) -> IdStrategy:
         try:
@@ -695,6 +718,7 @@ class WriteSession:
             self._transaction = self.ledger.driver.transaction()
             self._transaction.__enter__()
         self._open = True
+        self.ledger.last_write = self
         return self
 
     def __exit__(

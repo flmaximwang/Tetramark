@@ -12,9 +12,14 @@ from pathlib import Path
 import typer
 
 from doltledger import __version__
+from doltledger.cli.alias import alias_app
+from doltledger.cli.aliquot import aliquot_app
+from doltledger.cli.box import box_app
+from doltledger.cli.entity import entity_app
 from doltledger.cli.ledger import init_command, presets_app
 from doltledger.cli.options import GlobalOptions
 from doltledger.cli.schema import schema_app
+from doltledger.cli.stock import stock_app
 from doltledger.cli.workspace import server_app, workspace_app
 from doltledger.errors import EXIT_OK, LedgerError
 
@@ -64,6 +69,11 @@ def root(
         "--no-commit",
         help="Execute a write but skip its Dolt commit.",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Print read results and created/changed objects as JSON.",
+    ),
 ) -> None:
     """A version-controlled inventory ledger on Dolt."""
     ctx.obj = GlobalOptions(
@@ -71,6 +81,7 @@ def root(
         ledger=ledger,
         dry_run=dry_run,
         no_commit=no_commit,
+        json=as_json,
     )
 
 
@@ -78,6 +89,11 @@ app.add_typer(workspace_app, name="workspace")
 app.add_typer(server_app, name="server")
 app.add_typer(presets_app, name="presets")
 app.add_typer(schema_app, name="schema")
+app.add_typer(entity_app, name="entity")
+app.add_typer(stock_app, name="stock")
+app.add_typer(aliquot_app, name="aliquot")
+app.add_typer(box_app, name="box")
+app.add_typer(alias_app, name="alias")
 app.command("init")(init_command)
 
 
