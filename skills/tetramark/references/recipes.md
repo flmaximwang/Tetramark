@@ -155,9 +155,9 @@ optional extra column.
 ```sh
 tm backup                      # <data_dir>/backups/<ledger>, then sync on later runs
 tm backup --ls
-tm backup /Volumes/Archive/zsqlab12
+tm backup /path/to/archive/lab101
 
-tm remote add origin /Volumes/Archive/zsqlab12.git
+tm remote add origin /path/to/archive/lab101.git
 tm remote push
 tm remote pull               # on the other machine, after adding the same remote
 ```

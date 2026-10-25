@@ -49,14 +49,14 @@ def test_workspace_init_can_set_default_ledger_and_author(tmp_path: Path) -> Non
             "init",
             str(data),
             "--default-ledger",
-            "zsqlab12",
+            "lab101",
             "--author",
             "Maxim <maxim@example.invalid>",
         ],
     )
     assert result.exit_code == 0, result.output
     payload = yaml.safe_load((data / "workspace.yaml").read_text(encoding="utf-8"))
-    assert payload["default_ledger"] == "zsqlab12"
+    assert payload["default_ledger"] == "lab101"
     assert payload["author"] == "Maxim <maxim@example.invalid>"
 
 

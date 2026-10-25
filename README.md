@@ -55,8 +55,8 @@ mkdir -p ~/ledger-workspace
 cd ~/ledger-workspace
 
 tm workspace init . --port 13308 \
-  --default-ledger zsqlab12 --author "Your Name <you@example.com>"
-tm init zsqlab12 --preset molbio --id-prefix 12
+  --default-ledger lab101 --author "Your Name <you@example.com>"
+tm init lab101 --preset molbio --id-prefix 12
 
 tm server start -d
 

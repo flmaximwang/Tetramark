@@ -5,7 +5,7 @@ Tetramark. Migration is **manual and guided**, not automatic: old databases enco
 conventions, so every column gets an explicit landing place or an explicit decision to drop it.
 
 The worked example uses **zsqlab08** because its tables are documented in
-`/Users/maxim/Documents/Lab/Dolt/cli/README.md`. The same steps apply to zsqlab10 with the extra
+`<legacy-zsqlab-checkout>/README.md`. The same steps apply to zsqlab10 with the extra
 `stock_strains`/`stock_libraries`/`box_table` tables.
 
 ## Non-goals

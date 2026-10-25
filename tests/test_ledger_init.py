@@ -74,14 +74,14 @@ def test_init_creates_database_schema_and_one_commit(
     workspace = make_workspace(tmp_path, dolt_env)
     ledger = init_ledger(
         workspace,
-        "zsqlab12",
+        "lab101",
         [PRESETS / "full"],
         id_prefix="12",
         author="Init Author <init@tetramark.invalid>",
     )
 
     assert isinstance(ledger, Ledger)
-    assert ledger.path == workspace.ledger_path("zsqlab12")
+    assert ledger.path == workspace.ledger_path("lab101")
     assert (ledger.path / ".dolt").is_dir()
     assert (ledger.path / "ledger.yaml").is_file()
 
@@ -106,7 +106,7 @@ def test_init_creates_database_schema_and_one_commit(
     # dolt init committed once; tm init made exactly one more commit.
     assert commit_count(ledger) == 2
     message = latest_commit(ledger)
-    assert message["message"] == "init(ledger): zsqlab12"
+    assert message["message"] == "init(ledger): lab101"
     assert message["author"] == "Init Author"
     assert message["author_email"] == "init@tetramark.invalid"
     # A completed init leaves no uncommitted changes.

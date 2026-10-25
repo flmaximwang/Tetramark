@@ -68,7 +68,7 @@ def init_workspace(port: int | None = None) -> None:
         "init",
         ".",
         "--default-ledger",
-        "zsqlab12",
+        "lab101",
         "--author",
         AUTHOR,
     ]
@@ -88,9 +88,9 @@ def test_readme_quickstart_runs(docs_env: Path, port: int) -> None:
     del docs_env  # the fixture only changes cwd / environment
     init_workspace(port)
 
-    run("init", "zsqlab12", "--preset", "molbio", "--id-prefix", "12")
-    assert (Path.cwd() / "zsqlab12" / ".dolt").is_dir()
-    assert (Path.cwd() / "zsqlab12" / "ledger.yaml").is_file()
+    run("init", "lab101", "--preset", "molbio", "--id-prefix", "12")
+    assert (Path.cwd() / "lab101" / ".dolt").is_dir()
+    assert (Path.cwd() / "lab101" / "ledger.yaml").is_file()
 
     started = False
     try:
@@ -174,7 +174,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     """Every command in references/commands.md except schema changes and import."""
     del docs_env
     init_workspace()
-    run("init", "zsqlab12", "--preset", "molbio", "--id-prefix", "77")
+    run("init", "lab101", "--preset", "molbio", "--id-prefix", "77")
 
     presets = run("presets", "list")
     assert "molbio" in presets.output
@@ -324,8 +324,8 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     backup_dir = Path.cwd() / "backup"
     run("backup", str(backup_dir))
     backups = run("backup", "--ls")
-    assert "zsqlab12" in backups.output
-    assert "zsqlab12" in run("backup", "ls").output
+    assert "lab101" in backups.output
+    assert "lab101" in run("backup", "ls").output
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +337,8 @@ def test_schema_skill_local_kind_rules_and_destructive_flow(docs_env: Path) -> N
     """kinds_dir + rules_dir, plan/apply, destructive refusal and override."""
     del docs_env
     init_workspace()
-    run("init", "zsqlab12", "--preset", "base", "--id-prefix", "77")
-    ledger_dir = Path.cwd() / "zsqlab12"
+    run("init", "lab101", "--preset", "base", "--id-prefix", "77")
+    ledger_dir = Path.cwd() / "lab101"
 
     (ledger_dir / "kinds").mkdir()
     (ledger_dir / "kinds" / "equipment.yaml").write_text(
@@ -521,11 +521,11 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(docs_env: Path) -> None
     ):
         assert (exports / name).is_file(), name
 
-    run("init", "zsqlab08copy", "--preset", "molbio", "--id-prefix", "08")
-    run("--ledger", "zsqlab08copy", "--dry-run", "import", "all", str(exports))
-    run("--ledger", "zsqlab08copy", "import", "all", str(exports))
-    assert "OK:" in run("--ledger", "zsqlab08copy", "check").output
-    copied = run_json("--ledger", "zsqlab08copy", "find", "0826FP02")
+    run("init", "lab42", "--preset", "molbio", "--id-prefix", "08")
+    run("--ledger", "lab42", "--dry-run", "import", "all", str(exports))
+    run("--ledger", "lab42", "import", "all", str(exports))
+    assert "OK:" in run("--ledger", "lab42", "check").output
+    copied = run_json("--ledger", "lab42", "find", "0826FP02")
     assert copied
 
     # Importing into the source ledger rejects existing IDs, all-or-nothing.

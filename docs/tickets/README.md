@@ -1,5 +1,7 @@
 # Tickets
 
+These tickets are historical. Package and CLI names in the text predate the Tetramark rename; the current package is `tetramark` and the CLI is `tm`.
+
 Read `docs/spec.md` first; section numbers below refer to it. Each ticket: implement, add pytest tests
 (real `dolt`, no mocks), `uv run pytest` green, stay inside the listed files where possible.
 

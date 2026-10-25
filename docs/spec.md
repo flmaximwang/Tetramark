@@ -5,7 +5,7 @@ Four core objects — **entity**, **stock**, **aliquot**, **box** — are extend
 declarative YAML **schemas** bundled into **presets**. Pick presets, run `tm init`, and you have a
 validated, versioned ledger. Biology is one preset (`molbio`), not the scope.
 
-Origin: generalises the hand-written zsqlab ledgers in `/Users/maxim/Documents/Lab/Dolt/cli`
+Origin: generalises the hand-written zsqlab ledgers in `<legacy-zsqlab-checkout>`
 (per-DB generators, incremental SQL scripts, `stock_pellets`, `find_entity.sh`). Their proven patterns
 (registry + per-kind tables with discriminator FKs, Dolt tests as the pass/fail authority, one Dolt
 commit per change) are kept; their pain points (one generator per DB, bash fragility, trigger-only
@@ -44,10 +44,10 @@ Rules:
 
 ```yaml
 # <data_dir>/<ledger>/ledger.yaml
-name: zsqlab12
+name: lab101
 presets: [base, molbio]          # bundled or path to a local preset dir
 kinds_dir: kinds/                # optional local kinds (YAML), same format as presets
-author: "Maxim <wangfanlin990@gmail.com>"   # fallback: git config user.name/email
+author: "Your Name <you@example.com>"   # fallback: git config user.name/email
 ids:
   stock: {strategy: datecode, prefix: "12"}   # → 1226JT01
   entity: {strategy: uuid}

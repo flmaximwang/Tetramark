@@ -17,7 +17,7 @@ one Dolt commit; every read is a normal `tm` command.
 2. Inspect before writing: `tm schema show`, `tm box ls`, `tm find QUERY`.
 3. Prefer an alias/ID from `find` over a guessed ID.
 4. Global flags (`--workspace`, `--ledger`, `--dry-run`, `--no-commit`, `--json`, `--format`) go
-   before the command: `tm --ledger zsqlab12 --json entity ls plasmid`.
+   before the command: `tm --ledger lab101 --json entity ls plasmid`.
 5. On a server-backed workspace every command uses the server; with no server it falls back to the
    embedded driver. Never run two writers against one ledger at the same time.
 

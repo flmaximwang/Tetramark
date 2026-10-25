@@ -3,7 +3,7 @@ Depends on: 10  · Spec: §6
 
 - `ops/find.py`: `find(query)` → exact id (any object) → alias → name/text LIKE across entity names and
   string/text fields of kind tables; ranked results with object type, kind, id, summary, location.
-  Behaviour reference: `/Users/maxim/Documents/Lab/Dolt/cli/find_entity.sh` and `test_find_entity.py` (read only).
+  Behaviour reference: `<legacy-zsqlab-checkout>/find_entity.sh` and `test_find_entity.py` (read only).
 - `ops/render.py`: `box show` grid via rich (rows × cols, cell = aliquot id or child box name, status colouring,
   `A,B` when capacity>1), list form for named/slotless; `--json` shape `{box, kind, geometry, path, slots:[{label,row,col,occupants:[…]}]}`.
 - `ledger history ID`: aliquot_event rows + `dolt_log`/`dolt_diff_<table>` entries touching the id.

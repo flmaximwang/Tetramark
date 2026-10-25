@@ -5,7 +5,7 @@ Depends on: 01  · Spec: §2, §1.1 (ledger.yaml)
   `values`, `renamed_from`), `Geometry` (grid/named/slotless with range parser `"A-J!I"`, `"1-12"`, lists),
   `Kind` (object entity|stock|box, fields, mixins, entity_kinds, aliquot_fields, geometry, slot_capacity, renamed_from),
   `Rule`, `Preset`, `LedgerConfig` (ledger.yaml), `EffectiveSchema` (resolved kinds by object, rules, statuses).
-- `schema/loader.py`: load bundled presets (importlib.resources `doltledger/presets/<name>/`) or a path;
+- `schema/loader.py`: load bundled presets (importlib.resources `tetramark/presets/<name>/`) or a path;
   resolve `include` (cycle → error), apply mixins (field collision → error), merge local `kinds_dir` and
   `rules_dir`; validate cross-refs: `ref.to` exists, `entity_kinds` are entity kinds, geometry only on box kinds,
   aliquot_fields only on stock kinds, identifiers are `[a-z][a-z0-9_]*` and not SQL reserved/core column names.

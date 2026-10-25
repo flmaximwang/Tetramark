@@ -8,7 +8,7 @@ steps in one transaction and one Dolt commit, then refreshes the fingerprint and
 ## Reading a plan
 
 ```
-schema plan for ledger 'zsqlab12'
+schema plan for ledger 'lab101'
   1. [additive] create_table entity_equipment
      new entity kind 'equipment'
      CREATE TABLE `entity_equipment` ( ... )
