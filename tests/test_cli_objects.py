@@ -204,6 +204,64 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
     assert dirty(ledger) == []
 
 
+def test_cli_show_prints_sorted_aliases_in_json_and_table(
+    cli_env: None, ledger_factory
+) -> None:
+    """spec v2: entity/stock/box show expose the object's aliases (§6)."""
+    ledger = ledger_factory([BASE], name="cli-show-aliases", id_prefix="77")
+
+    entity = json.loads(
+        write(
+            ledger,
+            "entity",
+            "add",
+            "item",
+            "--name",
+            "alpha",
+            "--alias",
+            "zeta",
+            "--alias",
+            "alpha-old",
+            "--json",
+        ).output
+    )
+    entity_id = entity["id"]
+    shown_entity = json.loads(
+        read(ledger, "entity", "show", entity_id, "--json").output
+    )
+    assert shown_entity["aliases"] == ["alpha-old", "zeta"]
+    entity_table = read(ledger, "entity", "show", entity_id)
+    assert "aliases" in entity_table.output
+    assert "alpha-old, zeta" in entity_table.output
+
+    stock = json.loads(
+        write(ledger, "stock", "add", "lot", "--entity", entity_id, "--json").output
+    )
+    write(ledger, "alias", "add", "stock", stock["id"], "old-lot")
+    write(ledger, "alias", "add", "stock", stock["id"], "lot-old")
+    shown_stock = json.loads(
+        read(ledger, "stock", "show", stock["id"], "--json").output
+    )
+    assert shown_stock["aliases"] == ["lot-old", "old-lot"]
+    stock_table = read(ledger, "stock", "show", stock["id"])
+    assert "lot-old, old-lot" in stock_table.output
+
+    box = json.loads(write(ledger, "box", "add", "grid96", "BOX", "--json").output)
+    write(ledger, "alias", "add", "box", box["id"], "legacy-box")
+    write(ledger, "alias", "add", "box", box["id"], "AAA-box")
+    shown_box = json.loads(read(ledger, "box", "show", "BOX", "--json").output)
+    assert shown_box["aliases"] == ["AAA-box", "legacy-box"]
+    box_table = read(ledger, "box", "show", "BOX")
+    assert "aliases: AAA-box, legacy-box" in box_table.output
+
+    # No aliases: the key is present (empty) and the table row is blank.
+    plain = json.loads(write(ledger, "box", "add", "grid96", "PLAIN", "--json").output)
+    assert plain["slots"] == 96
+    plain_box = json.loads(read(ledger, "box", "show", "PLAIN", "--json").output)
+    assert plain_box["aliases"] == []
+    assert "aliases:" not in read(ledger, "box", "show", "PLAIN").output
+
+
 def test_cli_dry_run_prints_sql_and_writes_nothing(
     cli_env: None, ledger_factory
 ) -> None:

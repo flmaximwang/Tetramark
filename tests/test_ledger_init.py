@@ -151,7 +151,7 @@ def test_init_writes_ledger_yaml_and_ledger_meta(
         "preset_versions",
         "ledger_yaml",
     }
-    assert meta["spec_version"] == "1"
+    assert meta["spec_version"] == "2"
     assert meta["tetramark_version"] == __version__
     assert meta["created_with"] == __version__
     # Only ``tm init --adopt`` records the pre-adoption commit (TM-04).
@@ -734,7 +734,7 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     assert result.exit_code == 0, result.output
     payload = yaml.safe_load(result.output)
     # Spec A1 header: format version and tool provenance.
-    assert payload["spec_version"] == "1"
+    assert payload["spec_version"] == "2"
     assert payload["tetramark_version"] == __version__
     assert payload["created_with"] == __version__
     assert payload["preset_versions"] == {"base": 2, "chain": 3, "full": 1}
@@ -756,7 +756,7 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     )
     assert as_json.exit_code == 0, as_json.output
     json_payload = json.loads(as_json.output)
-    assert json_payload["spec_version"] == "1"
+    assert json_payload["spec_version"] == "2"
     assert json_payload["tetramark_version"] == __version__
     assert json_payload["created_with"] == __version__
 
@@ -1013,7 +1013,7 @@ def test_adopt_formats_an_existing_database_and_keeps_its_history(
     # Provenance: adopted_from_commit is the branch HEAD *before* the adopt
     # commit, and the format/tool versions are stamped like a normal init.
     meta = ledger.meta
-    assert meta["spec_version"] == "1"
+    assert meta["spec_version"] == "2"
     assert meta["tetramark_version"] == __version__
     assert meta["created_with"] == __version__
     assert meta["adopted_from_commit"] == pre_head
@@ -1282,7 +1282,7 @@ def test_adopt_formats_an_existing_server_database(server_workspace: Workspace) 
         try:
             assert ledger.branch == "tetramark"
             assert ledger.meta["adopted_from_commit"] == branch_head
-            assert ledger.meta["spec_version"] == "1"
+            assert ledger.meta["spec_version"] == "2"
             assert ledger.check().passed
             messages = [
                 str(row["message"])

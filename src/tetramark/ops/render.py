@@ -10,8 +10,10 @@ renderer is split in two:
   colouring included) and :func:`render_box_text` renders it without colour
   for snapshots.
 
-The dictionary shape is ``{box, kind, geometry, path, slots}``; a slotless box
-has no slots, so its contents are returned as ``occupants`` instead.
+The dictionary shape is ``{box, kind, geometry, path, aliases, slots}``; a
+slotless box has no slots, so its contents are returned as ``occupants``
+instead.  ``aliases`` is the box's sorted alias list (e.g. a legacy label); the
+generated ``v_box_slots`` view exposes the same data as ``occupant_alias_list``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from tetramark.core.objects import _box_paths, _resolve_box
+from tetramark.core.objects import _box_paths, _object_aliases, _resolve_box
 from tetramark.schema.model import GeometryType, Kind
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
@@ -52,7 +54,7 @@ def box_view(ledger: Ledger, ref: str) -> dict[str, Any]:
     The box is resolved by human name first, then id, then alias.  Slotted
     boxes list every slot (empty ones included) in ordinal order; a slotless
     box has ``slots: []`` and an ``occupants`` list of its direct aliquots and
-    child boxes.
+    child boxes.  ``aliases`` is always present (empty when the box has none).
     """
     box_row = _resolve_box(ledger.driver, ref)
     box_id = str(box_row["id"])
@@ -71,6 +73,7 @@ def box_view(ledger: Ledger, ref: str) -> dict[str, Any]:
         "kind": kind_name,
         "geometry": _geometry_json(kind),
         "path": paths.get(box_id, str(box_row["name"])),
+        "aliases": _object_aliases(ledger.driver, "box", box_id),
         "slots": [],
     }
 
@@ -191,19 +194,29 @@ def _slotless_occupants(ledger: Ledger, box_id: str) -> list[dict[str, Any]]:
 
 
 def render_box(view: dict[str, Any]) -> Group:
-    """A rich renderable for one :func:`box_view` dictionary."""
+    """A rich renderable for one :func:`box_view` dictionary.
+
+    A box's aliases (when it has any) print as their own ``aliases:`` line,
+    mirroring the ``aliases`` field row of ``entity show``/``stock show``.
+    """
     header = Text()
     header.append(str(view["box"]), style="bold")
     header.append(f"  {view['kind']}  path: {view['path']}", style="dim")
 
+    blocks: list[Any] = [header]
+    aliases = view.get("aliases") or []
+    if aliases:
+        alias_text = ", ".join(str(alias) for alias in aliases)
+        blocks.append(Text(f"aliases: {alias_text}", style="dim"))
+
     geometry = view.get("geometry") or {}
     if geometry.get("type") == "slotless":
-        summary = Text(_slotless_summary(view, geometry), style="dim")
-        table = _slotless_table(view)
+        blocks.append(Text(_slotless_summary(view, geometry), style="dim"))
+        blocks.append(_slotless_table(view))
     else:
-        summary = Text(_slot_summary(view, geometry), style="dim")
-        table = _slot_table(view, geometry)
-    return Group(header, summary, table)
+        blocks.append(Text(_slot_summary(view, geometry), style="dim"))
+        blocks.append(_slot_table(view, geometry))
+    return Group(*blocks)
 
 
 def render_box_text(view: dict[str, Any], *, width: int = 120) -> str:

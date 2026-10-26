@@ -80,6 +80,7 @@ tm entity ls [KIND] [--where FIELD=VALUE ...] [--json]
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
 `--where` filters match the kind's columns and can be repeated (AND).
+`show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
 
 ## Stocks
 
@@ -100,7 +101,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
 - `--aliquot-set` sets kind-specific aliquot fields (e.g. `glycerol_pct=15`).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
-- `stock show` includes the aliquot list.
+- `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
+  row in table output).
 
 `stock renumber` repairs ids that predate (or ignore) the ledger's stock id strategy. Give one REF and
 `--id NEW` for a single rename, one or more REFs with `--auto` to generate strategy-shaped ids, or
@@ -147,8 +149,9 @@ tm box move NAME --in PARENT [--slot S] [--json]
 named positions, `shelf`/`freezer`/`drawer` → none). `--slot` is only valid for a slotted parent;
 slotless parents take one child box each (up to `capacity`). Nesting must stay acyclic.
 
-`box show` prints a terminal grid (or `--json` for `{box, geometry, slots:[...]}`) and works for
-slotless boxes too (it lists child boxes). `--format csv` prints one row per slot.
+`box show` prints a terminal grid with an `aliases: …` line when the box has aliases (or `--json` for
+`{box, kind, geometry, path, aliases, slots:[...]}`) and works for slotless boxes too (it lists child
+boxes). `--format csv` prints one row per slot.
 
 ## Aliases, search, history
 
@@ -163,6 +166,12 @@ tm history ID|ALIAS|BOX [--json]
 `alias rm ALIAS` removes that alias everywhere, `alias rm stock ALIAS` only from stocks.
 `find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
 location. `history` merges aliquot events and the Dolt commits that touched the object.
+
+Aliases are also visible in the generated views (ledger format `spec_version` 2): every
+`v_<object>_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated
+`alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list` for the slot's
+occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The column is not
+called `aliases` because some kinds have a domain field with that name (e.g. `construct.aliases`).
 
 ## Validation
 

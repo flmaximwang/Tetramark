@@ -163,7 +163,10 @@ alias(object_type, object_id, alias, PK(object_type, alias))
 - `spec_version` is the **ledger format version** — the key an upgrade pipeline
   dispatches on. It is bumped only when the generated shape changes: the core
   table set, the `ledger_meta` key set, or generated objects (views,
-  `dolt_tests`). A pure bug-fix release does not change it.
+  `dolt_tests`). A pure bug-fix release does not change it. Version 2 adds the
+  `alias_list`/`occupant_alias_list` columns to the generated views; a v1
+  ledger upgrades (`tm schema plan` → `tm schema apply`) with an additive view
+  replacement plus the usual `ledger_meta` refresh, never a destructive step.
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger
@@ -212,11 +215,22 @@ Kind tables (generated from schema):
 - `aliquot_<stockkind>(id PK FK→aliquot, <aliquot_fields…>)` when the stock kind has `aliquot_fields`.
 
 Views (generated):
-- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity, status.
-- `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`).
+- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity, status,
+  and `occupant_alias_list` (the occupant's aliases: the aliquot's aliases when the occupant is an
+  aliquot, the box's aliases when it is a nested box, NULL for an empty slot).
+- `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`) and `alias_list`.
 - `v_stock_status` — stock + derived status (`active` if any aliquot stored; `pending` if any pending
-  and none stored; `depleted` if all consumed; `missing` if all missing/consumed with ≥1 missing; `empty` if 0 aliquots) + aliquot counts + total quantity per unit.
-- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench).
+  and none stored; `depleted` if all consumed; `missing` if all missing/consumed with ≥1 missing; `empty` if 0 aliquots) + aliquot counts + total quantity per unit + `alias_list`.
+- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench); the final
+  column is `alias_list`.
+
+Every view that represents an object aggregates the `alias` table into a sorted, `;`-separated
+`alias_list` (NULL when the object has no aliases; `v_box_slots` names it `occupant_alias_list`
+because the row describes a slot and its occupant, not only the box). The column is deliberately
+**not** called `aliases`: a kind may already have a domain field named `aliases` — the bundled
+`construct` kind does, holding semicolon-separated alternative construct names — and a view cannot
+expose two columns with the same name. After a `tm stock renumber` the old stock and aliquot ids are
+aliases (§6), so these columns are how a view reader still sees the pre-renumber handles.
 
 What the DB enforces vs the app:
 - DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values.
@@ -303,7 +317,7 @@ tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reac
 tm aliquot status ALQ stored|missing|consumed|pending
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT --slot S]
-tm box show NAME            # terminal grid / list; --json gives {box, geometry, slots:[...]}
+tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
 tm box ls ; tm box move NAME --in PARENT --slot S
 tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
 tm find QUERY               # id → alias → name/text match across all objects and kinds
@@ -314,6 +328,11 @@ tm export KIND|all [--out DIR]
 tm remote add NAME URL | push | pull ; tm backup [DIR]
 tm branch ls | create NAME [--from REF] | delete NAME
 ```
+
+`tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
+`aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays
+narrow and unchanged. The generated views expose the same data as `alias_list` /
+`occupant_alias_list` (§3).
 
 `tm stock renumber` is the audited way to repair ids that do not follow the ledger's stock id strategy
 (legacy imports, hand-made ids). It renumbers one stock (`REF --id NEW`), many (`REF ... --auto`), or a

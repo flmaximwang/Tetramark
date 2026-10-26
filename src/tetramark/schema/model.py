@@ -52,7 +52,10 @@ __all__ = [
     "parse_labels",
 ]
 
-SPEC_VERSION = 1
+#: Ledger format version (spec §3).  Bumped only when the generated shape
+#: changes: v2 added the ``alias_list``/``occupant_alias_list`` columns to the
+#: generated views so the ``alias`` table is visible there.
+SPEC_VERSION = 2
 
 DEFAULT_STATUSES: tuple[str, ...] = ("pending", "stored", "missing", "consumed")
 
