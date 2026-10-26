@@ -9,7 +9,14 @@ import yaml
 
 from tetramark.cli.options import GlobalOptions
 from tetramark.cli.workspace import resolve_workspace
-from tetramark.core.ledger import InitPlan, Ledger, init_ledger
+from tetramark.core.ledger import (
+    META_ADOPTED_FROM_COMMIT,
+    AdoptPlan,
+    InitPlan,
+    Ledger,
+    adopt_ledger,
+    init_ledger,
+)
 from tetramark.errors import UsageError
 from tetramark.schema.loader import list_bundled_presets, load_preset
 from tetramark.schema.model import EffectiveSchema, Kind, ObjectType, Preset, Rule
@@ -46,12 +53,55 @@ def init_command(
         "--status",
         help="Aliquot status vocabulary (repeat to override the default four).",
     ),
+    adopt: bool = typer.Option(
+        False,
+        "--adopt",
+        help=(
+            "Format a Dolt database that already exists in the workspace instead "
+            "of creating one: same schema as init, existing history kept. The "
+            "database must be empty (no tables, views or dolt_tests rows), have "
+            "a clean working set and no ledger.yaml (or pass --force-config)."
+        ),
+    ),
+    force_config: bool = typer.Option(
+        False,
+        "--force-config",
+        help="With --adopt: overwrite an existing ledger.yaml; nothing is deleted.",
+    ),
 ) -> None:
-    """Create a ledger in the workspace and commit its generated schema."""
+    """Create a ledger in the workspace, or format an existing one with --adopt."""
     options: GlobalOptions = ctx.obj
     workspace = resolve_workspace(ctx)
     if not preset:
         raise UsageError("at least one --preset is required (e.g. --preset base)")
+    if force_config and not adopt:
+        raise UsageError("--force-config only applies to --adopt")
+
+    if adopt:
+        adopted = adopt_ledger(
+            workspace,
+            name,
+            preset,
+            id_prefix=id_prefix,
+            author=author,
+            statuses=status or None,
+            force_config=force_config,
+            branch=options.branch,
+            dry_run=options.dry_run,
+        )
+        if isinstance(adopted, AdoptPlan):
+            typer.echo(
+                f"Would adopt ledger {adopted.name} at {adopted.path} "
+                f"(branch {adopted.branch}, HEAD {adopted.adopted_from_commit})"
+            )
+            typer.echo(f"  presets : {', '.join(adopted.config.presets)}")
+            typer.echo(f"  schema  : {_describe_schema(adopted.schema)}")
+            typer.echo("  history : kept; nothing is deleted")
+            typer.echo("")
+            typer.echo(adopted.sql)
+            return
+        _print_adopted(adopted)
+        return
 
     result = init_ledger(
         workspace,
@@ -71,6 +121,18 @@ def init_command(
         return
 
     _print_created(result)
+
+
+def _print_adopted(ledger: Ledger) -> None:
+    typer.echo(f"Adopted ledger {ledger.name} at {ledger.path}")
+    typer.echo(f"  presets    : {', '.join(ledger.config.presets)}")
+    typer.echo(f"  schema     : {_describe_schema(ledger.schema)}")
+    typer.echo(f"  fingerprint: {ledger.fingerprint}")
+    typer.echo(f"  author     : {ledger.author or '(from git config)'}")
+    typer.echo(f"  branch     : {ledger.branch or '(checked out)'}")
+    adopted_from = ledger.meta.get(META_ADOPTED_FROM_COMMIT)
+    if adopted_from:
+        typer.echo(f"  adopted    : {adopted_from}")
 
 
 def _print_created(ledger: Ledger) -> None:

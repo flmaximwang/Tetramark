@@ -41,6 +41,8 @@ Rules:
   data_dir (host, port, default ledger, author).
 - **Ledger** = one Dolt database = one direct subdirectory of the data_dir. Its config `ledger.yaml`
   lives inside the ledger directory and is also stored in the DB (`ledger_meta`) so the DB is self-describing.
+  A ledger can be created fresh (`tm init`) or formatted in place from an existing empty database
+  (`tm init --adopt`, §3.1), which keeps that database's history.
 
 ```yaml
 # <data_dir>/<ledger>/ledger.yaml
@@ -171,6 +173,37 @@ alias(object_type, object_id, alias, PK(object_type, alias))
 `tetramark_version`, `created_with` and `adopted_from_commit` are provenance
 records: they are shown by `tm schema show` but drive no migration logic.
 
+### 3.1 Adopting an existing database (`tm init --adopt`)
+
+`tm init NAME --adopt --preset …` formats a Dolt database that already exists in the workspace:
+it performs the same steps as `tm init` (write `ledger.yaml`, create the core and kind tables, write
+`ledger_meta`, install the generated `dolt_tests`) but skips `mkdir`/`dolt init` and commits
+`adopt(ledger): NAME` on top of the existing history instead of starting a new root commit.
+`ledger_meta.adopted_from_commit` records the branch HEAD from *before* that commit; the rest of the
+history is untouched, so old commits stay reachable (e.g. `AS OF <old tag>`).
+
+Preconditions — any failure refuses the adopt and writes nothing:
+
+- the selected branch's working set is clean (`dolt_status` has no rows);
+- that branch has **no user tables** (no `information_schema.tables` BASE TABLE outside `dolt_*`),
+  **no views**, and **no `dolt_tests` rows**;
+- the ledger directory has no `ledger.yaml`, or `--force-config` was given (it is overwritten, never
+  deleted).
+
+Adopt runs on the branch selected by `-b/--branch` (default: the checked-out branch), so a migration
+can format a branch while `main` keeps the old schema. A branch that does not exist is an error — it is
+never created. Adopt never drops an existing object: dropping the legacy schema is a separate,
+auditable commit made before the adopt.
+
+A failed adopt rolls back only its own writes: it drops the tables/views it had created (Dolt's
+`DOLT_RESET --hard` leaves untracked tables behind, so a plain reset is not enough), resets the branch
+to the pre-adopt HEAD, restores or removes `ledger.yaml`, and leaves the working set clean. It must
+**never** remove the database directory: unlike a failed `tm init`, which deletes its own half-created
+directory, adopt operates on a real database and answering a failure with `rmtree` would destroy it.
+
+`tm --dry-run init NAME --adopt` runs the read-only preconditions (including the legacy-schema refusal) and
+prints the branch, the HEAD that would be recorded, and the DDL; nothing is written.
+
 Kind tables (generated from schema):
 - `entity_<kind>(id PK, kind CHAR const DEFAULT '<kind>' CHECK(kind='<kind>'), <fields…>,
   FK(id,kind)→entity(id,kind))` — the discriminator FK: an id can belong to only one kind table.
@@ -199,7 +232,7 @@ No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in t
 `tm check` runs Dolt's `dolt_tests` (same source as Workbench's Tests page). Exit 0 = all PASS,
 1 = any FAIL. `-v` prints offending rows (each generated test has a companion detail query).
 
-Tests are generated into `dolt_tests` on `init` / `schema apply`, grouped:
+Tests are generated into `dolt_tests` on `init` / `init --adopt` / `schema apply`, grouped:
 - `core` — the app-enforced invariants in §3.
 - `schema:<kind>` — patterns, required refs, entity_kinds restriction.
 - `rules:<preset|local>` — custom rules. `severity: info` tests are reported but never fail the exit code
@@ -238,7 +271,8 @@ Branch selection (`-b/--branch`, placed before the subcommand like `-w`/`-l`): e
 commit of that command happens on BRANCH. The default is `branch:` in `ledger.yaml`, else the branch
 checked out in the repository. A branch that does not exist is a usage error — it is never created
 implicitly. Selection is session-scoped and never moves the branch other sessions or the server see
-(see §7). `--dry-run` prints the target branch with the SQL. `tm remote push/pull -b` is a different
+(see §7). `--dry-run` prints the target branch with the SQL. It also selects the branch that
+`tm init --adopt` formats (§3.1). `tm remote push/pull -b` is a different
 option with the same letter: it names the branch on the **remote**, while the global `-b` selects the
 local session branch. `tm branch ls|create NAME [--from REF]|delete NAME` manage branches; merging is
 not part of `tm` (cut over with Dolt's native `CALL DOLT_MERGE(branch, '--ff-only')`).
@@ -251,6 +285,7 @@ Author from `ledger.yaml` → `workspace.yaml` → git config.
 tm workspace init [PATH] [--port 13308]
 tm server start [-d] | stop | status
 tm init NAME --preset base --preset molbio [--id-prefix 12]
+tm init NAME --adopt --preset molbio [--id-prefix 12] [--force-config]   # §3.1
 tm presets [list|show NAME]
 tm schema show [KIND] | plan | apply [--allow-destructive]
 

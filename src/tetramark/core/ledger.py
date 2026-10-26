@@ -1,4 +1,4 @@
-"""Ledger lifecycle: ``init_ledger``, ``open`` and the one-commit write session.
+"""Ledger lifecycle: ``init_ledger``, ``adopt_ledger``, ``open`` and the write session.
 
 A ledger is one Dolt database inside a :class:`~tetramark.driver.workspace.Workspace`
 (spec §1.1).  Creating one means:
@@ -7,8 +7,15 @@ A ledger is one Dolt database inside a :class:`~tetramark.driver.workspace.Works
 2. write ``ledger.yaml`` (the human-editable config, copied into the DB);
 3. load the effective schema and execute the generated DDL;
 4. write ``ledger_meta`` (fingerprint, preset versions, the ``ledger.yaml`` text,
-   ``spec_version``);
+   ``spec_version``, tool provenance);
 5. make exactly one Dolt commit, ``init(ledger): <name>``.
+
+:func:`adopt_ledger` formats an **existing** Dolt database in place instead
+(spec A4): same steps 2–5 on an empty, clean branch, but no ``mkdir``/``dolt
+init``, one ``adopt(ledger): <name>`` commit on top of the existing history and
+``adopted_from_commit`` recording the pre-adopt HEAD.  Adopt never deletes
+anything, and a failed adopt rolls its own writes back — it must never remove
+the database directory the way a failed :func:`init_ledger` removes its own.
 
 Opening one loads ``ledger.yaml``, the effective schema, the id strategies and
 the commit author (``ledger.yaml`` → ``workspace.yaml`` → Git config), then
@@ -78,9 +85,11 @@ __all__ = [
     "META_PRESET_VERSIONS",
     "META_SPEC_VERSION",
     "META_TETRAMARK_VERSION",
+    "AdoptPlan",
     "InitPlan",
     "Ledger",
     "WriteSession",
+    "adopt_ledger",
     "build_id_strategies",
     "init_ledger",
     "init_ledger_on_server",
@@ -394,8 +403,21 @@ class InitPlan:
         return ";\n".join(statement.sql for statement in self.statements) + ";"
 
 
-def _prepare_init(
-    workspace: Workspace | str | Path,
+@dataclass(frozen=True)
+class AdoptPlan(InitPlan):
+    """Everything ``adopt_ledger`` would do, computed without writing anything.
+
+    ``branch`` is the branch the adoption happens on and
+    ``adopted_from_commit`` the branch HEAD before the adoption commit — the
+    value the eventual ``ledger_meta`` row records.
+    """
+
+    branch: str
+    adopted_from_commit: str
+
+
+def _ledger_plan(
+    ws: Workspace,
     name: str,
     presets: Sequence[str | Path] | str | Path | None,
     *,
@@ -403,12 +425,13 @@ def _prepare_init(
     author: str | None,
     statuses: Sequence[str] | None,
 ) -> InitPlan:
-    ws = _as_workspace(workspace)
-    _check_name(name)
+    """Build the configuration, schema and DDL of a new ledger (no disk writes).
 
+    Every validation that does not need the database happens here, so a bad
+    preset or a missing author fails before a directory is created or (for
+    adopt) before the existing database is touched.
+    """
     target = ws.ledger_path(name)
-    if target.exists():
-        raise LedgerError(f"ledger {name!r} already exists at {target}")
 
     if presets is None:
         sources: list[str] = []
@@ -458,10 +481,86 @@ def _prepare_init(
     )
 
 
+def _prepare_init(
+    workspace: Workspace | str | Path,
+    name: str,
+    presets: Sequence[str | Path] | str | Path | None,
+    *,
+    id_prefix: str | None,
+    author: str | None,
+    statuses: Sequence[str] | None,
+) -> InitPlan:
+    ws = _as_workspace(workspace)
+    _check_name(name)
+
+    target = ws.ledger_path(name)
+    if target.exists():
+        raise LedgerError(f"ledger {name!r} already exists at {target}")
+
+    return _ledger_plan(
+        ws,
+        name,
+        presets,
+        id_prefix=id_prefix,
+        author=author,
+        statuses=statuses,
+    )
+
+
+def _prepare_adopt(
+    workspace: Workspace | str | Path,
+    name: str,
+    presets: Sequence[str | Path] | str | Path | None,
+    *,
+    id_prefix: str | None,
+    author: str | None,
+    statuses: Sequence[str] | None,
+    force_config: bool,
+) -> InitPlan:
+    """Validation of the adopt target that needs no database connection.
+
+    The existing database is judged by its ``.dolt`` directory and its
+    ``ledger.yaml``; the schema and working-set preconditions need SQL and are
+    checked by :func:`_check_adoptable`.
+    """
+    ws = _as_workspace(workspace)
+    _check_name(name)
+
+    target = ws.ledger_path(name)
+    if not (target / ".dolt").is_dir():
+        if target.exists():
+            raise LedgerError(
+                f"cannot adopt {name!r}: {target} exists but is not a Dolt "
+                "database (no '.dolt' directory); use 'tm init' to create a "
+                "new ledger"
+            )
+        raise LedgerError(
+            f"cannot adopt {name!r}: no Dolt database at {target}; create a new "
+            "ledger with 'tm init' instead"
+        )
+    config_path = target / LEDGER_FILE
+    if config_path.is_file() and not force_config:
+        raise LedgerError(
+            f"cannot adopt {name!r}: {config_path} already exists; pass "
+            "--force-config to overwrite it"
+        )
+
+    return _ledger_plan(
+        ws,
+        name,
+        presets,
+        id_prefix=id_prefix,
+        author=author,
+        statuses=statuses,
+    )
+
+
 def _write_meta(
     driver: Driver,
     schema: EffectiveSchema,
     ledger_yaml: str,
+    *,
+    adopted_from_commit: str | None = None,
 ) -> None:
     # Imported here because ``tetramark/__init__`` imports this module; the
     # package is fully initialised by the time a ledger is written.
@@ -470,8 +569,7 @@ def _write_meta(
     values = {
         META_SPEC_VERSION: str(SPEC_VERSION),
         # Provenance only: which tool last wrote meta and which first
-        # formatted the ledger.  ``adopted_from_commit`` is written
-        # separately by the adopt path (ticket TM-04).
+        # formatted the ledger.
         META_TETRAMARK_VERSION: __version__,
         META_CREATED_WITH: __version__,
         META_FINGERPRINT: schema.fingerprint(),
@@ -484,6 +582,13 @@ def _write_meta(
         driver.execute(
             "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s)",
             (key, values[key]),
+        )
+    # Only the adopt path records the pre-adoption HEAD (ticket TM-04); a plain
+    # init has no history to adopt, so the key stays absent.
+    if adopted_from_commit is not None:
+        driver.execute(
+            "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s)",
+            (META_ADOPTED_FROM_COMMIT, adopted_from_commit),
         )
 
 
@@ -543,6 +648,283 @@ def init_ledger(
         config=plan.config,
         schema=plan.schema,
         author=plan.author,
+    )
+    ledger.refresh_meta()
+    return ledger
+
+
+# ---------------------------------------------------------------------------
+# Adopt (spec A4)
+# ---------------------------------------------------------------------------
+
+
+def _head_hash(driver: Driver) -> str:
+    """The commit hash ``HEAD`` points to on the driver's branch."""
+    rows = driver.query("SELECT DOLT_HASHOF('HEAD') AS `hash`")
+    value = rows[0].get("hash") if rows else None
+    if value is None:
+        raise LedgerError("cannot read HEAD of the database (DOLT_HASHOF is empty)")
+    return str(value)
+
+
+def _active_branch(driver: Driver) -> str:
+    """The branch the driver's session reads and writes."""
+    rows = driver.query("SELECT active_branch() AS `branch`")
+    value = rows[0].get("branch") if rows else None
+    if value is None:
+        raise LedgerError("cannot determine the database's current branch")
+    return str(value)
+
+
+def _name_list(names: Sequence[str], *, limit: int = 5) -> str:
+    """``(a, b, c, ... 3 more)`` — never an unbounded list in an error."""
+    shown = list(names[:limit])
+    text = ", ".join(shown)
+    if len(names) > limit:
+        text += f", ... {len(names) - limit} more"
+    return f"({text})"
+
+
+def _check_adoptable(driver: Driver, name: str) -> None:
+    """Refuse to adopt a database that is not empty, clean and unformatted.
+
+    Read-only: every refusal happens before the first write (spec A4).  The
+    checks are: clean working set, no user tables and no views, no
+    ``dolt_tests`` rows.  ``ledger.yaml`` is checked without a connection.
+    """
+    dirty = driver.query("SELECT `table_name` AS `name` FROM dolt_status")
+    if dirty:
+        changed = sorted({str(row.get("name")) for row in dirty})
+        raise LedgerError(
+            f"cannot adopt {name!r}: the working set is not clean "
+            f"({len(dirty)} uncommitted change(s) in {_name_list(changed)}); "
+            "commit or reset them first"
+        )
+
+    rows = driver.query(
+        "SELECT `table_name` AS `name`, `table_type` AS `kind` "
+        "FROM information_schema.tables WHERE table_schema = DATABASE()"
+    )
+    tables = sorted(
+        str(row["name"])
+        for row in rows
+        if str(row["kind"]).upper() == "BASE TABLE"
+        and not str(row["name"]).startswith("dolt_")
+    )
+    views = sorted(
+        str(row["name"]) for row in rows if str(row["kind"]).upper() == "VIEW"
+    )
+    if tables or views:
+        found: list[str] = []
+        if tables:
+            found.append(f"{len(tables)} user table(s) {_name_list(tables)}")
+        if views:
+            found.append(f"{len(views)} view(s) {_name_list(views)}")
+        raise LedgerError(
+            f"cannot adopt {name!r}: the schema is not empty — "
+            f"{'; '.join(found)}; drop the legacy schema as its own commit "
+            "first (adopt never deletes anything)"
+        )
+
+    rows = driver.query("SELECT COUNT(*) AS `n` FROM `dolt_tests`")
+    count = int(rows[0]["n"]) if rows else 0
+    if count:
+        raise LedgerError(
+            f"cannot adopt {name!r}: `dolt_tests` still has {count} row(s); "
+            "delete them before adopting"
+        )
+
+
+def _rollback_statements(statements: Sequence[Statement]) -> list[str]:
+    """SQL undoing a (possibly partial) application of ``schema_statements``.
+
+    Foreign keys are dropped first because ``stock``/``aliquot`` reference each
+    other, so no table order can satisfy both; then views (which may depend on
+    any table); then tables in reverse creation order.
+    """
+
+    def ident(value: str) -> str:
+        return "`" + value.replace("`", "``") + "`"
+
+    sql: list[str] = [
+        f"ALTER TABLE {ident(str(statement.table))} "
+        f"DROP FOREIGN KEY {ident(statement.name)}"
+        for statement in reversed(statements)
+        if statement.object == "fk" and statement.table
+    ]
+    for statement in reversed(statements):
+        if statement.object == "view":
+            sql.append(f"DROP VIEW IF EXISTS {ident(statement.name)}")
+        elif statement.object == "table":
+            sql.append(f"DROP TABLE IF EXISTS {ident(statement.name)}")
+    return sql
+
+
+def _rollback_adopt(
+    workspace: Workspace,
+    name: str,
+    *,
+    branch: str | None,
+    pre_head: str,
+    statements: Sequence[Statement],
+    config_path: Path,
+    previous_config: str | None,
+) -> None:
+    """Best-effort undo of a failed adopt.  Never deletes the database.
+
+    The directory and its history are untouched: only the objects this attempt
+    created are dropped (Dolt's ``reset --hard`` leaves untracked tables
+    behind), then the branch is reset to ``pre_head``.  A pre-existing
+    ``ledger.yaml`` is restored.  Failures here must not mask the original
+    error, hence the warnings instead of nested exceptions.
+    """
+    failed: list[str] = []
+    driver: Driver | None = None
+    try:
+        driver = workspace.driver_for(name, branch=branch)
+    except Exception as error:  # pragma: no cover - only if the server vanished
+        failed.append(f"could not reconnect: {error}")
+    if driver is not None:
+        try:
+            for sql in _rollback_statements(statements):
+                try:
+                    driver.execute(sql)
+                except Exception as error:  # a missing object is fine
+                    failed.append(f"{sql.split()[0].lower()} failed: {error}")
+            driver.execute("CALL DOLT_RESET('--hard', %s)", (pre_head,))
+        except Exception as error:  # pragma: no cover - defensive
+            failed.append(f"reset failed: {error}")
+        finally:
+            with suppress(Exception):
+                _close_driver(driver)
+    try:
+        if previous_config is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            config_path.write_text(previous_config, encoding="utf-8")
+    except OSError as error:  # pragma: no cover - defensive
+        failed.append(f"could not restore {config_path}: {error}")
+    if failed:
+        warnings.warn(
+            f"adopt rollback of {name!r} is incomplete: {'; '.join(failed)}",
+            UserWarning,
+            stacklevel=2,
+        )
+
+
+def adopt_ledger(
+    workspace: Workspace | str | Path,
+    name: str,
+    presets: Sequence[str | Path] | str | Path | None = None,
+    *,
+    id_prefix: str | None = None,
+    author: str | None = None,
+    statuses: Sequence[str] | None = None,
+    force_config: bool = False,
+    branch: str | None = None,
+    dry_run: bool = False,
+) -> Ledger | AdoptPlan:
+    """Format an existing, empty Dolt database in place (spec A4).
+
+    This is ``init`` steps 2–5 (``ledger.yaml``, core and kind tables,
+    ``ledger_meta``, generated ``dolt_tests``) applied to a database that
+    already exists, skipping ``mkdir``/``dolt init``.  It commits
+    ``adopt(ledger): <name>`` on top of the existing history and records the
+    pre-adopt HEAD in ``ledger_meta.adopted_from_commit``.
+
+    Preconditions (a refusal writes nothing): the selected branch's working set
+    is clean, it has no user tables, no views and no ``dolt_tests`` rows, and
+    the database has no ``ledger.yaml`` unless ``force_config`` is set.
+    ``branch`` selects the branch (default: the checked-out one); a missing
+    branch is an error, never created.
+
+    A failure rolls this attempt's writes back and resets the branch to the
+    pre-adopt HEAD; the database directory is never removed (unlike a failed
+    :func:`init_ledger`).  Adopt itself never drops an existing object: the
+    legacy-schema drop is a separate, auditable commit.
+
+    Returns the opened :class:`Ledger`; with ``dry_run=True`` returns an
+    :class:`AdoptPlan` (after running the read-only preconditions) and writes
+    nothing.
+    """
+    plan = _prepare_adopt(
+        workspace,
+        name,
+        presets,
+        id_prefix=id_prefix,
+        author=author,
+        statuses=statuses,
+        force_config=force_config,
+    )
+    target = plan.path
+
+    driver = plan.workspace.driver_for(name, branch=branch)
+    try:
+        _check_adoptable(driver, name)
+        selected = branch if branch is not None else _active_branch(driver)
+        # Read before any DDL: this is the hash the meta key records, never the
+        # hash of the adoption commit.
+        pre_head = _head_hash(driver)
+    except BaseException:
+        _close_driver(driver)
+        raise
+
+    if dry_run:
+        _close_driver(driver)
+        return AdoptPlan(
+            workspace=plan.workspace,
+            name=plan.name,
+            path=plan.path,
+            config=plan.config,
+            schema=plan.schema,
+            ledger_yaml=plan.ledger_yaml,
+            statements=plan.statements,
+            author=plan.author,
+            branch=selected,
+            adopted_from_commit=pre_head,
+        )
+
+    config_path = target / LEDGER_FILE
+    previous_config = (
+        config_path.read_text(encoding="utf-8") if config_path.is_file() else None
+    )
+    try:
+        config_path.write_text(plan.ledger_yaml, encoding="utf-8")
+        with driver.transaction():
+            for statement in plan.statements:
+                driver.execute(statement.sql)
+            _write_meta(
+                driver,
+                plan.schema,
+                plan.ledger_yaml,
+                adopted_from_commit=pre_head,
+            )
+            # Generated dolt_tests are derived state (spec §4): the adopted
+            # database is immediately checkable, like a freshly initialised one.
+            install_tests(driver, plan.schema)
+        driver.commit(f"adopt(ledger): {name}", author=plan.author)
+    except BaseException:
+        # Never rmtree here: this is the production database.  Drop what this
+        # attempt created and reset the branch to where it was.
+        _rollback_adopt(
+            plan.workspace,
+            name,
+            branch=branch,
+            pre_head=pre_head,
+            statements=plan.statements,
+            config_path=config_path,
+            previous_config=previous_config,
+        )
+        raise
+
+    ledger = Ledger(
+        workspace=plan.workspace,
+        name=name,
+        driver=driver,
+        config=plan.config,
+        schema=plan.schema,
+        author=plan.author,
+        branch=branch,
     )
     ledger.refresh_meta()
     return ledger
