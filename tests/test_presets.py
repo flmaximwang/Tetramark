@@ -6,12 +6,15 @@ workspace whose Dolt/Git configuration lives under ``tmp_path``.
 
 from __future__ import annotations
 
+import importlib.resources
 import json
+from pathlib import Path
 
 import pytest
 
+import tetramark.presets
 from tetramark.schema.ddl import slot_rows
-from tetramark.schema.loader import list_bundled_presets, load_schema
+from tetramark.schema.loader import list_bundled_presets, load_preset, load_schema
 from tetramark.schema.model import (
     FieldType,
     GeometryType,
@@ -87,6 +90,32 @@ def table_names(ledger) -> set[str]:
 
 def test_all_three_bundled_presets_are_discoverable() -> None:
     assert list_bundled_presets() == ["base", "library", "molbio"]
+
+
+def test_bundled_presets_are_single_yaml_files() -> None:
+    root = importlib.resources.files("tetramark.presets")
+    package_root = Path(tetramark.presets.__file__).parent
+
+    for name in BUNDLED:
+        assert root.joinpath(f"{name}.yaml").is_file(), name
+        # The directory form was only for the bundled presets; a same-named
+        # directory here would mean the package is still (partly) nested.
+        assert not root.joinpath(name).is_dir(), name
+
+    leftovers = [
+        path
+        for path in package_root.rglob("preset.yaml")
+        if "__pycache__" not in path.parts
+    ]
+    assert leftovers == []
+
+
+def test_bundled_molbio_resolves_its_include_chain() -> None:
+    preset = load_preset("molbio")
+    assert preset.preset == "molbio"
+    # "item" comes from base via ``include:``, "plasmid" is molbio's own.
+    assert {"item", "plasmid"} <= set(preset.kinds)
+    assert preset.include == []
 
 
 @pytest.mark.parametrize("name", BUNDLED)

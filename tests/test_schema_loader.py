@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ DATA = Path(__file__).parent / "data"
 PRESETS = DATA / "presets"
 LEDGERS = DATA / "ledgers"
 INVALID = PRESETS / "invalid"
+BUNDLED_PRESETS_DIR = Path(str(files("tetramark.presets")))
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,12 @@ def test_load_preset_resolves_include_chain() -> None:
 def test_load_preset_single_yaml_file_with_search_paths() -> None:
     preset = load_preset(PRESETS / "full" / "preset.yaml", search_paths=[PRESETS])
     assert "item" in preset.kinds and "everything" in preset.kinds
+
+
+def test_load_preset_self_contained_bundled_yaml_file() -> None:
+    preset = load_preset(BUNDLED_PRESETS_DIR / "base.yaml")
+    assert preset.preset == "base"
+    assert "item" in preset.kinds
 
 
 def test_load_schema_resolves_mixins_and_cross_refs() -> None:
@@ -238,7 +246,9 @@ def test_load_ledger_config_directly() -> None:
 
 
 def test_list_bundled_presets_returns_a_list() -> None:
-    assert isinstance(list_bundled_presets(), list)
+    presets = list_bundled_presets()
+    assert isinstance(presets, list)
+    assert presets == ["base", "library", "molbio"]
 
 
 # ---------------------------------------------------------------------------

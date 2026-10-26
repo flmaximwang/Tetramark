@@ -2,13 +2,13 @@
 
 Three presets ship with the package. `base` is the common floor; `molbio` and `library` both
 `include: [base]`. `tm init --preset NAME` may be repeated (e.g. `-p base -p library`) and also
-accepts a path to a local preset directory.
+accepts a path to a local preset directory or a preset YAML file.
 
 ```
 src/tetramark/presets/
-  base/preset.yaml
-  molbio/preset.yaml       include: [base]
-  library/preset.yaml      include: [base]
+  base.yaml
+  molbio.yaml       include: [base]
+  library.yaml      include: [base]
 ```
 
 ## `base` — domain-neutral inventory and box geometry

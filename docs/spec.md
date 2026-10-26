@@ -61,12 +61,13 @@ rules_dir: rules/                # optional custom validation rules (YAML)
 
 ## 2. Schema language (YAML)
 
-A **preset** is a directory (or single YAML file) containing kinds, mixins, and rules. Presets can
+A **preset** is a single YAML file (`presets/<name>.yaml`) containing kinds, mixins, and rules; a
+local preset may instead be a directory, optionally with `kinds/` and `rules/` files. Presets can
 `include` other presets. A ledger's effective schema = union of its presets + local kinds; name
 collisions are an error.
 
 ```yaml
-# presets/molbio/preset.yaml
+# presets/molbio.yaml
 preset: molbio
 version: 1
 include: [base]
@@ -398,7 +399,7 @@ src/tetramark/
   core/                   # ids.py, ledger.py (open/init), objects.py (entity/stock/aliquot/box ops), events.py
   ops/                    # find.py, render.py (grid), io_csv.py, remote.py
   cli/                    # app.py (Typer root) + one module per command group
-  presets/                # base/, molbio/, library/ (package data)
+  presets/                # base.yaml, molbio.yaml, library.yaml (package data)
 skills/tetramark/SKILL.md (+ references/)
 skills/tetramark-schema/SKILL.md (+ references/)
 docs/spec.md, docs/migration.md, docs/tickets/

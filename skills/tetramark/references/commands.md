@@ -45,7 +45,8 @@ tm presets show NAME
 ```
 
 `init` creates the Dolt database, writes `ledger.yaml` and the meta row, generates DDL/views/tests and
-commits once. `--preset` is repeatable; a value can also be a path to a local preset directory.
+commits once. `--preset` is repeatable; a value can also be a path to a local preset directory or a
+preset YAML file.
 `--id-prefix` feeds the default date-code stock strategy (`1226FP01` for prefix `12`, 2026-06-16).
 `--status` replaces the default vocabulary `pending, stored, missing, consumed`.
 

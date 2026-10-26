@@ -2,7 +2,7 @@
 
 Responsibilities (spec §1.1, §2):
 
-* read bundled presets (``tetramark/presets/<name>/``) or presets from a path;
+* read bundled presets (``tetramark/presets/<name>.yaml``) or presets from a path;
 * resolve ``include`` chains (missing preset or cycle → error; a preset included
   twice through a diamond is merged once);
 * merge local ``kinds_dir`` / ``rules_dir`` files and the ledger's ``ledger.yaml``;
@@ -12,7 +12,7 @@ Responsibilities (spec §1.1, §2):
   :meth:`~tetramark.schema.model.EffectiveSchema.fingerprint`.
 
 Every error is a :class:`~tetramark.schema.model.SchemaError` carrying the YAML
-file and dotted path, e.g. ``molbio/preset.yaml: kinds.plasmid.fields.construct.to``.
+file and dotted path, e.g. ``molbio.yaml: kinds.plasmid.fields.construct.to``.
 
 Public entry points
 -------------------
@@ -148,7 +148,7 @@ def _bundled_source(raw: str) -> _Source | None:
         item = _join(root, name)
         if _is_dir(item) or _is_file(item):
             is_file = _is_file(item)
-            display = name if is_file else name
+            display = name
             return _Source(
                 key=f"bundled:{name}",
                 root=item,
@@ -778,10 +778,11 @@ def load_ledger_schema(
 
 
 def list_bundled_presets() -> list[str]:
-    """Names of bundled presets (directories containing ``preset.yaml``)."""
+    """Names of bundled presets (top-level ``*.yaml``/``*.yml`` files)."""
     root = _bundled_root()
-    names: list[str] = []
-    for item in root.iterdir():
-        if _is_dir(item) and _is_file(_join(item, "preset.yaml")):
-            names.append(item.name)
+    names = [
+        Path(item.name).stem
+        for item in root.iterdir()
+        if _is_file(item) and item.name.endswith(YAML_SUFFIXES)
+    ]
     return sorted(names)

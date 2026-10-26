@@ -153,7 +153,7 @@ class SchemaError(LedgerError):
     Carries the YAML document (``file``) and the dotted path inside it
     (``path``) so the message looks like::
 
-        molbio/preset.yaml: kinds.plasmid.fields.construct.to: unknown kind 'x'
+        molbio.yaml: kinds.plasmid.fields.construct.to: unknown kind 'x'
     """
 
     def __init__(self, message: str, *, file: str | None = None, path: str | None = None):

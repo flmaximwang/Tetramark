@@ -10,7 +10,8 @@ generates the DDL, views, foreign keys and `dolt_tests`. Never add or edit those
 
 ## Where schemas live
 
-- **Presets** shipped with the package: `src/tetramark/presets/<name>/preset.yaml`, plus optional
+- **Presets** shipped with the package: one file per preset, `src/tetramark/presets/<name>.yaml`.
+  A preset given by path may also be a directory containing `preset.yaml`, with optional
   `kinds/*.yaml` and `rules/*.yaml` next to it. `preset:` is the name, `version:` an integer,
   `include:` a list of preset names or paths.
 - **Ledger-local** additions: `ledger.yaml` points at `kinds_dir:` and `rules_dir:`; each `.yaml` in
@@ -25,7 +26,7 @@ parent-first (included documents first), then local files.
 ## Skeleton
 
 ```yaml
-# presets/example/preset.yaml
+# presets/example.yaml
 preset: example
 version: 1
 include: [base]

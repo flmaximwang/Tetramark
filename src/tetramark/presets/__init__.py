@@ -1,5 +1,5 @@
 """Bundled schema presets (``base``, ``molbio``, ``library``).
 
-Each preset lives in its own subdirectory of this package as YAML files and is
+Each preset is a flat ``<name>.yaml`` file directly in this package and is
 shipped as package data.
 """
