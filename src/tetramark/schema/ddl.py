@@ -643,9 +643,55 @@ def _kind_foreign_keys(
 # ---------------------------------------------------------------------------
 
 
+def _alias_list_sql(id_expr: str, object_type: str) -> str:
+    """Correlated scalar subquery aggregating one object's aliases.
+
+    The alias rows live only in the ``alias`` table, so every generated view
+    that represents an object exposes them through this subquery rather than a
+    join (a join would multiply the object's rows).  ``GROUP_CONCAT`` with an
+    explicit ``ORDER BY`` and ``';'`` separator keeps the value deterministic;
+    the subquery is NULL when the object has no aliases.
+
+    The column is called ``alias_list`` and never ``aliases``: kinds may
+    already have a domain field named ``aliases`` (the bundled ``construct``
+    kind does, meaning alternative construct names), and two view columns with
+    the same name are invalid DDL.
+    """
+    return (
+        f"(SELECT GROUP_CONCAT({_ident('alias')} ORDER BY {_ident('alias')} "
+        f"SEPARATOR ';') FROM {_ident('alias')} "
+        f"WHERE {_ident('object_type')} = {literal(object_type)} "
+        f"AND {_ident('object_id')} = {id_expr})"
+    )
+
+
+def _occupant_alias_list_sql() -> str:
+    """The ``occupant_alias_list`` select item of ``v_box_slots``.
+
+    The occupant is an aliquot (its own aliases are the tube labels a renumber
+    turns old aliquot ids into) or a nested box; an empty slot has no aliases.
+    """
+    aliquot_id = f"a.{_ident('id')}"
+    child_id = f"c.{_ident('id')}"
+    aliquot_aliases = _alias_list_sql(aliquot_id, "aliquot")
+    child_aliases = _alias_list_sql(child_id, "box")
+    return (
+        "  CASE\n"
+        f"    WHEN {aliquot_id} IS NOT NULL THEN {aliquot_aliases}\n"
+        f"    WHEN {child_id} IS NOT NULL THEN {child_aliases}\n"
+        "    ELSE NULL\n"
+        f"  END AS {_ident('occupant_alias_list')}"
+    )
+
+
 def view_statements(schema: EffectiveSchema) -> list[Statement]:
     """``v_box_slots``, ``v_aliquot_location``, ``v_stock_status`` and one
-    ``v_<object>_<kind>`` per kind."""
+    ``v_<object>_<kind>`` per kind.
+
+    Every view aggregates its object's ``alias`` rows into a final
+    ``alias_list`` column (``occupant_alias_list`` for ``v_box_slots``).  The
+    name avoids the domain field ``aliases`` a kind may define.
+    """
     statements = [
         _view_box_slots(),
         _view_aliquot_location(),
@@ -681,7 +727,8 @@ def _view_box_slots() -> Statement:
         f"  e.{_ident('kind')} AS {_ident('entity_kind')},\n"
         f"  a.{_ident('status')} AS {_ident('status')},\n"
         f"  c.{_ident('id')} AS {_ident('child_box_id')},\n"
-        f"  c.{_ident('name')} AS {_ident('child_box_name')}\n"
+        f"  c.{_ident('name')} AS {_ident('child_box_name')},\n"
+        f"{_occupant_alias_list_sql()}\n"
         f"FROM {_ident('slot')} s\n"
         f"JOIN {_ident('box')} b ON b.{_ident('id')} = s.{_ident('box_id')}\n"
         f"LEFT JOIN {_ident('aliquot')} a "
@@ -702,7 +749,10 @@ def _view_aliquot_location() -> Statement:
     Dolt 2.3.5 supports a recursive CTE inside a view (verified by the tests),
     so no fixed-depth join fallback is needed.  ``CAST`` pins the path column
     type for ``UNION ALL``; 1024 characters is generous for six nesting levels.
+    ``alias_list`` carries the aliquot's aliases (old tube ids after a renumber
+    are aliases of the aliquot).
     """
+    aliquot_aliases = _alias_list_sql(f"a.{_ident('id')}", "aliquot")
     sql = (
         f"CREATE VIEW {_ident('v_aliquot_location')} AS\n"
         f"WITH RECURSIVE {_ident('box_path')} AS (\n"
@@ -738,7 +788,8 @@ def _view_aliquot_location() -> Statement:
         f"  p.{_ident('box_path')} AS {_ident('box_path')},\n"
         f"  CASE WHEN p.{_ident('box_path')} IS NULL THEN NULL\n"
         f"       ELSE CONCAT(p.{_ident('box_path')}, ':', a.{_ident('slot')})\n"
-        f"  END AS {_ident('location')}\n"
+        f"  END AS {_ident('location')},\n"
+        f"  {aliquot_aliases} AS {_ident('alias_list')}\n"
         f"FROM {_ident('aliquot')} a\n"
         f"LEFT JOIN {_ident('box_path')} p ON p.{_ident('id')} = a.{_ident('box_id')}"
     )
@@ -751,6 +802,8 @@ def _view_stock_status() -> Statement:
     One row per stock.  ``total_quantity`` sums the aliquot quantities and
     ``unit`` is that unit when every aliquotted quantity shares one; a stock
     whose aliquots mix units therefore has a sum but a NULL unit.
+    ``alias_list`` carries the stock's aliases (e.g. the legacy id a
+    ``tm stock renumber`` replaced).
     """
     def count_where(condition: str) -> str:
         return f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)"
@@ -764,6 +817,7 @@ def _view_stock_status() -> Statement:
     not_missing_consumed = count_where(
         f"a.{_ident('status')} NOT IN ({literal('missing')}, {literal('consumed')})"
     )
+    stock_aliases = _alias_list_sql(f"s.{_ident('id')}", "stock")
     sql = (
         f"CREATE VIEW {_ident('v_stock_status')} AS\n"
         "SELECT\n"
@@ -786,7 +840,8 @@ def _view_stock_status() -> Statement:
         f"  {consumed} AS {_ident('consumed_count')},\n"
         f"  SUM(a.{_ident('quantity')}) AS {_ident('total_quantity')},\n"
         f"  CASE WHEN COUNT(DISTINCT a.{_ident('unit')}) = 1 "
-        f"THEN MAX(a.{_ident('unit')}) ELSE NULL END AS {_ident('unit')}\n"
+        f"THEN MAX(a.{_ident('unit')}) ELSE NULL END AS {_ident('unit')},\n"
+        f"  {stock_aliases} AS {_ident('alias_list')}\n"
         f"FROM {_ident('stock')} s\n"
         f"LEFT JOIN {_ident('aliquot')} a ON a.{_ident('stock_id')} = s.{_ident('id')}\n"
         f"GROUP BY s.{_ident('id')}, s.{_ident('kind')}, s.{_ident('entity_id')}"
@@ -801,10 +856,23 @@ def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
     it exists on ``entity`` and in the ``named_fields`` mixin), the kind's
     column is projected and the core one is omitted — the kind table is the
     domain-specific definition.
+
+    The final ``alias_list`` column aggregates the object's alias rows.  It is
+    deliberately not called ``aliases``: a kind field may already be named
+    ``aliases`` (the bundled ``construct`` kind is), and a view cannot expose
+    two columns with one name.
     """
     table = table_name(core, kind_name)
     core_columns = CORE_COLUMNS[core]
     kind_fields = list(kind.fields)
+    if "alias_list" in kind_fields:
+        # ``alias_list`` is a generated view column (spec §3).  Reserved here
+        # rather than in the loader so every entry point that generates DDL
+        # rejects the collision the same way.
+        raise SchemaError(
+            f"kind {kind_name!r} defines a field named 'alias_list', which "
+            "collides with the generated view column of the same name"
+        )
     overridden = {name for name in kind_fields if name in core_columns}
 
     select: list[str] = []
@@ -814,6 +882,8 @@ def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
         select.append(f"  c.{_ident(column)} AS {_ident(column)}")
     for column in kind_fields:
         select.append(f"  k.{_ident(column)} AS {_ident(column)}")
+    core_id = f"c.{_ident('id')}"
+    select.append(f"  {_alias_list_sql(core_id, core)} AS {_ident('alias_list')}")
 
     sql = (
         f"CREATE VIEW {_ident(f'v_{core}_{kind_name}')} AS\n"

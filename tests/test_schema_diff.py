@@ -18,10 +18,13 @@ from typing import Any
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from tetramark import __version__
+from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies
 from tetramark.errors import EXIT_ERROR, LedgerError
+from tetramark.schema.ddl import view_statements
 from tetramark.schema.diff import (
     ADDITIVE,
     DESTRUCTIVE,
@@ -246,6 +249,105 @@ def test_plan_is_stale_when_tetramark_version_is_missing(ledger: Ledger) -> None
     assert current.is_empty
     assert current.meta_stale
     assert current.to_dict()["fingerprint"]["stale"] is True
+
+
+# ---------------------------------------------------------------------------
+# Format upgrade: spec v1 views -> v2 (alias columns)
+# ---------------------------------------------------------------------------
+
+
+def v1_view_sql(statement_sql: str) -> str:
+    """The v1 definition of a generated view: v2 minus its last alias column.
+
+    The alias column is the final select item of every generated view (spec
+    §3), so dropping it reproduces the v1 shape without keeping a second copy
+    of the view DDL in the test.
+    """
+    select, separator, tail = statement_sql.rpartition("\nFROM ")
+    assert separator, statement_sql
+    last_item = select.rstrip()
+    expected = ("`alias_list`", "`occupant_alias_list`")
+    assert last_item.endswith(expected), last_item[-80:]
+    comma = last_item.rfind(",\n")
+    assert comma > 0
+    return last_item[:comma] + separator + tail
+
+
+def downgrade_views_to_v1(ledger: Ledger) -> list[str]:
+    """Rewrite every generated view in the pre-TM-07 (spec v1) shape."""
+    names: list[str] = []
+    for statement in view_statements(ledger.schema):
+        ledger.driver.execute(f"DROP VIEW `{statement.name}`")
+        ledger.driver.execute(v1_view_sql(statement.sql))
+        names.append(statement.name)
+    return names
+
+
+def test_upgrade_from_spec_v1_adds_alias_columns_and_refreshes_meta(
+    ledger: Ledger,
+) -> None:
+    """An existing v1 ledger upgrades additively; no destructive step, exit 0."""
+    names = downgrade_views_to_v1(ledger)
+    assert "alias_list" not in column_names(ledger, "v_entity_sample")
+    assert "occupant_alias_list" not in column_names(ledger, "v_box_slots")
+
+    # A v1 ledger records format version 1 and a fingerprint that no longer
+    # matches the tool's schema.
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '1' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '0.0.9' "
+        "WHERE `key` = 'tetramark_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = 'v1-fingerprint' "
+        "WHERE `key` = 'fingerprint'"
+    )
+    ledger.read_meta()
+
+    current = plan(ledger)
+    assert current.destructive == []
+    assert current.meta_stale
+    assert current.pending
+    actions_seen = {(step.action, step.name) for step in current.additive}
+    for name in names:
+        assert ("drop_view", name) in actions_seen
+        assert ("create_view", name) in actions_seen
+
+    # ``tm schema plan`` exits 0 and announces the additive view replacement
+    # plus the meta refresh.
+    runner = CliRunner()
+    base = [
+        "--workspace",
+        str(ledger.workspace.data_dir),
+        "--ledger",
+        ledger.name,
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        planned = runner.invoke(app, [*base, "schema", "plan"])
+        applied = runner.invoke(app, [*base, "schema", "apply"])
+    assert planned.exit_code == 0, planned.output
+    assert "drop_view v_entity_sample" in planned.output
+    assert "0 destructive" in planned.output
+    assert "meta refresh" in planned.output
+
+    assert applied.exit_code == 0, applied.output
+    assert "Applied" in applied.output
+
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "2"
+    assert ledger.meta["tetramark_version"] == __version__
+    for name, column in (
+        ("v_entity_sample", "alias_list"),
+        ("v_stock_bacterial", "alias_list"),
+        ("v_stock_status", "alias_list"),
+        ("v_aliquot_location", "alias_list"),
+        ("v_box_slots", "occupant_alias_list"),
+    ):
+        assert column in column_names(ledger, name), name
+    assert_clean(ledger)
 
 
 def test_apply_refreshes_tetramark_version_but_keeps_created_with(

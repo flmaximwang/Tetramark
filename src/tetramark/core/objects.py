@@ -463,6 +463,24 @@ def _fetch_kind_row(
     return dict(rows[0]) if rows else {}
 
 
+def _object_aliases(
+    session: Any, object_type: str, object_id: str
+) -> list[str]:
+    """Every alias of one object, sorted (the shape ``show`` reports).
+
+    The alias table is the only home of aliases; ``show``/``box show`` use this
+    helper so the CLI never hand-rolls the query (spec §6).  An object without
+    aliases returns an empty list.
+    """
+    rows = session.query(
+        f"SELECT {_quote('alias')} FROM {_quote('alias')} "
+        f"WHERE {_quote('object_type')} = %s AND {_quote('object_id')} = %s "
+        f"ORDER BY {_quote('alias')}",
+        (object_type, object_id),
+    )
+    return [str(row["alias"]) for row in rows]
+
+
 def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
     """Find a core row by ID, then by alias (ID wins, as ``find`` does)."""
     row = _fetch_core(session, object_type, ref)
@@ -925,9 +943,16 @@ def edit_entity(
 
 
 def show_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """One entity (core + kind fields), accepting an ID or an alias."""
+    """One entity (core + kind fields), accepting an ID or an alias.
+
+    ``aliases`` is the object's sorted alias list (spec §6); the generated
+    views expose the same data as ``alias_list``.
+    """
     row = _resolve_core(ledger.driver, "entity", ref)
-    return _load_record(ledger.driver, ledger, "entity", str(row["id"]))
+    object_id = str(row["id"])
+    record = _load_record(ledger.driver, ledger, "entity", object_id)
+    record["aliases"] = _object_aliases(ledger.driver, "entity", object_id)
+    return record
 
 
 def list_entities(
@@ -1197,8 +1222,11 @@ def edit_stock(
 
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """One stock, its sorted aliases (``aliases``) and its aliquots."""
     row = _resolve_core(ledger.driver, "stock", ref)
-    record = _load_record(ledger.driver, ledger, "stock", str(row["id"]))
+    object_id = str(row["id"])
+    record = _load_record(ledger.driver, ledger, "stock", object_id)
+    record["aliases"] = _object_aliases(ledger.driver, "stock", object_id)
     record["aliquots"] = ledger.driver.query(
         "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
         "FROM `aliquot` WHERE `stock_id` = %s ORDER BY `seq`",

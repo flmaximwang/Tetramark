@@ -36,6 +36,7 @@ from tetramark.schema.model import (
     Kind,
     LedgerConfig,
     ObjectType,
+    SchemaError,
 )
 
 DATA = Path(__file__).parent / "data"
@@ -113,6 +114,38 @@ def test_statement_helpers_return_composable_lists() -> None:
     assert [s.name for s in core[: len(CORE_TABLES)]] == list(CORE_TABLES)
     assert all(name in {s.name for s in views} for name in CORE_VIEWS)
     assert to_sql([]) == ""
+
+
+def test_every_generated_view_exposes_aliases() -> None:
+    """spec v2: each view ends with its object's aggregated aliases."""
+    statements = {s.name: s.sql for s in view_statements(full_schema())}
+    for name, sql in statements.items():
+        expected = (
+            "`occupant_alias_list`" if name == "v_box_slots" else "`alias_list`"
+        )
+        assert f"AS {expected}" in sql, name
+
+
+def test_alias_list_avoids_the_construct_aliases_field() -> None:
+    """``alias_list`` is a view column; the domain field ``aliases`` stays one.
+
+    The bundled ``construct`` kind has a field called ``aliases``; naming the
+    generated column ``aliases`` would produce duplicate view columns.
+    """
+    schema = load_schema(LedgerConfig(name="molbio", presets=["molbio"]))
+    construct = next(
+        s.sql for s in view_statements(schema) if s.name == "v_entity_construct"
+    )
+    assert "`aliases`" in construct
+    assert "AS `alias_list`" in construct
+
+
+def test_kind_field_named_alias_list_is_rejected() -> None:
+    """A kind cannot declare the generated column's own name."""
+    schema = full_schema()
+    schema.kinds["everything"].fields["alias_list"] = Field(type=FieldType.string)
+    with pytest.raises(SchemaError, match="alias_list"):
+        view_statements(schema)
 
 
 def test_slot_rows_for_every_geometry() -> None:
@@ -623,6 +656,122 @@ def test_views_report_location_status_and_slots(
     assert item == {"id": "ENT-1", "kind": "item", "name": "Item"}
 
 
+def test_views_expose_aggregated_alias_lists(
+    full_ledger: Path, dolt_run: Any
+) -> None:
+    """Every object view shows its aliases, sorted, ``;``-joined; NULL if none."""
+    _insert_entity(dolt_run, full_ledger, "ENT-1", "Item")
+    _insert_entity(dolt_run, full_ledger, "ENT-2", "Other")
+    _seed_boxes(dolt_run, full_ledger)
+    _insert_stock(dolt_run, full_ledger, "STK-1", "ENT-1")
+    _insert_stock(dolt_run, full_ledger, "STK-2", "ENT-2")
+    execute(
+        dolt_run,
+        full_ledger,
+        "INSERT INTO aliquot (id, stock_id, seq, box_id, slot, status) "
+        "VALUES ('STK-1.1', 'STK-1', 1, 'B-BOX', 'A1', 'stored');"
+        "INSERT INTO aliquot (id, stock_id, seq, status) "
+        "VALUES ('STK-2.1', 'STK-2', 1, 'pending');"
+        # Insert aliases out of order: the views must sort them.
+        "INSERT INTO alias (object_type, object_id, alias) VALUES "
+        "('entity', 'ENT-1', 'E-b'), ('entity', 'ENT-1', 'E-a'),"
+        "('stock', 'STK-1', 'S-2'), ('stock', 'STK-1', 'S-1'),"
+        "('aliquot', 'STK-1.1', 'tube-2'), ('aliquot', 'STK-1.1', 'tube-1'),"
+        "('box', 'B-BOX', 'box-b'), ('box', 'B-BOX', 'box-a');",
+    )
+
+    entity = query(
+        dolt_run,
+        full_ledger,
+        "SELECT alias_list FROM v_entity_item WHERE id = 'ENT-1'",
+    )[0]
+    assert entity["alias_list"] == "E-a;E-b"
+
+    # A stock's aliases are on its kind view and on the derived-status view.
+    stock_view = query(
+        dolt_run,
+        full_ledger,
+        "SELECT alias_list FROM v_stock_bacterial WHERE id = 'STK-1'",
+    )[0]
+    assert stock_view["alias_list"] == "S-1;S-2"
+    status = query(
+        dolt_run,
+        full_ledger,
+        "SELECT stock_id, alias_list FROM v_stock_status ORDER BY stock_id",
+    )
+    assert status[0]["alias_list"] == "S-1;S-2"
+    # Dolt JSON omits NULL keys, so ask about the alias-less stock explicitly.
+    missing = query(
+        dolt_run,
+        full_ledger,
+        "SELECT alias_list IS NULL AS no_alias FROM v_stock_status "
+        "WHERE stock_id = 'STK-2'",
+    )[0]
+    assert missing["no_alias"] in (1, True)
+    missing_entity = query(
+        dolt_run,
+        full_ledger,
+        "SELECT alias_list IS NULL AS no_alias FROM v_entity_item "
+        "WHERE id = 'ENT-2'",
+    )[0]
+    assert missing_entity["no_alias"] in (1, True)
+
+    # Aliquot aliases are the old tube labels after a renumber.
+    location = query(
+        dolt_run,
+        full_ledger,
+        "SELECT alias_list FROM v_aliquot_location WHERE aliquot_id = 'STK-1.1'",
+    )[0]
+    assert location["alias_list"] == "tube-1;tube-2"
+
+    slots = {
+        row["slot"]: row
+        for row in query(
+            dolt_run,
+            full_ledger,
+            "SELECT slot, occupant_type, occupant_alias_list "
+            "FROM v_box_slots WHERE box_id = 'B-BOX' AND slot IN ('A1', 'A2')",
+        )
+    }
+    assert slots["A1"]["occupant_alias_list"] == "tube-1;tube-2"
+    # An empty slot has no occupant at all (NULL keys are omitted by Dolt JSON).
+    assert "occupant_type" not in slots["A2"]
+    assert "occupant_alias_list" not in slots["A2"]
+    # The child box carries its own aliases in the parent's slot.
+    child = query(
+        dolt_run,
+        full_ledger,
+        "SELECT occupant_type, occupant_alias_list FROM v_box_slots "
+        "WHERE box_id = 'B-SHELF' AND slot = 'top'",
+    )[0]
+    assert child["occupant_type"] == "box"
+    assert child["occupant_alias_list"] == "box-a;box-b"
+    empty = query(
+        dolt_run,
+        full_ledger,
+        "SELECT occupant_alias_list IS NULL AS no_alias FROM v_box_slots "
+        "WHERE box_id = 'B-BOX' AND slot = 'A2'",
+    )[0]
+    assert empty["no_alias"] in (1, True)
+
+    columns = {
+        row["view_name"]: row["alias_column"]
+        for row in query(
+            dolt_run,
+            full_ledger,
+            "SELECT table_name AS view_name, column_name AS alias_column "
+            "FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name LIKE 'v\\_%' "
+            "AND column_name LIKE '%alias%'",
+        )
+    }
+    assert columns["v_entity_item"] == "alias_list"
+    assert columns["v_stock_bacterial"] == "alias_list"
+    assert columns["v_stock_status"] == "alias_list"
+    assert columns["v_aliquot_location"] == "alias_list"
+    assert columns["v_box_slots"] == "occupant_alias_list"
+
+
 def test_view_kind_projects_kind_fields_and_hides_shadowed_core_name(
     full_ledger: Path, dolt_run: Any
 ) -> None:
@@ -653,6 +802,35 @@ def test_view_kind_projects_kind_fields_and_hides_shadowed_core_name(
     # sha256 columns are an internal detail, not a view column.
     assert "seq_sha256" not in columns
     assert "name" in columns
+
+
+def test_construct_view_keeps_aliases_field_and_alias_list_apart(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """A kind's own ``aliases`` field and the generated ``alias_list`` coexist.
+
+    The bundled ``construct`` kind has a domain field ``aliases`` (alternative
+    construct names); the aggregated alias-table column is called
+    ``alias_list`` so both can be projected by one view.
+    """
+    schema = load_schema(LedgerConfig(name="molbio", presets=["molbio"]))
+    install(dolt_run, dolt_repo, schema_statements(schema))
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO entity (id, kind, name) VALUES ('C-1', 'construct', 'c1');"
+        "INSERT INTO entity_construct (id, name, aliases) "
+        "VALUES ('C-1', 'c1', 'old-name');"
+        "INSERT INTO alias (object_type, object_id, alias) "
+        "VALUES ('entity', 'C-1', 'C-OLD');",
+    )
+    row = query(
+        dolt_run,
+        dolt_repo,
+        "SELECT aliases, alias_list FROM v_entity_construct WHERE id = 'C-1'",
+    )[0]
+    assert row["aliases"] == "old-name"
+    assert row["alias_list"] == "C-OLD"
 
 
 # ---------------------------------------------------------------------------

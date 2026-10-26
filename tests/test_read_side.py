@@ -173,7 +173,7 @@ def test_box_show_grid_json_shape_and_snapshot(ledger_factory) -> None:
     third_aliquot = second_stock["aliquots"][0]
 
     view = ledger.boxes.show("GRID")
-    assert set(view) == {"box", "kind", "geometry", "path", "slots"}
+    assert set(view) == {"box", "kind", "geometry", "path", "aliases", "slots"}
     assert view["box"] == "GRID"
     assert view["kind"] == "grid9x9"
     assert view["path"] == "GRID"
@@ -267,7 +267,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
         ledger, item["id"], box="RACK", slots=("1",), quantity="3"
     )
     rack = ledger.boxes.show("RACK")
-    assert set(rack) == {"box", "kind", "geometry", "path", "slots"}
+    assert set(rack) == {"box", "kind", "geometry", "path", "aliases", "slots"}
     assert rack["geometry"]["type"] == "named"
     assert rack["geometry"]["slots"] == [str(number) for number in range(1, 11)]
     assert next(slot for slot in rack["slots"] if slot["label"] == "1")[
@@ -283,7 +283,15 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
         ledger, item["id"], box="SHELF", quantity="7"
     )
     shelf = ledger.boxes.show("SHELF")
-    assert set(shelf) == {"box", "kind", "geometry", "path", "slots", "occupants"}
+    assert set(shelf) == {
+        "box",
+        "kind",
+        "geometry",
+        "path",
+        "aliases",
+        "slots",
+        "occupants",
+    }
     assert shelf["geometry"] == {"type": "slotless", "capacity": 12}
     assert shelf["slots"] == []
     occupants = {occupant["type"]: occupant for occupant in shelf["occupants"]}
@@ -301,6 +309,23 @@ def test_box_show_resolves_name_id_and_alias(ledger_factory) -> None:
     assert ledger.boxes.show("NAMED")["box"] == "NAMED"
     assert ledger.boxes.show(created["id"])["box"] == "NAMED"
     assert ledger.boxes.show("NAMED-ALIAS")["box"] == "NAMED"
+
+
+def test_box_show_exposes_sorted_aliases(ledger_factory) -> None:
+    ledger = ledger_factory([BUNDLED_BASE], name="render-aliases")
+    created = ledger.boxes.add("grid96", "ALIASED")
+    ledger.aliases.add("box", created["id"], "legacy-box")
+    ledger.aliases.add("box", created["id"], "AAA-box")
+
+    view = ledger.boxes.show("ALIASED")
+    assert view["aliases"] == ["AAA-box", "legacy-box"]
+    text = render_box_text(view)
+    assert "aliases: AAA-box, legacy-box" in text
+
+    ledger.boxes.add("grid96", "PLAIN")
+    plain = ledger.boxes.show("PLAIN")
+    assert plain["aliases"] == []
+    assert "aliases:" not in render_box_text(plain)
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +452,15 @@ def test_cli_box_show_json_and_csv(cli_env: None, ledger_factory) -> None:
     result = invoke(ledger, "box", "show", "CBOX", "--json")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert set(payload) == {"box", "kind", "geometry", "path", "slots"}
+    assert set(payload) == {
+        "box",
+        "kind",
+        "geometry",
+        "path",
+        "aliases",
+        "slots",
+    }
+    assert payload["aliases"] == []
     assert payload["box"] == "CBOX"
     assert next(slot for slot in payload["slots"] if slot["label"] == "B2")[
         "occupants"

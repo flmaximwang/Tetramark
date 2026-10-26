@@ -294,7 +294,12 @@ SELECT
   e.`kind` AS `entity_kind`,
   a.`status` AS `status`,
   c.`id` AS `child_box_id`,
-  c.`name` AS `child_box_name`
+  c.`name` AS `child_box_name`,
+  CASE
+    WHEN a.`id` IS NOT NULL THEN (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'aliquot' AND `object_id` = a.`id`)
+    WHEN c.`id` IS NOT NULL THEN (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`)
+    ELSE NULL
+  END AS `occupant_alias_list`
 FROM `slot` s
 JOIN `box` b ON b.`id` = s.`box_id`
 LEFT JOIN `aliquot` a ON a.`box_id` = s.`box_id` AND a.`slot` = s.`label`
@@ -335,7 +340,8 @@ SELECT
   p.`box_path` AS `box_path`,
   CASE WHEN p.`box_path` IS NULL THEN NULL
        ELSE CONCAT(p.`box_path`, ':', a.`slot`)
-  END AS `location`
+  END AS `location`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'aliquot' AND `object_id` = a.`id`) AS `alias_list`
 FROM `aliquot` a
 LEFT JOIN `box_path` p ON p.`id` = a.`box_id`;
 
@@ -358,7 +364,8 @@ SELECT
   SUM(CASE WHEN a.`status` = 'missing' THEN 1 ELSE 0 END) AS `missing_count`,
   SUM(CASE WHEN a.`status` = 'consumed' THEN 1 ELSE 0 END) AS `consumed_count`,
   SUM(a.`quantity`) AS `total_quantity`,
-  CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `unit`
+  CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `unit`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = s.`id`) AS `alias_list`
 FROM `stock` s
 LEFT JOIN `aliquot` a ON a.`stock_id` = s.`id`
 GROUP BY s.`id`, s.`kind`, s.`entity_id`;
@@ -382,7 +389,8 @@ SELECT
   k.`seq` AS `seq`,
   k.`parent` AS `parent`,
   k.`display` AS `display`,
-  k.`legacy` AS `legacy`
+  k.`legacy` AS `legacy`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'entity' AND `object_id` = c.`id`) AS `alias_list`
 FROM `entity_everything` k
 JOIN `entity` c ON c.`id` = k.`id`;
 
@@ -394,7 +402,8 @@ SELECT
   c.`notes` AS `notes`,
   k.`name` AS `name`,
   k.`description` AS `description`,
-  k.`category` AS `category`
+  k.`category` AS `category`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'entity' AND `object_id` = c.`id`) AS `alias_list`
 FROM `entity_item` k
 JOIN `entity` c ON c.`id` = k.`id`;
 
@@ -408,7 +417,8 @@ SELECT
   k.`description` AS `description`,
   k.`sequence` AS `sequence`,
   k.`length_bp` AS `length_bp`,
-  k.`backbone` AS `backbone`
+  k.`backbone` AS `backbone`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'entity' AND `object_id` = c.`id`) AS `alias_list`
 FROM `entity_plasmid` k
 JOIN `entity` c ON c.`id` = k.`id`;
 
@@ -424,7 +434,8 @@ SELECT
   k.`measured_at` AS `measured_at`,
   k.`amount` AS `amount`,
   k.`strain` AS `strain`,
-  k.`medium` AS `medium`
+  k.`medium` AS `medium`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_bacterial` k
 JOIN `stock` c ON c.`id` = k.`id`;
 
@@ -438,7 +449,8 @@ SELECT
   c.`created_at` AS `created_at`,
   c.`notes` AS `notes`,
   k.`supplier` AS `supplier`,
-  k.`received_on` AS `received_on`
+  k.`received_on` AS `received_on`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_lot` k
 JOIN `stock` c ON c.`id` = k.`id`;
 
@@ -451,7 +463,8 @@ SELECT
   c.`source_aliquot_id` AS `source_aliquot_id`,
   c.`created_at` AS `created_at`,
   c.`notes` AS `notes`,
-  k.`batch` AS `batch`
+  k.`batch` AS `batch`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_prep` k
 JOIN `stock` c ON c.`id` = k.`id`;
 
@@ -463,7 +476,8 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_grid96` k
 JOIN `box` c ON c.`id` = k.`id`;
 
@@ -475,7 +489,8 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_grid9x9` k
 JOIN `box` c ON c.`id` = k.`id`;
 
@@ -487,7 +502,8 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_namedbox` k
 JOIN `box` c ON c.`id` = k.`id`;
 
@@ -499,7 +515,8 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_rack` k
 JOIN `box` c ON c.`id` = k.`id`;
 
@@ -511,7 +528,8 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_shelf` k
 JOIN `box` c ON c.`id` = k.`id`;
 
@@ -523,6 +541,7 @@ SELECT
   c.`parent_box_id` AS `parent_box_id`,
   c.`parent_slot` AS `parent_slot`,
   c.`created_at` AS `created_at`,
-  c.`notes` AS `notes`
+  c.`notes` AS `notes`,
+  (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`) AS `alias_list`
 FROM `box_slotlessbox` k
 JOIN `box` c ON c.`id` = k.`id`;
