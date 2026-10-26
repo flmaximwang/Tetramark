@@ -40,6 +40,7 @@ __all__ = [
     "backup",
     "current_branch",
     "default_backup_dir",
+    "default_backup_name",
     "list_backups",
     "list_remotes",
     "pull",
@@ -302,6 +303,15 @@ def default_backup_dir(ledger: Ledger) -> Path:
     return Path(ledger.workspace.data_dir) / "backups" / ledger.name
 
 
+#: Dolt backup names reject ``.``, which ledger names allow.
+_BACKUP_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def default_backup_name(ledger: Ledger) -> str:
+    """The ledger name with characters Dolt refuses in backup names as ``_``."""
+    return _BACKUP_NAME_UNSAFE_RE.sub("_", ledger.name)
+
+
 def list_backups(ledger: Ledger) -> list[Backup]:
     """Backups configured in the ledger, ordered by name."""
     rows = ledger.driver.query(
@@ -320,12 +330,12 @@ def backup(
     """Sync the ledger to a ``file://`` backup directory.
 
     A ledger has one backup destination per backup name (default: the ledger
-    name), so running the command again with another directory replaces that
+    name, with ``.`` replaced by ``_``), so running the command again with another directory replaces that
     destination before syncing.  The backup itself is a Dolt backup, not a
     filesystem copy: ``dolt backup restore`` can recreate the database.
     """
     url = as_url(default_backup_dir(ledger) if directory is None else directory)
-    backup_name = _check_name(name or ledger.name, what="backup")
+    backup_name = _check_name(name or default_backup_name(ledger), what="backup")
     existing = {item.name: item for item in list_backups(ledger)}
 
     statements: list[str] = []

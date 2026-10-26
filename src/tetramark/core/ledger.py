@@ -110,7 +110,7 @@ META_ORDER: tuple[str, ...] = (
     META_LEDGER_YAML,
 )
 
-_LEDGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_LEDGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _COMMIT_PART_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _AUTHOR_RE = re.compile(r"^\s*(?P<name>[^<>]*?)\s*<(?P<email>[^<>]+)>\s*$")
 
@@ -127,10 +127,23 @@ def _as_workspace(workspace: Workspace | str | Path) -> Workspace:
 
 
 def _check_name(name: str) -> str:
-    if not isinstance(name, str) or not _LEDGER_NAME_RE.match(name):
+    """Validate a ledger name.
+
+    A ledger name is one directory (and Dolt database) name: letters, digits,
+    ``_``, ``-`` and ``.``, starting with a letter or digit.  ``..`` anywhere,
+    a trailing ``.`` and ``/`` are rejected — they would make the name ambiguous
+    as a path component or as a Dolt revision (``db/branch``).
+    """
+    if (
+        not isinstance(name, str)
+        or not _LEDGER_NAME_RE.match(name)
+        or ".." in name
+        or name.endswith(".")
+    ):
         raise UsageError(
-            f"invalid ledger name {name!r}: use letters, digits, '_' or '-' "
-            "(starting with a letter or digit)"
+            f"invalid ledger name {name!r}: use letters, digits, '_', '-' or '.' "
+            "(starting with a letter or digit); '/' is not allowed, nor '..' "
+            "anywhere or a trailing '.'"
         )
     return name
 
