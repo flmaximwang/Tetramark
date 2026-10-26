@@ -372,8 +372,8 @@ def test_open_is_quiet_when_the_fingerprint_matches(ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_is_one_transaction_and_one_commit(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "full"])
+def test_write_is_one_transaction_and_one_commit(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "full"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box") as session:
@@ -389,8 +389,8 @@ def test_write_is_one_transaction_and_one_commit(ledger_factory) -> None:
     assert latest["author_email"] == "factory@tetramark.invalid"
 
 
-def test_write_rolls_back_when_the_body_raises(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_rolls_back_when_the_body_raises(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
     ledger.driver.execute("CREATE TABLE rollback_probe (id BIGINT)")
 
@@ -403,8 +403,8 @@ def test_write_rolls_back_when_the_body_raises(ledger_factory) -> None:
     assert commit_count(ledger) == before
 
 
-def test_write_dry_run_collects_sql_and_executes_nothing(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_dry_run_collects_sql_and_executes_nothing(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", dry_run=True) as session:
@@ -417,8 +417,8 @@ def test_write_dry_run_collects_sql_and_executes_nothing(ledger_factory) -> None
     assert commit_count(ledger) == before
 
 
-def test_write_no_commit_executes_but_does_not_commit(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_no_commit_executes_but_does_not_commit(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", no_commit=True) as session:
@@ -429,8 +429,8 @@ def test_write_no_commit_executes_but_does_not_commit(ledger_factory) -> None:
     assert session.commit_hash is None
 
 
-def test_open_carries_default_dry_run_and_no_commit(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"], name="flags")
+def test_open_carries_default_dry_run_and_no_commit(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"], name="flags")
     opened = open_ledger(ledger.workspace, "flags", dry_run=True)
     with opened.write("probe", verb="add", object="box") as session:
         session.execute("CREATE TABLE never_created (id BIGINT)")
@@ -444,30 +444,30 @@ def test_open_carries_default_dry_run_and_no_commit(ledger_factory) -> None:
     assert session.dry_run is False
 
 
-def test_write_requires_a_context_manager(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_requires_a_context_manager(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     session = ledger.write("probe", verb="add", object="box")
     assert isinstance(session, WriteSession)
     with pytest.raises(LedgerError, match="inside 'with"):
         session.execute("SELECT 1")
 
 
-def test_write_refuses_non_ascii_commit_messages(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_refuses_non_ascii_commit_messages(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     with pytest.raises(LedgerError, match="ASCII"):
         ledger.write("加了一支管", verb="add", object="aliquot")
 
 
-def test_write_refuses_a_malformed_verb_or_object(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"])
+def test_write_refuses_a_malformed_verb_or_object(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"])
     with pytest.raises(UsageError):
         ledger.write("x", verb="Add It", object="box")
     with pytest.raises(UsageError):
         ledger.write("x", verb="add", object="Box!")
 
 
-def test_next_id_uses_the_configured_strategies(ledger_factory) -> None:
-    ledger = ledger_factory([PRESETS / "base"], id_prefix="08")
+def test_next_id_uses_the_configured_strategies(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([PRESETS / "base"], id_prefix="08")
     entity_id = ledger.next_id("entity")
     assert isinstance(entity_id, str) and len(entity_id) == 36
     stock_id = ledger.next_id("stock")
@@ -604,12 +604,12 @@ def test_cli_presets_list_and_show(cli_isolated: None) -> None:
     assert [rule["id"] for rule in payload["rules"]] == ["CH01", "CH02"]
 
 
-def test_cli_schema_show(cli_isolated: None, ledger_factory) -> None:
+def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     from typer.testing import CliRunner
 
     from tetramark.cli.app import app
 
-    ledger = ledger_factory([PRESETS / "full"], name="shown")
+    ledger = server_ledger_factory([PRESETS / "full"], name="shown")
     runner = CliRunner()
     result = runner.invoke(
         app,

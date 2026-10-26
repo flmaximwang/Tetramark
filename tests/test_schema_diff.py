@@ -32,6 +32,13 @@ from tetramark.schema.loader import load_ledger_schema
 
 from conftest import PRESETS
 
+
+@pytest.fixture
+def ledger_factory(server_ledger_factory):
+    """Schema plan/apply needs only the ``Ledger``/``Driver`` interfaces."""
+    return server_ledger_factory
+
+
 #: Baseline preset used by most tests.  It has one entity kind with every
 #: interesting column shape, and one stock kind without aliquot fields.
 BASE_KINDS: dict[str, Any] = {

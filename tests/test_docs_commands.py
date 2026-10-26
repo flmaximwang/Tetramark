@@ -3,7 +3,7 @@
 Three flows are executed against a real temporary workspace:
 
 * the README quickstart, including starting and stopping a real ``dolt sql-server``;
-* the command reference (every command group) through the embedded driver;
+* the command reference (every command group) through a real workspace server;
 * the schema skill's local-kind / rules / destructive workflow;
 * the migration recipe's explicit old IDs and CSV round-trip.
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,30 @@ def init_workspace(port: int | None = None) -> None:
     if port is not None:
         args.extend(["--port", str(port)])
     run(*args)
+
+
+def start_server() -> None:
+    """Start the flow's real ``dolt sql-server`` (all commands then use ServerDriver)."""
+    run("server", "start", "-d")
+
+
+def restart_server() -> None:
+    """Restart the server after ``tm init`` added a ledger directory.
+
+    ``dolt sql-server`` discovers databases when it starts; ``tm init`` creates
+    a new ledger on disk through the embedded path (as documented), so the
+    server only serves it after a restart.
+    """
+    run("server", "stop")
+    run("server", "start", "-d")
+
+
+@pytest.fixture
+def docs_server(docs_env: Path, port: int) -> Iterator[int]:
+    """The flow workspace's server port; stops the server even on failure."""
+    del docs_env
+    yield port
+    runner.invoke(app, ["server", "stop"])
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +191,17 @@ def test_readme_quickstart_runs(docs_env: Path, port: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command reference: every command group, embedded driver
+# Command reference: every command group, real workspace server
 # ---------------------------------------------------------------------------
 
 
-def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
+@pytest.mark.server
+def test_command_reference_object_and_read_flows(docs_env: Path, docs_server: int) -> None:
     """Every command in references/commands.md except schema changes and import."""
     del docs_env
-    init_workspace()
+    init_workspace(docs_server)
     run("init", "lab101", "--preset", "molbio", "--id-prefix", "77")
+    start_server()
 
     presets = run("presets", "list")
     assert "molbio" in presets.output
@@ -304,6 +331,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     run("export", "item", "--out", str(single))
     assert (single / "item.csv").is_file()
     run("init", "itemcopy", "--preset", "molbio", "--id-prefix", "77")
+    restart_server()  # make the new ledger visible to the running server
     run("--ledger", "itemcopy", "import", "item", str(single / "item.csv"))
     copied_items = run_json("--ledger", "itemcopy", "entity", "ls", "item")
     assert {row["name"] for row in copied_items} >= {"Reagent", "no-commit-item"}
@@ -333,11 +361,15 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_skill_local_kind_rules_and_destructive_flow(docs_env: Path) -> None:
+@pytest.mark.server
+def test_schema_skill_local_kind_rules_and_destructive_flow(
+    docs_env: Path, docs_server: int
+) -> None:
     """kinds_dir + rules_dir, plan/apply, destructive refusal and override."""
     del docs_env
-    init_workspace()
+    init_workspace(docs_server)
     run("init", "lab101", "--preset", "base", "--id-prefix", "77")
+    start_server()
     ledger_dir = Path.cwd() / "lab101"
 
     (ledger_dir / "kinds").mkdir()
@@ -437,14 +469,18 @@ def test_schema_skill_local_kind_rules_and_destructive_flow(docs_env: Path) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_migration_recipe_explicit_ids_and_csv_roundtrip(docs_env: Path) -> None:
+@pytest.mark.server
+def test_migration_recipe_explicit_ids_and_csv_roundtrip(
+    docs_env: Path, docs_server: int
+) -> None:
     """The zsqlab08 mapping in docs/migration.md runs end to end."""
     del docs_env
     run(
         "workspace", "init", ".", "--default-ledger", "zsqlab08",
-        "--author", AUTHOR,
+        "--port", str(docs_server), "--author", AUTHOR,
     )
     run("init", "zsqlab08", "--preset", "molbio", "--id-prefix", "08")
+    start_server()
 
     run("box", "add", "grid9x9", "WFL-08-01")
     run("box", "add", "grid9x9", "WFL-08-02")
@@ -522,6 +558,7 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(docs_env: Path) -> None
         assert (exports / name).is_file(), name
 
     run("init", "lab42", "--preset", "molbio", "--id-prefix", "08")
+    restart_server()  # make the new ledger visible to the running server
     run("--ledger", "lab42", "--dry-run", "import", "all", str(exports))
     run("--ledger", "lab42", "import", "all", str(exports))
     assert "OK:" in run("--ledger", "lab42", "check").output

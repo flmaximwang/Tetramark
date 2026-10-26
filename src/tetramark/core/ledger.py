@@ -30,13 +30,14 @@ import shutil
 import subprocess
 import warnings
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+import pymysql
 import yaml
 
 from tetramark.core.ids import IdStrategy, strategy_from_config
@@ -55,6 +56,7 @@ from tetramark.driver.base import (
     render_sql,
 )
 from tetramark.driver.embedded import EmbeddedDriver
+from tetramark.driver.server import ServerDriver
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 from tetramark.schema.ddl import Statement, schema_statements
@@ -78,6 +80,7 @@ __all__ = [
     "WriteSession",
     "build_id_strategies",
     "init_ledger",
+    "init_ledger_on_server",
     "open",
     "resolve_author",
 ]
@@ -277,6 +280,74 @@ def _run_dolt_init(
 
 
 # ---------------------------------------------------------------------------
+# Server admin connection
+# ---------------------------------------------------------------------------
+
+#: PyMySQL codes meaning "the server went away" rather than "bad SQL".
+_ADMIN_UNREACHABLE_CODES = {2002, 2003, 2005, 2006, 2013}
+
+
+def _admin_error_text(error: pymysql.err.MySQLError) -> str:
+    return str(error.args[1]) if len(error.args) >= 2 else str(error)
+
+
+def _admin_connection(workspace: Workspace) -> pymysql.connections.Connection:
+    """An admin connection to the workspace server, with no database selected."""
+    try:
+        return pymysql.connect(
+            host=workspace.config.host,
+            port=workspace.config.port,
+            user="root",
+            password="",
+            autocommit=True,
+            charset="utf8mb4",
+            connect_timeout=5,
+        )
+    except OSError as error:
+        raise UnreachableError(
+            f"cannot connect to the Dolt server at "
+            f"{workspace.config.host}:{workspace.config.port}: {error}"
+        ) from error
+    except pymysql.err.MySQLError as error:
+        raise UnreachableError(_admin_error_text(error)) from error
+
+
+def _quote_admin_ident(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
+def _admin_database_statement(
+    workspace: Workspace, statement: str, name: str
+) -> None:
+    connection = _admin_connection(workspace)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(statement)
+    except pymysql.err.MySQLError as error:
+        text = _admin_error_text(error)
+        code = error.args[0] if error.args else None
+        if code in _ADMIN_UNREACHABLE_CODES:
+            raise UnreachableError(text) from error
+        verb = statement.split()[0].lower()
+        raise LedgerError(f"cannot {verb} database {name!r}: {text}") from error
+    finally:
+        connection.close()
+
+
+def _create_database(workspace: Workspace, name: str) -> None:
+    _admin_database_statement(
+        workspace, f"CREATE DATABASE {_quote_admin_ident(name)}", name
+    )
+
+
+def _drop_database(workspace: Workspace, name: str, *, missing_ok: bool = False) -> None:
+    clause = "IF EXISTS " if missing_ok else ""
+    _admin_database_statement(
+        workspace, f"DROP DATABASE {clause}{_quote_admin_ident(name)}", name
+    )
+
+
+# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
 
@@ -435,6 +506,82 @@ def init_ledger(
 
     ledger = Ledger(
         workspace=plan.workspace,
+        name=name,
+        driver=driver,
+        config=plan.config,
+        schema=plan.schema,
+        author=plan.author,
+    )
+    ledger.refresh_meta()
+    return ledger
+
+
+def init_ledger_on_server(
+    workspace: Workspace | str | Path,
+    name: str,
+    presets: Sequence[str | Path] | str | Path | None = None,
+    *,
+    id_prefix: str | None = None,
+    author: str | None = None,
+    statuses: Sequence[str] | None = None,
+) -> Ledger:
+    """Create a ledger inside a running workspace ``dolt sql-server``.
+
+    Same result as :func:`init_ledger` (identical schema, ``ledger.yaml``,
+    ``ledger_meta``, generated tests and one ``init(ledger)`` commit), but the
+    database is created with ``CREATE DATABASE`` over an admin PyMySQL
+    connection and the DDL runs through :class:`ServerDriver`.  The workspace
+    server must already be running; otherwise :class:`UnreachableError` is
+    raised.  On failure the database and the ledger directory are removed.
+    """
+    ws = _as_workspace(workspace)
+    pid = ws.running_pid()
+    if pid is None or not ws.port_in_use():
+        raise UnreachableError(
+            f"no Dolt server is running for workspace {ws.data_dir}"
+        )
+
+    plan = _prepare_init(
+        ws,
+        name,
+        presets,
+        id_prefix=id_prefix,
+        author=author,
+        statuses=statuses,
+    )
+    target = plan.path
+    created = False
+    driver: ServerDriver | None = None
+    try:
+        _create_database(ws, name)
+        created = True
+        target.mkdir(parents=True, exist_ok=True)
+        (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
+
+        driver = ServerDriver(ws.config.host, ws.config.port, name)
+        with driver.transaction():
+            for statement in plan.statements:
+                driver.execute(statement.sql)
+            _write_meta(driver, plan.schema, plan.ledger_yaml)
+            # Generated dolt_tests are derived state (spec §4): install them
+            # with the schema so a fresh ledger is immediately checkable.
+            install_tests(driver, plan.schema)
+        driver.commit(f"init(ledger): {name}", author=plan.author)
+    except BaseException:
+        # Never leave a half-initialised ledger behind: drop the database and
+        # remove the directory.  Cleanup failures must not mask the real error.
+        if driver is not None:
+            with suppress(Exception):
+                _close_driver(driver)
+        if created:
+            with suppress(Exception):
+                _drop_database(ws, name, missing_ok=True)
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+    assert driver is not None
+    ledger = Ledger(
+        workspace=ws,
         name=name,
         driver=driver,
         config=plan.config,

@@ -92,3 +92,7 @@ def test_dolt_repo_does_not_write_to_home(dolt_repo: Path, dolt_env: dict[str, s
     home = Path(dolt_env["HOME"])
     assert home.is_dir()
     assert list(home.rglob("*")) == []
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded

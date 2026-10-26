@@ -44,6 +44,25 @@ uv run tm --help
 uv run pytest
 ```
 
+### Testing
+
+The suite runs against a real `dolt` binary (no mocks). Most tests use a long-lived
+`dolt sql-server`: pytest creates one server per xdist worker (`server_workspace`) and each test
+gets its own database through `server_ledger_factory` (about 0.4 ms per query instead of a
+`dolt sql` subprocess). Tests that must exercise the embedded driver, the server lifecycle, raw
+`dolt` CLI, or init/open semantics keep `embedded_ledger_factory` and are marked
+`@pytest.mark.embedded`.
+
+```sh
+uv run pytest                      # full suite, server-backed, ~2-3 min
+uv run pytest -m embedded          # only the embedded-driver coverage set
+uv run pytest -m "not server"      # skip tests that start their own server
+uv run pytest tests/test_objects.py -n0   # focused loop
+```
+
+The design and migration notes are in `docs/test-server-harness.md` and
+`docs/test-runtime-optimization.md`.
+
 ## Quickstart
 
 Create a workspace (one Dolt data directory), a ledger with the `molbio` preset, and a 96-well box.

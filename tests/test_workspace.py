@@ -276,3 +276,7 @@ def test_server_start_failure_leaves_no_pid_file(
     with pytest.raises(LedgerError, match="did not become ready"):
         workspace.start(daemon=True)
     assert not workspace.pid_file.exists()
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded

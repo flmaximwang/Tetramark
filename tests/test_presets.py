@@ -405,3 +405,7 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
     )[0]
     assert book["title"] == "The C Programming Language"
     assert book["isbn"] == "978-0-13-110362-7"
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded
