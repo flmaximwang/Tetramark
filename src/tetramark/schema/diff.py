@@ -43,6 +43,7 @@ from tetramark.core.ledger import (
     META_LEDGER_YAML,
     META_PRESET_VERSIONS,
     META_SPEC_VERSION,
+    META_TETRAMARK_VERSION,
 )
 from tetramark.driver.base import Driver, literal
 from tetramark.errors import LedgerError
@@ -133,6 +134,8 @@ class SchemaPlan:
     ledger: str = ""
     live_fingerprint: str | None = None
     expected_fingerprint: str = ""
+    live_tetramark_version: str | None = None
+    expected_tetramark_version: str = ""
 
     # -- summaries ---------------------------------------------------------
     @property
@@ -141,7 +144,15 @@ class SchemaPlan:
 
     @property
     def meta_stale(self) -> bool:
-        return self.live_fingerprint != self.expected_fingerprint
+        """True when apply must refresh ``ledger_meta`` (spec A1).
+
+        A stale fingerprint is the historical reason; a missing or outdated
+        ``tetramark_version`` is the other (older ledgers predate the key).
+        """
+        return (
+            self.live_fingerprint != self.expected_fingerprint
+            or self.live_tetramark_version != self.expected_tetramark_version
+        )
 
     @property
     def additive(self) -> list[PlanStep]:
@@ -792,6 +803,9 @@ def build_plan(
     ledger_name: str = "",
 ) -> SchemaPlan:
     """Compare ``schema`` with the live database behind ``driver``."""
+    # Local import: ``tetramark/__init__`` imports this package's dependencies.
+    from tetramark import __version__
+
     desired = _desired_tables(schema)
     desired_fks = _desired_foreign_keys(schema)
     desired_views = _desired_views(schema)
@@ -801,6 +815,8 @@ def build_plan(
         ledger=ledger_name,
         live_fingerprint=live.meta.get(META_FINGERPRINT),
         expected_fingerprint=schema.fingerprint(),
+        live_tetramark_version=live.meta.get(META_TETRAMARK_VERSION),
+        expected_tetramark_version=__version__,
     )
     buckets = _Buckets()
 
@@ -1763,12 +1779,18 @@ def _refresh_meta(session: Any, ledger: "Ledger") -> None:
 
 
 def _meta_values(ledger: "Ledger") -> dict[str, str]:
+    # Local import: ``tetramark/__init__`` imports this package's dependencies.
+    from tetramark import __version__
+
     config_path = ledger.path / LEDGER_FILE
     ledger_yaml = (
         config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
     )
     return {
         META_SPEC_VERSION: str(SPEC_VERSION),
+        # Refresh the writing-tool version; ``created_with`` stays frozen at
+        # the value written by init/adopt.
+        META_TETRAMARK_VERSION: __version__,
         META_FINGERPRINT: ledger.schema.fingerprint(),
         META_PRESET_VERSIONS: json.dumps(
             ledger.schema.preset_versions, sort_keys=True, ensure_ascii=False

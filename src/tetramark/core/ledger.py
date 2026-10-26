@@ -71,10 +71,13 @@ from tetramark.schema.tests_gen import CheckReport, install_tests, run_check
 
 __all__ = [
     "LEDGER_FILE",
+    "META_ADOPTED_FROM_COMMIT",
+    "META_CREATED_WITH",
     "META_FINGERPRINT",
     "META_LEDGER_YAML",
     "META_PRESET_VERSIONS",
     "META_SPEC_VERSION",
+    "META_TETRAMARK_VERSION",
     "InitPlan",
     "Ledger",
     "WriteSession",
@@ -90,11 +93,18 @@ LEDGER_FILE = "ledger.yaml"
 
 #: Keys stored in ``ledger_meta``.  Other tickets (08/09) read and update them.
 META_SPEC_VERSION = "spec_version"
+META_TETRAMARK_VERSION = "tetramark_version"
+META_CREATED_WITH = "created_with"
+#: Only ``tm init --adopt`` writes this key (ticket TM-04); it is deliberately
+#: not part of :data:`META_ORDER`, so a plain init never records it.
+META_ADOPTED_FROM_COMMIT = "adopted_from_commit"
 META_FINGERPRINT = "fingerprint"
 META_PRESET_VERSIONS = "preset_versions"
 META_LEDGER_YAML = "ledger_yaml"
 META_ORDER: tuple[str, ...] = (
     META_SPEC_VERSION,
+    META_TETRAMARK_VERSION,
+    META_CREATED_WITH,
     META_FINGERPRINT,
     META_PRESET_VERSIONS,
     META_LEDGER_YAML,
@@ -440,8 +450,17 @@ def _write_meta(
     schema: EffectiveSchema,
     ledger_yaml: str,
 ) -> None:
+    # Imported here because ``tetramark/__init__`` imports this module; the
+    # package is fully initialised by the time a ledger is written.
+    from tetramark import __version__
+
     values = {
         META_SPEC_VERSION: str(SPEC_VERSION),
+        # Provenance only: which tool last wrote meta and which first
+        # formatted the ledger.  ``adopted_from_commit`` is written
+        # separately by the adopt path (ticket TM-04).
+        META_TETRAMARK_VERSION: __version__,
+        META_CREATED_WITH: __version__,
         META_FINGERPRINT: schema.fingerprint(),
         META_PRESET_VERSIONS: json.dumps(
             schema.preset_versions, sort_keys=True, ensure_ascii=False

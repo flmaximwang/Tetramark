@@ -155,6 +155,22 @@ aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit)
 alias(object_type, object_id, alias, PK(object_type, alias))
 ```
 
+`ledger_meta` also carries the version stamps:
+
+- `spec_version` is the **ledger format version** — the key an upgrade pipeline
+  dispatches on. It is bumped only when the generated shape changes: the core
+  table set, the `ledger_meta` key set, or generated objects (views,
+  `dolt_tests`). A pure bug-fix release does not change it.
+- `tetramark_version` records which tool version last wrote the metadata
+  (`tm init` and every `tm schema apply` refresh it).
+- `created_with` records the tool version that first formatted the ledger
+  (`tm init`/`tm init --adopt`); it never changes afterwards.
+- `adopted_from_commit` is written only by `tm init --adopt`: the HEAD hash of
+  the adopted database before formatting.
+
+`tetramark_version`, `created_with` and `adopted_from_commit` are provenance
+records: they are shown by `tm schema show` but drive no migration logic.
+
 Kind tables (generated from schema):
 - `entity_<kind>(id PK, kind CHAR const DEFAULT '<kind>' CHECK(kind='<kind>'), <fields…>,
   FK(id,kind)→entity(id,kind))` — the discriminator FK: an id can belong to only one kind table.

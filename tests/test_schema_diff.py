@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tetramark import __version__
 from tetramark.core.ledger import Ledger, build_id_strategies
 from tetramark.errors import EXIT_ERROR, LedgerError
 from tetramark.schema.diff import (
@@ -234,6 +235,42 @@ def test_plan_reads_ledger_meta_fingerprint(ledger: Ledger) -> None:
     stale = plan(ledger)
     assert stale.is_empty
     assert stale.meta_stale
+
+
+def test_plan_is_stale_when_tetramark_version_is_missing(ledger: Ledger) -> None:
+    ledger.driver.execute(
+        "DELETE FROM `ledger_meta` WHERE `key` = 'tetramark_version'"
+    )
+    ledger.read_meta()
+    current = plan(ledger)
+    assert current.is_empty
+    assert current.meta_stale
+    assert current.to_dict()["fingerprint"]["stale"] is True
+
+
+def test_apply_refreshes_tetramark_version_but_keeps_created_with(
+    ledger: Ledger,
+) -> None:
+    # Simulate a ledger written by an older release.
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '0.0.9' "
+        "WHERE `key` = 'tetramark_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '0.0.1' WHERE `key` = 'created_with'"
+    )
+    ledger.read_meta()
+
+    current = plan(ledger)
+    assert current.is_empty
+    assert current.meta_stale
+
+    result = apply(ledger, schema_plan=current)
+    assert result.applied is True
+    ledger.read_meta()
+    assert ledger.meta["tetramark_version"] == __version__
+    # Provenance written at init is frozen: apply never rewrites it.
+    assert ledger.meta["created_with"] == "0.0.1"
 
 
 def test_plan_is_empty_with_a_custom_status_vocabulary(ledger_factory) -> None:
@@ -920,6 +957,37 @@ def test_cli_schema_plan_text_and_json(
     )
     assert added["tag"] == ADDITIVE
     assert added["sql"].startswith("ALTER TABLE")
+
+
+def test_cli_schema_plan_reports_meta_refresh_for_missing_version(
+    cli_isolated: None, ledger: Ledger
+) -> None:
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    ledger.driver.execute(
+        "DELETE FROM `ledger_meta` WHERE `key` = 'tetramark_version'"
+    )
+    runner = CliRunner()
+    common = [
+        "--workspace",
+        str(ledger.workspace.data_dir),
+        "--ledger",
+        "evolving",
+        "schema",
+    ]
+    # An older ledger without the key still opens; plan reports a refresh, not
+    # an error.
+    planned = runner.invoke(app, [*common, "plan"])
+    assert planned.exit_code == 0, planned.output
+    assert "schema is up to date" in planned.output
+    assert "meta refresh" in planned.output
+
+    applied = runner.invoke(app, [*common, "apply"])
+    assert applied.exit_code == 0, applied.output
+    ledger.read_meta()
+    assert ledger.meta["tetramark_version"] == __version__
 
 
 def test_cli_schema_apply_refuses_destructive(
