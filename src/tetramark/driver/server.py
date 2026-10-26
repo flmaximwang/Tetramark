@@ -12,10 +12,12 @@ from pymysql.cursors import DictCursor
 from tetramark.driver.base import (
     Driver,
     Params,
+    check_branch_name,
     commit_statements,
     is_nothing_to_commit,
+    revision_database,
 )
-from tetramark.errors import LedgerError, UnreachableError
+from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 __all__ = ["ServerDriver"]
 
@@ -50,11 +52,13 @@ class ServerDriver(Driver):
         port: int,
         database: str,
         *,
+        branch: str | None = None,
         user: str = "root",
         password: str = "",
         connect_timeout: int = 5,
     ) -> None:
         self._database = database
+        self._branch = check_branch_name(branch) if branch is not None else None
         self._in_transaction = False
         try:
             self._conn = pymysql.connect(
@@ -77,6 +81,24 @@ class ServerDriver(Driver):
             quoted = database.replace("`", "``")
             with self._conn.cursor() as cursor:
                 cursor.execute(f"USE `{quoted}`")
+                if self._branch is not None:
+                    cursor.execute(
+                        "SELECT 1 AS `present` FROM dolt_branches WHERE `name` = %s",
+                        (self._branch,),
+                    )
+                    if cursor.fetchone() is None:
+                        raise UsageError(
+                            f"branch {self._branch!r} does not exist in "
+                            f"database {database!r} (it is never created implicitly)"
+                        )
+                    # A revision database is a session-scoped checkout: it does
+                    # not move the branch other sessions (or the server) see.
+                    cursor.execute(
+                        f"USE {revision_database(database, self._branch)}"
+                    )
+        except UsageError:
+            self.close()
+            raise
         except pymysql.err.MySQLError as error:
             self.close()
             _raise_mysql_error(error)
@@ -85,6 +107,11 @@ class ServerDriver(Driver):
     @property
     def database(self) -> str:
         return self._database
+
+    @property
+    def branch(self) -> str | None:
+        """The branch this session reads and writes, or ``None`` when checked out."""
+        return self._branch
 
     # -- reads / writes ---------------------------------------------------
     def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:

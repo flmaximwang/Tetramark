@@ -7,7 +7,12 @@ from pathlib import Path
 
 import typer
 
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import (
+    echo_dry_run_sql,
+    json_output,
+    resolve_ledger,
+    target_branch,
+)
 from tetramark.ops import io_csv
 
 
@@ -43,8 +48,9 @@ def import_command(
         )
         if result.dry_run:
             if result.sql:
-                typer.echo(result.sql)
+                echo_dry_run_sql(ledger, result.sql)
             else:
+                typer.echo(f"-- target branch: {target_branch(ledger)}")
                 typer.echo("Nothing to import.")
             return
         if json_output(ctx, as_json):

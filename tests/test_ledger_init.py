@@ -452,6 +452,100 @@ def test_open_carries_default_dry_run_and_no_commit(server_ledger_factory) -> No
     assert session.dry_run is False
 
 
+# ---------------------------------------------------------------------------
+# Branch selection (spec A3)
+# ---------------------------------------------------------------------------
+
+
+def _create_branch(ledger: Ledger, name: str) -> None:
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", (name,))
+
+
+def _entity_count(ledger: Ledger) -> int:
+    return int(ledger.driver.query("SELECT COUNT(*) AS n FROM `entity`")[0]["n"])
+
+
+def test_open_on_a_branch_writes_there_and_leaves_main_unchanged(
+    ledger_factory,
+) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="branchy")
+    _create_branch(ledger, "feature")
+    before = commit_count(ledger)
+
+    branch = open_ledger(ledger.workspace, "branchy", branch="feature")
+    try:
+        assert branch.branch == "feature"
+        created = branch.entities.add("item", name="on-branch")
+        assert created["name"] == "on-branch"
+
+        # The write and its commit are on the branch only.
+        assert _entity_count(branch) == 1
+        assert _entity_count(ledger) == 0
+        assert commit_count(ledger) == before
+        assert ledger.driver.query(
+            "SELECT 1 AS `found` FROM dolt_log WHERE `message` LIKE %s",
+            ("add(entity)%",),
+        ) == []
+        assert ledger.driver.query(
+            "SELECT COUNT(*) AS n FROM `entity` AS OF %s", ("feature",)
+        ) == [{"n": 1}]
+        # Neither session moved the repository's checkout; the branch session's
+        # own checkout is the branch it selected.
+        assert ledger.driver.query("SELECT active_branch() AS `b`") == [
+            {"b": "main"}
+        ]
+        assert branch.driver.query("SELECT active_branch() AS `b`") == [
+            {"b": "feature"}
+        ]
+    finally:
+        branch.close()
+
+
+def test_ledger_yaml_branch_is_the_default_for_open(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="branchdefault")
+    _create_branch(ledger, "config-branch")
+    config = read_config(ledger)
+    config["branch"] = "config-branch"
+    write_config(ledger, config)
+    assert read_config(ledger)["branch"] == "config-branch"
+
+    opened = open_ledger(ledger.workspace, "branchdefault")
+    try:
+        assert opened.branch == "config-branch"
+        opened.entities.add("item", name="from-config")
+        assert _entity_count(opened) == 1
+        assert _entity_count(ledger) == 0
+    finally:
+        opened.close()
+
+
+def test_missing_branch_raises_usage_and_creates_nothing(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="nobranch")
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="does not exist"):
+        open_ledger(ledger.workspace, "nobranch", branch="absent")
+    assert ledger.driver.query(
+        "SELECT 1 AS `found` FROM dolt_branches WHERE `name` = %s", ("absent",)
+    ) == []
+    assert commit_count(ledger) == before
+
+
+def test_open_with_the_checked_out_branch_uses_the_revision_database(
+    ledger_factory,
+) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="samebranch")
+    opened = open_ledger(ledger.workspace, "samebranch", branch="main")
+    try:
+        opened.entities.add("item", name="on-main")
+        assert opened.branch == "main"
+        assert _entity_count(ledger) == 1
+        assert opened.driver.query("SELECT active_branch() AS `b`") == [
+            {"b": "main"}
+        ]
+    finally:
+        opened.close()
+
+
 def test_write_requires_a_context_manager(server_ledger_factory) -> None:
     ledger = server_ledger_factory([PRESETS / "base"])
     session = ledger.write("probe", verb="add", object="box")

@@ -9,7 +9,11 @@ from typing import Any
 import typer
 import yaml
 
-from tetramark.cli.options import resolve_ledger
+from tetramark.cli.options import (
+    echo_dry_run_sql,
+    resolve_ledger,
+    target_branch,
+)
 from tetramark.core.ledger import (
     META_CREATED_WITH,
     META_SPEC_VERSION,
@@ -105,7 +109,9 @@ def apply_schema(
         if ledger.dry_run:
             typer.echo(f"Would apply {len(current.steps)} step(s)")
             if current.sql:
-                typer.echo(current.sql)
+                echo_dry_run_sql(ledger, current.sql)
+            else:
+                typer.echo(f"-- target branch: {target_branch(ledger)}")
             return
         if not result.applied:
             typer.echo("schema is up to date")

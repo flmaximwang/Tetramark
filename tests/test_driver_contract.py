@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 
 from tetramark.driver import Driver, EmbeddedDriver, ServerDriver
 from tetramark.driver.workspace import Workspace
-from tetramark.errors import LedgerError, UnreachableError
+from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 from conftest import free_port, isolated_env
 
@@ -236,3 +237,129 @@ def test_server_driver_reports_missing_database(server_workspace: Workspace) -> 
             "no_such_ledger",
             connect_timeout=2,
         )
+
+
+# -- branch selection (revision database), both backends ------------------
+
+
+@dataclass
+class BranchPair:
+    """A checked-out session plus a session on a new branch of the same repo."""
+
+    base: Driver
+    branch: Driver
+    name: str
+    table: str
+
+
+@pytest.fixture(params=["embedded", "server"])
+def branch_pair(
+    request: pytest.FixtureRequest,
+    embedded_driver: EmbeddedDriver,
+    server_workspace: Workspace,
+    server_db: ServerDriver,
+    dolt_env: dict[str, str],
+) -> Iterator[BranchPair]:
+    """A branch created from HEAD, with one committed row on the checked-out branch."""
+    table = table_name()
+    base: Driver
+    if request.param == "embedded":
+        base = embedded_driver
+    else:
+        base = server_db
+    base.execute(f"CREATE TABLE {table} (v BIGINT)")
+    base.execute(f"INSERT INTO {table} VALUES (%s)", (1,))
+    assert base.commit(f"branch fixture {table}") is not None
+
+    name = f"feat_{uuid.uuid4().hex[:8]}"
+    base.execute("CALL DOLT_BRANCH(%s)", (name,))
+
+    branch: Driver
+    if request.param == "embedded":
+        branch = EmbeddedDriver(
+            embedded_driver.path, branch=name, env=dolt_env
+        )
+    else:
+        branch = ServerDriver(
+            server_workspace.config.host,
+            server_workspace.config.port,
+            "led1",
+            branch=name,
+        )
+    try:
+        yield BranchPair(base=base, branch=branch, name=name, table=table)
+    finally:
+        close = getattr(branch, "close", None)
+        if callable(close):
+            close()
+
+
+def test_branch_writes_leave_the_checked_out_branch_unchanged(
+    branch_pair: BranchPair,
+) -> None:
+    pair = branch_pair
+    table = pair.table
+    assert pair.branch.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 1}]
+
+    pair.branch.execute(f"INSERT INTO {table} VALUES (%s)", (2,))
+    message = f"write on {pair.name}"
+    assert pair.branch.commit(message) is not None
+
+    # The checked-out branch neither sees the row nor the commit.
+    assert pair.base.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 1}]
+    assert pair.base.query(
+        "SELECT 1 AS `found` FROM dolt_log WHERE `message` = %s", (message,)
+    ) == []
+    # ... and the commit landed on the branch tip, visible as of the branch.
+    assert pair.branch.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 2}]
+    assert pair.base.query(
+        f"SELECT COUNT(*) AS n FROM {table} AS OF %s", (pair.name,)
+    ) == [{"n": 2}]
+    # No session ever moved the repository's checkout: the base session still
+    # reports main, while the branch session's own checkout is the branch.
+    assert pair.base.query("SELECT active_branch() AS `b`") == [{"b": "main"}]
+    assert pair.branch.query("SELECT active_branch() AS `b`") == [{"b": pair.name}]
+
+
+def test_two_sessions_read_in_parallel_without_crossing(
+    branch_pair: BranchPair,
+) -> None:
+    pair = branch_pair
+    table = pair.table
+    pair.branch.execute(f"INSERT INTO {table} VALUES (%s)", (2,))
+    assert pair.branch.commit("branch row") is not None
+    pair.base.execute(f"INSERT INTO {table} VALUES (%s)", (3,))
+    assert pair.base.commit("main row") is not None
+
+    # Interleaved reads: each session sees exactly its own branch.
+    assert pair.base.query(f"SELECT v FROM {table} ORDER BY v") == [
+        {"v": 1},
+        {"v": 3},
+    ]
+    assert pair.branch.query(f"SELECT v FROM {table} ORDER BY v") == [
+        {"v": 1},
+        {"v": 2},
+    ]
+    assert pair.base.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 2}]
+    assert pair.branch.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 2}]
+    assert pair.base.query("SELECT active_branch() AS `b`") == [{"b": "main"}]
+
+
+def test_missing_branch_is_a_usage_error_for_both_drivers(
+    embedded_driver: EmbeddedDriver, server_workspace: Workspace
+) -> None:
+    missing = f"absent_{uuid.uuid4().hex[:8]}"
+    with pytest.raises(UsageError, match="does not exist"):
+        EmbeddedDriver(embedded_driver.path, branch=missing)
+    with pytest.raises(UsageError, match="does not exist"):
+        ServerDriver(
+            server_workspace.config.host,
+            server_workspace.config.port,
+            "led1",
+            branch=missing,
+        )
+    # A missing branch is never created implicitly.
+    assert embedded_driver.query(
+        "SELECT 1 AS `found` FROM dolt_branches WHERE `name` = %s", (missing,)
+    ) == []
+

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, resolve_ledger
+from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, resolve_ledger
 from tetramark.errors import UsageError
 
 config_app = typer.Typer(
@@ -55,7 +55,7 @@ def config_set(
     if name == "author":
         session = ledger.set_author(value)
         if session.dry_run:
-            typer.echo(session.sql)
+            echo_dry_run_sql(ledger, session.sql)
         else:
             typer.echo(f"author: {ledger.author}")
             if options.no_commit:

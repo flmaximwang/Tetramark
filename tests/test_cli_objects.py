@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tetramark.cli.app import app, main
+from tetramark.core.ledger import open as open_ledger
 
 from conftest import PRESETS
 
@@ -258,6 +259,149 @@ def test_cli_global_json_flag_applies_to_writes_and_reads(
     assert created["name"] == "gamma"
     listed = json.loads(invoke(ledger, "--json", "entity", "ls", "item").output)
     assert [row["id"] for row in listed] == [created["id"]]
+
+
+# ---------------------------------------------------------------------------
+# Branch support (TM-03)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_global_branch_selects_the_session_branch(
+    cli_env: None, ledger_factory
+) -> None:
+    ledger = ledger_factory([BASE], name="cli-branch", id_prefix="77")
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("feature",))
+    before = commit_count(ledger)
+
+    result = invoke(
+        ledger, "-b", "feature", "entity", "add", "item", "--name", "branch-item"
+    )
+    assert result.exit_code == 0, result.output
+
+    # Nothing changed on the checked-out branch; the write and commit are on
+    # the session branch only.
+    assert ledger.entities.ls() == []
+    assert commit_count(ledger) == before
+    branch = open_ledger(ledger.workspace, ledger.name, branch="feature")
+    try:
+        assert [row["name"] for row in branch.entities.ls()] == ["branch-item"]
+        assert ledger.driver.query("SELECT active_branch() AS `b`") == [
+            {"b": "main"}
+        ]
+    finally:
+        branch.close()
+
+
+def test_cli_branch_dry_run_names_the_target_branch(
+    cli_env: None, ledger_factory
+) -> None:
+    ledger = ledger_factory([BASE], name="cli-branch-dry", id_prefix="77")
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("feature",))
+    before = commit_count(ledger)
+
+    result = invoke(
+        ledger,
+        "-b",
+        "feature",
+        "--dry-run",
+        "entity",
+        "add",
+        "item",
+        "--name",
+        "planned",
+    )
+    assert result.exit_code == 0, result.output
+    assert "-- target branch: feature" in result.output
+    assert "INSERT INTO `entity`" in result.output
+    assert commit_count(ledger) == before
+
+    as_json = invoke(
+        ledger,
+        "-b",
+        "feature",
+        "--dry-run",
+        "entity",
+        "add",
+        "item",
+        "--name",
+        "planned2",
+        "--json",
+    )
+    assert as_json.exit_code == 0, as_json.output
+    payload = json.loads(as_json.output)
+    assert payload["branch"] == "feature"
+    assert "INSERT INTO `entity`" in payload["sql"]
+
+
+def test_cli_branch_ls_create_and_delete_roundtrip(
+    cli_env: None, ledger_factory
+) -> None:
+    ledger = ledger_factory([BASE], name="cli-branch-cmd", id_prefix="77")
+
+    listed = invoke(ledger, "branch", "ls")
+    assert listed.exit_code == 0, listed.output
+    assert "main" in listed.output and "* main" in listed.output
+
+    created = invoke(ledger, "branch", "create", "feature", "--from", "main")
+    assert created.exit_code == 0, created.output
+    names = [
+        entry["name"]
+        for entry in json.loads(invoke(ledger, "--json", "branch", "ls").output)
+    ]
+    assert {"main", "feature"} <= set(names)
+
+    deleted = invoke(ledger, "branch", "delete", "feature")
+    assert deleted.exit_code == 0, deleted.output
+    names = [
+        entry["name"]
+        for entry in json.loads(invoke(ledger, "--json", "branch", "ls").output)
+    ]
+    assert "feature" not in names
+
+    # An unmerged branch is refused by Dolt, then deletable once merged.
+    assert invoke(ledger, "branch", "create", "unmerged").exit_code == 0
+    branch = open_ledger(ledger.workspace, ledger.name, branch="unmerged")
+    try:
+        branch.entities.add("item", name="unmerged-row")
+    finally:
+        branch.close()
+    refused = invoke(ledger, "branch", "delete", "unmerged")
+    assert refused.exit_code == 1
+    assert "not fully merged" in str(refused.exception)
+
+    ledger.driver.execute("CALL DOLT_MERGE(%s)", ("unmerged",))
+    assert invoke(ledger, "branch", "delete", "unmerged").exit_code == 0
+
+
+def test_remote_push_b_still_names_the_remote_branch(
+    cli_env: None, ledger_factory, tmp_path
+) -> None:
+    """Q-08: the subcommand's -b wins over the global -b (different meanings)."""
+    ledger = ledger_factory([BASE], name="cli-remote-b", id_prefix="77")
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("feature",))
+    added = invoke(ledger, "remote", "add", "origin", str(tmp_path / "remote"))
+    assert added.exit_code == 0, added.output
+
+    pushed = invoke(
+        ledger,
+        "-b",
+        "feature",
+        "--dry-run",
+        "remote",
+        "push",
+        "-b",
+        "remote-only",
+        "origin",
+    )
+    assert pushed.exit_code == 0, pushed.output
+    assert "DOLT_PUSH('origin', 'remote-only')" in pushed.output
+
+    # Without the subcommand option the session branch is pushed.
+    session = invoke(
+        ledger, "-b", "feature", "--dry-run", "remote", "push", "origin"
+    )
+    assert session.exit_code == 0, session.output
+    assert "DOLT_PUSH('origin', 'feature')" in session.output
 
 
 def test_cli_unknown_field_exits_usage(

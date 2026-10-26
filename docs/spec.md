@@ -229,9 +229,19 @@ Generated tests are fully replaced on each apply (they are derived state); never
 ## 6. CLI (`tm`)
 
 Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$TETRAMARK_WORKSPACE`),
-`--ledger NAME` (default from workspace), `--format table|json|csv` on reads, `--json` shorthand,
+`--ledger NAME` (default from workspace), `-b/--branch BRANCH` (session branch, see below),
+`--format table|json|csv` on reads, `--json` shorthand,
 `--dry-run` (print SQL, no write) and `--no-commit` on writes. Exit codes: 0 ok, 1 business/validation
 error, 2 usage error, 3 database unreachable.
+
+Branch selection (`-b/--branch`, placed before the subcommand like `-w`/`-l`): every read, write and
+commit of that command happens on BRANCH. The default is `branch:` in `ledger.yaml`, else the branch
+checked out in the repository. A branch that does not exist is a usage error — it is never created
+implicitly. Selection is session-scoped and never moves the branch other sessions or the server see
+(see §7). `--dry-run` prints the target branch with the SQL. `tm remote push/pull -b` is a different
+option with the same letter: it names the branch on the **remote**, while the global `-b` selects the
+local session branch. `tm branch ls|create NAME [--from REF]|delete NAME` manage branches; merging is
+not part of `tm` (cut over with Dolt's native `CALL DOLT_MERGE(branch, '--ff-only')`).
 
 Every successful write = exactly one Dolt commit. Message is ASCII: `<verb>(<object>): <summary>`;
 non-ASCII user text is kept in the event/notes, never in the commit message (known Dolt byte-truncation bug).
@@ -264,10 +274,11 @@ tm check [-v] [--group G]
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
 tm export KIND|all [--out DIR]
 tm remote add NAME URL | push | pull ; tm backup [DIR]
+tm branch ls | create NAME [--from REF] | delete NAME
 ```
 
-Python API mirrors the CLI (`tetramark.open(workspace, ledger)` → `Ledger` with `.entities`, `.stocks`,
-`.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin layer over it.
+Python API mirrors the CLI (`tetramark.open(workspace, ledger, branch=None)` → `Ledger` with
+`.entities`, `.stocks`, `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin layer over it.
 
 ### 6.1 ID strategies
 
@@ -288,6 +299,22 @@ Python API mirrors the CLI (`tetramark.open(workspace, ledger)` → `Ledger` wit
 - `ServerDriver` — PyMySQL to `dolt sql-server` (`127.0.0.1`, no TLS). Default when the workspace server is up.
 - `EmbeddedDriver` — `dolt sql -r json -q` subprocess in the ledger dir. Used when no server runs and in tests.
   Must detect errors from output, not only exit codes (dolt can exit 0 on error).
+
+Optional branch selection (`ServerDriver(..., branch=...)`, `EmbeddedDriver(..., branch=...)`) uses Dolt's
+**revision database** `` `db/branch` ``; it is a session-scoped checkout and never moves the branch the
+repository has checked out (so parallel sessions and the server keep seeing the original branch):
+
+- Server: after `USE \`db\``, the driver verifies the branch in `dolt_branches`, then executes
+  `USE \`db/branch\`` on its own connection. Reads, writes, transactions and `DOLT_COMMIT` all target that
+  revision database, so commits land on the branch tip.
+- Embedded: `dolt sql --help` on the installed Dolt 2.3.5 has **no** `--branch`-style flag (verified; open
+  question Q-03), and `CALL DOLT_CHECKOUT` is forbidden because it moves the repository's working set for
+  every process. Each `dolt sql` invocation is its own process, i.e. its own session, so the driver prefixes
+  every statement batch with `USE \`db/branch\`;`. That is the same session-scoped mechanism as the server,
+  and the driver verifies the branch exists first.
+
+A missing branch raises a usage error in the driver constructor; it is never created implicitly. The
+checked-out branch of the repository is never changed by either driver.
 
 `tm server start|stop|status` ports `dolt_start.sh`/`dolt_stop.sh`: pid/log in data_dir, readiness
 probe, port-busy detection, lists ledgers (subdirs with `.dolt`).

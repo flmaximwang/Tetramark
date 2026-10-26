@@ -633,6 +633,7 @@ def open(
     workspace: Workspace | str | Path | None = None,
     ledger: str | None = None,
     *,
+    branch: str | None = None,
     dry_run: bool = False,
     no_commit: bool = False,
 ) -> Ledger:
@@ -641,6 +642,13 @@ def open(
     ``workspace`` accepts a :class:`Workspace`, a data directory or a
     ``workspace.yaml`` path; when omitted the workspace is discovered from the
     current directory (then ``$TETRAMARK_WORKSPACE``).
+
+    ``branch`` selects the branch every read, write and commit of this command
+    happens on.  It defaults to ``branch:`` in ``ledger.yaml`` and otherwise to
+    the branch checked out in the repository.  Selection is session-scoped (a
+    Dolt ``db/branch`` revision database), so other sessions and the server
+    keep seeing the checked-out branch.  A missing branch is an error; it is
+    never created implicitly.
     """
     ws = _as_workspace(workspace) if workspace is not None else Workspace.discover()
     if ws is None:
@@ -658,9 +666,13 @@ def open(
     path = ws.ledger_path(name)
     if not (path / LEDGER_FILE).is_file():
         raise UnreachableError(f"ledger {name!r} not found in {ws.data_dir}")
-    driver = ws.driver_for(name)
+
+    # The configuration is needed to resolve the default branch, so read it
+    # before opening a connection.
+    config, schema = load_ledger_schema(path)
+    selected = branch if branch is not None else (config.branch or None)
+    driver = ws.driver_for(name, branch=selected)
     try:
-        config, schema = load_ledger_schema(path)
         author = resolve_author(
             config.author, ws.config.author, cwd=path, env=ws.env
         )
@@ -671,6 +683,7 @@ def open(
             config=config,
             schema=schema,
             author=author,
+            branch=selected,
             dry_run=dry_run,
             no_commit=no_commit,
         )
@@ -705,6 +718,7 @@ class Ledger:
         config: LedgerConfig,
         schema: EffectiveSchema,
         author: str | None = None,
+        branch: str | None = None,
         dry_run: bool = False,
         no_commit: bool = False,
     ) -> None:
@@ -714,6 +728,8 @@ class Ledger:
         self.config = config
         self.schema = schema
         self.author = author
+        #: Branch this ledger session reads and writes (``None`` = checked out).
+        self.branch = branch
         self.dry_run = dry_run
         self.no_commit = no_commit
         self.ids = build_id_strategies(config)

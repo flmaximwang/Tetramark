@@ -29,12 +29,14 @@ from typing import Any
 from tetramark.driver.base import (
     Driver,
     Params,
+    check_branch_name,
     commit_statements,
     is_nothing_to_commit,
     looks_like_error,
     render_sql,
+    revision_database,
 )
-from tetramark.errors import LedgerError, UnreachableError
+from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 __all__ = ["EmbeddedDriver"]
 
@@ -52,6 +54,7 @@ class EmbeddedDriver(Driver):
         self,
         path: str | Path,
         *,
+        branch: str | None = None,
         dolt_binary: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
@@ -63,8 +66,25 @@ class EmbeddedDriver(Driver):
         self._env = dict(env) if env is not None else None
         #: Statements buffered by :meth:`transaction`; ``None`` outside one.
         self._pending: list[str] | None = None
+        #: Session branch; validated below once the repository is known to exist.
+        self._branch: str | None = None
         if not (self._path / ".dolt").is_dir():
             raise UnreachableError(f"not a Dolt database: {self._path}")
+        if branch is not None:
+            self._branch = self._require_branch(branch)
+
+    def _require_branch(self, branch: str) -> str:
+        """Fail with a usage error when ``branch`` does not exist (never create)."""
+        name = check_branch_name(branch)
+        rows = self.query(
+            "SELECT `name` FROM dolt_branches WHERE `name` = %s", (name,)
+        )
+        if not rows:
+            raise UsageError(
+                f"branch {name!r} does not exist in database {self.database!r} "
+                "(it is never created implicitly)"
+            )
+        return name
 
     # -- identity ---------------------------------------------------------
     @property
@@ -76,6 +96,11 @@ class EmbeddedDriver(Driver):
     def database(self) -> str:
         """Dolt names a database after its directory."""
         return self._path.name
+
+    @property
+    def branch(self) -> str | None:
+        """The branch this session reads and writes, or ``None`` when checked out."""
+        return self._branch
 
     # -- reads / writes ---------------------------------------------------
     def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
@@ -187,6 +212,11 @@ class EmbeddedDriver(Driver):
         return _parse_result_sets(self._invoke(sql, "json"))
 
     def _invoke(self, sql: str, result_format: str) -> str:
+        if self._branch is not None:
+            # Every ``dolt sql`` run is its own process, i.e. its own session;
+            # USE on a revision database selects the branch for that session
+            # only and never moves the repository's checked-out branch.
+            sql = f"USE {revision_database(self.database, self._branch)};\n{sql}"
         argv = [self._dolt, "sql", "-r", result_format, "-q", sql]
         process = subprocess.run(
             argv,

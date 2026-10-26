@@ -227,7 +227,10 @@ def resolve_remote(ledger: Ledger, name: str | None = None) -> Remote:
 
 
 def current_branch(ledger: Ledger) -> str:
-    """The branch checked out in the ledger."""
+    """The branch this session works on: the selected branch or the checked-out one."""
+    selected = getattr(ledger, "branch", None)
+    if selected:
+        return str(selected)
     rows = ledger.driver.query("SELECT active_branch() AS `branch`")
     if not rows or not rows[0].get("branch"):
         raise LedgerError("cannot determine the active Dolt branch")

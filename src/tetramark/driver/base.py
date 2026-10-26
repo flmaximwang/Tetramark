@@ -18,7 +18,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Sequence
 
-from tetramark.errors import LedgerError
+from tetramark.errors import LedgerError, UsageError
 
 #: Positional parameters for a query.  Named parameters are deliberately not
 #: supported: the embedded backend has no binder and would have to rewrite them.
@@ -34,13 +34,39 @@ __all__ = [
     "Driver",
     "Params",
     "NOTHING_TO_COMMIT",
+    "check_branch_name",
     "commit_statements",
     "ensure_ascii",
     "is_nothing_to_commit",
     "literal",
     "looks_like_error",
     "render_sql",
+    "revision_database",
 ]
+
+
+def check_branch_name(branch: str) -> str:
+    """Validate a branch name before it selects a revision database.
+
+    The name is interpolated into a backtick identifier as ``db/branch``; a
+    backtick or control character would make that ambiguous, so it is rejected
+    here (Dolt itself does not allow them in branch names either).
+    """
+    if not isinstance(branch, str) or not branch.strip():
+        raise UsageError("a branch name must not be empty")
+    if branch != branch.strip() or any(char in branch for char in "`\x00\n\r\t"):
+        raise UsageError(f"invalid branch name {branch!r}")
+    return branch
+
+
+def revision_database(database: str, branch: str) -> str:
+    """The quoted ``db/branch`` revision database for one session.
+
+    This is Dolt's session-scoped checkout: reading and writing through it
+    never moves the branch checked out in the repository.
+    """
+    check_branch_name(branch)
+    return "`" + f"{database}/{branch}".replace("`", "``") + "`"
 
 
 def literal(value: Any) -> str:

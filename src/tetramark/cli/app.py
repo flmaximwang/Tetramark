@@ -15,6 +15,7 @@ from tetramark import __version__
 from tetramark.cli.alias import alias_app
 from tetramark.cli.aliquot import aliquot_app
 from tetramark.cli.box import box_app
+from tetramark.cli.branch import branch_app
 from tetramark.cli.check import check_command
 from tetramark.cli.config import config_app
 from tetramark.cli.csv_io import export_command, import_command
@@ -65,6 +66,18 @@ def root(
         "-l",
         help="Ledger name (default: the workspace's default ledger).",
     ),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        "-b",
+        help=(
+            "Session branch: all reads, writes and commits of this command happen "
+            "on BRANCH (default: 'branch:' in ledger.yaml, else the checked-out "
+            "branch). A missing branch is an error; it is never created. This is "
+            "not the remote branch: 'tm remote push/pull -b' keeps naming the "
+            "branch on the remote."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -99,6 +112,7 @@ def root(
     ctx.obj = GlobalOptions(
         workspace=workspace,
         ledger=ledger,
+        branch=branch,
         dry_run=dry_run,
         no_commit=no_commit,
         json=as_json,
@@ -121,6 +135,7 @@ app.command("import")(import_command)
 app.command("export")(export_command)
 app.add_typer(remote_app, name="remote")
 app.add_typer(config_app, name="config")
+app.add_typer(branch_app, name="branch")
 app.command("backup")(backup_command)
 app.command("find")(find_command)
 app.command("history")(history_command)
