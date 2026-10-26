@@ -15,14 +15,21 @@ import pytest
 import yaml
 
 from tetramark import Ledger, __version__, init_ledger, open as open_ledger
-from tetramark.core.ledger import InitPlan, WriteSession
+from tetramark.core.ledger import AdoptPlan, InitPlan, WriteSession, adopt_ledger
 from tetramark.core.ids import DatecodeIds, UuidIds
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
 
-from conftest import FACTORY_AUTHOR, PRESETS
+from conftest import (
+    FACTORY_AUTHOR,
+    PRESETS,
+    admin_connection,
+    drop_database,
+    worker_id,
+)
 
 CLI_AUTHOR = "CLI User <cli@tetramark.invalid>"
+LEGACY_AUTHOR = "Legacy User <legacy@tetramark.invalid>"
 
 
 # ---------------------------------------------------------------------------
@@ -771,3 +778,817 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     assert single["kind"] == "plasmid"
     assert single["object"] == "entity"
     assert "sequence" in single["fields"]
+
+
+# ---------------------------------------------------------------------------
+# Adopt an existing database (spec A4)
+# ---------------------------------------------------------------------------
+
+
+def make_bare_database(workspace: Workspace, name: str, dolt_run) -> Path:
+    """A ``dolt init`` database inside the workspace, without ``ledger.yaml``."""
+    path = workspace.ledger_path(name)
+    path.mkdir(parents=True)
+    dolt_run(
+        "init",
+        "--name=Legacy User",
+        "--email=legacy@tetramark.invalid",
+        cwd=path,
+    )
+    assert (path / ".dolt").is_dir(), "dolt init did not create .dolt"
+    return path
+
+
+def dolt_query(path: Path, dolt_run, sql: str) -> list[dict[str, object]]:
+    """Rows of one read-only ``dolt sql -r json`` query in ``path``."""
+    output = dolt_run("sql", "-r", "json", "-q", sql, cwd=path).stdout
+    return list(json.loads(output).get("rows", []))
+
+
+def head_hash(path: Path, dolt_run) -> str:
+    rows = dolt_query(path, dolt_run, "SELECT DOLT_HASHOF('HEAD') AS h")
+    return str(rows[0]["h"])
+
+
+def dolt_messages(path: Path, dolt_run) -> list[str]:
+    return [
+        str(row["message"])
+        for row in dolt_query(path, dolt_run, "SELECT message FROM dolt_log")
+    ]
+
+
+def object_names(path: Path, dolt_run) -> list[str]:
+    """Every table and view currently in the database."""
+    return [
+        str(row["name"])
+        for row in dolt_query(
+            path,
+            dolt_run,
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() ORDER BY table_name",
+        )
+    ]
+
+
+def working_set(path: Path, dolt_run) -> list[dict[str, object]]:
+    return dolt_query(path, dolt_run, "SELECT * FROM dolt_status")
+
+
+def commit_all(path: Path, dolt_run, message: str) -> None:
+    dolt_run("add", "-A", cwd=path)
+    dolt_run("commit", "-m", message, "--author", LEGACY_AUTHOR, cwd=path)
+
+
+def create_legacy_schema(path: Path, dolt_run, *, tests_row: bool = False) -> None:
+    """The pre-Tetramark shape: user tables, a view (and optionally a dolt test)."""
+    dolt_run(
+        "sql",
+        "-q",
+        "CREATE TABLE legacy_entity (id VARCHAR(64) NOT NULL, PRIMARY KEY (id));"
+        "INSERT INTO legacy_entity VALUES ('e1');"
+        "CREATE VIEW legacy_entities AS SELECT id FROM legacy_entity;"
+        "CREATE TABLE legacy_stock (id BIGINT NOT NULL, PRIMARY KEY (id));",
+        cwd=path,
+    )
+    if tests_row:
+        dolt_run(
+            "sql",
+            "-q",
+            "INSERT INTO dolt_tests (test_name, test_group, test_query, "
+            "assertion_type, assertion_comparator, assertion_value) VALUES "
+            "('legacy_check', 'core', 'SELECT 1', 'expected_single_value', '==', '1')",
+            cwd=path,
+        )
+    commit_all(path, dolt_run, "legacy schema")
+
+
+def drop_legacy_schema(path: Path, dolt_run) -> None:
+    """The migration's own commit: drop every legacy object, keep the history."""
+    dolt_run(
+        "sql",
+        "-q",
+        "DROP VIEW legacy_entities; DROP TABLE legacy_entity; DROP TABLE legacy_stock;",
+        cwd=path,
+    )
+    commit_all(path, dolt_run, "migrate: drop legacy schema")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_adopt_refuses_a_legacy_schema_and_writes_nothing(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    dolt_run,
+    dry_run: bool,
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "legacy", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    head = head_hash(path, dolt_run)
+    messages = dolt_messages(path, dolt_run)
+    objects = object_names(path, dolt_run)
+    assert objects == ["legacy_entities", "legacy_entity", "legacy_stock"]
+
+    with pytest.raises(LedgerError, match="schema is not empty"):
+        adopt_ledger(
+            workspace,
+            "legacy",
+            [PRESETS / "base"],
+            author=LEGACY_AUTHOR,
+            dry_run=dry_run,
+        )
+
+    # A refusal is zero writes: no table/view, commit, HEAD or ledger.yaml change.
+    assert object_names(path, dolt_run) == objects
+    assert head_hash(path, dolt_run) == head
+    assert dolt_messages(path, dolt_run) == messages
+    assert working_set(path, dolt_run) == []
+    assert not (path / "ledger.yaml").exists()
+
+
+def test_adopt_refuses_a_database_with_dolt_tests_rows(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "tested", dolt_run)
+    create_legacy_schema(path, dolt_run, tests_row=True)
+    drop_legacy_schema(path, dolt_run)  # tables/views gone, the test row remains
+    head = head_hash(path, dolt_run)
+
+    with pytest.raises(LedgerError, match="dolt_tests"):
+        adopt_ledger(workspace, "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
+
+    assert head_hash(path, dolt_run) == head
+    assert not (path / "ledger.yaml").exists()
+
+    # Emptying dolt_tests is the documented preparation step; then adopt works.
+    dolt_run("sql", "-q", "DELETE FROM dolt_tests", cwd=path)
+    commit_all(path, dolt_run, "migrate: clear legacy dolt_tests")
+    pre_head = head_hash(path, dolt_run)
+    ledger = adopt_ledger(workspace, "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
+    assert ledger.meta["adopted_from_commit"] == pre_head
+
+
+def test_adopt_refuses_a_dirty_working_set(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "dirty", dolt_run)
+    dolt_run("sql", "-q", "CREATE TABLE scratch (id BIGINT)", cwd=path)
+    head = head_hash(path, dolt_run)
+    status = working_set(path, dolt_run)
+    assert status and status[0]["table_name"] == "scratch"
+
+    with pytest.raises(LedgerError, match="working set is not clean"):
+        adopt_ledger(workspace, "dirty", [PRESETS / "base"], author=LEGACY_AUTHOR)
+
+    assert head_hash(path, dolt_run) == head
+    assert working_set(path, dolt_run) == status  # untouched, still dirty
+    assert not (path / "ledger.yaml").exists()
+
+
+def test_adopt_requires_an_existing_dolt_database(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    with pytest.raises(LedgerError, match="no Dolt database"):
+        adopt_ledger(
+            workspace, "absent", [PRESETS / "base"], author=LEGACY_AUTHOR
+        )
+    assert not workspace.ledger_path("absent").exists()
+
+    plain = workspace.ledger_path("plain")
+    plain.mkdir()
+    with pytest.raises(LedgerError, match="not a Dolt database"):
+        adopt_ledger(workspace, "plain", [PRESETS / "base"], author=LEGACY_AUTHOR)
+    assert list(plain.iterdir()) == []
+
+
+def test_adopt_reports_a_missing_branch_as_a_usage_error(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "branchless", dolt_run)
+    head = head_hash(path, dolt_run)
+
+    with pytest.raises(UsageError, match="does not exist"):
+        adopt_ledger(
+            workspace,
+            "branchless",
+            [PRESETS / "base"],
+            author=LEGACY_AUTHOR,
+            branch="absent",
+        )
+
+    branches = dolt_query(path, dolt_run, "SELECT name FROM dolt_branches")
+    assert [row["name"] for row in branches] == ["main"]
+    assert head_hash(path, dolt_run) == head
+    assert not (path / "ledger.yaml").exists()
+
+
+def test_adopt_formats_an_existing_database_and_keeps_its_history(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "legacy", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    drop_legacy_schema(path, dolt_run)
+    pre_head = head_hash(path, dolt_run)
+    old_messages = dolt_messages(path, dolt_run)
+    old_count = len(old_messages)
+
+    ledger = adopt_ledger(
+        workspace,
+        "legacy",
+        [PRESETS / "base"],
+        id_prefix="12",
+        author=LEGACY_AUTHOR,
+    )
+
+    assert isinstance(ledger, Ledger)
+    assert ledger.path == path
+    assert (path / "ledger.yaml").is_file()
+    assert read_config(ledger)["name"] == "legacy"
+    assert read_config(ledger)["author"] == LEGACY_AUTHOR
+
+    # Provenance: adopted_from_commit is the branch HEAD *before* the adopt
+    # commit, and the format/tool versions are stamped like a normal init.
+    meta = ledger.meta
+    assert meta["spec_version"] == "1"
+    assert meta["tetramark_version"] == __version__
+    assert meta["created_with"] == __version__
+    assert meta["adopted_from_commit"] == pre_head
+    assert set(meta) == {
+        "spec_version",
+        "tetramark_version",
+        "created_with",
+        "fingerprint",
+        "preset_versions",
+        "ledger_yaml",
+        "adopted_from_commit",
+    }
+    assert meta["fingerprint"] == ledger.schema.fingerprint()
+
+    # Exactly one new commit, on top of the untouched old history.
+    messages = dolt_messages(path, dolt_run)
+    assert len(messages) == old_count + 1
+    assert messages[0] == "adopt(ledger): legacy"
+    assert set(old_messages) <= set(messages)
+    assert latest_commit(ledger)["message"] == "adopt(ledger): legacy"
+    assert latest_commit(ledger)["author"] == "Legacy User"
+    assert ledger.driver.query("SELECT * FROM dolt_status") == []
+
+    # The adopted ledger is immediately usable: generated tests all pass.
+    report = ledger.check()
+    assert report.count > 0
+    assert report.passed, [failure.name for failure in report.failures]
+
+
+def test_adopt_dry_run_reports_and_writes_nothing(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "planned", dolt_run)
+    head = head_hash(path, dolt_run)
+    messages = dolt_messages(path, dolt_run)
+
+    plan = adopt_ledger(
+        workspace,
+        "planned",
+        [PRESETS / "base"],
+        author=LEGACY_AUTHOR,
+        dry_run=True,
+    )
+
+    assert isinstance(plan, AdoptPlan)
+    assert isinstance(plan, InitPlan)  # the dry-run contract of init is kept
+    assert plan.name == "planned"
+    assert plan.path == path
+    assert plan.branch == "main"
+    assert plan.adopted_from_commit == head
+    assert "CREATE TABLE `ledger_meta`" in plan.sql
+    assert not (path / "ledger.yaml").exists()
+    assert head_hash(path, dolt_run) == head
+    assert dolt_messages(path, dolt_run) == messages
+    assert object_names(path, dolt_run) == []
+
+
+def test_adopt_force_config_overwrites_an_existing_ledger_yaml(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "configured", dolt_run)
+    stale = "name: stale\npresets: []\n"
+    (path / "ledger.yaml").write_text(stale, encoding="utf-8")
+    head = head_hash(path, dolt_run)
+
+    with pytest.raises(LedgerError, match="force-config"):
+        adopt_ledger(
+            workspace, "configured", [PRESETS / "base"], author=LEGACY_AUTHOR
+        )
+    assert (path / "ledger.yaml").read_text(encoding="utf-8") == stale
+    assert head_hash(path, dolt_run) == head
+
+    ledger = adopt_ledger(
+        workspace,
+        "configured",
+        [PRESETS / "base"],
+        author=LEGACY_AUTHOR,
+        force_config=True,
+    )
+    assert ledger.meta["adopted_from_commit"] == head
+    assert read_config(ledger)["name"] == "configured"
+    assert read_config(ledger)["author"] == LEGACY_AUTHOR
+
+
+def test_failed_adopt_rolls_back_without_removing_the_database(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    dolt_run,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for SPEC A4: a failed adopt must never rmtree the database."""
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "protected", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    drop_legacy_schema(path, dolt_run)
+    pre_head = head_hash(path, dolt_run)
+    messages = dolt_messages(path, dolt_run)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected adopt failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr("tetramark.core.ledger.install_tests", boom)
+        with pytest.raises(RuntimeError, match="injected adopt failure"):
+            adopt_ledger(
+                workspace, "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
+            )
+
+    # The directory, its .dolt repository and the whole history survive.
+    assert path.is_dir()
+    assert (path / ".dolt").is_dir()
+    assert head_hash(path, dolt_run) == pre_head
+    assert dolt_messages(path, dolt_run) == messages
+    # The partial DDL was dropped and the working set is clean again.
+    assert object_names(path, dolt_run) == []
+    assert working_set(path, dolt_run) == []
+    assert not (path / "ledger.yaml").exists()
+
+    # ... and because the rollback is complete, adopting can simply be retried.
+    ledger = adopt_ledger(
+        workspace, "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
+    )
+    assert ledger.meta["adopted_from_commit"] == pre_head
+    assert dolt_messages(path, dolt_run)[0] == "adopt(ledger): protected"
+
+
+def test_failed_adopt_with_force_config_restores_the_ledger_yaml(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    dolt_run,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "restore", dolt_run)
+    stale = "name: stale\npresets: []\n"
+    (path / "ledger.yaml").write_text(stale, encoding="utf-8")
+    head = head_hash(path, dolt_run)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected adopt failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr("tetramark.core.ledger.install_tests", boom)
+        with pytest.raises(RuntimeError, match="injected adopt failure"):
+            adopt_ledger(
+                workspace,
+                "restore",
+                [PRESETS / "base"],
+                author=LEGACY_AUTHOR,
+                force_config=True,
+            )
+
+    assert (path / "ledger.yaml").read_text(encoding="utf-8") == stale
+    assert head_hash(path, dolt_run) == head
+    assert object_names(path, dolt_run) == []
+
+
+def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
+    tmp_path: Path, dolt_env: dict[str, str], dolt_run
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "branched", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    main_head = head_hash(path, dolt_run)
+    main_messages = dolt_messages(path, dolt_run)
+
+    # The migration's shape: branch, drop the legacy schema on the branch,
+    # then adopt on the branch while main keeps the old schema.
+    dolt_run(
+        "sql",
+        "-q",
+        "CALL DOLT_BRANCH('tetramark');",
+        cwd=path,
+    )
+    dolt_run(
+        "sql",
+        "-q",
+        "USE `branched/tetramark`;"
+        "DROP VIEW legacy_entities; DROP TABLE legacy_entity; DROP TABLE legacy_stock;"
+        "CALL DOLT_COMMIT('-Am', 'migrate: drop legacy schema');",
+        cwd=path,
+    )
+    branch_head = str(
+        dolt_query(
+            path,
+            dolt_run,
+            "USE `branched/tetramark`; SELECT DOLT_HASHOF('HEAD') AS h",
+        )[0]["h"]
+    )
+    branch_count = int(
+        dolt_query(
+            path,
+            dolt_run,
+            "USE `branched/tetramark`; SELECT COUNT(*) AS n FROM dolt_log",
+        )[0]["n"]
+    )
+
+    ledger = adopt_ledger(
+        workspace,
+        "branched",
+        [PRESETS / "base"],
+        author=LEGACY_AUTHOR,
+        branch="tetramark",
+    )
+    assert ledger.branch == "tetramark"
+    assert ledger.meta["adopted_from_commit"] == branch_head
+    assert ledger.check().passed
+    branch_messages = [
+        str(row["message"])
+        for row in ledger.driver.query("SELECT message FROM dolt_log")
+    ]
+    assert len(branch_messages) == branch_count + 1
+    assert branch_messages[0] == "adopt(ledger): branched"
+
+    # main is exactly where it was: same HEAD, same history, same tables.
+    assert head_hash(path, dolt_run) == main_head
+    assert dolt_messages(path, dolt_run) == main_messages
+    assert object_names(path, dolt_run) == [
+        "legacy_entities",
+        "legacy_entity",
+        "legacy_stock",
+    ]
+
+
+@pytest.mark.server
+def test_adopt_formats_an_existing_server_database(server_workspace: Workspace) -> None:
+    """Adopt works through the server driver (the production path)."""
+    from tetramark.driver.server import ServerDriver
+
+    name = f"t_{worker_id()}_adopt"
+    host, port = server_workspace.config.host, server_workspace.config.port
+    with admin_connection(server_workspace) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE `{name}`")
+    try:
+        assert (server_workspace.data_dir / name / ".dolt").is_dir()
+        main_driver = ServerDriver(host, port, name)
+        main_driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
+        main_driver.commit("legacy schema", FACTORY_AUTHOR)
+        main_head = str(
+            main_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
+        )
+        main_driver.execute("CALL DOLT_BRANCH(%s)", ("tetramark",))
+        main_driver.close()
+
+        branch_driver = ServerDriver(host, port, name, branch="tetramark")
+        branch_driver.execute("DROP TABLE legacy_t")
+        branch_driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
+        branch_head = str(
+            branch_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
+        )
+        branch_count = int(
+            branch_driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]
+        )
+        branch_driver.close()
+
+        ledger = adopt_ledger(
+            server_workspace,
+            name,
+            [PRESETS / "base"],
+            author=FACTORY_AUTHOR,
+            branch="tetramark",
+        )
+        try:
+            assert ledger.branch == "tetramark"
+            assert ledger.meta["adopted_from_commit"] == branch_head
+            assert ledger.meta["spec_version"] == "1"
+            assert ledger.check().passed
+            messages = [
+                str(row["message"])
+                for row in ledger.driver.query("SELECT message FROM dolt_log")
+            ]
+            assert len(messages) == branch_count + 1
+            assert messages[0] == f"adopt(ledger): {name}"
+        finally:
+            ledger.close()
+
+        reopened = ServerDriver(host, port, name)
+        try:
+            assert reopened.query(
+                "SELECT table_name AS name FROM information_schema.tables "
+                "WHERE table_schema = DATABASE()"
+            ) == [{"name": "legacy_t"}]
+            assert str(
+                reopened.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
+            ) == main_head
+        finally:
+            reopened.close()
+    finally:
+        drop_database(server_workspace, name)
+
+
+# ---------------------------------------------------------------------------
+# Adopt CLI (spec A4)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_init_help_documents_adopt(cli_isolated: None) -> None:
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    result = CliRunner().invoke(app, ["init", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--adopt" in result.output
+    assert "--force-config" in result.output
+
+
+def test_cli_init_adopt_formats_an_existing_database(
+    cli_isolated: None, tmp_path: Path, dolt_run
+) -> None:
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    data = tmp_path / "data"
+    workspace = Workspace.create(data)
+    path = make_bare_database(workspace, "cliadopt", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    drop_legacy_schema(path, dolt_run)
+    pre_head = head_hash(path, dolt_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--workspace",
+            str(data),
+            "init",
+            "cliadopt",
+            "--adopt",
+            "--preset",
+            str(PRESETS / "base"),
+            "--id-prefix",
+            "12",
+            "--author",
+            CLI_AUTHOR,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Adopted ledger cliadopt" in result.output
+    assert f"adopted    : {pre_head}" in result.output
+
+    ledger = open_ledger(workspace, "cliadopt")
+    try:
+        assert latest_commit(ledger)["message"] == "adopt(ledger): cliadopt"
+        assert ledger.meta["adopted_from_commit"] == pre_head
+        assert ledger.author == CLI_AUTHOR
+    finally:
+        ledger.close()
+
+
+def test_cli_init_adopt_uses_the_global_branch(
+    cli_isolated: None, tmp_path: Path, dolt_run
+) -> None:
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    data = tmp_path / "data"
+    workspace = Workspace.create(data)
+    path = make_bare_database(workspace, "clibranch", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    main_head = head_hash(path, dolt_run)
+    dolt_run("sql", "-q", "CALL DOLT_BRANCH('tetramark');", cwd=path)
+    dolt_run(
+        "sql",
+        "-q",
+        "USE `clibranch/tetramark`;"
+        "DROP VIEW legacy_entities; DROP TABLE legacy_entity; DROP TABLE legacy_stock;"
+        "CALL DOLT_COMMIT('-Am', 'migrate: drop legacy schema');",
+        cwd=path,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--workspace",
+            str(data),
+            "-b",
+            "tetramark",
+            "init",
+            "clibranch",
+            "--adopt",
+            "--preset",
+            str(PRESETS / "base"),
+            "--author",
+            CLI_AUTHOR,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "branch     : tetramark" in result.output
+    assert "Adopted ledger clibranch" in result.output
+
+    # main still carries the legacy schema and the same HEAD.
+    assert object_names(path, dolt_run) == [
+        "legacy_entities",
+        "legacy_entity",
+        "legacy_stock",
+    ]
+    assert head_hash(path, dolt_run) == main_head
+    branches = dolt_query(path, dolt_run, "SELECT name FROM dolt_branches")
+    assert {row["name"] for row in branches} == {"main", "tetramark"}
+
+
+def test_cli_init_adopt_dry_run_prints_and_writes_nothing(
+    cli_isolated: None, tmp_path: Path, dolt_run
+) -> None:
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    data = tmp_path / "data"
+    workspace = Workspace.create(data)
+    path = make_bare_database(workspace, "cliplanned", dolt_run)
+    head = head_hash(path, dolt_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--workspace",
+            str(data),
+            "--dry-run",
+            "init",
+            "cliplanned",
+            "--adopt",
+            "--preset",
+            str(PRESETS / "base"),
+            "--author",
+            CLI_AUTHOR,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Would adopt ledger cliplanned" in result.output
+    assert f"HEAD {head}" in result.output
+    assert "CREATE TABLE `ledger_meta`" in result.output
+    assert not (path / "ledger.yaml").exists()
+    assert head_hash(path, dolt_run) == head
+    assert object_names(path, dolt_run) == []
+
+
+def test_cli_init_adopt_refuses_a_legacy_schema(
+    cli_isolated: None,
+    tmp_path: Path,
+    dolt_run,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import sys
+
+    from tetramark.cli.app import main
+
+    data = tmp_path / "data"
+    workspace = Workspace.create(data)
+    path = make_bare_database(workspace, "clirefused", dolt_run)
+    create_legacy_schema(path, dolt_run)
+    head = head_hash(path, dolt_run)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tm",
+            "--workspace",
+            str(data),
+            "init",
+            "clirefused",
+            "--adopt",
+            "--preset",
+            str(PRESETS / "base"),
+            "--author",
+            CLI_AUTHOR,
+        ],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 1
+    assert "schema is not empty" in capsys.readouterr().err
+    assert head_hash(path, dolt_run) == head
+
+
+def test_cli_force_config_requires_adopt(
+    cli_isolated: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import sys
+
+    from tetramark.cli.app import main
+
+    data = tmp_path / "data"
+    Workspace.create(data)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tm",
+            "--workspace",
+            str(data),
+            "init",
+            "noadopt",
+            "--preset",
+            str(PRESETS / "base"),
+            "--force-config",
+            "--author",
+            CLI_AUTHOR,
+        ],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == EXIT_USAGE
+    assert "--force-config only applies to --adopt" in capsys.readouterr().err
+
+
+@pytest.mark.server
+def test_failed_adopt_on_a_server_database_rolls_back(
+    server_workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production path: the server database survives a failed adopt too."""
+    from tetramark.driver.server import ServerDriver
+
+    name = f"t_{worker_id()}_adopt_fail"
+    host, port = server_workspace.config.host, server_workspace.config.port
+    with admin_connection(server_workspace) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE `{name}`")
+    try:
+        driver = ServerDriver(host, port, name)
+        driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
+        driver.commit("legacy schema", FACTORY_AUTHOR)
+        driver.execute("DROP TABLE legacy_t")
+        driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
+        pre_head = str(driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"])
+        base_count = int(driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"])
+        driver.close()
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected adopt failure")
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr("tetramark.core.ledger.install_tests", boom)
+            with pytest.raises(RuntimeError, match="injected adopt failure"):
+                adopt_ledger(
+                    server_workspace,
+                    name,
+                    [PRESETS / "base"],
+                    author=FACTORY_AUTHOR,
+                )
+
+        assert (server_workspace.data_dir / name / ".dolt").is_dir()
+        check = ServerDriver(host, port, name)
+        try:
+            assert str(check.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]) == (
+                pre_head
+            )
+            assert int(check.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]) == (
+                base_count
+            )
+            assert check.query(
+                "SELECT table_name AS name FROM information_schema.tables "
+                "WHERE table_schema = DATABASE()"
+            ) == []
+            assert check.query("SELECT * FROM dolt_status") == []
+        finally:
+            check.close()
+
+        # The rollback is complete, so the adopt can be retried as-is.
+        ledger = adopt_ledger(
+            server_workspace, name, [PRESETS / "base"], author=FACTORY_AUTHOR
+        )
+        try:
+            assert ledger.meta["adopted_from_commit"] == pre_head
+        finally:
+            ledger.close()
+    finally:
+        drop_database(server_workspace, name)
