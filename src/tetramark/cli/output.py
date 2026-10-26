@@ -23,7 +23,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from tetramark.cli.options import GlobalOptions
+from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, target_branch
 from tetramark.errors import UsageError
 
 __all__ = [
@@ -150,9 +150,16 @@ def emit_write(
     session = getattr(ledger, "last_write", None)
     if session is not None and session.dry_run:
         if as_json:
-            _dump({"dry_run": True, "sql": session.sql, "result": result})
+            _dump(
+                {
+                    "dry_run": True,
+                    "branch": target_branch(ledger),
+                    "sql": session.sql,
+                    "result": result,
+                }
+            )
         else:
-            typer.echo(session.sql)
+            echo_dry_run_sql(ledger, session.sql)
         return
     if as_json:
         _dump(result)

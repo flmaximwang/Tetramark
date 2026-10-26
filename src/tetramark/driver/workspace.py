@@ -310,8 +310,12 @@ class Workspace:
         return "\n".join(content.splitlines()[-lines:])
 
     # -- drivers ----------------------------------------------------------
-    def driver_for(self, ledger: str | None = None) -> Driver:
-        """A :class:`ServerDriver` when the server is up, else an :class:`EmbeddedDriver`."""
+    def driver_for(self, ledger: str | None = None, *, branch: str | None = None) -> Driver:
+        """A :class:`ServerDriver` when the server is up, else an :class:`EmbeddedDriver`.
+
+        ``branch`` selects a session branch through a ``db/branch`` revision
+        database; the repository's checked-out branch is left untouched.
+        """
         name = ledger or self.config.default_ledger
         if not name:
             raise UsageError(
@@ -319,10 +323,12 @@ class Workspace:
             )
         path = self.ledger_path(name)
         if self.running_pid() is not None and self.port_in_use():
-            return ServerDriver(self.config.host, self.config.port, name)
+            return ServerDriver(
+                self.config.host, self.config.port, name, branch=branch
+            )
         if not (path / ".dolt").is_dir():
             raise UnreachableError(f"ledger {name!r} not found in {self.data_dir}")
-        return EmbeddedDriver(path, env=self._env)
+        return EmbeddedDriver(path, branch=branch, env=self._env)
 
     # -- internals --------------------------------------------------------
     def _server_argv(self) -> list[str]:

@@ -894,6 +894,7 @@ class LedgerConfig(BaseModel):
 
     name: str
     presets: list[str] = PydanticField(default_factory=list)
+    branch: str | None = None
     kinds_dir: str | None = None
     rules_dir: str | None = None
     author: str | None = None

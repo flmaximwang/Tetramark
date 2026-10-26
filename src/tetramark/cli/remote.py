@@ -67,7 +67,16 @@ def remote_rm(
 def remote_push(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
-    branch: str | None = typer.Option(None, "--branch", "-b", help="Branch to push."),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        "-b",
+        help=(
+            "Remote branch name to push (default: the session branch — the "
+            "global -b, else the checked-out branch). Unlike the global "
+            "'tm -b', this names a branch on the remote."
+        ),
+    ),
 ) -> None:
     """Push the current branch to a remote."""
     ledger = resolve_ledger(ctx)
@@ -81,7 +90,16 @@ def remote_push(
 def remote_pull(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
-    branch: str | None = typer.Option(None, "--branch", "-b", help="Branch to pull."),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        "-b",
+        help=(
+            "Remote branch name to pull (default: the session branch — the "
+            "global -b, else the checked-out branch). Unlike the global "
+            "'tm -b', this names a branch on the remote."
+        ),
+    ),
 ) -> None:
     """Pull the current branch from a remote."""
     ledger = resolve_ledger(ctx)
