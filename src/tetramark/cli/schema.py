@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import typer
 import yaml
 
 from tetramark.cli.options import resolve_ledger
+from tetramark.core.ledger import (
+    META_CREATED_WITH,
+    META_SPEC_VERSION,
+    META_TETRAMARK_VERSION,
+)
 from tetramark.errors import LedgerError
 from tetramark.schema.diff import (
     SchemaPlan,
@@ -34,7 +40,10 @@ def show_schema(
     """Print the effective schema (kinds, rules, statuses, fingerprint)."""
     ledger = resolve_ledger(ctx)
     try:
-        payload = schema_payload(ledger.schema, kind=kind)
+        # ``ledger_meta`` is unreachable once the driver is closed, so read it
+        # (and build the payload) first; spec A1's header lives in the meta.
+        meta = ledger.read_meta()
+        payload = schema_payload(ledger.schema, kind=kind, meta=meta)
     finally:
         ledger.close()
 
@@ -113,8 +122,8 @@ def echo_plan(current: SchemaPlan) -> None:
         typer.echo("schema is up to date")
         if current.meta_stale:
             typer.echo(
-                "ledger_meta fingerprint is stale; 'tm schema apply' "
-                "will refresh it"
+                "ledger_meta is stale; 'tm schema apply' will perform "
+                "a meta refresh"
             )
         return
 
@@ -131,18 +140,34 @@ def echo_plan(current: SchemaPlan) -> None:
         f"{len(current.destructive)} destructive"
     )
     if current.meta_stale:
-        typer.echo("ledger_meta fingerprint will be refreshed on apply")
+        typer.echo("ledger_meta is stale; a meta refresh will be applied")
 
 
-def schema_payload(schema: EffectiveSchema, *, kind: str | None = None) -> dict[str, Any]:
-    """A stable rendering of the effective schema, for YAML/JSON output."""
+def schema_payload(
+    schema: EffectiveSchema,
+    *,
+    kind: str | None = None,
+    meta: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """A stable rendering of the effective schema, for YAML/JSON output.
+
+    The header (spec A1) carries the ledger's format version and its tool
+    provenance, read from ``ledger_meta``.
+    """
+    stored = meta or {}
+    header: dict[str, Any] = {
+        META_SPEC_VERSION: stored.get(META_SPEC_VERSION),
+        META_TETRAMARK_VERSION: stored.get(META_TETRAMARK_VERSION),
+        META_CREATED_WITH: stored.get(META_CREATED_WITH),
+        "preset_versions": dict(sorted(schema.preset_versions.items())),
+    }
     if kind is not None:
-        return {"kind": kind, **_kind_payload(schema.kind(kind))}
+        return {**header, "kind": kind, **_kind_payload(schema.kind(kind))}
 
     return {
+        **header,
         "fingerprint": schema.fingerprint(),
         "statuses": list(schema.statuses),
-        "preset_versions": dict(sorted(schema.preset_versions.items())),
         "kinds": {
             name: _kind_payload(schema.kinds[name]) for name in sorted(schema.kinds)
         },

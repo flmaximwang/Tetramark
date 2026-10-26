@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tetramark import Ledger, init_ledger, open as open_ledger
+from tetramark import Ledger, __version__, init_ledger, open as open_ledger
 from tetramark.core.ledger import InitPlan, WriteSession
 from tetramark.core.ids import DatecodeIds, UuidIds
 from tetramark.driver.workspace import Workspace
@@ -138,11 +138,17 @@ def test_init_writes_ledger_yaml_and_ledger_meta(
     meta = ledger.meta
     assert set(meta) == {
         "spec_version",
+        "tetramark_version",
+        "created_with",
         "fingerprint",
         "preset_versions",
         "ledger_yaml",
     }
     assert meta["spec_version"] == "1"
+    assert meta["tetramark_version"] == __version__
+    assert meta["created_with"] == __version__
+    # Only ``tm init --adopt`` records the pre-adoption commit (TM-04).
+    assert "adopted_from_commit" not in meta
     assert meta["fingerprint"] == ledger.schema.fingerprint() == ledger.fingerprint
     assert json.loads(meta["preset_versions"]) == {
         "base": 2,
@@ -273,6 +279,8 @@ def test_open_reopens_with_the_same_schema_and_strategies(ledger_factory) -> Non
     assert reopened.ids["stock"].prefix == "77"
     assert set(reopened.meta) == {
         "spec_version",
+        "tetramark_version",
+        "created_with",
         "fingerprint",
         "preset_versions",
         "ledger_yaml",
@@ -624,9 +632,32 @@ def test_cli_schema_show(cli_isolated: None, ledger_factory) -> None:
     )
     assert result.exit_code == 0, result.output
     payload = yaml.safe_load(result.output)
+    # Spec A1 header: format version and tool provenance.
+    assert payload["spec_version"] == "1"
+    assert payload["tetramark_version"] == __version__
+    assert payload["created_with"] == __version__
+    assert payload["preset_versions"] == {"base": 2, "chain": 3, "full": 1}
     assert payload["fingerprint"] == ledger.fingerprint
     assert set(payload["kinds"]) >= {"item", "plasmid", "grid9x9", "everything"}
     assert payload["statuses"] == ["pending", "stored", "missing", "consumed"]
+
+    as_json = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(ledger.workspace.data_dir),
+            "--ledger",
+            "shown",
+            "schema",
+            "show",
+            "--json",
+        ],
+    )
+    assert as_json.exit_code == 0, as_json.output
+    json_payload = json.loads(as_json.output)
+    assert json_payload["spec_version"] == "1"
+    assert json_payload["tetramark_version"] == __version__
+    assert json_payload["created_with"] == __version__
 
     one = runner.invoke(
         app,
