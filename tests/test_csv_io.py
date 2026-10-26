@@ -449,6 +449,62 @@ def test_dry_run_reports_sql_and_writes_nothing(
     assert commit_count(ledger) == before
 
 
+def test_aliquot_label_is_imported_exported_and_round_trips(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """``aliquot.label`` (the physical tube label) is a CSV core column."""
+    source = ledger_factory([BASE], name="labelled")
+    item = source.entities.add("item", name="widget")
+    stock = source.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=0
+    )
+
+    path = write_csv(
+        tmp_path / "aliquots.csv",
+        "id,stock,seq,status,label,notes\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,AA-12,tube one\n",
+    )
+    import_csv(source, "aliquot", path, object_type="aliquot")
+
+    rows = source.driver.query("SELECT `label`, `notes` FROM `aliquot`")
+    assert rows == [{"label": "AA-12", "notes": "tube one"}]
+
+    # The export header carries the column right before `quantity`...
+    out = tmp_path / "export"
+    export_csv(source, "all", out_dir=out)
+    header = (out / "aliquots.csv").read_text(encoding="utf-8").splitlines()[0]
+    columns = header.split(",")
+    assert columns[columns.index("status") + 1] == "label"
+    assert "AA-12" in (out / "aliquots.csv").read_text(encoding="utf-8")
+
+    # ...and a full round trip into a fresh ledger keeps the label.
+    target = ledger_factory([BASE], name="labelled-target")
+    import_csv(target, "all", out)
+    assert target.driver.query("SELECT `label` FROM `aliquot`") == [
+        {"label": "AA-12"}
+    ]
+
+
+def test_aliquot_label_over_255_characters_is_rejected(
+    ledger_factory, tmp_path: Path
+) -> None:
+    ledger = ledger_factory([BASE], name="long-label")
+    item = ledger.entities.add("item", name="widget")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=0
+    )
+    long_label = "x" * 256
+    path = write_csv(
+        tmp_path / "aliquots.csv",
+        "id,stock,seq,status,label\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,{long_label}\n",
+    )
+    with pytest.raises(CsvImportError, match="label"):
+        import_csv(ledger, "aliquot", path, object_type="aliquot")
+    assert ledger.driver.query("SELECT COUNT(*) AS n FROM `aliquot`") == [{"n": 0}]
+
+
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------

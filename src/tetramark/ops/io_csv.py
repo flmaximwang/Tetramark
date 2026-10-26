@@ -13,8 +13,8 @@ header carries the core columns plus the kind's own fields:
 * ``box`` — ``id``, ``kind``, ``name``, ``parent``, ``parent_slot``,
   ``created_at``, ``notes``, the kind fields, ``alias``;
 * ``aliquot`` — ``id``, ``kind``, ``stock``, ``seq``, ``box``, ``slot``,
-  ``status``, ``quantity``, ``unit``, ``created_at``, ``notes``, the stock
-  kind's aliquot fields, ``alias``;
+  ``status``, ``label``, ``quantity``, ``unit``, ``created_at``, ``notes``, the
+  stock kind's aliquot fields, ``alias``;
 * ``alias`` — ``object_type``, ``object_id``, ``alias``.
 
 Aliases use a ``;``-separated ``alias`` column (and ``aliases.csv`` is also
@@ -96,6 +96,7 @@ _CORE_COLUMNS: dict[str, tuple[str, ...]] = {
         "box",
         "slot",
         "status",
+        "label",
         "quantity",
         "unit",
         "created_at",
@@ -1497,6 +1498,11 @@ class _Planner:
             )
         if status is None:
             status = "stored" if box_id is not None else "pending"
+        label = _text(data, "label")
+        if label is not None and len(label) > 255:
+            raise UsageError(
+                f"'label' is longer than 255 characters (got {len(label)})"
+            )
         quantity, unit = _parse_quantity_unit(
             _text(data, "quantity"), _text(data, "unit")
         )
@@ -1515,6 +1521,8 @@ class _Planner:
         notes = _raw(data, "notes")
         if notes is not None:
             payload["notes"] = notes
+        if label is not None:
+            payload["label"] = label
         created = _parse_created_at(_text(data, "created_at"))
         if created is not None:
             payload["created_at"] = created
