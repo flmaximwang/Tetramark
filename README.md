@@ -102,6 +102,42 @@ still work through the embedded driver — just don't run two writers against on
 More flows: register a design and its glycerol stock, aliquot a pellet and use part of it, move boxes,
 audit, import/export, back up. See `skills/tetramark/references/recipes.md`.
 
+## Versioning, branches and adopting an existing database
+
+Every ledger records its format version and tool provenance in `ledger_meta`:
+
+| key | meaning |
+|---|---|
+| `spec_version` | ledger **format** version, the key an upgrade pipeline reads; it only moves when the core tables, the `ledger_meta` key set or the generated objects change shape |
+| `tetramark_version` | the tool version that last wrote `ledger_meta` (`schema apply` refreshes it) |
+| `created_with` | the tool version that first formatted the ledger; never changes |
+| `adopted_from_commit` | only `tm init --adopt`: the branch HEAD the database was adopted from |
+
+`tm schema show` prints them in its header, and a ledger whose metadata predates these keys shows a
+"meta refresh" hint in `tm schema plan` instead of an error.
+
+### Branches
+
+Dolt branches are first-class: `tm -b BRANCH <command>` runs every read, write and commit of that
+command on BRANCH, without moving the branch other sessions (or the server) see — it selects a Dolt
+revision database (`` `db/branch` ``) for the session. The default is `branch:` in `ledger.yaml`, else
+the checked-out branch; a branch that does not exist is a usage error (it is never created
+implicitly). Manage branches with `tm branch ls`, `tm branch create NAME [--from REF]` and
+`tm branch delete NAME`. Merging is deliberately not part of `tm`: cut over with Dolt's own
+`CALL DOLT_MERGE('<branch>', '--ff-only')`.
+
+So an in-place schema upgrade is: create a branch, adopt/apply/import on it, verify, then
+fast-forward `main`. `main` stays readable until the cutover.
+
+### Adopting an existing Dolt database
+
+`tm init` creates a new ledger; `tm init --adopt` formats a Dolt database that already exists in the
+workspace — same schema, the entire history kept, plus one `adopt(ledger): NAME` commit. It requires
+an empty schema on the selected branch (no user tables, no views, no `dolt_tests` rows), a clean
+working set, and no `ledger.yaml` (pass `--force-config` to overwrite one). You drop the legacy schema
+yourself, as its own commit, before adopting; adopt never deletes anything, and a failed adopt rolls
+back without removing the database directory. See `docs/spec.md` §3.1.
+
 ## Concepts in one table
 
 | Object | What it is | ID |
