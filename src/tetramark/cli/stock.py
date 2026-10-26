@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import (
+    echo_dry_run_sql,
+    json_output,
+    resolve_ledger,
+)
 from tetramark.cli.output import emit_read, output_format
 
 stock_app = typer.Typer(
@@ -136,5 +143,62 @@ def list_stocks_command(
             fmt=output_format(ctx, as_json),
             columns=["id", "kind", "entity_id"],
         )
+    finally:
+        ledger.close()
+
+
+def _echo_renumber_plan(result: dict[str, Any]) -> None:
+    """Print the old → new mapping of a renumber run (stocks then aliquots)."""
+    for rename in result["renames"]:
+        typer.echo(f"stock   {rename['old']} -> {rename['new']}")
+        for aliquot in rename["aliquots"]:
+            typer.echo(f"aliquot {aliquot['old']} -> {aliquot['new']}")
+
+
+@stock_app.command("renumber")
+def renumber_stocks_command(
+    ctx: typer.Context,
+    ref: list[str] = typer.Argument(
+        None, help="One or more stock ids or aliases (required without --map)."
+    ),
+    new_id: str | None = typer.Option(
+        None,
+        "--id",
+        help="New stock id for the single REF; must match the stock id strategy.",
+    ),
+    auto: bool = typer.Option(
+        False,
+        "--auto",
+        help="Generate the new id(s) from the ledger's stock id strategy.",
+    ),
+    map_path: Path | None = typer.Option(
+        None,
+        "--map",
+        help=(
+            "Batch mapping file, one rename per line: OLD<TAB>NEW or OLD,NEW "
+            "(OLD alone with --auto); # comments and blank lines are ignored."
+        ),
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the old -> new mapping as JSON."
+    ),
+) -> None:
+    """Renumber stocks to strategy-shaped ids, keeping the old ids as aliases."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.stocks.renumber(
+            list(ref or []), new_id=new_id, auto=auto, map_path=map_path
+        )
+        session = ledger.last_write
+        if json_output(ctx, as_json):
+            emit_write(ledger, result, "", as_json=True)
+        elif session is not None and session.dry_run:
+            _echo_renumber_plan(result)
+            echo_dry_run_sql(ledger, session.sql)
+        else:
+            _echo_renumber_plan(result)
+            typer.echo(
+                f"Renumbered {len(result['renames'])} stock(s) in one commit"
+            )
     finally:
         ledger.close()

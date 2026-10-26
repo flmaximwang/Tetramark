@@ -33,10 +33,11 @@ import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tetramark.core.events import purge_events, record_event
-from tetramark.core.ids import aliquot_id, next_aliquot_id, parse_aliquot_id
+from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows, table_name
 from tetramark.schema.model import Field, FieldType, Kind
@@ -64,7 +65,9 @@ __all__ = [
     "move_aliquot",
     "move_box",
     "purge_aliquot",
+    "read_rename_map",
     "remove_alias",
+    "renumber_stocks",
     "set_aliquot_status",
     "show_entity",
     "show_stock",
@@ -1681,6 +1684,472 @@ def remove_alias(
 
 
 # ---------------------------------------------------------------------------
+# Renumbering stocks (TM-06)
+# ---------------------------------------------------------------------------
+
+#: Separators accepted between the old and the new id in a ``--map`` file.
+_RENAME_SEPARATORS: tuple[str, ...] = ("\t", ",")
+
+#: ``id`` columns are ``VARCHAR(64)`` in the generated DDL; aliquot ids append
+#: ``.<seq>``, so a generated id also has to leave room for that suffix.
+_ID_MAX_LENGTH = 64
+
+
+def read_rename_map(
+    path: str | Path, *, auto: bool = False
+) -> list[tuple[str, str | None]]:
+    """Parse a ``--map`` file into ``(old, new)`` pairs.
+
+    One rename per line: ``OLD<TAB>NEW`` or ``OLD,NEW``; with ``auto`` a line
+    may contain only ``OLD`` and the new id is generated.  Blank lines and
+    lines whose first non-space character is ``#`` are ignored.  Every problem
+    is reported with the file name and line number.
+    """
+    file_path = Path(path).expanduser()
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise UsageError(f"cannot read the mapping file {file_path}: {error}") from error
+
+    renames: list[tuple[str, str | None]] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        separator = next((sep for sep in _RENAME_SEPARATORS if sep in line), None)
+        if separator is None:
+            old, new = line, None
+        else:
+            parts = [part.strip() for part in line.split(separator)]
+            if len(parts) != 2:
+                raise UsageError(
+                    f"{file_path}: line {number}: expected one rename "
+                    f"'OLD{separator}NEW' (got {line!r})"
+                )
+            old, new = parts
+        if not old:
+            raise UsageError(f"{file_path}: line {number}: the old id is empty")
+        if new is not None and not new:
+            raise UsageError(f"{file_path}: line {number}: the new id is empty")
+        if new is None and not auto:
+            raise UsageError(
+                f"{file_path}: line {number}: missing the new id; "
+                "write 'OLD<TAB>NEW' or pass --auto"
+            )
+        renames.append((old, new))
+    if not renames:
+        raise UsageError(f"the mapping file {file_path} contains no renames")
+    return renames
+
+
+def _resolve_stock_target(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """Resolve one REF to a stock row, with a precise error for other objects."""
+    try:
+        return _resolve_core(ledger.driver, "stock", ref)
+    except LedgerError as error:
+        # Imported late: ``ops.find`` imports this module.
+        from tetramark.ops.find import resolve_any
+
+        try:
+            other = resolve_any(ledger, ref)
+        except LedgerError:
+            raise error from None
+        raise UsageError(
+            f"{ref!r} is a {other['object']} {other['id']}, not a stock"
+        ) from None
+
+
+def _alias_owners(ledger: Ledger, object_type: str) -> dict[str, str]:
+    """Alias text → object id for one object type (the alias namespace)."""
+    rows = ledger.driver.query(
+        f"SELECT {_quote('alias')}, {_quote('object_id')} FROM {_quote('alias')} "
+        f"WHERE {_quote('object_type')} = %s",
+        (object_type,),
+    )
+    return {str(row["alias"]): str(row["object_id"]) for row in rows}
+
+
+def _allocate_stock_ids(
+    ledger: Ledger, count: int, *, reserved: Iterable[str] = ()
+) -> list[str]:
+    """Allocate ``count`` fresh strategy-shaped stock ids (one per rename).
+
+    The strategy is asked for ids as if the already-chosen candidates existed,
+    and ids taken by an existing stock *alias* are skipped too: ids and aliases
+    share one namespace, so ``--auto`` must never produce a shadowing id.
+    """
+    strategy = ledger.id_strategy("stock")
+    taken = {
+        str(row["id"]) for row in ledger.driver.query("SELECT `id` FROM `stock`")
+    }
+    taken.update(_alias_owners(ledger, "stock"))
+    taken.update(str(value) for value in reserved)
+    today = _dt.date.today()
+
+    def existing(prefix: str) -> list[str]:
+        return sorted(value for value in taken if value.startswith(prefix))
+
+    chosen: list[str] = []
+    for _ in range(count):
+        candidate = strategy.next_id(existing, today)
+        while candidate in taken:
+            # A taken value (typically an alias) must push the strategy on.
+            taken.add(candidate)
+            candidate = strategy.next_id(existing, today)
+        taken.add(candidate)
+        chosen.append(candidate)
+    return chosen
+
+
+def _ref_target_object(ledger: Ledger, field: Field) -> str | None:
+    """The core object type a ``ref`` field points at (``None`` for non-refs)."""
+    if field.type is not FieldType.ref or field.to is None:
+        return None
+    target = str(field.to)
+    if target in OBJECT_TYPES:
+        return target
+    kind = ledger.schema.kinds.get(target)
+    return None if kind is None else kind.object.value
+
+
+def _renumber_ref_columns(
+    ledger: Ledger,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Kind ``ref`` columns that store a stock id or an aliquot id.
+
+    The core tables are handled separately; this catches user-defined
+    ``type: ref`` fields (including fields on aliquot extension tables), whose
+    foreign keys also point at the renamed primary keys.
+    """
+    stock_columns: list[tuple[str, str]] = []
+    aliquot_columns: list[tuple[str, str]] = []
+    for kind_name in sorted(ledger.schema.kinds):
+        kind = ledger.schema.kinds[kind_name]
+        scopes: list[tuple[str, Mapping[str, Field]]] = [
+            (table_name(kind.object.value, kind_name), kind.fields)
+        ]
+        if kind.object.value == "stock" and kind.aliquot_fields:
+            scopes.append((table_name("aliquot", kind_name), kind.aliquot_fields))
+        for table, fields in scopes:
+            for field_name in sorted(fields):
+                target = _ref_target_object(ledger, fields[field_name])
+                if target == "stock":
+                    stock_columns.append((table, field_name))
+                elif target == "aliquot":
+                    aliquot_columns.append((table, field_name))
+    return stock_columns, aliquot_columns
+
+
+def _emit_renumber_statements(
+    ledger: Ledger,
+    session: Any,
+    plans: Sequence[Mapping[str, Any]],
+    *,
+    stock_ref_columns: Sequence[tuple[str, str]],
+    aliquot_ref_columns: Sequence[tuple[str, str]],
+    skip_stock_aliases: set[str],
+    skip_aliquot_aliases: set[str],
+) -> None:
+    """Queue every reference update of one renumber batch in one session."""
+    for plan in plans:
+        old = str(plan["old"])
+        new = str(plan["new"])
+        kind_name = str(plan["kind"])
+        kind = ledger.schema.kind(kind_name)
+
+        session.execute("UPDATE `stock` SET `id` = %s WHERE `id` = %s", (new, old))
+        session.execute(
+            f"UPDATE {_quote(table_name('stock', kind_name))} "
+            "SET `id` = %s WHERE `id` = %s",
+            (new, old),
+        )
+
+        for aliquot in plan["aliquots"]:
+            old_alq = str(aliquot["old"])
+            new_alq = str(aliquot["new"])
+            session.execute(
+                "UPDATE `aliquot` SET `id` = %s, `stock_id` = %s WHERE `id` = %s",
+                (new_alq, new, old_alq),
+            )
+            if kind.aliquot_fields:
+                session.execute(
+                    f"UPDATE {_quote(table_name('aliquot', kind_name))} "
+                    "SET `id` = %s WHERE `id` = %s",
+                    (new_alq, old_alq),
+                )
+            session.execute(
+                "UPDATE `aliquot_event` SET `aliquot_id` = %s "
+                "WHERE `aliquot_id` = %s",
+                (new_alq, old_alq),
+            )
+            session.execute(
+                "UPDATE `stock` SET `source_aliquot_id` = %s "
+                "WHERE `source_aliquot_id` = %s",
+                (new_alq, old_alq),
+            )
+            for table, column in aliquot_ref_columns:
+                session.execute(
+                    f"UPDATE {_quote(table)} SET {_quote(column)} = %s "
+                    f"WHERE {_quote(column)} = %s",
+                    (new_alq, old_alq),
+                )
+
+        session.execute(
+            "UPDATE `stock` SET `parent_stock_id` = %s "
+            "WHERE `parent_stock_id` = %s",
+            (new, old),
+        )
+        for table, column in stock_ref_columns:
+            session.execute(
+                f"UPDATE {_quote(table)} SET {_quote(column)} = %s "
+                f"WHERE {_quote(column)} = %s",
+                (new, old),
+            )
+        session.execute(
+            "UPDATE `alias` SET `object_id` = %s "
+            "WHERE `object_type` = 'stock' AND `object_id` = %s",
+            (new, old),
+        )
+        for aliquot in plan["aliquots"]:
+            session.execute(
+                "UPDATE `alias` SET `object_id` = %s "
+                "WHERE `object_type` = 'aliquot' AND `object_id` = %s",
+                (str(aliquot["new"]), str(aliquot["old"])),
+            )
+
+        # Keep the old handles findable.  An existing alias that already names
+        # this very object was rewritten above, so inserting it again would
+        # only violate the alias primary key (idempotent case).
+        if old not in skip_stock_aliases:
+            session.execute(
+                "INSERT INTO `alias` (`object_type`, `object_id`, `alias`) "
+                "VALUES ('stock', %s, %s)",
+                (new, old),
+            )
+        for aliquot in plan["aliquots"]:
+            old_alq = str(aliquot["old"])
+            if old_alq not in skip_aliquot_aliases:
+                session.execute(
+                    "INSERT INTO `alias` (`object_type`, `object_id`, `alias`) "
+                    "VALUES ('aliquot', %s, %s)",
+                    (str(aliquot["new"]), old_alq),
+                )
+
+
+def renumber_stocks(
+    ledger: Ledger,
+    refs: Sequence[str] = (),
+    *,
+    new_id: str | None = None,
+    auto: bool = False,
+    map_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Renumber stocks (and their aliquots) to strategy-shaped ids.
+
+    Exactly one of ``new_id`` (one REF), ``auto`` (generated ids) or
+    ``map_path`` (a batch file) supplies the new ids; ``auto`` may be combined
+    with ``map_path`` to generate the id of lines that only give the old one.
+    The old stock and aliquot ids are kept as aliases, every referencing column
+    is rewritten, and the whole batch is one transaction and one Dolt commit.
+    """
+    selected = [str(ref).strip() for ref in refs]
+    if any(not ref for ref in selected):
+        raise UsageError("a stock REF must not be empty")
+    if new_id is not None and (auto or map_path is not None):
+        raise UsageError("--id cannot be combined with --auto or --map")
+    if new_id is None and not auto and map_path is None:
+        raise UsageError("nothing to renumber: pass --id NEW, --auto or --map PATH")
+    if new_id is not None and len(selected) != 1:
+        raise UsageError(f"--id takes exactly one REF (got {len(selected)})")
+    if map_path is not None and selected:
+        raise UsageError("REF and --map cannot be combined")
+    if map_path is None and not selected:
+        raise UsageError("nothing to renumber: give at least one REF or --map")
+
+    if map_path is not None:
+        requested = read_rename_map(map_path, auto=auto)
+    elif new_id is not None:
+        requested = [(selected[0], str(new_id))]
+    else:
+        requested = [(ref, None) for ref in selected]
+
+    # 1. Resolve every REF to an existing stock (id first, then alias).
+    plans: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref, wanted in requested:
+        row = _resolve_stock_target(ledger, ref)
+        old = str(row["id"])
+        if old in seen:
+            raise UsageError(f"stock {old!r} appears more than once in the rename list")
+        seen.add(old)
+        plans.append(
+            {"old": old, "new": wanted, "kind": str(row["kind"]), "aliquots": []}
+        )
+
+    # 2. Generate the ids the caller left open (--auto).
+    missing = [plan for plan in plans if plan["new"] is None]
+    if missing:
+        reserved = {str(plan["new"]) for plan in plans if plan["new"] is not None}
+        for plan, candidate in zip(
+            missing, _allocate_stock_ids(ledger, len(missing), reserved=reserved)
+        ):
+            plan["new"] = candidate
+
+    # 3. Validate every new id: shape, uniqueness, and the alias namespace.
+    strategy = ledger.id_strategy("stock")
+    existing_ids = {
+        str(row["id"]) for row in ledger.driver.query("SELECT `id` FROM `stock`")
+    }
+    stock_aliases = _alias_owners(ledger, "stock")
+    new_ids: dict[str, str] = {}
+    for plan in plans:
+        old = str(plan["old"])
+        new = str(plan["new"])
+        try:
+            strategy.require_valid(new)
+        except IdError as error:
+            raise IdError(f"{error} (new id for stock {old!r})") from None
+        if len(new) > _ID_MAX_LENGTH:
+            raise LedgerError(
+                f"stock id {new!r} is longer than {_ID_MAX_LENGTH} characters"
+            )
+        if new == old:
+            raise UsageError(
+                f"the new id for stock {old!r} must differ from the old id"
+            )
+        if new in new_ids:
+            raise UsageError(
+                f"the new id {new!r} is used for both {new_ids[new]!r} and {old!r}"
+            )
+        new_ids[new] = old
+        if new in existing_ids:
+            raise LedgerError(f"stock id {new!r} already exists")
+        if new in stock_aliases:
+            raise LedgerError(
+                f"{new!r} is already an alias of stock {stock_aliases[new]!r}; "
+                "stock ids and stock aliases share one namespace"
+            )
+
+    # 4. Collect the aliquots of every stock and the ids they would get.
+    candidates: list[str] = []
+    for plan in plans:
+        rows = ledger.driver.query(
+            "SELECT `id`, `seq` FROM `aliquot` WHERE `stock_id` = %s ORDER BY `seq`",
+            (plan["old"],),
+        )
+        aliquots: list[dict[str, Any]] = []
+        for row in rows:
+            seq = int(row["seq"])
+            old_alq = str(row["id"])
+            new_alq = aliquot_id(str(plan["new"]), seq)
+            if len(new_alq) > _ID_MAX_LENGTH:
+                raise LedgerError(
+                    f"aliquot id {new_alq!r} is longer than {_ID_MAX_LENGTH} characters"
+                )
+            aliquots.append({"old": old_alq, "new": new_alq, "seq": seq})
+            candidates.append(new_alq)
+        plan["aliquots"] = aliquots
+    if candidates:
+        placeholders = ", ".join("%s" for _ in candidates)
+        clashes = ledger.driver.query(
+            f"SELECT `id` FROM `aliquot` WHERE `id` IN ({placeholders})",
+            tuple(candidates),
+        )
+        if clashes:
+            raise LedgerError(
+                "aliquot id(s) already exist: "
+                + ", ".join(sorted(str(row["id"]) for row in clashes))
+            )
+
+    # 5. The old ids must be free as alias texts (they normally are: they are
+    #    the primary keys we are about to vacate).
+    skip_stock_aliases: set[str] = set()
+    for plan in plans:
+        old = str(plan["old"])
+        owner = stock_aliases.get(old)
+        if owner is None:
+            continue
+        if owner == old:
+            skip_stock_aliases.add(old)
+            continue
+        raise LedgerError(
+            f"cannot keep {old!r} as an alias: it is already an alias of "
+            f"stock {owner!r}"
+        )
+    aliquot_aliases = _alias_owners(ledger, "aliquot")
+    skip_aliquot_aliases: set[str] = set()
+    for plan in plans:
+        for aliquot in plan["aliquots"]:
+            old_alq = str(aliquot["old"])
+            owner = aliquot_aliases.get(old_alq)
+            if owner is None:
+                continue
+            if owner == old_alq:
+                skip_aliquot_aliases.add(old_alq)
+                continue
+            raise LedgerError(
+                f"cannot keep {old_alq!r} as an alias: it is already an alias "
+                f"of aliquot {owner!r}"
+            )
+
+    # 6. One transaction, one commit.  Foreign keys are NO ACTION, so a
+    #    primary-key rename needs the checks off; Dolt applies the setting per
+    #    session, and both drivers run the whole batch in one session.  The
+    #    reset is queued in a ``finally`` so a failing statement cannot leave a
+    #    session with the checks disabled.
+    stock_ref_columns, aliquot_ref_columns = _renumber_ref_columns(ledger)
+    count = len(plans)
+    summary = (
+        f"{plans[0]['old']} -> {plans[0]['new']}"
+        if count == 1
+        else f"{count} stock(s)"
+    )
+    try:
+        summary.encode("ascii")
+    except UnicodeEncodeError:
+        # Dolt may truncate a non-ASCII commit message mid-byte (2.3.x bug);
+        # fall back to the batch message instead of leaving writes uncommitted.
+        summary = f"{count} stock(s)"
+    with ledger.write(summary, verb="renumber", object="stock") as session:
+        session.execute("SET FOREIGN_KEY_CHECKS = 0")
+        try:
+            _emit_renumber_statements(
+                ledger,
+                session,
+                plans,
+                stock_ref_columns=stock_ref_columns,
+                aliquot_ref_columns=aliquot_ref_columns,
+                skip_stock_aliases=skip_stock_aliases,
+                skip_aliquot_aliases=skip_aliquot_aliases,
+            )
+        finally:
+            session.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+    mapping: dict[str, str] = {}
+    renames: list[dict[str, Any]] = []
+    for plan in plans:
+        mapping[str(plan["old"])] = str(plan["new"])
+        aliquots = []
+        for aliquot in plan["aliquots"]:
+            mapping[str(aliquot["old"])] = str(aliquot["new"])
+            aliquots.append({"old": aliquot["old"], "new": aliquot["new"]})
+        renames.append(
+            {
+                "old": plan["old"],
+                "new": plan["new"],
+                "kind": plan["kind"],
+                "aliquots": aliquots,
+            }
+        )
+    return {
+        "object": "stock",
+        "renames": renames,
+        "mapping": mapping,
+        "commit": session.commit_hash,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Facades attached to Ledger
 # ---------------------------------------------------------------------------
 
@@ -1773,6 +2242,18 @@ class StockOps:
 
     def show(self, ref: str) -> dict[str, Any]:
         return show_stock(self.ledger, ref)
+
+    def renumber(
+        self,
+        refs: Sequence[str] = (),
+        *,
+        new_id: str | None = None,
+        auto: bool = False,
+        map_path: str | Path | None = None,
+    ) -> dict[str, Any]:
+        return renumber_stocks(
+            self.ledger, refs, new_id=new_id, auto=auto, map_path=map_path
+        )
 
     def ls(
         self,

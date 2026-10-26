@@ -294,6 +294,8 @@ tm entity show ID|ALIAS ; tm entity edit ID --set f=v ; tm entity ls [KIND] [--w
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--box NAME --slot A1 [--slot A2 ...]] [--quantity 500 --unit ml]
 tm stock show|edit|ls ...
+tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
+                 # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot move ALQ --box NAME [--slot S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
@@ -311,6 +313,18 @@ tm export KIND|all [--out DIR]
 tm remote add NAME URL | push | pull ; tm backup [DIR]
 tm branch ls | create NAME [--from REF] | delete NAME
 ```
+
+`tm stock renumber` is the audited way to repair ids that do not follow the ledger's stock id strategy
+(legacy imports, hand-made ids). It renumbers one stock (`REF --id NEW`), many (`REF ... --auto`), or a
+wholesale batch (`--map PATH`, one `OLD<TAB>NEW` per line, `OLD` alone when combined with `--auto`).
+New ids are validated against `ids.stock` and against the alias namespace; the old stock id and every
+old aliquot id are kept as aliases, so `tm find OLD` and `tm find OLD_ALIQUOT` keep working and no
+handle is lost. Everything — `stock.id`, `aliquot.id`/`stock_id`, `aliquot_event.aliquot_id`, kind
+tables, aliquot extension tables, `ref` fields, `parent_stock_id`, `source_aliquot_id` and existing
+aliases — is rewritten in one transaction and one Dolt commit (`renumber(stock): OLD -> NEW` for one
+row, `renumber(stock): N stock(s)` for a batch). Because the foreign keys are `NO ACTION`, the primary
+key rename runs with `SET FOREIGN_KEY_CHECKS=0` and the checks are restored in the same session before
+the commit; `--dry-run` prints the mapping table and the SQL and writes nothing.
 
 Python API mirrors the CLI (`tetramark.open(workspace, ledger, branch=None)` → `Ledger` with
 `.entities`, `.stocks`, `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin layer over it.

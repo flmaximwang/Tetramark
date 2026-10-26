@@ -34,6 +34,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |
 | Mark lost / consumed without a quantity | `tm aliquot status ALQ missing\|consumed\|stored\|pending` |
 | Hard-delete a tube (rare) | `tm aliquot purge ALQ` |
+| Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
 | Find anything | `tm find ID\|ALIAS\|TEXT` |
