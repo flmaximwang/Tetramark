@@ -91,6 +91,7 @@ tm stock add KIND --entity ID|ALIAS \
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm stock ls [KIND] [--where FIELD=VALUE ...] [--json]
+tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 ```
 
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
@@ -99,6 +100,21 @@ tm stock ls [KIND] [--where FIELD=VALUE ...] [--json]
 - `--aliquot-set` sets kind-specific aliquot fields (e.g. `glycerol_pct=15`).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock show` includes the aliquot list.
+
+`stock renumber` repairs ids that predate (or ignore) the ledger's stock id strategy. Give one REF and
+`--id NEW` for a single rename, one or more REFs with `--auto` to generate strategy-shaped ids, or
+`--map PATH` for a batch file: one `OLD<TAB>NEW` (tab or comma) per line, or `OLD` alone when combined
+with `--auto`; blank lines and `#` comments are ignored. New ids are validated against `ids.stock` and
+must not collide with an existing stock id or a stock alias. Only one of `--id`/`--auto`/`--map`
+supplies the ids (`--map` may be combined with `--auto`), and `--id` takes exactly one REF.
+
+The stock id, all its aliquot ids (`<new>.<seq>`, seq unchanged), `aliquot_event` rows, kind and
+aliquot-extension tables, `parent_stock_id`/`source_aliquot_id` references and existing aliases are all
+rewritten in **one** transaction and **one** Dolt commit (`renumber(stock): OLD -> NEW`, or
+`renumber(stock): N stock(s)` for a batch). The old stock id and old aliquot ids are kept as aliases, so
+`tm find OLD` still resolves and nothing is lost. Foreign keys are `NO ACTION`, so the primary-key
+rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session before the commit;
+`--dry-run` prints the mapping and the SQL and writes nothing. `--json` prints the old → new mapping.
 
 ## Aliquots
 

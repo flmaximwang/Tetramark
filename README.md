@@ -100,7 +100,8 @@ generated Dolt tests (exit 0 when no non-info test fails). Without a running ser
 still work through the embedded driver — just don't run two writers against one ledger at once.
 
 More flows: register a design and its glycerol stock, aliquot a pellet and use part of it, move boxes,
-audit, import/export, back up. See `skills/tetramark/references/recipes.md`.
+audit, import/export, back up. See `skills/tetramark/references/recipes.md`. Legacy stock ids can be
+repaired in place with `tm stock renumber OLD --auto`; the old ids stay findable as aliases.
 
 ## Versioning, branches and adopting an existing database
 
