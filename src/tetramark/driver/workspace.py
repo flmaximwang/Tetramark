@@ -391,6 +391,7 @@ class Workspace:
             return
         deadline = time.monotonic() + READY_TIMEOUT
         while time.monotonic() < deadline:
+            _reap_child(pid)
             if not _pid_alive(pid):
                 return
             time.sleep(0.1)
@@ -400,9 +401,24 @@ class Workspace:
             return
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
+            _reap_child(pid)
             if not _pid_alive(pid):
                 return
             time.sleep(0.05)
+
+
+def _reap_child(pid: int) -> None:
+    """Reap a server this process started.
+
+    ``Workspace.stop()`` is also called by the very process that called
+    ``start()`` (tests, ``tm server start`` in a REPL).  Without ``waitpid`` the
+    exited server stays a zombie, which ``os.kill(pid, 0)`` reports as alive, so
+    the wait loop burns the whole ``READY_TIMEOUT`` (measured: 12 s per stop).
+    """
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
 
 
 def _pid_alive(pid: int) -> bool:

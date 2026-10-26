@@ -21,6 +21,11 @@ FULL = PRESETS / "full"
 
 
 @pytest.fixture
+def ledger_factory(server_ledger_factory):
+    return server_ledger_factory
+
+
+@pytest.fixture
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)

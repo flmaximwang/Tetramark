@@ -27,9 +27,8 @@ FULL = PRESETS / "full"
 
 
 @pytest.fixture
-def ledger_factory(fast_ledger_factory):
-    """Use the template-copying factory (faster than a real init per test)."""
-    return fast_ledger_factory
+def ledger_factory(server_ledger_factory):
+    return server_ledger_factory
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +49,9 @@ def snapshot(ledger, tables: list[str]) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {}
     for table in tables:
         rows = [dict(row) for row in ledger.driver.query(f"SELECT * FROM `{table}`")]
-        result[table] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+        result[table] = sorted(
+            rows, key=lambda row: json.dumps(row, sort_keys=True, default=str)
+        )
     return result
 
 

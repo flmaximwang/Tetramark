@@ -683,3 +683,7 @@ def test_custom_status_vocabulary_is_used_by_the_check(
         "VALUES ('STK-1.2', 'STK-1', 2, 'lost')",
         "check constraint",
     )
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded

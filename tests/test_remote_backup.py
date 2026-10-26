@@ -380,3 +380,7 @@ def test_cli_config_get_and_set_author(
     unknown = runner.invoke(app, [*prefix, "config", "get", "colour"])
     assert unknown.exit_code != 0
     assert isinstance(unknown.exception, UsageError)
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded

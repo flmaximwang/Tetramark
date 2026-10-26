@@ -131,3 +131,7 @@ def test_global_workspace_must_exist(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert isinstance(result.exception, LedgerError)
+
+
+# This module intentionally keeps the embedded-driver path covered.
+pytestmark = pytest.mark.embedded

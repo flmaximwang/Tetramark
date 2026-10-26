@@ -14,11 +14,18 @@ import shutil
 import socket
 import subprocess
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+import pymysql
 import pytest
 
-from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
+from tetramark.core.ledger import (
+    Ledger,
+    init_ledger,
+    init_ledger_on_server,
+    open as open_ledger,
+)
 from tetramark.driver.workspace import Workspace
 
 DOLT_BINARY = shutil.which("dolt")
@@ -54,6 +61,60 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def worker_id() -> str:
+    """The xdist worker name (``gw0`` when not running under xdist)."""
+    return os.environ.get("PYTEST_XDIST_WORKER") or "gw0"
+
+
+@contextmanager
+def admin_connection(workspace: Workspace) -> Iterator[pymysql.connections.Connection]:
+    """A short-lived admin connection (no database selected); never leaks."""
+    connection = pymysql.connect(
+        host=workspace.config.host,
+        port=workspace.config.port,
+        user="root",
+        password="",
+        autocommit=True,
+        charset="utf8mb4",
+        connect_timeout=5,
+    )
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def database_names(workspace: Workspace) -> list[str]:
+    """Every database the workspace server currently knows about."""
+    with admin_connection(workspace) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW DATABASES")
+            return sorted(str(row[0]) for row in cursor.fetchall())
+
+
+def drop_database(workspace: Workspace, name: str, *, missing_ok: bool = True) -> None:
+    """``DROP DATABASE ``name`` (idempotent by default)."""
+    clause = "IF EXISTS " if missing_ok else ""
+    quoted = "`" + name.replace("`", "``") + "`"
+    with admin_connection(workspace) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP DATABASE {clause}{quoted}")
+
+
+def _configure_dolt_identity(dolt_binary: str, env: dict[str, str]) -> None:
+    """Give the isolated global Dolt config a user name and email."""
+    for key, value in (
+        ("user.name", "Tetramark Tests"),
+        ("user.email", "tests@tetramark.invalid"),
+    ):
+        subprocess.run(
+            [dolt_binary, "config", "--global", "--add", key, value],
+            env=env,
+            capture_output=True,
+            check=True,
+        )
 
 
 def _test_server_pids(under: str, orphans_only: bool) -> list[int]:
@@ -187,14 +248,14 @@ def port() -> int:
 
 
 @pytest.fixture
-def ledger_factory(
+def embedded_ledger_factory(
     dolt_env: dict[str, str], tmp_path: Path
 ) -> Iterator[Callable[..., Ledger]]:
     """Create real ledgers in a ``tmp_path`` workspace (embedded driver).
 
-    ``ledger_factory(presets=[...], id_prefix="77")`` returns the opened
-    :class:`~tetramark.core.ledger.Ledger`.  The workspace is created once and
-    reused; every call gets a fresh ledger name unless one is given.
+    ``embedded_ledger_factory(presets=[...], id_prefix="77")`` returns the
+    opened :class:`~tetramark.core.ledger.Ledger`.  The workspace is created
+    once and reused; every call gets a fresh ledger name unless one is given.
     """
     counter = itertools.count(1)
     created: list[Ledger] = []
@@ -229,6 +290,105 @@ def ledger_factory(
     yield factory
     for ledger in created:
         ledger.close()
+
+
+@pytest.fixture
+def ledger_factory(
+    embedded_ledger_factory: Callable[..., Ledger],
+) -> Callable[..., Ledger]:
+    """Alias kept for existing tests: the embedded factory (unchanged behaviour)."""
+    return embedded_ledger_factory
+
+
+@pytest.fixture(scope="session")
+def _server_ledger_sequence() -> itertools.count:
+    """Worker-wide counter so default database names never repeat."""
+    return itertools.count(1)
+
+
+@pytest.fixture(scope="session")
+def server_workspace(
+    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+) -> Iterator[Workspace]:
+    """One ``dolt sql-server`` per xdist worker, in an isolated environment.
+
+    ``Workspace.start()`` refuses an empty data dir, so the workspace contains
+    a bare bootstrap ledger that tests never use.  Database names are
+    ``t_<worker>_<n>``; leftovers from a crashed run are swept at start.
+    """
+    worker = worker_id()
+    base = tmp_path_factory.mktemp(f"server-ws-{worker}")
+    env = isolated_env(base / "dolt-root", base / "home")
+    _configure_dolt_identity(dolt_binary, env)
+
+    data_dir = base / "data"
+    bootstrap = data_dir / "bootstrap"
+    bootstrap.mkdir(parents=True)
+    subprocess.run(
+        [dolt_binary, "init"],
+        cwd=bootstrap,
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+
+    workspace = Workspace.create(data_dir, port=free_port(), env=env)
+    try:
+        workspace.start(daemon=True)
+    except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
+        pytest.skip(f"dolt sql-server unavailable ({workspace.data_dir}): {error}")
+
+    prefix = f"t_{worker}_"
+    try:
+        for stale in database_names(workspace):
+            if stale.startswith(prefix):
+                drop_database(workspace, stale)
+        yield workspace
+    finally:
+        workspace.stop()
+        assert workspace.running_pid() is None, (
+            f"dolt sql-server for {workspace.data_dir} is still running"
+        )
+
+
+@pytest.fixture
+def server_ledger_factory(
+    server_workspace: Workspace, _server_ledger_sequence: itertools.count
+) -> Iterator[Callable[..., Ledger]]:
+    """Like :func:`embedded_ledger_factory`, but inside the worker's server.
+
+    Each call gets its own database (``CREATE DATABASE``); teardown closes the
+    driver and drops every database the fixture created.
+    """
+    created: list[Ledger] = []
+
+    def factory(
+        presets: list[str | Path] | None = None,
+        *,
+        name: str | None = None,
+        id_prefix: str | None = "77",
+        author: str | None = FACTORY_AUTHOR,
+        statuses: list[str] | None = None,
+    ) -> Ledger:
+        ledger_name = name or f"t_{worker_id()}_{next(_server_ledger_sequence)}"
+        sources = list(presets) if presets else [PRESETS / "base"]
+        ledger = init_ledger_on_server(
+            server_workspace,
+            ledger_name,
+            sources,
+            id_prefix=id_prefix,
+            author=author,
+            statuses=statuses,
+        )
+        created.append(ledger)
+        return ledger
+
+    yield factory
+    for ledger in reversed(created):
+        try:
+            ledger.close()
+        finally:
+            drop_database(server_workspace, ledger.name)
 
 
 @pytest.fixture(scope="session")

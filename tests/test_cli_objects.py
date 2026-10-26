@@ -16,9 +16,8 @@ BASE = PRESETS / "base"
 
 
 @pytest.fixture
-def ledger_factory(fast_ledger_factory):
-    """Use the template-copying factory for this module (faster tests)."""
-    return fast_ledger_factory
+def ledger_factory(server_ledger_factory):
+    return server_ledger_factory
 
 
 @pytest.fixture

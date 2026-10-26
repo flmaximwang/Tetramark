@@ -34,4 +34,5 @@ testpaths = ["tests"]
 addopts = "-ra -n auto --dist loadfile"
 markers = [
     "server: starts a real dolt sql-server on a random free port (slow; skip with -m 'not server')",
+    "embedded: test deliberately runs against the embedded driver (no dolt sql-server)",
 ]

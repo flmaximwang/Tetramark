@@ -22,9 +22,8 @@ BASE = PRESETS / "base"
 
 
 @pytest.fixture
-def ledger_factory(fast_ledger_factory):
-    """Use the template-copying factory for this module (faster tests)."""
-    return fast_ledger_factory
+def ledger_factory(server_ledger_factory):
+    return server_ledger_factory
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +127,11 @@ def test_entity_add_accepts_aliases_and_show_resolves_them(ledger_factory) -> No
     assert ledger.entities.show(child["id"])["parent"] == first["id"]
 
 
-def test_entity_field_coercion_and_sequence_normalisation(ledger_factory) -> None:
-    ledger = make_full_ledger(ledger_factory)
+def test_entity_field_coercion_and_sequence_normalisation(embedded_ledger_factory) -> None:
+    # Stays embedded: the embedded driver renders DATE/DATETIME columns as ISO
+    # strings, while PyMySQL returns ``date``/``datetime`` objects; this test
+    # asserts the text form (harness gap, see T16 report).
+    ledger = make_full_ledger(embedded_ledger_factory)
     ledger.entities.add("everything", name="base", values={"code": "AAA"})
     created = ledger.entities.add(
         "everything",
@@ -227,8 +229,10 @@ def test_entity_explicit_ids_and_rollback_on_duplicate_name(ledger_factory) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_stock_add_defaults_lineage_and_show(ledger_factory) -> None:
-    ledger = make_ledger(ledger_factory)
+def test_stock_add_defaults_lineage_and_show(embedded_ledger_factory) -> None:
+    # Stays embedded: asserts the ISO text form of a DATE column, which only
+    # the embedded driver returns (PyMySQL yields ``datetime.date``).
+    ledger = make_ledger(embedded_ledger_factory)
     item = new_item(ledger)
     before = commit_count(ledger)
 
