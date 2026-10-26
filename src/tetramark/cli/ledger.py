@@ -22,7 +22,13 @@ presets_app = typer.Typer(
 
 def init_command(
     ctx: typer.Context,
-    name: str = typer.Argument(..., help="Ledger (Dolt database) name."),
+    name: str = typer.Argument(
+        ...,
+        help=(
+            "Ledger (Dolt database) name: letters, digits, '_', '-' and '.' "
+            "(no '/', '..' or trailing '.')."
+        ),
+    ),
     preset: list[str] = typer.Option(
         [],
         "--preset",
