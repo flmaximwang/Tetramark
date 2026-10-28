@@ -74,19 +74,29 @@ BASE_KINDS: dict[str, Any] = {
 
 
 class PresetWriter:
-    """Rewrite the preset of a live ledger between plans."""
+    """Rewrite the preset of a live ledger between plans.
+
+    ``tm init`` copies the preset into ``<ledger>/presets/`` and the ledger only
+    ever reads that copy (ticket 20), so once attached the writer updates the
+    copy as well; the source directory is kept to prove it is what init read.
+    """
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.path = directory / "preset.yaml"
+        self.ledger: Ledger | None = None
         directory.mkdir(parents=True, exist_ok=True)
+
+    def attach(self, ledger: Ledger) -> None:
+        self.ledger = ledger
 
     def write(self, kinds: dict[str, Any]) -> None:
         payload = {"preset": "evolving", "version": 1, "kinds": kinds}
-        self.path.write_text(
-            yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        self.path.write_text(text, encoding="utf-8")
+        if self.ledger is not None:
+            copy = self.ledger.path / "presets" / "evolving" / "preset.yaml"
+            copy.write_text(text, encoding="utf-8")
 
 
 @pytest.fixture
@@ -103,7 +113,9 @@ def preset(tmp_path: Path, kinds: dict[str, Any]) -> PresetWriter:
 
 @pytest.fixture
 def ledger(ledger_factory, preset: PresetWriter) -> Ledger:
-    return ledger_factory([preset.directory], name="evolving")
+    ledger = ledger_factory([preset.directory], name="evolving")
+    preset.attach(ledger)
+    return ledger
 
 
 def reload_schema(ledger: Ledger) -> None:

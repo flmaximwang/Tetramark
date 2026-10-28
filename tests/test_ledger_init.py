@@ -134,7 +134,9 @@ def test_init_writes_ledger_yaml_and_ledger_meta(
     config = read_config(ledger)
 
     assert config["name"] == "meta"
-    assert config["presets"] == [str((PRESETS / "full").resolve())]
+    # ticket 20: ledger.yaml records bare preset names; the files sit next to it.
+    assert config["presets"] == ["full"]
+    assert (ledger.path / "presets" / "full" / "preset.yaml").is_file()
     assert config["author"] == FACTORY_AUTHOR
     assert config["ids"] == {
         "entity": {"strategy": "uuid"},
@@ -689,28 +691,48 @@ def test_cli_init_requires_a_preset(
     assert "at least one --preset" in capsys.readouterr().err
 
 
-def test_cli_presets_list_and_show(cli_isolated: None) -> None:
+def test_cli_presets_list_and_show(
+    cli_isolated: None, tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
     from typer.testing import CliRunner
 
+    from conftest import REPO_PRESETS
+
     from tetramark.cli.app import app
-    from tetramark.schema.loader import list_bundled_presets
 
     runner = CliRunner()
-    listed = runner.invoke(app, ["presets", "list"])
-    assert listed.exit_code == 0, listed.output
-    bundled = list_bundled_presets()
-    if bundled:
-        for name in bundled:
-            assert name in listed.output
-    else:
-        assert "no bundled presets" in listed.output
+    data = tmp_path / "data"
+    Workspace.create(data, presets_dir=str(REPO_PRESETS))
 
+    listed = runner.invoke(
+        app, ["--workspace", str(data), "presets", "list"]
+    )
+    assert listed.exit_code == 0, listed.output
+    assert listed.output.split() == ["base", "library", "molbio"]
+
+    shown = runner.invoke(
+        app, ["--workspace", str(data), "presets", "show", "molbio"]
+    )
+    assert shown.exit_code == 0, shown.output
+    payload = yaml.safe_load(shown.output)
+    assert payload["preset"] == "molbio"
+    assert {"plasmid", "item"} <= set(payload["kinds"])
+
+    # A path still works without any workspace.
     shown = runner.invoke(app, ["presets", "show", str(PRESETS / "chain")])
     assert shown.exit_code == 0, shown.output
     payload = yaml.safe_load(shown.output)
     assert payload["preset"] == "chain"
-    assert {"plasmid", "bacterial", "item"} <= set(payload["kinds"])
     assert [rule["id"] for rule in payload["rules"]] == ["CH01", "CH02"]
+
+    empty = tmp_path / "empty"
+    Workspace.create(empty)
+    missing_key = runner.invoke(
+        app, ["--workspace", str(empty), "presets", "list"]
+    )
+    assert missing_key.exit_code != 0
+    assert isinstance(missing_key.exception, UsageError)
+    assert "presets_dir" in str(missing_key.exception)
 
 
 def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:

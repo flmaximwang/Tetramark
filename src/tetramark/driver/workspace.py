@@ -58,6 +58,9 @@ class WorkspaceConfig(BaseModel):
     port: int = DEFAULT_PORT
     default_ledger: str | None = None
     author: str | None = None
+    #: Directory holding ``<name>.yaml`` presets for bare ``--preset NAME``.
+    #: A relative path is resolved against ``workspace.yaml``.
+    presets_dir: str | None = None
 
 
 @dataclass
@@ -115,6 +118,21 @@ class Workspace:
         return self.data_dir / PID_FILE
 
     @property
+    def presets_dir_path(self) -> Path | None:
+        """The workspace's ``presets_dir`` as an absolute path (``None`` if unset).
+
+        Relative values are resolved against ``workspace.yaml`` (the data_dir),
+        never against the caller's cwd.
+        """
+        raw = self.config.presets_dir
+        if raw is None or not str(raw).strip():
+            return None
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = self.data_dir / path
+        return path
+
+    @property
     def log_file(self) -> Path:
         return self.data_dir / LOG_FILE
 
@@ -127,6 +145,7 @@ class Workspace:
         port: int = DEFAULT_PORT,
         default_ledger: str | None = None,
         author: str | None = None,
+        presets_dir: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> Workspace:
         """Create ``workspace.yaml`` in ``path`` (the directory is made if needed)."""
@@ -139,6 +158,7 @@ class Workspace:
                 port=port,
                 default_ledger=default_ledger,
                 author=author,
+                presets_dir=presets_dir,
             ),
             env=env,
         )

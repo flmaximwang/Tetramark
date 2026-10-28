@@ -24,6 +24,8 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 
+from conftest import REPO_PRESETS
+
 runner = CliRunner()
 
 AUTHOR = "Docs Test <docs@tetramark.invalid>"
@@ -72,6 +74,8 @@ def init_workspace(port: int | None = None) -> None:
         "lab101",
         "--author",
         AUTHOR,
+        "--presets-dir",
+        str(REPO_PRESETS),
     ]
     if port is not None:
         args.extend(["--port", str(port)])
@@ -478,6 +482,7 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     run(
         "workspace", "init", ".", "--default-ledger", "zsqlab08",
         "--port", str(docs_server), "--author", AUTHOR,
+        "--presets-dir", str(REPO_PRESETS),
     )
     run("init", "zsqlab08", "--preset", "molbio", "--id-prefix", "08")
     start_server()

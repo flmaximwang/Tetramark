@@ -10,6 +10,7 @@ import yaml
 from typer.testing import CliRunner
 
 from tetramark.cli.app import app, main
+from tetramark.driver.workspace import Workspace
 from tetramark.errors import EXIT_USAGE, LedgerError
 
 runner = CliRunner()
@@ -58,6 +59,37 @@ def test_workspace_init_can_set_default_ledger_and_author(tmp_path: Path) -> Non
     payload = yaml.safe_load((data / "workspace.yaml").read_text(encoding="utf-8"))
     assert payload["default_ledger"] == "lab101"
     assert payload["author"] == "Maxim <maxim@example.invalid>"
+
+
+def test_workspace_init_stores_presets_dir_and_config_manages_it(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    result = runner.invoke(
+        app,
+        ["workspace", "init", str(data), "--presets-dir", "presets"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = yaml.safe_load((data / "workspace.yaml").read_text(encoding="utf-8"))
+    assert payload["presets_dir"] == "presets"
+
+    # Relative values resolve against workspace.yaml, not the caller's cwd.
+    workspace = Workspace.load(data)
+    assert workspace.presets_dir_path == (data / "presets").resolve()
+
+    got = runner.invoke(
+        app, ["--workspace", str(data), "config", "get", "presets_dir"]
+    )
+    assert got.exit_code == 0, got.output
+    assert got.output.strip() == str((data / "presets").resolve())
+
+    changed = runner.invoke(
+        app,
+        ["--workspace", str(data), "config", "set", "presets_dir", "/tmp/presets"],
+    )
+    assert changed.exit_code == 0, changed.output
+    payload = yaml.safe_load((data / "workspace.yaml").read_text(encoding="utf-8"))
+    assert payload["presets_dir"] == "/tmp/presets"
 
 
 def test_workspace_init_defaults_to_the_current_directory() -> None:

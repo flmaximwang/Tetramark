@@ -42,6 +42,7 @@ from tetramark.schema.model import (
 DATA = Path(__file__).parent / "data"
 PRESETS = DATA / "presets"
 GOLDEN = DATA / "golden" / "ddl_full.sql"
+REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,9 @@ def test_alias_list_avoids_the_construct_aliases_field() -> None:
     The bundled ``construct`` kind has a field called ``aliases``; naming the
     generated column ``aliases`` would produce duplicate view columns.
     """
-    schema = load_schema(LedgerConfig(name="molbio", presets=["molbio"]))
+    schema = load_schema(
+        LedgerConfig(name="molbio", presets=[str(REPO_PRESETS / "molbio.yaml")])
+    )
     construct = next(
         s.sql for s in view_statements(schema) if s.name == "v_entity_construct"
     )
@@ -813,7 +816,9 @@ def test_construct_view_keeps_aliases_field_and_alias_list_apart(
     construct names); the aggregated alias-table column is called
     ``alias_list`` so both can be projected by one view.
     """
-    schema = load_schema(LedgerConfig(name="molbio", presets=["molbio"]))
+    schema = load_schema(
+        LedgerConfig(name="molbio", presets=[str(REPO_PRESETS / "molbio.yaml")])
+    )
     install(dolt_run, dolt_repo, schema_statements(schema))
     execute(
         dolt_run,

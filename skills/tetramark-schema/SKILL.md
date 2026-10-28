@@ -10,10 +10,15 @@ generates the DDL, views, foreign keys and `dolt_tests`. Never add or edit those
 
 ## Where schemas live
 
-- **Presets** shipped with the package: one file per preset, `src/tetramark/presets/<name>.yaml`.
-  A preset given by path may also be a directory containing `preset.yaml`, with optional
-  `kinds/*.yaml` and `rules/*.yaml` next to it. `preset:` is the name, `version:` an integer,
-  `include:` a list of preset names or paths.
+- **Presets** live in the repository's `presets/` directory (one file per preset, e.g.
+  `presets/molbio.yaml`); the wheel does not ship them. `tm init --preset NAME` resolves `NAME` in
+  the workspace's `presets_dir` (`workspace.yaml`), and `--preset PATH` uses a file or a directory
+  containing `preset.yaml` with optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the name,
+  `version:` an integer, `include:` a list of preset names.
+- **A ledger keeps its own copy**: `tm init` copies the selected preset and its include closure into
+  `<ledger>/presets/` and every later command reads only that copy. Change a ledger's schema by
+  editing `<ledger>/presets/*.yaml`; editing the checkout's `presets/` is how you change the
+  *template* for new ledgers, not an existing ledger.
 - **Ledger-local** additions: `ledger.yaml` points at `kinds_dir:` and `rules_dir:`; each `.yaml` in
   those directories is a document with a `kinds:` or `rules:` mapping. Relative paths resolve against
   the ledger directory.
