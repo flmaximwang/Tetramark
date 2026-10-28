@@ -44,3 +44,14 @@ up to date.
 - Adopting databases that were never tm ledgers. That is `tm init --adopt`, introduced for the zsqlab10
   migration (`/Users/maxim/Documents/Lab/Dolt/migration/zsqlab10/SPEC.md`, Part A4).
 - Preset version upgrades (`preset_versions`). Those stay with `tm schema plan/apply`.
+
+## Relationship to `migration/`
+
+`migration/` now holds the first real upgrade step (`spec/1-to-2`); the wave-9 preset renames
+(`presets/molbio/1-to-2`) use the same layout. They are hand-run scripts, not a command: one folder
+per counter that changed, with a README, a `migrate.py` over the shared runner in `src/tetramark/migrate.py`, and an
+optional `renames.yaml` fed to the schema diff planner as an explicit rename map. That runner already
+implements the parts of this proposal that a step needs — counter precondition, dry-run, a tag before
+writing, one `migrate(ledger): …` commit, and the non-transactional-DDL failure report — keyed by
+`spec_version` / `preset_versions`. It can be absorbed into `tm upgrade` (registered as step modules,
+chained and exposed as a command) once that design is implemented; nothing here blocks it.

@@ -8,7 +8,8 @@ that performs it.
 
 The plan is ordered so that it can be executed top to bottom:
 
-1. table and column renames (``renamed_from``);
+1. table and column renames (``renamed_from``, or the explicit
+   :class:`RenameMap` a migration step passes in);
 2. drops that other objects depend on: foreign keys, checks/unique indexes,
    generated views;
 3. generated columns that must be rebuilt, then removed columns and tables;
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -46,7 +48,7 @@ from tetramark.core.ledger import (
     META_TETRAMARK_VERSION,
 )
 from tetramark.driver.base import Driver, literal
-from tetramark.errors import LedgerError
+from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
     CORE_TABLES,
     CORE_VIEWS,
@@ -74,6 +76,7 @@ __all__ = [
     "DESTRUCTIVE",
     "ApplyResult",
     "PlanStep",
+    "RenameMap",
     "SchemaPlan",
     "apply",
     "build_plan",
@@ -203,6 +206,147 @@ class ApplyResult:
     @property
     def committed(self) -> bool:
         return self.commit_hash is not None
+
+
+_RENAME_IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+#: Objects whose kind tables the rename map may address ("aliquot" means the
+#: ``aliquot_<stock kind>`` extension table).
+_RENAME_OBJECTS = ("entity", "stock", "box", "aliquot")
+
+
+@dataclass(frozen=True)
+class RenameMap:
+    """Explicit kind and column renames handed to the diff planner (spec §5).
+
+    A preset migration step ships ``renames.yaml`` in its folder and feeds it
+    to :func:`build_plan`; presets deliberately do **not** carry
+    ``renamed_from``.  The planner then reuses the same machinery as
+    ``renamed_from``: ``ALTER TABLE ... RENAME TO`` for the kind table and its
+    ``aliquot_<kind>`` extension, ``ALTER TABLE ... RENAME COLUMN`` for fields
+    and the core ``kind`` discriminator rewrite — never hand-written SQL.
+
+    ``entity``/``stock``/``box`` map **old** kind name → **new** kind name; the
+    new kind must be defined by the loaded schema and the old one must not be
+    (it only exists in the live ledger).  ``fields`` keys are
+    ``<object>.<new kind>`` — e.g. ``stock.bacterial_glycerol`` or
+    ``aliquot.bacterial_glycerol`` — and their values map old column names to
+    new column names.
+    """
+
+    entity: Mapping[str, str] = field(default_factory=dict)
+    stock: Mapping[str, str] = field(default_factory=dict)
+    box: Mapping[str, str] = field(default_factory=dict)
+    fields: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any] | None) -> "RenameMap":
+        """Validate a ``renames.yaml`` mapping (``None``/``{}`` is empty).
+
+        Raises :class:`~tetramark.errors.UsageError` for an unknown key, a
+        malformed identifier or a ``fields`` scope that is not
+        ``<object>.<kind>``, so a typo in a migration step fails loudly instead
+        of silently renaming nothing.
+        """
+        if payload is None:
+            return cls()
+        if not isinstance(payload, Mapping):
+            raise UsageError(
+                "renames must be a mapping with 'entity', 'stock', 'box' and/or "
+                f"'fields' keys, not {type(payload).__name__}"
+            )
+        unknown = sorted(set(payload) - {"entity", "stock", "box", "fields"})
+        if unknown:
+            raise UsageError(
+                f"unknown renames key(s) {', '.join(map(repr, unknown))} "
+                "(expected 'entity', 'stock', 'box' or 'fields')"
+            )
+
+        kind_maps: dict[str, Mapping[str, str]] = {}
+        for object_name in ("entity", "stock", "box"):
+            raw = payload.get(object_name) or {}
+            if not isinstance(raw, Mapping):
+                raise UsageError(
+                    f"renames.{object_name} must be a mapping old_kind: new_kind"
+                )
+            mapping: dict[str, str] = {}
+            for old_kind, new_kind in raw.items():
+                old_text, new_text = str(old_kind), str(new_kind)
+                for value in (old_text, new_text):
+                    if not _RENAME_IDENT_RE.match(value):
+                        raise UsageError(
+                            f"renames.{object_name}: {value!r} is not a kind "
+                            "name (expected [a-z][a-z0-9_]*)"
+                        )
+                if old_text == new_text:
+                    raise UsageError(
+                        f"renames.{object_name}: {old_text!r} is mapped to "
+                        "itself"
+                    )
+                mapping[old_text] = new_text
+            kind_maps[object_name] = mapping
+
+        raw_fields = payload.get("fields") or {}
+        if not isinstance(raw_fields, Mapping):
+            raise UsageError(
+                "renames.fields must map '<object>.<kind>' to {old: new} columns"
+            )
+        field_maps: dict[str, Mapping[str, str]] = {}
+        for scope, columns in raw_fields.items():
+            scope_text = str(scope)
+            object_name, separator, kind_name = scope_text.partition(".")
+            if (
+                not separator
+                or object_name not in _RENAME_OBJECTS
+                or not _RENAME_IDENT_RE.match(kind_name)
+            ):
+                raise UsageError(
+                    f"renames.fields key {scope_text!r} must be "
+                    "'<object>.<kind>' with object one of "
+                    f"{', '.join(_RENAME_OBJECTS)}"
+                )
+            if not isinstance(columns, Mapping):
+                raise UsageError(
+                    f"renames.fields[{scope_text!r}] must be a mapping "
+                    "old_column: new_column"
+                )
+            mapping = {}
+            for old_name, new_name in columns.items():
+                old_text, new_text = str(old_name), str(new_name)
+                for value in (old_text, new_text):
+                    if not _RENAME_IDENT_RE.match(value):
+                        raise UsageError(
+                            f"renames.fields[{scope_text!r}]: {value!r} is not "
+                            "a column name (expected [a-z][a-z0-9_]*)"
+                        )
+                if old_text == new_text:
+                    raise UsageError(
+                        f"renames.fields[{scope_text!r}]: {old_text!r} is "
+                        "mapped to itself"
+                    )
+                mapping[old_text] = new_text
+            field_maps[scope_text] = mapping
+
+        return cls(
+            entity=kind_maps["entity"],
+            stock=kind_maps["stock"],
+            box=kind_maps["box"],
+            fields=field_maps,
+        )
+
+    def kind_maps(self) -> list[tuple[str, Mapping[str, str]]]:
+        """The non-empty kind maps as ``(object, {old: new})`` pairs."""
+        return [
+            (object_name, mapping)
+            for object_name, mapping in (
+                ("entity", self.entity),
+                ("stock", self.stock),
+                ("box", self.box),
+            )
+            if mapping
+        ]
+
+    def __bool__(self) -> bool:
+        return bool(self.kind_maps() or self.fields)
 
 
 # ---------------------------------------------------------------------------
@@ -801,11 +945,20 @@ def build_plan(
     schema: EffectiveSchema,
     *,
     ledger_name: str = "",
+    renames: RenameMap | Mapping[str, Any] | None = None,
 ) -> SchemaPlan:
-    """Compare ``schema`` with the live database behind ``driver``."""
+    """Compare ``schema`` with the live database behind ``driver``.
+
+    ``renames`` is the explicit rename map of a migration step
+    (:class:`RenameMap`, or its ``renames.yaml`` mapping): it supplements the
+    ``renamed_from`` declarations in the YAML schema so a preset step can
+    rename kinds without editing the preset.  Duplicate or contradictory
+    entries are a ``UsageError``.
+    """
     # Local import: ``tetramark/__init__`` imports this package's dependencies.
     from tetramark import __version__
 
+    rename_map = _as_rename_map(renames)
     desired = _desired_tables(schema)
     desired_fks = _desired_foreign_keys(schema)
     desired_views = _desired_views(schema)
@@ -821,10 +974,10 @@ def build_plan(
     buckets = _Buckets()
 
     table_renames, renamed_kinds = _plan_renames(
-        buckets, schema, desired, live
+        buckets, schema, desired, live, rename_map
     )
     column_renames = _plan_column_renames(
-        buckets, schema, desired, live, table_renames
+        buckets, schema, desired, live, table_renames, rename_map
     )
     state = _translate_live(live, table_renames, column_renames)
 
@@ -1003,16 +1156,93 @@ def build_plan(
     return plan
 
 
-def plan(ledger: "Ledger", schema: EffectiveSchema | None = None) -> SchemaPlan:
-    """The plan for an opened ledger (defaults to its loaded YAML schema)."""
+def plan(
+    ledger: "Ledger",
+    schema: EffectiveSchema | None = None,
+    *,
+    renames: RenameMap | Mapping[str, Any] | None = None,
+) -> SchemaPlan:
+    """The plan for an opened ledger (defaults to its loaded YAML schema).
+
+    ``renames`` forwards the explicit rename map of a migration step; pass the
+    new schema as ``schema`` (the opened ledger still carries the live YAML).
+    """
     return build_plan(
         ledger.driver,
         schema or ledger.schema,
         ledger_name=ledger.name,
+        renames=renames,
     )
 
 
 # -- renames ---------------------------------------------------------------
+
+
+def _as_rename_map(
+    renames: RenameMap | Mapping[str, Any] | None,
+) -> RenameMap | None:
+    """Normalise the ``renames`` argument (already a map, a dict, or ``None``)."""
+    if renames is None or isinstance(renames, RenameMap):
+        return renames
+    return RenameMap.from_dict(renames)
+
+
+def _kind_rename_pairs(
+    schema: EffectiveSchema, renames: RenameMap | None
+) -> list[tuple[str, str, str]]:
+    """``(object, old kind, new kind)`` from ``renamed_from`` plus the map.
+
+    The map is the alternative to ``renamed_from`` (presets do not carry it);
+    both can be combined.  A contradiction between the two, an unknown new
+    kind or two old kinds aiming at one new kind is a ``UsageError`` — a
+    migration must fail loudly instead of renaming the wrong table.
+    """
+    pairs: dict[tuple[str, str], str] = {}
+    targets: dict[tuple[str, str], str] = {}
+
+    for kind_name, kind in schema.kinds.items():
+        old_kind = kind.renamed_from
+        if not old_kind:
+            continue
+        object_name = kind.object.value
+        pairs[(object_name, old_kind)] = kind_name
+        targets[(object_name, kind_name)] = old_kind
+
+    if renames is not None:
+        for object_name, mapping in renames.kind_maps():
+            for old_kind, new_kind in mapping.items():
+                kind = schema.kinds.get(new_kind)
+                if kind is None or kind.object.value != object_name:
+                    raise UsageError(
+                        f"renames.{object_name}: {old_kind!r} -> {new_kind!r}: "
+                        f"{new_kind!r} is not a {object_name} kind of the "
+                        "loaded schema"
+                    )
+                if old_kind in schema.kinds:
+                    raise UsageError(
+                        f"renames.{object_name}: the old kind {old_kind!r} is "
+                        "still defined by the loaded schema; a rename map only "
+                        "names kinds that exist in the live ledger"
+                    )
+                existing = pairs.get((object_name, old_kind))
+                if existing is not None and existing != new_kind:
+                    raise UsageError(
+                        f"renames.{object_name}: {old_kind!r} is mapped to both "
+                        f"{existing!r} and {new_kind!r}"
+                    )
+                previous = targets.get((object_name, new_kind))
+                if previous is not None and previous != old_kind:
+                    raise UsageError(
+                        f"renames.{object_name}: {previous!r} and {old_kind!r} "
+                        f"are both mapped to {new_kind!r}"
+                    )
+                pairs[(object_name, old_kind)] = new_kind
+                targets[(object_name, new_kind)] = old_kind
+
+    return [
+        (object_name, old_kind, new_kind)
+        for (object_name, old_kind), new_kind in sorted(pairs.items())
+    ]
 
 
 def _plan_renames(
@@ -1020,17 +1250,16 @@ def _plan_renames(
     schema: EffectiveSchema,
     desired: dict[str, _DesiredTable],
     live: _LiveState,
+    renames: RenameMap | None = None,
 ) -> tuple[dict[str, str], list[tuple[str, str, str, str, str]]]:
-    """Plan ``ALTER TABLE ... RENAME TO`` for kinds that declare a rename."""
+    """Plan ``ALTER TABLE ... RENAME TO`` for declared or mapped kind renames."""
     table_renames: dict[str, str] = {}
     renamed_kinds: list[tuple[str, str, str, str, str]] = []
 
-    for kind_name, kind in schema.kinds.items():
-        old_kind = kind.renamed_from
-        if not old_kind:
-            continue
-        old_table = table_name(kind.object, old_kind)
-        new_table = table_name(kind.object, kind_name)
+    for object_name, old_kind, kind_name in _kind_rename_pairs(schema, renames):
+        kind = schema.kinds[kind_name]
+        old_table = table_name(object_name, old_kind)
+        new_table = table_name(object_name, kind_name)
         if (
             old_table in live.columns
             and new_table not in live.columns
@@ -1048,10 +1277,10 @@ def _plan_renames(
             )
             table_renames[old_table] = new_table
             renamed_kinds.append(
-                (kind.object.value, old_kind, kind_name, old_table, new_table)
+                (object_name, old_kind, kind_name, old_table, new_table)
             )
 
-        if kind.object is not ObjectType.stock or not kind.aliquot_fields:
+        if object_name != ObjectType.stock.value or not kind.aliquot_fields:
             continue
         old_extension = table_name("aliquot", old_kind)
         new_extension = table_name("aliquot", kind_name)
@@ -1079,16 +1308,26 @@ def _plan_renames(
     return table_renames, renamed_kinds
 
 
+def _sequence_hash(name: str, columns: dict[str, _Spec]) -> str | None:
+    """The generated ``<name>_sha256`` column, when ``name`` is a sequence."""
+    hash_name = f"{name}_sha256"
+    spec = columns.get(hash_name)
+    if spec is None or not spec.generated:
+        return None
+    return hash_name
+
+
 def _plan_column_renames(
     buckets: _Buckets,
     schema: EffectiveSchema,
     desired: dict[str, _DesiredTable],
     live: _LiveState,
     table_renames: dict[str, str],
+    renames: RenameMap | None = None,
 ) -> dict[str, dict[str, str]]:
-    """Plan ``ALTER TABLE ... RENAME COLUMN`` from ``renamed_from``."""
+    """Plan ``ALTER TABLE ... RENAME COLUMN`` from ``renamed_from`` or the map."""
     final_to_live = {new: old for old, new in table_renames.items()}
-    renames: dict[str, dict[str, str]] = {}
+    renames_out: dict[str, dict[str, str]] = {}
 
     for kind_name, kind in schema.kinds.items():
         scopes: list[tuple[str, dict[str, Field]]] = [
@@ -1143,8 +1382,78 @@ def _plan_column_renames(
                         )
                         mapping[old_sha] = new_sha
             if mapping:
-                renames[table] = mapping
-    return renames
+                renames_out[table] = mapping
+
+    if renames is not None:
+        _plan_explicit_column_renames(
+            buckets, desired, live, final_to_live, renames_out, renames
+        )
+    return renames_out
+
+
+def _plan_explicit_column_renames(
+    buckets: _Buckets,
+    desired: dict[str, _DesiredTable],
+    live: _LiveState,
+    final_to_live: dict[str, str],
+    renames_out: dict[str, dict[str, str]],
+    renames: RenameMap,
+) -> None:
+    """Plan the ``renames.fields`` half of an explicit rename map."""
+    for scope, mapping in sorted(renames.fields.items()):
+        object_name, kind_name = scope.split(".", 1)
+        table = table_name(object_name, kind_name)
+        if table not in desired:
+            raise UsageError(
+                f"renames.fields: {scope!r} does not name a table of the loaded "
+                "schema (an 'aliquot.<kind>' scope needs a stock kind with "
+                "aliquot_fields)"
+            )
+        columns = desired[table].columns
+        source = final_to_live.get(table, table)
+        live_columns = live.columns.get(source, {})
+        if not live_columns:
+            continue
+        merged = renames_out.setdefault(table, {})
+        for old_name, new_name in sorted(mapping.items()):
+            if new_name not in columns:
+                raise UsageError(
+                    f"renames.fields[{scope!r}]: the loaded schema has no "
+                    f"column {new_name!r} in {table!r}"
+                )
+            if old_name not in live_columns or new_name in live_columns:
+                continue
+            buckets.renames.append(
+                _step(
+                    "rename_column",
+                    ADDITIVE,
+                    f"ALTER TABLE {_ident(table)} RENAME COLUMN "
+                    f"{_ident(old_name)} TO {_ident(new_name)}",
+                    object="column",
+                    name=f"{table}.{new_name}",
+                    description=f"rename field {old_name!r} to {new_name!r}",
+                )
+            )
+            merged[old_name] = new_name
+            new_hash = _sequence_hash(new_name, columns)
+            old_hash = f"{old_name}_sha256"
+            if (
+                new_hash is not None
+                and old_hash in live_columns
+                and new_hash not in live_columns
+            ):
+                buckets.renames.append(
+                    _step(
+                        "rename_column",
+                        ADDITIVE,
+                        f"ALTER TABLE {_ident(table)} RENAME COLUMN "
+                        f"{_ident(old_hash)} TO {_ident(new_hash)}",
+                        object="column",
+                        name=f"{table}.{new_hash}",
+                        description="rename the generated sequence hash column",
+                    )
+                )
+                merged[old_hash] = new_hash
 
 
 def _translate_live(
