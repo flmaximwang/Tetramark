@@ -53,6 +53,15 @@ and the new `cellbio` and `angenet` bundles. The design is in `docs/preset-parts
 
 25 and 26 can run in parallel; 27–29 are sequential.
 
+Ticket 30 is the **box-views wave** (from git-bug issue `20b350c`, "Box View Specification"): one view
+per existing box instead of one per box kind, grid boxes hold tubes only, `grid96` becomes `grid8x12`,
+and a tube that is not in stock has no position. It follows wave 10. Box schemas (templates in
+`presets/boxes/`) are a separate git-bug issue.
+
+| # | Ticket | Depends on | Wave |
+|---|---|---|---|
+| 30 | One view per box, not per box kind (spec 5) | 25 | 11 |
+
 Each ticket: implement, add pytest tests (real `dolt`, no mocks), stay inside the listed files where
 possible, leave the working tree dirty for review (no commit). Tickets in the same wave are
 independent and may run in parallel (separate git worktrees/copies).
