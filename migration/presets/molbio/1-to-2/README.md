@@ -79,6 +79,15 @@ migrates zsqlab10.
   (`--branch tetramark-upgrade`), never on `main`, never push.
 - The tag `pre-migrate-molbio-1` must not exist at a different commit; the
   script refuses if it points anywhere other than HEAD.
+- **The diff plan must be additive.**  The step refuses (before writing
+  anything) when the planner tags a step `destructive` — a column/table the
+  v2 schema does not know, a widening/tightening, a UNIQUE constraint that
+  will not hold, ... — because the same plan `tm schema apply` refuses
+  without `--allow-destructive`.  Apply such changes deliberately first
+  (`tm schema apply --allow-destructive`, or fix the ledger's local
+  `kinds/`/`rules/`), then re-run this step.  A ledger that loads additional
+  presets keeps them: the target schema is built from the ledger's own
+  preset list with only molbio and base replaced by the repository copies.
 - Run it from a Tetramark checkout that contains the v2 `presets/` (the step
   reads `presets/molbio.yaml` and `presets/base.yaml` from the repository), and
   with the matching tool version (`uv run` resolves the checkout's venv).
@@ -235,4 +244,8 @@ end-to-end check: stale tests would reference the old tables and FAIL here.
   fingerprint mismatch, not an error) but is best avoided: migrate the branch
   you intend to use, and if you switch back restore the v1 preset files from
   the backup together with the reset to the tag.
+- **A destructive diff is refused, never executed.**  The error lists every
+  `[destructive]` planner step (index/action/SQL) and names
+  `tm schema apply --allow-destructive` as the deliberate path.  Nothing is
+  written: no tag, no commit, no DDL, no preset file.
 - **A second run refuses** (`preset_versions.molbio` is 2, not 1).

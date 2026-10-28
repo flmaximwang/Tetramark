@@ -865,8 +865,11 @@ V1_DDL = (
     "`kind` VARCHAR(64) NOT NULL DEFAULT 'construct', "
     "`name` VARCHAR(255) NOT NULL, "
     "`sequence` MEDIUMTEXT, "
+    "`sequence_sha256` CHAR(64) GENERATED ALWAYS AS (SHA2(`sequence`, 256)) STORED, "
     "`molecular_weight_da` DECIMAL(12,2), "
     "CONSTRAINT `pk_entity_construct` PRIMARY KEY (`id`), "
+    "CONSTRAINT `uq_entity_construct_name` UNIQUE (`name`), "
+    "CONSTRAINT `uq_entity_construct_sequence` UNIQUE (`sequence_sha256`), "
     "CONSTRAINT `ck_entity_construct_kind` CHECK (`kind` = 'construct'))",
     "ALTER TABLE `entity_construct` ADD CONSTRAINT `fk_entity_construct_id_kind` "
     "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
@@ -875,6 +878,7 @@ V1_DDL = (
     "`kind` VARCHAR(64) NOT NULL DEFAULT 'strain', "
     "`name` VARCHAR(255) NOT NULL, `genotype` MEDIUMTEXT, "
     "CONSTRAINT `pk_entity_strain` PRIMARY KEY (`id`), "
+    "CONSTRAINT `uq_entity_strain_name` UNIQUE (`name`), "
     "CONSTRAINT `ck_entity_strain_kind` CHECK (`kind` = 'strain'))",
     "ALTER TABLE `entity_strain` ADD CONSTRAINT `fk_entity_strain_id_kind` "
     "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
@@ -889,7 +893,7 @@ V1_DDL = (
     "CREATE TABLE `stock_pellet` ("
     "`id` VARCHAR(64) NOT NULL, "
     "`kind` VARCHAR(64) NOT NULL DEFAULT 'pellet', "
-    "`culture_volume_ml` DECIMAL(18,6), `od600` DECIMAL(18,6), "
+    "`culture_volume_ml` DECIMAL(10,2), `od600` DECIMAL(6,2), "
     "CONSTRAINT `pk_stock_pellet` PRIMARY KEY (`id`), "
     "CONSTRAINT `ck_stock_pellet_kind` CHECK (`kind` = 'pellet'))",
     "ALTER TABLE `stock_pellet` ADD CONSTRAINT `fk_stock_pellet_id_kind` "
@@ -1237,6 +1241,201 @@ def test_molbio_1_to_2_refuses_conflicting_glycerol_and_writes_nothing(
         assert json.loads(ledger.meta["preset_versions"]) == {"base": 1, "molbio": 1}
         assert "entity_construct" in table_names(ledger)
         assert "aliquot_bacterial" in table_names(ledger)
+
+
+def test_molbio_1_to_2_refuses_a_destructive_plan_and_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """F1a: a plan with a destructive step is refused, never executed.
+
+    ``tm schema apply`` refuses this same plan without ``--allow-destructive``;
+    the step must not execute it silently.  A hand-added column that the v2
+    schema does not know is planned as ``[destructive] drop_column``.
+    """
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
+        name="molbio-destructive",
+    )
+    downgrade_to_molbio_v1(ledger)
+    seed_molbio_v1(ledger)
+    ledger.driver.execute(
+        "ALTER TABLE `entity_construct` ADD COLUMN `legacy_note` VARCHAR(64)"
+    )
+    ledger.driver.execute(
+        "UPDATE `entity_construct` SET `legacy_note` = 'keep me' WHERE `id` = 'E1'"
+    )
+    ledger.driver.commit("test: hand-added column on a v1 kind table")
+    ledger.read_meta()
+
+    preset_before = (ledger.path / "presets" / "molbio.yaml").read_bytes()
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            MOLBIO_STEP, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate molbio 1 -> 2" in output
+        assert "destructive step(s)" in output
+        assert "drop_column" in output
+        assert "legacy_note" in output
+        assert "DROP COLUMN `legacy_note`" in output
+        assert "tm schema apply --allow-destructive" in output
+        # Refused before writing: no commit, no tag, no DDL, no file change.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        assert (ledger.path / "presets" / "molbio.yaml").read_bytes() == preset_before
+        ledger.read_meta()
+        assert json.loads(ledger.meta["preset_versions"]) == {"base": 1, "molbio": 1}
+        assert "legacy_note" in column_names(ledger, "entity_construct")
+        assert ledger.driver.query(
+            "SELECT `legacy_note` FROM `entity_construct` WHERE `id` = 'E1'"
+        ) == [{"legacy_note": "keep me"}]
+
+
+def test_molbio_1_to_2_refuses_a_directory_preset_copy(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Vendoring writes ``presets/<name>.yaml``; a directory copy would win on
+    reopen (``<name>/`` is the first candidate), so the step refuses first."""
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
+        name="molbio-dir-preset",
+    )
+    downgrade_to_molbio_v1(ledger)
+    copies = ledger.path / "presets"
+    document = (copies / "molbio.yaml").read_bytes()
+    (copies / "molbio.yaml").unlink()
+    (copies / "molbio").mkdir()
+    (copies / "molbio" / "preset.yaml").write_bytes(document)
+    reopenable = open_ledger(ledger.workspace, ledger.name)
+    reopenable.close()
+
+    head_before = head(ledger)
+    result = run_python(
+        MOLBIO_STEP, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "refusing to migrate molbio 1 -> 2" in output
+    assert "is a directory" in output
+    assert "molbio" in output
+    assert head(ledger) == head_before
+    assert tags(ledger) == {}
+
+
+def _write_widgets_preset(directory: Path) -> Path:
+    """An unrelated preset with one entity kind (it does not include base)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "widgets-src.yaml"
+    path.write_text(
+        "preset: widgets\n"
+        "version: 1\n"
+        "description: unrelated entity kind for the multi-preset migration test\n"
+        "kinds:\n"
+        "  widget:\n"
+        "    object: entity\n"
+        "    fields:\n"
+        "      size: {type: int}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _load_molbio_step():
+    spec = importlib.util.spec_from_file_location("molbio_1_to_2_f1", MOLBIO_STEP)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """F1b: a ledger loading another preset keeps its kind table and version.
+
+    ``target_schema`` builds its preset list from the ledger's own list: molbio
+    and base come from the repository v2/v1 files, the ``widgets`` preset (and
+    its include closure) from ``<ledger>/presets/``.  The plan is additive, the
+    ``entity_widget`` table (and its row) survives, and ``preset_versions``
+    still records ``widgets``.
+    """
+    extra = _write_widgets_preset(tmp_path / "presets-src")
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml", extra],
+        name="molbio-other-preset",
+    )
+    downgrade_to_molbio_v1(ledger)
+    # The downgrade writes the v1 molbio counters; restore the extra preset's
+    # recorded version so the ledger describes the presets it actually loads.
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 1, "molbio": 1, "widgets": 1}),),
+    )
+    ledger.driver.commit("test: record the widgets preset version")
+    ledger.read_meta()
+    seed_molbio_v1(ledger)
+    widget = ledger.entities.add("widget", name="W1", values={"size": 3})
+    widgets_copy = ledger.path / "presets" / "widgets.yaml"
+    widgets_before = widgets_copy.read_bytes()
+    assert widgets_before == extra.read_bytes()
+
+    module = _load_molbio_step()
+    target = module.target_schema(ledger)
+    assert target.preset_versions == {"base": 1, "molbio": 2, "widgets": 1}
+    assert "widget" in target.kinds
+    schema_plan = plan(ledger, target, renames=module.RENAMES)
+    assert schema_plan.destructive == []
+    assert ("drop_table", "entity_widget") not in {
+        (step.action, step.name) for step in schema_plan.steps
+    }
+
+    dry = run_python(
+        MOLBIO_STEP, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "DROP TABLE `entity_widget`" not in dry.stdout
+    assert "entity_widget" not in dry.stdout  # not even as a planned rename
+
+    head_before = head(ledger)
+    applied = run_python(MOLBIO_STEP, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): molbio 1 -> 2" in applied.stdout
+    assert head(ledger) != head_before
+    # The step vendors molbio/base only; the other preset copy is untouched.
+    assert widgets_copy.read_bytes() == widgets_before
+
+    reopened = open_ledger(ledger.workspace, ledger.name)
+    try:
+        assert "widget" in reopened.schema.kinds
+        assert reopened.schema.preset_versions == {
+            "base": 1,
+            "molbio": 2,
+            "widgets": 1,
+        }
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            "base": 1,
+            "molbio": 2,
+            "widgets": 1,
+        }
+        assert "entity_widget" in table_names(reopened)
+        assert reopened.driver.query(
+            "SELECT `id`, `kind` FROM `entity` WHERE `kind` = 'widget'"
+        ) == [{"id": widget["id"], "kind": "widget"}]
+        assert reopened.driver.query("SELECT `size` FROM `entity_widget`") == [
+            {"size": 3}
+        ]
+        assert reopened.warnings == []
+        assert reopened.check_fingerprint(warn=False) is True
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+    finally:
+        reopened.close()
 
 
 # ---------------------------------------------------------------------------
