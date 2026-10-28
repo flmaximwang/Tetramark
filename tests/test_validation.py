@@ -198,7 +198,9 @@ def cli_env(
 
 
 def test_init_installs_every_generated_test(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="installed")
+    # Install-on-init is exactly what this test asserts, so it opts out of the
+    # session templates.
+    ledger = server_ledger_factory([FULL], name="installed", real_init=True)
     definitions = generate_tests(ledger.schema)
     rows = installed_test_rows(ledger)
 

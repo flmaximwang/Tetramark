@@ -18,6 +18,9 @@ from tetramark.driver.base import (
 from tetramark.driver.embedded import _check_output, _parse_result_sets
 from tetramark.errors import LedgerError
 
+#: No database and no ``dolt`` binary: safe for the fast lane (``-m fast``).
+pytestmark = pytest.mark.fast
+
 
 @pytest.mark.parametrize(
     ("value", "expected"),
