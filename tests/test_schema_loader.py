@@ -274,7 +274,15 @@ def test_load_ledger_config_directly() -> None:
 
 
 def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
-    assert list_presets(REPO_PRESETS) == ["base", "library", "molbio"]
+    assert list_presets(REPO_PRESETS) == [
+        "bacteria",
+        "base",
+        "cell_culture",
+        "library",
+        "molbio",
+        "nucleic_acids",
+        "proteins",
+    ]
     assert list_presets(PRESETS) == ["base", "chain", "extras", "full"]
     with pytest.raises(SchemaError, match="presets directory not found"):
         list_presets(tmp_path / "absent")

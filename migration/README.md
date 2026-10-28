@@ -83,15 +83,30 @@ A second run on an already-migrated ledger refuses: the counter is `N+1`, not
 `N`.
 
 A preset step also updates files, which are **not** Dolt content: `<ledger>/presets/`
-is the ledger's own preset copy (0.2.0) and the repository copy must replace
-it, or the next `open` loads the old preset while `preset_versions` says `N+1`.
-The step passes `after_commit=` for that; the runner runs it **only on a real
-apply**, after the commit, describes it in `--dry-run` via `after_commit_note=`,
-and then re-reads the ledger from its new copy (`reopened_schema=`) and verifies
-the fingerprint before reporting success. If the file hook fails, the report says
-`commit <hash> was made but the preset copy update failed` and exits 1 — the Dolt
-side is already migrated and only the files need the manual fix from the step
-README.
+is the ledger's own preset copy (0.2.0) and the target copy must replace it, or
+the next `open` loads the old preset while `preset_versions` says `N+1`.
+The wave-10 preset steps place the copies **before** the runner opens the ledger
+(`vendor_repo_presets`, because the spec-4 loader refuses a stock kind without
+`statuses:`), or pass `after_commit=` when the step has to open the old ledger
+first (the molbio 1 -> 2 renames); the runner runs an `after_commit` hook **only
+on a real apply**, after the commit, describes it in `--dry-run` via
+`after_commit_note=`, and then re-reads the ledger from its new copy
+(`reopened_schema=`) and verifies the fingerprint before reporting success. If
+the file hook fails, the report says `commit <hash> was made but the preset copy
+update failed` and exits 1 — the Dolt side is already migrated and only the files
+need the manual fix from the step README.
+
+Two rules keep historical steps usable after a later release bumps a preset
+again:
+
+- **A step ships the preset content it installs.** `presets/` only holds the
+  current version, so a step that upgrades to version `N+1` keeps that version's
+  YAML next to its `migrate.py` and places it with `vendor_preset_files` (see
+  `migration/presets/base/1-to-2/base-2.yaml`). Otherwise the step would try to
+  install the current, newer file and refuse its own counter.
+- **A bundle step records its part counters.** When a preset becomes a bundle
+  (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
+  the one commit also records the version of every file the ledger now loads.
 
 ## Writing a step
 
@@ -154,6 +169,8 @@ constraints/views — no hand-written SQL, no data loss.
 | [`spec/1-to-2`](spec/1-to-2/README.md) | `spec_version` 1 → 2 | Recreates the generated views in the spec-2 shape (`alias_list`/`occupant_alias_list`). |
 | [`spec/2-to-3`](spec/2-to-3/README.md) | `spec_version` 2 → 3 | Drops the empty `aliquot_<stockkind>` extension tables (refusing if one still holds values), recreates the views with the stock entity/aliquot/quantity/status columns, and regenerates `dolt_tests`. |
 | [`spec/3-to-4`](spec/3-to-4/README.md) | `spec_version` 3 → 4 | Drops the global `aliquot.status` CHECK, adds `aliquot_event.forced`, recreates the in-stock views, removes the default `statuses:` list from `ledger.yaml`/`ledger_meta` (refusing a custom list), and regenerates `dolt_tests` including the two status rules. |
-| [`presets/base/1-to-2`](presets/base/1-to-2/README.md) | `preset_versions.base` 1 → 2 | Places the v2 base copy (status sets `tube`/`cryo`/`animal`, `lot` uses `tube`), recreates the generated views; no table changes. |
+| [`presets/base/1-to-2`](presets/base/1-to-2/README.md) | `preset_versions.base` 1 → 2 | Places the frozen v2 base copy (status sets `tube`/`cryo`/`animal`, `lot` uses `tube`), recreates the generated views; no table changes. |
+| [`presets/base/2-to-3`](presets/base/2-to-3/README.md) | `preset_versions.base` 2 → 3 | Places base v3 and applies its additive diff: the slotless `incubator` box kind (`box_incubator` + its view); refuses a destructive plan. |
 | [`presets/library/1-to-2`](presets/library/1-to-2/README.md) | `preset_versions.library` 1 → 2 | Places the v2 library copy (`copy` uses the base `tube` set), recreates the generated views; no table changes. |
-| [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the v2 preset copy. |
+| [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the frozen v2 preset copy. |
+| [`presets/molbio/2-to-3`](presets/molbio/2-to-3/README.md) | `preset_versions.molbio` 2 → 3 | Turns molbio into a bundle of parts, adds `entity_oligo`/`stock_oligo_stock` (and base v3's `box_incubator`), places every part copy and records a `preset_versions` key per part at 1. |

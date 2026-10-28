@@ -52,6 +52,13 @@ copy) passes ``after_commit=...``: a callable ``(ledger, result) -> note`` that
 the runner runs **only on a real apply**, after the commit.  Its failure is
 reported as "the commit exists, the files were not updated" and exits 1.
 
+Two wave-10 details: a **bundle** preset has no kinds of its own, so its
+migration step introduces the counters of the parts it now announces
+(``preset_versions_extra={part: 1, ...}``, written in the same commit); and a
+step that installs a *historical* preset version ships that content next to its
+``migrate.py`` and places it with :func:`vendor_preset_files`, because the
+repository's ``presets/`` only ever holds the current version.
+
 A step script looks like::
 
     from tetramark.migrate import MigrationStep, main
@@ -77,7 +84,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
@@ -112,6 +119,7 @@ __all__ = [
     "preset_args",
     "restore_files",
     "run",
+    "vendor_preset_files",
     "vendor_repo_presets",
 ]
 
@@ -171,6 +179,12 @@ class MigrationStep:
     from disk).  It runs after ``after_commit`` and before the success
     report; its fingerprint must equal the one the commit recorded, so a
     stale or wrong preset copy can never pass as migrated.
+
+    ``preset_versions_extra`` — additional ``ledger_meta.preset_versions``
+    entries this step introduces, e.g. the parts a new **bundle** preset
+    announces (``{"nucleic_acids": 1, ...}``).  They are written in the same
+    commit as the stepped counter, and the runner refuses when the target
+    schema does not load one of them at the declared version.
     """
 
     kind: str
@@ -182,6 +196,7 @@ class MigrationStep:
     after_commit: AfterCommitCallable | None = None
     after_commit_note: str = ""
     reopened_schema: ReopenedSchemaCallable | None = None
+    preset_versions_extra: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.kind not in _STEP_KINDS:
@@ -199,6 +214,17 @@ class MigrationStep:
             raise UsageError(
                 f"from_version must be a positive integer, not {self.from_version!r}"
             )
+        if self.preset_versions_extra:
+            if self.kind != "preset":
+                raise UsageError(
+                    "preset_versions_extra is only valid on a preset step"
+                )
+            for name, version in self.preset_versions_extra.items():
+                if not isinstance(version, int) or version < 1:
+                    raise UsageError(
+                        "preset_versions_extra values must be positive integers "
+                        f"(got {name}={version!r})"
+                    )
         ensure_ascii(self.commit_summary)
 
     # -- identity ----------------------------------------------------------
@@ -507,6 +533,7 @@ def _meta_statements(
         values[META_SPEC_VERSION] = str(step.to_version)
     else:
         payload = _preset_versions(ledger)
+        payload.update(step.preset_versions_extra)
         assert step.preset is not None
         payload[step.preset] = step.to_version
         values[META_PRESET_VERSIONS] = json.dumps(
@@ -628,6 +655,15 @@ def _prepare(
                 f"{step.to_version}; the repository preset is not the "
                 "version this step upgrades to"
             )
+        for name, expected in step.preset_versions_extra.items():
+            loaded = target_schema.preset_versions.get(name)
+            if loaded != expected:
+                raise LedgerError(
+                    f"refusing to run {step.title}: the target schema loads "
+                    f"preset_versions[{name}] = {loaded}, but the step "
+                    f"declares {expected}; the preset list the ledger loads "
+                    "does not match the counters this step adds"
+                )
     statements = [
         *_plan_statements(step, ledger),
         *_meta_statements(step, ledger, target_schema),
@@ -801,6 +837,15 @@ def _verify_after(step: MigrationStep, ledger: Ledger, state: MigrationResult) -
                 f"{META_FINGERPRINT} is {live}, expected the target schema's "
                 f"{expected}"
             )
+    if step.preset_versions_extra:
+        recorded_versions = _preset_versions(ledger)
+        for name, version in step.preset_versions_extra.items():
+            if recorded_versions.get(name) != version:
+                raise MigrationError(
+                    f"{step.title}: the commit was made, but "
+                    f"{META_PRESET_VERSIONS}[{name}] is "
+                    f"{recorded_versions.get(name)!r}, expected {version}"
+                )
     if step.reopened_schema is not None:
         recorded = ledger.meta.get(META_FINGERPRINT)
         actual = step.reopened_schema(ledger)
@@ -1043,8 +1088,45 @@ def vendor_repo_presets(
     return saved
 
 
+def vendor_preset_files(
+    ledger_dir: str | Path, sources: Mapping[str, str | Path]
+) -> list[tuple[Path, bytes | None]]:
+    """Place explicit preset files under ``<ledger>/presets/``.
+
+    A migration step installs the preset version it upgrades **to**, and the
+    repository's ``presets/`` only ever holds the *current* version.  A
+    historical step therefore ships the target content next to its
+    ``migrate.py`` (e.g. ``migration/presets/base/1-to-2/base-2.yaml``) and
+    places it here; ``sources`` maps the preset name to that file.  The
+    destination is ``<ledger>/presets/<name>.yaml``, exactly where ``tm init``
+    writes the copy the ledger resolves.
+
+    Returns the same ``[(path, previous_bytes_or_None), ...]`` shape as
+    :func:`vendor_repo_presets`, so :func:`restore_files` undoes it and a dry
+    run or refused step leaves the ledger byte-identical.
+    """
+    root = Path(ledger_dir).expanduser().resolve()
+    copies = root / "presets"
+    saved: list[tuple[Path, bytes | None]] = []
+    for name, source_path in sources.items():
+        if not _PRESET_NAME_RE.match(str(name)):
+            raise UsageError(f"invalid preset name {name!r} for a frozen step copy")
+        source = Path(source_path).expanduser()
+        if not source.is_file():
+            raise UsageError(f"frozen preset copy {source} does not exist")
+        target = copies / f"{name}.yaml"
+        data = source.read_bytes()
+        if target.is_file() and target.read_bytes() == data:
+            continue
+        previous = target.read_bytes() if target.is_file() else None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        saved.append((target, previous))
+    return saved
+
+
 def restore_files(saved: Sequence[tuple[Path, bytes | None]]) -> None:
-    """Undo :func:`vendor_repo_presets` (best effort, back to front)."""
+    """Undo :func:`vendor_repo_presets`/:func:`vendor_preset_files` (back to front)."""
     for target, previous in reversed(list(saved)):
         try:
             if previous is None:

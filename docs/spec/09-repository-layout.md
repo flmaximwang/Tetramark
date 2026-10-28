@@ -2,7 +2,8 @@
 
 ```
 pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
-presets/                  # base.yaml, molbio.yaml, library.yaml (repo files; tm init copies them)
+presets/                  # parts (base, nucleic_acids, bacteria, proteins, cell_culture, library) and
+                          # bundles (molbio) + README.md (part/bundle table); tm init copies them
 src/tetramark/
   driver/                 # base.py, server.py, embedded.py, workspace.py (server start/stop)
   schema/                 # model.py (pydantic), loader.py (presets/include/mixins), ddl.py, diff.py, tests_gen.py

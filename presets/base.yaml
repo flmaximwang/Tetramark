@@ -1,8 +1,9 @@
 preset: base
-version: 2
+version: 3
 description: >-
-  Domain-neutral inventory: a generic item, a purchase lot, and the box
-  geometries used by the sample-oriented presets.
+  Domain-neutral inventory: a generic item, a purchase lot, the status sets
+  every stock kind names, and the box geometries used by the sample-oriented
+  presets (a freezer, an incubator, racks and grids).
 
 status_sets:
   # General tube / vial inventory (spec 4, design §4).  ``stored`` is the only
@@ -116,6 +117,14 @@ kinds:
     geometry:
       type: slotless
       capacity: 1
+
+  incubator:
+    object: box
+    description: >-
+      A temperature-controlled incubator; racks, boxes, plates or vials sit in
+      it directly and it has no slots of its own.
+    geometry:
+      type: slotless
 
 rules:
   - id: BASE01

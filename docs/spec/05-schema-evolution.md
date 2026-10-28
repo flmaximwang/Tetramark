@@ -21,7 +21,8 @@ the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH
 and, through `src/tetramark/migrate.py`, refuses unless the ledger's counter equals `N`, creates the tag
 `pre-migrate-<spec|preset>-<N>` before writing, prints every statement with `--dry-run`, and applies in
 exactly one commit (`migrate(ledger): spec N -> N+1`) that bumps the counter, `tetramark_version` and
-the fingerprint together. A step whose target schema differs from the ledger's declares it (`schema=`),
+the fingerprint together. A step that turns a preset into a **bundle** declares the part counters it
+introduces (`preset_versions_extra`), so `preset_versions` records every file the ledger now loads. A step whose target schema differs from the ledger's declares it (`schema=`),
 so the commit writes the **new** fingerprint and regenerates the derived `dolt_tests` from that schema in
 the same commit; a preset step then replaces `<ledger>/presets/` with the repository copy after the
 commit (files are not Dolt content) and the runner re-reads the ledger from that copy and verifies the

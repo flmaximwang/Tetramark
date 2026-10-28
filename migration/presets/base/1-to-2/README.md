@@ -22,13 +22,17 @@ allowed statuses moved from the ledger-wide list into the presets. The step ther
 current preset copies (files, not Dolt content — the spec-4 loader refuses a stock kind without
 `statuses:`), recreates the generated views from the ledger's own (now v2) schema, and bumps
 `preset_versions.base` + the fingerprint; the shared runner regenerates the derived `dolt_tests` in
-the same commit.
+the same commit. Base itself comes from the **frozen `base-2.yaml` next to `migrate.py`**: the
+repository's `presets/base.yaml` only ever holds the current version, which may be newer than v2 by
+the time you run this step.
 
 ## Preconditions
 
 - `ledger_meta.spec_version = 4`. Run [`migration/spec/3-to-4`](../../../spec/3-to-4/README.md) first
   (the step refuses a spec-3 ledger).
 - `ledger_meta.preset_versions.base = 1` (a second run refuses; the shared runner checks it).
+  The step installs the frozen base v2, no matter which version the repository currently ships; for
+  a ledger created before the base parts split that is exactly the version this step reaches.
 - A clean working set.
 - The ledger lists `base`. A ledger that lists other presets whose copies are still pre-wave-10
   (e.g. `molbio`) cannot be loaded by the spec-4 tool at all: the step places **every bundled preset

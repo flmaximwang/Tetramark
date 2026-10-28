@@ -10,8 +10,9 @@ aliquots of one stock are the same* — to the bundled biology preset:
   ``bacterial_glycerol`` (``aliquot_bacterial`` disappears);
 * new kinds: the ``cell_line`` entity (with a ``parental`` self-reference) and
   the ``cell_vial`` / ``cell_pellet`` stocks — additive tables and views;
-* the ledger's own ``<ledger>/presets/`` copy is replaced with the repository's
-  v2 preset and the counter ``preset_versions.molbio`` becomes 2.
+* the ledger's own ``<ledger>/presets/`` copy is replaced with the frozen v2
+  preset content shipped next to this file, and the counter
+  ``preset_versions.molbio`` becomes 2.
 
 Run it by hand from the repository root::
 
@@ -25,9 +26,11 @@ Dolt content) and ``reopened_schema`` makes the runner re-read the ledger from
 that copy and verify its fingerprint before the success report.
 
 The target schema is the ledger's own preset list with molbio (and the base it
-includes) substituted by the repository v2/v1 files: another preset a ledger
-loads (``library``, a local preset, ...) stays part of the desired schema, so
-its kind tables are not planned as drops.  ``plan`` refuses any **destructive**
+includes) substituted by the **frozen v2 copies shipped next to this file**
+(``molbio-2.yaml``, ``base-2.yaml``): the repository's ``presets/`` only ever
+holds the current versions, so a historical step must carry the content it
+installs.  Another preset a ledger loads (``library``, a local preset, ...)
+stays part of the desired schema, so its kind tables are not planned as drops.  ``plan`` refuses any **destructive**
 planner step — the same plan ``tm schema apply`` would refuse without
 ``--allow-destructive`` — before anything is written, instead of silently
 dropping columns or rows.
@@ -62,12 +65,17 @@ from tetramark.schema.loader import (
 )
 from tetramark.schema.model import EffectiveSchema
 
-#: The repository root: this file is ``migration/presets/molbio/1-to-2/``.
-REPO_ROOT = Path(__file__).resolve().parents[4]
-REPO_PRESETS = REPO_ROOT / "presets"
-
 #: ``presets/molbio.yaml`` version this step upgrades a ledger to.
 TO_VERSION = 2
+
+#: The frozen v2 preset content this step installs (the repository's
+#: ``presets/`` only holds the current version).  ``molbio-2.yaml`` is the
+#: released molbio v2 (include base + statuses on its stock kinds) and
+#: ``base-2.yaml`` is the base v2 it was released with.
+FROZEN_PRESETS: dict[str, Path] = {
+    "molbio": Path(__file__).with_name("molbio-2.yaml"),
+    "base": Path(__file__).with_name("base-2.yaml"),
+}
 
 #: Old → new names live in ``renames.yaml`` (the planner does the renames).
 RENAMES = load_renames(Path(__file__).with_name("renames.yaml"))
@@ -89,10 +97,6 @@ COPY_GLYCEROL_SQL = (
     "WHERE `e`.`glycerol_pct` IS NOT NULL"
 )
 DROP_EXTENSION_SQL = "DROP TABLE IF EXISTS `aliquot_bacterial`"
-
-#: Ledger preset files this step vendors from the repository (v2 molbio; base
-#: is unchanged at version 1 but is re-copied if the ledger's copy differs).
-PRESET_FILES = ("molbio.yaml", "base.yaml")
 
 #: Preset names this step replaces in the target preset list: molbio and the
 #: base it includes.  Every other preset the ledger lists is kept.
@@ -133,13 +137,13 @@ def _copy_preset(preset: PresetFile, root: Path) -> Path:
 def _target_preset_sources(ledger: Ledger, root: Path) -> list[str]:
     """The ``presets:`` list of the target schema, rooted in a private copy.
 
-    The ledger's own list wins: molbio (and the base it includes) is the
-    repository v2/v1 copy — exactly what ``vendor_presets`` writes after the
-    commit — and every other preset stays the ledger's own ``<ledger>/presets/``
-    copy, so its kinds are not planned as drops.  Everything is materialised
-    into ``root`` so that the includes of the other presets also resolve to the
-    repository base (a ledger listing e.g. ``library`` would otherwise load two
-    different ``base.yaml`` files).
+    The ledger's own list wins: molbio (and the base it includes) is the frozen
+    v2 copy — exactly what ``vendor_presets`` writes after the commit — and
+    every other preset stays the ledger's own ``<ledger>/presets/`` copy, so its
+    kinds are not planned as drops.  Everything is materialised into ``root`` so
+    that the includes of the other presets also resolve to the frozen base (a
+    ledger listing e.g. ``library`` would otherwise load two different
+    ``base.yaml`` files).
     """
     resolved = resolve_ledger_presets(ledger.path, ledger.config)
     for preset in resolved:
@@ -156,11 +160,11 @@ def _target_preset_sources(ledger: Ledger, root: Path) -> list[str]:
     materialised: dict[str, Path] = {}
     for name in REPLACED_PRESETS:
         materialised[name] = _copy_preset(
-            PresetFile(name=name, path=REPO_PRESETS / f"{name}.yaml", is_file=True),
+            PresetFile(name=name, path=FROZEN_PRESETS[name], is_file=True),
             root,
         )
     for preset in closure:
-        if preset.name in materialised:  # the repository copies win over the ledger's
+        if preset.name in materialised:  # the frozen v2 copies win over the ledger's
             continue
         materialised[preset.name] = _copy_preset(preset, root)
     return [str(materialised[preset.name]) for preset in resolved]
@@ -195,7 +199,7 @@ def target_schema(ledger: Ledger) -> EffectiveSchema:
     """The schema after the step: the ledger's presets with molbio 2 substituted.
 
     ``open_target`` still opens the ledger with its old preset copy, so the
-    migration loads the repository v2 molbio itself; every *other* preset the
+    migration loads the frozen v2 molbio itself; every *other* preset the
     ledger lists is kept from the ledger's own ``<ledger>/presets/`` copy, so
     unrelated kinds stay in the desired schema instead of being planned away.
     ``base_dir`` is the ledger directory, so a ``kinds_dir``/``rules_dir`` in
@@ -210,7 +214,7 @@ def target_schema(ledger: Ledger) -> EffectiveSchema:
     version = schema.preset_versions.get("molbio")
     if version != TO_VERSION:
         raise LedgerError(
-            f"refusing to migrate molbio 1 -> 2: the repository preset is "
+            f"refusing to migrate molbio 1 -> 2: the frozen v2 preset is "
             f"version {version}, expected {TO_VERSION}"
         )
     _check_other_presets_unchanged(ledger, schema)
@@ -357,31 +361,32 @@ def plan(ledger: Ledger):
 
 
 def vendor_presets(ledger: Ledger, result) -> str:
-    """Replace the ledger's preset copies with the repository copies.
+    """Replace the ledger's preset copies with the frozen v2 copies.
 
     ``after_commit`` hook: the files are not Dolt content, so the runner can
     only do this after the migration commit exists.  A ledger resolves presets
     **only** from ``<ledger>/presets/`` (0.2.0 rule), so without this the next
     ``open`` would load molbio v1 while ``preset_versions.molbio`` says 2.
-    The runner's ``reopened_schema`` hook then re-reads the ledger from these
-    files and verifies the fingerprint, so a partial copy cannot pass.
+    The content is frozen next to this file, not read from ``presets/``: after
+    a later release the repository copy is no longer version 2.  The runner's
+    ``reopened_schema`` hook then re-reads the ledger from these files and
+    verifies the fingerprint, so a partial copy cannot pass.
     """
     copies = ledger.path / "presets"
     updated: list[str] = []
-    for name in PRESET_FILES:
-        source = REPO_PRESETS / name
-        target = copies / name
+    for name, source in FROZEN_PRESETS.items():
+        target = copies / f"{name}.yaml"
         data = source.read_bytes()
         if target.is_file() and target.read_bytes() == data:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-        updated.append(name)
+        updated.append(f"{name}.yaml")
 
     if not updated:
-        return f"presets in {copies} already match the repository copies"
+        return f"presets in {copies} already match the frozen v2 copies"
     return (
-        f"replaced {', '.join(updated)} in {copies} with the repository copies; "
+        f"replaced {', '.join(updated)} in {copies} with the frozen v2 copies; "
         "the runner verifies the reopened fingerprint"
     )
 
@@ -395,8 +400,8 @@ step = MigrationStep(
     after_commit=vendor_presets,
     reopened_schema=reopened_schema,
     after_commit_note=(
-        "replace <ledger>/presets/molbio.yaml with presets/molbio.yaml (v2), "
-        "then reopen the ledger and compare its fingerprint"
+        "replace <ledger>/presets/molbio.yaml and base.yaml with the frozen v2 "
+        "copies, then reopen the ledger and compare its fingerprint"
     ),
     description=(
         "rename construct/strain/bacterial/pellet kinds, add the cell_line, "

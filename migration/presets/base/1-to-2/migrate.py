@@ -13,7 +13,9 @@ config into the preset.  The step therefore
 
 * places the repository preset copies the ledger lists (files are not Dolt
   content — the spec-4 loader refuses a stock kind without ``statuses:``, so
-  the copy has to be current before the ledger can be opened),
+  the copy has to be current before the ledger can be opened), and puts the
+  **frozen base v2** shipped next to this file over its own copy (the
+  repository's ``presets/`` only holds the current base version),
 * re-creates the generated views from the ledger's own (now v2) schema,
 * bumps ``preset_versions.base`` to 2 and the fingerprint; the shared runner
   regenerates the derived ``dolt_tests`` from the same schema in that commit.
@@ -41,6 +43,7 @@ from tetramark.migrate import (
     preset_args,
     restore_files,
     run,
+    vendor_preset_files,
     vendor_repo_presets,
 )
 from tetramark.schema.ddl import view_statements
@@ -53,6 +56,11 @@ REPO_PRESETS = REPO_ROOT / "presets"
 
 PRESET = "base"
 TO_VERSION = 2
+
+#: The frozen base v2 this step installs over the repository copy: after a
+#: later release ``presets/base.yaml`` is a newer version, so the historical
+#: step must carry the content whose counter it bumps.
+FROZEN_BASE = Path(__file__).with_name("base-2.yaml")
 
 
 def _require_ready(ledger: Ledger) -> None:
@@ -118,9 +126,15 @@ step = MigrationStep(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Place the preset copies, then run the shared one-commit step."""
+    """Place the preset copies, then run the shared one-commit step.
+
+    Every other preset the ledger lists is placed from the repository (the
+    spec-4 loader needs current copies); base itself comes from the frozen v2
+    file, because that is the version this counter bumps to.
+    """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
+    saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_BASE})
     try:
         run(
             step,

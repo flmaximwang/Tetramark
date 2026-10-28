@@ -1,0 +1,124 @@
+preset: proteins
+version: 1
+description: >-
+  Protein designs and their purified preparations: one entity per amino-acid
+  sequence, with the extinction-coefficient formulas from zsqlab08, and the
+  prep stocks made from them. Included by the molbio bundle and, through
+  nucleic_acids (whose plasmid points at the design it expresses), by the
+  cellbio and angenet bundles. Adapted from BioManager (MIT).
+
+include: [base]
+
+# ``sequence_fields`` lives here because this is the deepest part that both
+# ``protein_construct`` (here) and ``plasmid`` (nucleic_acids, which includes
+# this part) load, so one definition serves both.  ``base`` is lower in the
+# include graph but domain-neutral, so a sequence mixin does not belong there.
+mixins:
+  sequence_fields:
+    sequence:
+      type: sequence
+      unique: true
+      description: >-
+        Nucleotide sequence; normalised (uppercase, whitespace stripped) by the
+        app and fingerprinted through the generated sequence_sha256 column.
+    length_bp:
+      type: computed
+      expr: "CHAR_LENGTH(sequence)"
+      sql_type: int
+      description: Sequence length in base pairs, recomputed from sequence.
+
+kinds:
+  protein_construct:
+    object: entity
+    description: >-
+      A protein design (the old entity_constructs table); one row per amino-acid
+      sequence, with the extinction-coefficient formulas from zsqlab08.
+    mixins: [named_fields, sequence_fields]
+    fields:
+      mature_sequence:
+        type: sequence
+        description: Mature protein sequence after signal-peptide/tag removal, when known.
+      aliases:
+        type: string
+        length: 255
+        description: Alternative names used in notebooks or vendor labels (semicolon-separated).
+      molecular_weight_da:
+        type: decimal
+        precision: 12
+        scale: 2
+        description: Calculated molecular weight in daltons (Da).
+      pi:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Isoelectric point of the construct.
+      extinction_coefficient_reduced_m1cm1:
+        type: int
+        description: Molar extinction coefficient at 280 nm, reduced cysteines (M-1 cm-1).
+      extinction_coefficient_oxidized_m1cm1:
+        type: int
+        description: Molar extinction coefficient at 280 nm, oxidized cysteines (M-1 cm-1).
+      extinction_coefficient_reduced_0p1pct:
+        type: computed
+        expr: "CAST(extinction_coefficient_reduced_m1cm1 AS DECIMAL(20,10)) / molecular_weight_da"
+        sql_type: decimal
+        precision: 12
+        scale: 8
+        description: >-
+          Reduced extinction coefficient per 0.1% solution, i.e.
+          epsilon_reduced / molecular_weight_da (the zsqlab08 Excel formula).
+      extinction_coefficient_oxidized_0p1pct:
+        type: computed
+        expr: "CAST(extinction_coefficient_oxidized_m1cm1 AS DECIMAL(20,10)) / molecular_weight_da"
+        sql_type: decimal
+        precision: 12
+        scale: 8
+        description: >-
+          Oxidized extinction coefficient per 0.1% solution, i.e.
+          epsilon_oxidized / molecular_weight_da (the zsqlab08 Excel formula).
+      tag:
+        type: string
+        length: 16
+        description: Affinity/purification tag appended to the design (e.g. 6H, SUMO, MBP).
+
+  protein_prep:
+    object: stock
+    statuses: tube
+    description: A purified protein preparation derived from a pellet or culture.
+    entity_kinds: [protein_construct]
+    fields:
+      concentration_mg_ml:
+        type: decimal
+        precision: 10
+        scale: 3
+        description: Protein concentration of the preparation, in mg/mL.
+      buffer:
+        type: string
+        length: 128
+        description: Storage buffer of the purified protein.
+      purification_id:
+        type: string
+        length: 64
+        description: Identifier of the purification run/record this prep belongs to.
+      purity_pct:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Estimated purity in percent (SDS-PAGE / SEC), when measured.
+
+rules:
+  - id: MB03
+    description: protein preparations record a positive concentration when known
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_protein_prep
+      WHERE concentration_mg_ml IS NOT NULL AND concentration_mg_ml <= 0
+    expect: {single_value: 0}
+
+  - id: MB04
+    description: constructs with a sequence also record their molecular weight (informational)
+    severity: info
+    sql: >-
+      SELECT COUNT(*) FROM entity_protein_construct
+      WHERE sequence IS NOT NULL AND molecular_weight_da IS NULL
+    expect: {single_value: 0}

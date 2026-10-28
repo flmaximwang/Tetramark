@@ -25,7 +25,9 @@ one Dolt commit; every read is a normal `tm` command.
    `tm config get presets_dir`) and copies it, plus its `include:` closure, into
    `<ledger>/presets/`. Every later command opens only that copy, so to change a ledger's schema you
    edit `<ledger>/presets/*.yaml` (or a local `kinds_dir`/`rules_dir`) — editing a checkout's
-   `presets/` does not affect existing ledgers.
+   `presets/` does not affect existing ledgers. A bundled preset such as `molbio` is a **bundle**:
+   its kinds come from the parts it includes (`base`, `nucleic_acids`, `bacteria`, `proteins`,
+   `cell_culture`), so a kind the ledger shows may live in any of those files.
 
 ## Decision table
 

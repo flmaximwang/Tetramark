@@ -55,7 +55,7 @@ from tetramark.schema.ddl import (
 )
 from tetramark.schema.diff import RenameMap, apply, plan
 from tetramark.schema.tests_gen import generate_tests, run_check
-from tetramark.schema.loader import load_ledger_schema
+from tetramark.schema.loader import load_ledger_schema, load_schema
 
 import tetramark.schema.model as model
 
@@ -64,7 +64,23 @@ from conftest import PRESETS, REPO_PRESETS, free_port, isolated_env
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
 MOLBIO_STEP = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "migrate.py"
-MOLBIO_V2 = REPO_PRESETS / "molbio.yaml"
+
+#: The frozen v2 preset content the historical steps install.  The repository's
+#: ``presets/`` only holds the current version (base 3, molbio 3), so the
+#: 1 -> 2 steps must ship what they upgrade to next to their ``migrate.py``.
+BASE_V2 = ROOT / "migration" / "presets" / "base" / "1-to-2" / "base-2.yaml"
+MOLBIO_V2 = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "molbio-2.yaml"
+#: The current repository copies (molbio 3 is a bundle of parts).
+MOLBIO_V3 = REPO_PRESETS / "molbio.yaml"
+BASE_V3 = REPO_PRESETS / "base.yaml"
+PARTS_V3 = ("proteins", "nucleic_acids", "bacteria", "cell_culture")
+
+
+def base_v2_schema():
+    """The schema the frozen base v2 preset loads (for expected view counts)."""
+    return load_schema(
+        model.LedgerConfig(name="base-v2", presets=[str(BASE_V2)])
+    )
 
 
 def base_args(ledger: Ledger) -> list[str]:
@@ -1239,9 +1255,11 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
         assert yaml.safe_load(
             (reopened.path / "presets" / "molbio.yaml").read_text(encoding="utf-8")
         )["version"] == 2
+        # base is frozen v2 here: the repository copy is v3 nowadays, and this
+        # step must still install the version its counter reaches.
         assert (reopened.path / "presets" / "base.yaml").read_bytes() == (
-            REPO_PRESETS / "base.yaml"
-        ).read_bytes()
+            BASE_V2.read_bytes()
+        )
 
         # tm check runs the regenerated tests: no FAIL, no stale-table error.
         checked = tm_check_open(reopened)
@@ -1761,7 +1779,7 @@ def test_post_commit_verification_failure_is_reported_on_stderr(
         from_version=1,
         statements=["UPDATE `alias` SET `alias` = `alias` WHERE 1 = 0"],
         hook_source=(
-            "from tetramark.schema.loader import load_ledger_schema\n"
+            "from tetramark.schema.loader import load_ledger_schema, load_schema\n"
             "\n"
             "def reopened(ledger):\n"
             "    return load_ledger_schema(ledger.path)[1]\n"
@@ -2169,7 +2187,9 @@ def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
 
     head_before = head(ledger)
     commits_before = commit_count(ledger)
-    view_count = len(view_statements(ledger.schema))
+    # The step installs the frozen base v2, so the plan recreates v2's views
+    # (one box kind fewer than the v3 repository copy this ledger started on).
+    view_count = len(view_statements(base_v2_schema()))
 
     dry = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env)
     assert dry.returncode == 0, dry.stdout + dry.stderr
@@ -2182,9 +2202,11 @@ def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
     assert applied.returncode == 0, applied.stdout + applied.stderr
     assert "migrate(ledger): base 1 -> 2" in applied.stdout
 
-    ledger.read_meta()
+    reload_schema(ledger)
     assert json.loads(ledger.meta["preset_versions"]) == {"base": 2}
+    assert ledger.schema.preset_versions == {"base": 2}
     assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert (ledger.path / "presets" / "base.yaml").read_bytes() == BASE_V2.read_bytes()
     assert commit_count(ledger) == commits_before + 1
     assert tags(ledger) == {"pre-migrate-base-1": head_before}
     checked = tm_check(ledger)
@@ -2280,3 +2302,435 @@ def test_spec_3_to_4_refuses_an_aliquot_status_outside_its_stock_kind_set(
     assert tags(ledger) == {}
     # The legacy ledger.yaml was restored too.
     assert "statuses" in config_payload(ledger)
+
+
+# ---------------------------------------------------------------------------
+# Ticket 27: molbio 2 -> 3 (a bundle of parts) and base 2 -> 3 (incubator)
+# ---------------------------------------------------------------------------
+
+MOLBIO_2_TO_3 = ROOT / "migration" / "presets" / "molbio" / "2-to-3" / "migrate.py"
+BASE_2_TO_3 = ROOT / "migration" / "presets" / "base" / "2-to-3" / "migrate.py"
+
+#: What a molbio-v2 ledger records before ticket 27's step.
+MOLBIO_V2_VERSIONS = {"base": 2, "molbio": 2}
+
+#: What the molbio 2 -> 3 step records: the bundle plus one key per part.
+#: ``base`` stays at 2 (its own step bumps it), exactly like molbio 1 -> 2.
+MOLBIO_V3_VERSIONS = {
+    "bacteria": 1,
+    "base": 2,
+    "cell_culture": 1,
+    "molbio": 3,
+    "nucleic_acids": 1,
+    "proteins": 1,
+}
+
+#: Every preset copy a molbio ledger needs after the step.
+MOLBIO_V3_FILES = ("molbio.yaml", "base.yaml", *[f"{part}.yaml" for part in PARTS_V3])
+
+
+def write_molbio_v2_presets(directory: Path) -> Path:
+    """Materialise the frozen v2 pair under the flat names ``tm init`` copies."""
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MOLBIO_V2, directory / "molbio.yaml")
+    shutil.copyfile(BASE_V2, directory / "base.yaml")
+    return directory / "molbio.yaml"
+
+
+def molbio_v2_ledger(
+    factory, directory: Path, *, name: str = "molbio-v2"
+) -> Ledger:
+    """A real molbio-v2 ledger, built from the frozen v2 presets.
+
+    The repository's ``presets/`` holds v3, so this is the supported way to
+    reproduce what a 0.2.0 ledger carries; the step under test is the only
+    thing that may move it to v3.
+    """
+    ledger = factory([write_molbio_v2_presets(directory)], name=name, real_init=True)
+    assert ledger.schema.preset_versions == MOLBIO_V2_VERSIONS
+    assert json.loads(ledger.meta["preset_versions"]) == MOLBIO_V2_VERSIONS
+    return ledger
+
+
+def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
+    """One row per v2 entity kind and every stock kind, with aliquots."""
+    construct = ledger.entities.add(
+        "protein_construct",
+        name="c01",
+        values={"sequence": "ATGC", "molecular_weight_da": 12345.67},
+    )
+    plasmid = ledger.entities.add(
+        "plasmid",
+        name="p01",
+        values={
+            "sequence": "ATGG",
+            "construct": construct["id"],
+            "resistance": "amp",
+        },
+    )
+    strain = ledger.entities.add(
+        "bacterial_strain", name="DH5a", values={"genotype": "F- endA1"}
+    )
+    line = ledger.entities.add(
+        "cell_line", name="HEK293T", values={"species": "Homo sapiens"}
+    )
+    glycerol = ledger.stocks.add(
+        "bacterial_glycerol",
+        entity=strain["id"],
+        values={"strain": "DH5a", "medium": "LB", "glycerol_pct": 25},
+        aliquots=2,
+        quantity=500,
+        unit="ul",
+    )
+    prep = ledger.stocks.add(
+        "plasmid_prep",
+        entity=plasmid["id"],
+        values={"concentration_ng_ul": 120.5, "prep_method": "miniprep"},
+        aliquots=1,
+        quantity=50,
+        unit="ul",
+    )
+    protein = ledger.stocks.add(
+        "protein_prep",
+        entity=construct["id"],
+        values={"concentration_mg_ml": 1.5},
+        aliquots=1,
+        quantity=100,
+        unit="ul",
+    )
+    pellet = ledger.stocks.add(
+        "bacterial_pellet",
+        entity=plasmid["id"],
+        values={"culture_volume_ml": 500, "od600": 2.4},
+        aliquots=2,
+        quantity=250,
+        unit="ml",
+    )
+    vial = ledger.stocks.add(
+        "cell_vial",
+        entity=line["id"],
+        values={"passage": 7, "dmso_pct": 10},
+        aliquots=1,
+        quantity=1,
+        unit="vial",
+    )
+    cell_pellet = ledger.stocks.add(
+        "cell_pellet",
+        entity=line["id"],
+        values={"cell_count": 1_000_000, "passage": 8},
+        aliquots=1,
+        quantity=1,
+        unit="tube",
+    )
+    ledger.aliases.add("stock", glycerol["id"], "OLD-GLY")
+    return {
+        "construct": construct,
+        "plasmid": plasmid,
+        "strain": strain,
+        "line": line,
+        "glycerol": glycerol,
+        "prep": prep,
+        "protein": protein,
+        "pellet": pellet,
+        "vial": vial,
+        "cell_pellet": cell_pellet,
+    }
+
+
+#: Every table a molbio-v2 ledger has; the step must keep all of them.
+MOLBIO_TABLES = (
+    "entity",
+    "stock",
+    "aliquot",
+    "alias",
+    "entity_protein_construct",
+    "entity_plasmid",
+    "entity_bacterial_strain",
+    "entity_cell_line",
+    "stock_bacterial_glycerol",
+    "stock_plasmid_prep",
+    "stock_protein_prep",
+    "stock_bacterial_pellet",
+    "stock_cell_vial",
+    "stock_cell_pellet",
+)
+
+
+def molbio_row_counts(ledger: Ledger) -> dict[str, int]:
+    return {table: row_count(ledger, table) for table in MOLBIO_TABLES}
+
+
+def downgrade_to_spec3(ledger: Ledger) -> None:
+    """Turn a spec-4 v2 ledger into the spec-3 shape the spec step upgrades.
+
+    Same downgrade the spec/3-to-4 tests use: drop the generated views, remove
+    ``aliquot_event.forced``, restore the global status CHECK, put the default
+    ``statuses:`` list back into ``ledger.yaml`` (and its meta copy) and stamp
+    ``spec_version = 3``.
+    """
+    driver = ledger.driver
+    for statement in view_statements(ledger.schema):
+        driver.execute(f"DROP VIEW `{statement.name}`")
+    driver.execute("ALTER TABLE `aliquot_event` DROP COLUMN `forced`")
+    driver.execute(
+        "ALTER TABLE `aliquot` ADD CONSTRAINT `ck_aliquot_status` "
+        "CHECK (`status` IN ('pending', 'stored', 'missing', 'consumed'))"
+    )
+    config_path = ledger.path / "ledger.yaml"
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["statuses"] = list(SPEC3_STATUSES)
+    text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    config_path.write_text(text, encoding="utf-8")
+    driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'ledger_yaml'",
+        (text,),
+    )
+    driver.execute("UPDATE `ledger_meta` SET `value` = '3' WHERE `key` = 'spec_version'")
+    driver.commit("test: simulate a spec-3 molbio-v2 ledger")
+    ledger.read_meta()
+
+
+def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Verify bullet 3, both drivers: dry run, one commit, rows kept, check."""
+    ledger = molbio_v2_ledger(ledger_factory, tmp_path / "molbio-v2-presets")
+    seeded = seed_molbio_v2(ledger)
+    counts_before = molbio_row_counts(ledger)
+    assert counts_before["aliquot"] == 8
+    copies_before = {
+        name: (ledger.path / "presets" / name).read_bytes()
+        for name in ("molbio.yaml", "base.yaml")
+    }
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    # -- dry run: the oligo DDL, the tag, the part counters; no writes -----
+    dry = run_python(
+        MOLBIO_2_TO_3, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    out = dry.stdout
+    assert "migration: molbio 2 -> 3" in out
+    assert "CALL DOLT_TAG('pre-migrate-molbio-2'" in out
+    assert "CREATE TABLE `entity_oligo`" in out
+    assert "CREATE TABLE `stock_oligo_stock`" in out
+    assert "CREATE TABLE `box_incubator`" in out
+    assert "\"bacteria\": 1" in out and "\"nucleic_acids\": 1" in out
+    assert "\"molbio\": 3" in out
+    assert "dolt tests: replace with" in out
+
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    assert "entity_oligo" not in table_names(ledger)
+    for name, data in copies_before.items():
+        assert (ledger.path / "presets" / name).read_bytes() == data, name
+
+    # -- apply: one commit, every counter, every row -----------------------
+    applied = run_python(MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "committed" in applied.stdout
+    assert "migrate(ledger): molbio 2 -> 3" in applied.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    try:
+        assert reopened.warnings == []
+        assert reopened.check_fingerprint(warn=False) is True
+        assert json.loads(reopened.meta["preset_versions"]) == MOLBIO_V3_VERSIONS
+        assert reopened.schema.preset_versions == {
+            **MOLBIO_V3_VERSIONS,
+            "base": 3,  # the placed copy is base v3; its counter is the base step's
+        }
+
+        tables = table_names(reopened)
+        for table in (
+            "entity_oligo",
+            "stock_oligo_stock",
+            "v_entity_oligo",
+            "v_stock_oligo_stock",
+            "box_incubator",
+            "v_box_incubator",
+        ):
+            assert table in tables, table
+        assert molbio_row_counts(reopened) == counts_before
+        assert reopened.driver.query(
+            "SELECT `alias` FROM `alias` WHERE `object_type` = 'stock' "
+            "AND `object_id` = %s",
+            (seeded["glycerol"]["id"],),
+        ) == [{"alias": "OLD-GLY"}]
+
+        # The ledger's copy is this checkout's v3 content, byte for byte.
+        for name in MOLBIO_V3_FILES:
+            assert (reopened.path / "presets" / name).read_bytes() == (
+                REPO_PRESETS / name
+            ).read_bytes(), name
+
+        # One commit with the contract message, tagged at the pre-step commit.
+        assert commit_count(reopened) == commits_before + 1
+        head_after = head(reopened)
+        assert head_after != head_before
+        assert commit_message(reopened, head_after) == "migrate(ledger): molbio 2 -> 3"
+        assert tags(reopened) == {"pre-migrate-molbio-2": head_before}
+
+        # tm check runs the regenerated v3 tests; the schema plan is empty.
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        assert "OK:" in checked.output
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        reopened.close()
+
+    # -- a second run refuses (molbio is already 3) ------------------------
+    again = run_python(MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    output = again.stdout + again.stderr
+    assert "refusing to run migration molbio 2 -> 3" in output
+    assert "preset_versions[molbio] 3, expected 2" in output
+    assert head(ledger) == head_after
+
+
+def test_base_2_to_3_adds_the_incubator_kind(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Ticket 27: base v3's slotless incubator is additive and idempotent."""
+    ledger = molbio_v2_ledger(
+        embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="base-v2"
+    )
+    seed_molbio_v2(ledger)
+    counts_before = molbio_row_counts(ledger)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    dry = run_python(
+        BASE_2_TO_3, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: base 2 -> 3" in dry.stdout
+    assert "CALL DOLT_TAG('pre-migrate-base-2'" in dry.stdout
+    assert "box_incubator" in dry.stdout
+    assert head(ledger) == head_before
+    assert tags(ledger) == {}
+
+    applied = run_python(BASE_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): base 2 -> 3" in applied.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    try:
+        # Only base's counter is bumped: molbio's own step records molbio/parts.
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            "base": 3,
+            "molbio": 2,
+        }
+        tables = table_names(reopened)
+        assert "box_incubator" in tables and "v_box_incubator" in tables
+        assert molbio_row_counts(reopened) == counts_before
+        # Exactly one commit, with the contract message and the restore tag.
+        assert commit_count(reopened) == commits_before + 1
+        assert commit_message(reopened, head(reopened)) == "migrate(ledger): base 2 -> 3"
+        assert tags(reopened) == {"pre-migrate-base-2": head_before}
+        # The new box kind is usable: a slotless incubator holds boxes/vials.
+        box = reopened.boxes.add("incubator", "INC-1")
+        assert reopened.driver.query(
+            "SELECT `name`, `kind` FROM `box` WHERE `id` = %s", (box["id"],)
+        ) == [{"name": "INC-1", "kind": "incubator"}]
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+    finally:
+        reopened.close()
+
+    again = run_python(BASE_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[base] 3, expected 2" in again.stdout + again.stderr
+
+    # The molbio step still runs afterwards and only bumps its own counters.
+    molbio_after = run_python(
+        MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env
+    )
+    assert molbio_after.returncode == 0, molbio_after.stdout + molbio_after.stderr
+    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    try:
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            **MOLBIO_V3_VERSIONS,
+            "base": 3,
+        }
+        assert reopened.check_fingerprint(warn=False) is True
+    finally:
+        reopened.close()
+
+
+def test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Ticket 27 constraint: the ordering zsqlab10 will take, on a test copy.
+
+    A molbio-v2 ledger still at spec 3 is upgraded by ``spec/3-to-4`` first and
+    then by ``molbio/2-to-3``: no row is lost, every kind table survives and
+    ``tm check`` is clean afterwards.
+    """
+    ledger = molbio_v2_ledger(
+        embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="zsqlab10"
+    )
+    seed_molbio_v2(ledger)
+    counts_before = molbio_row_counts(ledger)
+    downgrade_to_spec3(ledger)
+    assert ledger.meta["spec_version"] == "3"
+
+    spec = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert spec.returncode == 0, spec.stdout + spec.stderr
+    assert "migrate(ledger): spec 3 -> 4" in spec.stdout
+
+    molbio = run_python(MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert molbio.returncode == 0, molbio.stdout + molbio.stderr
+    assert "migrate(ledger): molbio 2 -> 3" in molbio.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name)
+    try:
+        assert reopened.meta["spec_version"] == "4"
+        assert json.loads(reopened.meta["preset_versions"]) == MOLBIO_V3_VERSIONS
+        assert molbio_row_counts(reopened) == counts_before
+        assert {"entity_oligo", "stock_oligo_stock"} <= table_names(reopened)
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+    finally:
+        reopened.close()
+
+
+def test_molbio_2_to_3_refuses_a_spec3_ledger_and_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """The bundle copy needs spec 4; a legacy ledger must run spec/3-to-4 first."""
+    ledger = molbio_v2_ledger(
+        embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="legacy"
+    )
+    seed_molbio_v2(ledger)
+    downgrade_to_spec3(ledger)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    copies_before = {
+        name: (ledger.path / "presets" / name).read_bytes()
+        for name in ("molbio.yaml", "base.yaml")
+    }
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            MOLBIO_2_TO_3, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate molbio 2 -> 3" in output
+        assert "migration/spec/3-to-4" in output
+        assert "nothing was written" in output
+        # No commit, no tag, no DDL, and the placed copies were restored.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        assert "entity_oligo" not in table_names(ledger)
+        for name, data in copies_before.items():
+            assert (ledger.path / "presets" / name).read_bytes() == data, name
