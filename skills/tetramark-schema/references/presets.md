@@ -76,10 +76,10 @@ now generated columns: they cannot drift and cannot be written.
 | `cell_vial` | `cell_line` | `passage`, `medium`, `freezing_medium`, `cells_per_vial`, `dmso_pct` (decimal 5,2, default 10) |
 | `cell_pellet` | `cell_line`, `plasmid` | `cell_count`, `passage`, `transfection`, `harvested_on` |
 
-Molbio 2 has **no `aliquot_fields`**: a property of the material lives on the stock kind (the user
-rule is "all aliquots of one stock are the same"). `bacterial_pellet` volumes still live in the core
-aliquot `quantity`/`unit` (one tube = one aliquot); a plasmid on `cell_pellet` records a transient
-transfection / transduction harvest.
+Molbio 2 has **no per-tube fields**: a property of the material lives on the stock kind (the user
+rule is "all aliquots of one stock are the same"); spec 3 removed that schema key from Tetramark
+entirely. `bacterial_pellet` volumes still live in the core aliquot `quantity`/`unit` (one tube = one
+aliquot); a plasmid on `cell_pellet` records a transient transfection / transduction harvest.
 
 ### Rules
 

@@ -23,7 +23,7 @@ clone a ledger, copy its `presets/` directory too.
 |---|---|---|
 | 1 | **entity** | *What* is it? (a plasmid design, a book title, a reagent) |
 | 2 | **stock** | *Which batch*? (one preparation, lot or culture of that entity) |
-| 3 | **aliquot** | *Which unit*? (one physical tube, vial or copy, with status and quantity) |
+| 3 | **aliquot** | *Which unit*? (one physical tube, vial or copy: generic location/quantity/unit/status/label/notes; material properties live on the stock) |
 | 4 | **box** | *Where*? (the container and slot that holds it) |
 
 A *mark* is also what you put on a tube or a shelf so you can find the thing again, and every mark
@@ -135,6 +135,12 @@ Every ledger records its format version and tool provenance in `ledger_meta`:
 `tm schema show` prints them in its header, and a ledger whose metadata predates these keys shows a
 "meta refresh" hint in `tm schema plan` instead of an error.
 
+A change of **format** (not of a preset) ships with a hand-run step under `migration/`, one folder per
+counter bump: `migration/spec/2-to-3/` is the 0.2.0 step that drops the old `aliquot_<kind>` extension
+tables and recreates the views with the stock entity/aliquot/quantity/status columns.
+`migration/README.md` and the step READMEs carry the preconditions, the manual steps, verification and
+the rollback path.
+
 ### Branches
 
 Dolt branches are first-class: `tm -b BRANCH <command>` runs every read, write and commit of that
@@ -163,7 +169,7 @@ back without removing the database directory. See `docs/spec.md` §3.1.
 |---|---|---|
 | **entity** | The design or abstract thing (plasmid, protein construct, book title, item). | UUID v4 |
 | **stock** | One preparation/batch of exactly one entity. Carries lineage. | date code, e.g. `1226FP01` |
-| **aliquot** | One physical tube/vial; the only thing in a box slot. | `<stock_id>.<n>` |
+| **aliquot** | One physical tube/vial; the only thing in a box slot. A **generic** tube — its material's properties live on the stock kind, because all aliquots of one stock are the same. | `<stock_id>.<n>` |
 | **box** | A container with a geometry; boxes nest. | unique name, e.g. `WFL-12-01` |
 
 Every successful write is exactly one Dolt commit, so `tm history` shows both aliquot events and

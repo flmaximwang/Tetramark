@@ -514,20 +514,11 @@ def _load_record(
     core = _fetch_core(session, object_type, object_id)
     if core is None:  # pragma: no cover - callers just resolved it
         raise LedgerError(f"unknown {object_type} {object_id!r}")
-    if object_type == "aliquot":
-        stock = _fetch_core(session, "stock", str(core["stock_id"]))
-        if stock is None:  # pragma: no cover - FK guarantees it
-            raise LedgerError(f"aliquot {object_id!r} has no stock")
-        kind_name = str(stock["kind"])
-        # Only stock kinds with aliquot_fields have an extension table.
-        has_extension = bool(ledger.schema.kind(kind_name).aliquot_fields)
-    else:
-        kind_name = str(core["kind"])
-        has_extension = True
+    # An aliquot is a generic tube: it has no kind row of its own (spec §3).
     kind_row = (
-        _fetch_kind_row(session, kind_name, object_type, object_id)
-        if has_extension
-        else {}
+        {}
+        if object_type == "aliquot"
+        else _fetch_kind_row(session, str(core["kind"]), object_type, object_id)
     )
     record = dict(core)
     for key, value in kind_row.items():
@@ -969,47 +960,6 @@ def list_entities(
 # ---------------------------------------------------------------------------
 
 
-def _split_aliquot_values(
-    session: Any,
-    ledger: Ledger,
-    kind: Kind,
-    kind_name: str,
-    values: Iterable[str] | Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Coerce ``aliquot_fields`` values supplied with a stock/aliquot add."""
-    raw = _parse_pairs(values, option="--aliquot-set")
-    unknown = sorted(set(raw) - set(kind.aliquot_fields))
-    if unknown:
-        choices = ", ".join(sorted(kind.aliquot_fields)) or "(none)"
-        raise UsageError(
-            f"unknown aliquot field(s) {', '.join(repr(name) for name in unknown)} "
-            f"for stock kind {kind_name!r}; valid fields: {choices}"
-        )
-    data = {
-        name: _coerce_field(
-            kind.aliquot_fields[name],
-            value,
-            ledger=ledger,
-            session=session,
-            label=name,
-        )
-        for name, value in raw.items()
-    }
-    missing = [
-        name
-        for name, schema_field in kind.aliquot_fields.items()
-        if schema_field.required
-        and not schema_field.has_default
-        and name not in data
-    ]
-    if missing:
-        raise UsageError(
-            f"missing required aliquot field(s) for kind {kind_name!r}: "
-            + ", ".join(sorted(missing))
-        )
-    return data
-
-
 def _insert_aliquot(
     session: Any,
     ledger: Ledger,
@@ -1043,22 +993,6 @@ def _insert_aliquot(
     return alq_id
 
 
-def _insert_aliquot_extension(
-    session: Any,
-    kind_name: str,
-    alq_id: str,
-    kind: Kind,
-    values: Mapping[str, Any],
-) -> None:
-    if not kind.aliquot_fields:
-        return
-    _insert(
-        session,
-        table_name("aliquot", kind_name),
-        {"id": alq_id, **values},
-    )
-
-
 def _place_slots(
     slots: Sequence[str | None], *, count: int, option: str = "--slot"
 ) -> list[str | None]:
@@ -1083,7 +1017,6 @@ def add_stock(
     slots: Sequence[str | None] = (),
     quantity: Any = None,
     unit: Any = None,
-    aliquot_values: Iterable[str] | Mapping[str, Any] | None = (),
     id: str | None = None,
 ) -> dict[str, Any]:
     """Create a stock, its kind row, and its aliquots (1 by default)."""
@@ -1144,10 +1077,6 @@ def add_stock(
                 raise LedgerError(
                     f"box {box_row['name']!r} has slots: give one --slot per aliquot"
                 )
-        alq_values = _split_aliquot_values(
-            session, ledger, kind, kind_name, aliquot_values
-        )
-
         created: list[str] = []
         for index in range(1, count + 1):
             alq_id = _insert_aliquot(
@@ -1159,9 +1088,6 @@ def add_stock(
                 slot=slot_list[index - 1],
                 quantity=amount,
                 unit=unit_text,
-            )
-            _insert_aliquot_extension(
-                session, kind_name, alq_id, kind, alq_values
             )
             record_event(
                 session,
@@ -1258,7 +1184,6 @@ def add_aliquots(
     slots: Sequence[str | None] = (),
     quantity: Any = None,
     unit: Any = None,
-    values: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> dict[str, Any]:
     """Add ``count`` aliquots to an existing stock."""
     amount, unit_text = _parse_quantity_unit(quantity, unit)
@@ -1292,9 +1217,6 @@ def add_aliquots(
                 raise LedgerError(
                     f"box {box_row['name']!r} has slots: give one --slot per aliquot"
                 )
-        alq_values = _split_aliquot_values(
-            session, ledger, kind, kind_name, values
-        )
         created: list[str] = []
         for offset in range(count):
             alq_id = _insert_aliquot(
@@ -1306,9 +1228,6 @@ def add_aliquots(
                 slot=slot_list[offset],
                 quantity=amount,
                 unit=unit_text,
-            )
-            _insert_aliquot_extension(
-                session, kind_name, alq_id, kind, alq_values
             )
             record_event(
                 session,
@@ -1489,17 +1408,9 @@ def purge_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     """Hard-delete an aliquot, its events and its kind extension row."""
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
-    stock = _resolve_core(ledger.driver, "stock", str(existing["stock_id"]))
-    kind = ledger.schema.kind(str(stock["kind"]))
 
     with ledger.write(alq_id, verb="purge", object="aliquot") as session:
         _resolve_core(session, "aliquot", alq_id)
-        if kind.aliquot_fields:
-            session.execute(
-                f"DELETE FROM {_quote(table_name('aliquot', str(stock['kind'])))} "
-                f"WHERE {_quote('id')} = %s",
-                (alq_id,),
-            )
         events = purge_events(session, alq_id)
         session.execute(
             f"DELETE FROM {_quote('aliquot')} WHERE {_quote('id')} = %s", (alq_id,)
@@ -1846,8 +1757,8 @@ def _renumber_ref_columns(
     """Kind ``ref`` columns that store a stock id or an aliquot id.
 
     The core tables are handled separately; this catches user-defined
-    ``type: ref`` fields (including fields on aliquot extension tables), whose
-    foreign keys also point at the renamed primary keys.
+    ``type: ref`` fields on kind tables, whose foreign keys also point at the
+    renamed primary keys.
     """
     stock_columns: list[tuple[str, str]] = []
     aliquot_columns: list[tuple[str, str]] = []
@@ -1856,8 +1767,6 @@ def _renumber_ref_columns(
         scopes: list[tuple[str, Mapping[str, Field]]] = [
             (table_name(kind.object.value, kind_name), kind.fields)
         ]
-        if kind.object.value == "stock" and kind.aliquot_fields:
-            scopes.append((table_name("aliquot", kind_name), kind.aliquot_fields))
         for table, fields in scopes:
             for field_name in sorted(fields):
                 target = _ref_target_object(ledger, fields[field_name])
@@ -1899,12 +1808,6 @@ def _emit_renumber_statements(
                 "UPDATE `aliquot` SET `id` = %s, `stock_id` = %s WHERE `id` = %s",
                 (new_alq, new, old_alq),
             )
-            if kind.aliquot_fields:
-                session.execute(
-                    f"UPDATE {_quote(table_name('aliquot', kind_name))} "
-                    "SET `id` = %s WHERE `id` = %s",
-                    (new_alq, old_alq),
-                )
             session.execute(
                 "UPDATE `aliquot_event` SET `aliquot_id` = %s "
                 "WHERE `aliquot_id` = %s",
@@ -2244,7 +2147,6 @@ class StockOps:
         slots: Sequence[str | None] = (),
         quantity: Any = None,
         unit: Any = None,
-        aliquot_values: Iterable[str] | Mapping[str, Any] | None = (),
         id: str | None = None,
     ) -> dict[str, Any]:
         return add_stock(
@@ -2259,7 +2161,6 @@ class StockOps:
             slots=slots,
             quantity=quantity,
             unit=unit,
-            aliquot_values=aliquot_values,
             id=id,
         )
 
@@ -2307,7 +2208,6 @@ class AliquotOps:
         slots: Sequence[str | None] = (),
         quantity: Any = None,
         unit: Any = None,
-        values: Iterable[str] | Mapping[str, Any] | None = (),
     ) -> dict[str, Any]:
         return add_aliquots(
             self.ledger,
@@ -2317,7 +2217,6 @@ class AliquotOps:
             slots=slots,
             quantity=quantity,
             unit=unit,
-            values=values,
         )
 
     def move(self, ref: str, *, box: str, slot: str | None = None) -> dict[str, Any]:

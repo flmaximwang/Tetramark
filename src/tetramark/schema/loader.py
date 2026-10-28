@@ -80,7 +80,6 @@ __all__ = [
 YAML_SUFFIXES = (".yaml", ".yml")
 _CORE_OBJECTS = frozenset({"entity", "stock", "aliquot", "box"})
 _KIND_RESERVED = frozenset({"id", "kind"})
-_ALIQUOT_RESERVED = frozenset({"id"})
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +284,42 @@ def _validate(
 def _validate_preset(data: Any, display: str, prefix: str = "") -> Preset:
     if not isinstance(data, dict):
         raise SchemaError("preset document must be a YAML mapping", file=display)
+    _reject_removed_kind_key(data, display, prefix)
     return _validate(Preset, data, display, prefix)
+
+
+#: Kind key removed in spec 3 (0.2.0): per-stock-kind tube fields.  An aliquot
+#: is a generic tube now, so a preset or local kind declaring it must fail to
+#: load (the pointer tells the user which migration step moves the values).
+_REMOVED_KIND_KEY = "aliquot_fields"
+
+
+def _reject_removed_kind_key(data: Any, display: str, prefix: str = "") -> None:
+    """Refuse the kind key spec 3 removed, before pydantic reports it as extra.
+
+    Spec 3 (0.2.0, ticket 23) removed the per-stock-kind extension tables: an
+    aliquot is a generic tube, so a property of the material belongs on the
+    stock kind (a migration step moves existing values).  The message must name
+    that step, because the loader is the first thing an old preset hits.
+    """
+    kinds = data.get("kinds")
+    if not isinstance(kinds, dict):
+        return
+    for kind_name, kind in kinds.items():
+        if isinstance(kind, dict) and _REMOVED_KIND_KEY in kind:
+            path = ".".join(
+                part
+                for part in (prefix, f"kinds.{kind_name}.{_REMOVED_KIND_KEY}")
+                if part
+            )
+            raise SchemaError(
+                f"{_REMOVED_KIND_KEY!r} was removed in Tetramark 0.2.0 (spec 3): "
+                "an aliquot is a generic tube and a property of the material "
+                "belongs on the stock kind. Move these fields to the stock "
+                "kind before upgrading; see migration/spec/2-to-3/README.md",
+                file=display,
+                path=path,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -483,18 +517,6 @@ class _Collector:
                     display,
                     f"kinds.{kind_name}.fields.{field_name}",
                 )
-            for field_name in kind.aliquot_fields:
-                _check_identifier(
-                    field_name,
-                    display,
-                    f"kinds.{kind_name}.aliquot_fields.{field_name}",
-                )
-                _check_not_reserved_column(
-                    field_name,
-                    _ALIQUOT_RESERVED,
-                    display,
-                    f"kinds.{kind_name}.aliquot_fields.{field_name}",
-                )
             for mixin_name in kind.mixins:
                 _check_identifier(
                     mixin_name, display, f"kinds.{kind_name}.mixins"
@@ -597,21 +619,17 @@ def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry])
                         path=f"kinds.{kind_name}.entity_kinds",
                     )
 
-        for scope_name, scope in (
-            ("fields", kind.fields),
-            ("aliquot_fields", kind.aliquot_fields),
-        ):
-            for field_name, schema_field in scope.items():
-                if schema_field.type is not FieldType.ref:
-                    continue
-                target = schema_field.to
-                if target not in kinds and target not in _CORE_OBJECTS:
-                    raise SchemaError(
-                        f"ref target {target!r} is neither a kind nor a core object "
-                        f"({', '.join(sorted(_CORE_OBJECTS))})",
-                        file=display,
-                        path=f"kinds.{kind_name}.{scope_name}.{field_name}.to",
-                    )
+        for field_name, schema_field in kind.fields.items():
+            if schema_field.type is not FieldType.ref:
+                continue
+            target = schema_field.to
+            if target not in kinds and target not in _CORE_OBJECTS:
+                raise SchemaError(
+                    f"ref target {target!r} is neither a kind nor a core object "
+                    f"({', '.join(sorted(_CORE_OBJECTS))})",
+                    file=display,
+                    path=f"kinds.{kind_name}.fields.{field_name}.to",
+                )
 
         for field_name, schema_field in kind.fields.items():
             if schema_field.renamed_from is not None:
@@ -619,13 +637,6 @@ def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry])
                     schema_field.renamed_from,
                     display,
                     f"kinds.{kind_name}.fields.{field_name}.renamed_from",
-                )
-        for field_name, schema_field in kind.aliquot_fields.items():
-            if schema_field.renamed_from is not None:
-                _check_identifier(
-                    schema_field.renamed_from,
-                    display,
-                    f"kinds.{kind_name}.aliquot_fields.{field_name}.renamed_from",
                 )
 
 

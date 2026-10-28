@@ -132,18 +132,7 @@ def _commits(
             False,
         )
     ]
-    if object_type == "aliquot":
-        kind = ledger.schema.kind(kind_name)
-        if kind.aliquot_fields:
-            queries.append(
-                (
-                    table_name("aliquot", kind_name),
-                    "`to_id` = %s OR `from_id` = %s",
-                    (object_id, object_id),
-                    False,
-                )
-            )
-    else:
+    if object_type != "aliquot":
         queries.append(
             (
                 table_name(object_type, kind_name),

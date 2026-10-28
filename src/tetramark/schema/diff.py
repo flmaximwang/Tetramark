@@ -13,7 +13,7 @@ The plan is ordered so that it can be executed top to bottom:
 2. drops that other objects depend on: foreign keys, checks/unique indexes,
    generated views;
 3. generated columns that must be rebuilt, then removed columns and tables;
-4. new core/kind/extension tables;
+4. new core/kind tables;
 5. column modifications, additions and generated-column rebuilds;
 6. data updates for a renamed kind (its discriminator values);
 7. new checks/unique indexes and foreign keys;
@@ -209,9 +209,8 @@ class ApplyResult:
 
 
 _RENAME_IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-#: Objects whose kind tables the rename map may address ("aliquot" means the
-#: ``aliquot_<stock kind>`` extension table).
-_RENAME_OBJECTS = ("entity", "stock", "box", "aliquot")
+#: Objects whose kind tables the rename map may address.
+_RENAME_OBJECTS = ("entity", "stock", "box")
 
 
 @dataclass(frozen=True)
@@ -221,16 +220,15 @@ class RenameMap:
     A preset migration step ships ``renames.yaml`` in its folder and feeds it
     to :func:`build_plan`; presets deliberately do **not** carry
     ``renamed_from``.  The planner then reuses the same machinery as
-    ``renamed_from``: ``ALTER TABLE ... RENAME TO`` for the kind table and its
-    ``aliquot_<kind>`` extension, ``ALTER TABLE ... RENAME COLUMN`` for fields
-    and the core ``kind`` discriminator rewrite — never hand-written SQL.
+    ``renamed_from``: ``ALTER TABLE ... RENAME TO`` for the kind table,
+    ``ALTER TABLE ... RENAME COLUMN`` for fields and the core ``kind``
+    discriminator rewrite — never hand-written SQL.
 
     ``entity``/``stock``/``box`` map **old** kind name → **new** kind name; the
     new kind must be defined by the loaded schema and the old one must not be
     (it only exists in the live ledger).  ``fields`` keys are
-    ``<object>.<new kind>`` — e.g. ``stock.bacterial_glycerol`` or
-    ``aliquot.bacterial_glycerol`` — and their values map old column names to
-    new column names.
+    ``<object>.<new kind>`` — e.g. ``stock.bacterial_glycerol`` — and their
+    values map old column names to new column names.
 
     An explicit entry is **strict**: when the planner runs, the old table or
     column it names must exist in the live ledger, or its renamed target must
@@ -476,18 +474,6 @@ def _desired_tables(
                 columns=columns,
                 create_sql=statements[table].sql,
             )
-            if object_type is ObjectType.stock and kind.aliquot_fields:
-                extension = table_name("aliquot", kind_name)
-                tables[extension] = _DesiredTable(
-                    name=extension,
-                    object="aliquot",
-                    kind=kind_name,
-                    columns={
-                        "id": _Spec("id", "VARCHAR(64)", nullable=False),
-                        **_field_specs(kind.aliquot_fields),
-                    },
-                    create_sql=statements[extension].sql,
-                )
     return tables
 
 
@@ -1015,7 +1001,7 @@ def build_plan(
         )
         created.add(table)
 
-    # -- kind / extension tables ------------------------------------------
+    # -- kind tables -------------------------------------------------------
     for name, table in desired.items():
         if name in state.columns:
             continue
@@ -1033,7 +1019,7 @@ def build_plan(
         created.add(name)
 
     extras = _extra_tables(state, desired)
-    for name in sorted(extras, key=lambda item: (not item.startswith("aliquot_"), item)):
+    for name in sorted(extras):
         if name in created:  # pragma: no cover - defensive
             continue
         buckets.table_drops.append(
@@ -1043,7 +1029,7 @@ def build_plan(
                 f"DROP TABLE {_ident(name)}",
                 object="table",
                 name=name,
-                description="kind/extension no longer in the YAML schema",
+                description="kind table no longer in the YAML schema",
             )
         )
         dropped_tables.add(name)
@@ -1071,21 +1057,16 @@ def build_plan(
         kind = schema.kinds.get(table.kind)
         if kind is None:  # pragma: no cover - desired tables come from kinds
             continue
-        fields = (
-            kind.aliquot_fields
-            if table.object == "aliquot"
-            else kind.fields
-        )
+        fields = kind.fields
         checks = _desired_checks(fields, name)
-        if table.object != "aliquot":
-            checks.insert(
-                0,
-                _DesiredCheck(
-                    name=f"ck_{name}_kind",
-                    column="kind",
-                    clause=f"({_ident('kind')} = {literal(table.kind)})",
-                ),
-            )
+        checks.insert(
+            0,
+            _DesiredCheck(
+                name=f"ck_{name}_kind",
+                column="kind",
+                clause=f"({_ident('kind')} = {literal(table.kind)})",
+            ),
+        )
         _diff_constraints(
             buckets,
             name,
@@ -1301,7 +1282,6 @@ def _plan_renames(
     for object_name, old_kind, kind_name, explicit in _kind_rename_pairs(
         schema, renames
     ):
-        kind = schema.kinds[kind_name]
         old_table = table_name(object_name, old_kind)
         new_table = table_name(object_name, kind_name)
         if new_table in live.columns:
@@ -1335,39 +1315,6 @@ def _plan_renames(
             )
         # ``renamed_from`` keeps its historic tolerant skip (nothing to rename).
 
-        if object_name != ObjectType.stock.value or not kind.aliquot_fields:
-            continue
-        old_extension = table_name("aliquot", old_kind)
-        new_extension = table_name("aliquot", kind_name)
-        if new_extension in live.columns:
-            continue
-        if old_extension in live.columns and new_extension in desired:
-            buckets.renames.append(
-                _step(
-                    "rename_table",
-                    ADDITIVE,
-                    f"ALTER TABLE {_ident(old_extension)} "
-                    f"RENAME TO {_ident(new_extension)}",
-                    object="table",
-                    name=new_extension,
-                    description=(
-                        f"rename aliquot extension of kind "
-                        f"{old_kind!r} to {kind_name!r}"
-                    ),
-                )
-            )
-            table_renames[old_extension] = new_extension
-        elif explicit:
-            raise UsageError(
-                f"renames.{object_name}: {old_kind!r} -> {kind_name!r}: the new "
-                f"kind has aliquot_fields, but the map entry matches nothing: "
-                f"expected the old extension table {old_extension!r} (or the "
-                f"already-renamed {new_extension!r} from a previous run) in the "
-                "ledger. If the old kind had no aliquot_fields, add them in a "
-                "separate step rather than in the renaming one. Live aliquot "
-                f"tables: {_live_table_signature(live, 'aliquot')}"
-            )
-
     return table_renames, renamed_kinds
 
 
@@ -1396,10 +1343,6 @@ def _plan_column_renames(
         scopes: list[tuple[str, dict[str, Field]]] = [
             (table_name(kind.object, kind_name), kind.fields)
         ]
-        if kind.object is ObjectType.stock and kind.aliquot_fields:
-            scopes.append(
-                (table_name("aliquot", kind_name), kind.aliquot_fields)
-            )
         for table, fields in scopes:
             if table not in desired:
                 continue
@@ -1476,8 +1419,7 @@ def _plan_explicit_column_renames(
         if table not in desired:
             raise UsageError(
                 f"renames.fields: {scope!r} does not name a table of the loaded "
-                "schema (an 'aliquot.<kind>' scope needs a stock kind with "
-                "aliquot_fields)"
+                "schema (use '<object>.<kind>', e.g. 'stock.bacterial_glycerol')"
             )
         columns = desired[table].columns
         source = final_to_live.get(table, table)

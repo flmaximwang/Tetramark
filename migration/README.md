@@ -123,9 +123,9 @@ fields: {stock.bacterial_glycerol: {old_col: new_col}}   # optional
 ```
 
 Keys of `entity`/`stock`/`box` are **old** kind names, values the **new** kind
-names of the loaded schema. `fields` keys are `<object>.<new kind>`; use
-`aliquot.<stock kind>` for the `aliquot_<kind>` extension table. Load the file
-with `tetramark.migrate.load_renames(path)` and pass it to the planner:
+names of the loaded schema. `fields` keys are `<object>.<new kind>` (e.g.
+`stock.bacterial_glycerol`). Load the file with
+`tetramark.migrate.load_renames(path)` and pass it to the planner:
 
 ```python
 from tetramark.migrate import load_renames
@@ -135,13 +135,14 @@ renames = load_renames(Path(__file__).with_name("renames.yaml"))
 schema_plan = plan(ledger, renames=renames)   # or build_plan(driver, schema, ...)
 ```
 
-The planner reuses the `renamed_from` machinery: it renames the kind table, the
-`aliquot_<kind>` table and columns, rewrites the core `kind` discriminator
-values, and translates constraints/views — no hand-written SQL, no data loss.
+The planner reuses the `renamed_from` machinery: it renames the kind table and
+columns, rewrites the core `kind` discriminator values, and translates
+constraints/views — no hand-written SQL, no data loss.
 
 ## Existing steps
 
 | Step | Counter | What it does |
 |---|---|---|
 | [`spec/1-to-2`](spec/1-to-2/README.md) | `spec_version` 1 → 2 | Recreates the generated views in the spec-2 shape (`alias_list`/`occupant_alias_list`). |
+| [`spec/2-to-3`](spec/2-to-3/README.md) | `spec_version` 2 → 3 | Drops the empty `aliquot_<stockkind>` extension tables (refusing if one still holds values), recreates the views with the stock entity/aliquot/quantity/status columns, and regenerates `dolt_tests`. |
 | [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the v2 preset copy. |

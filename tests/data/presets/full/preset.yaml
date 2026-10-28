@@ -34,9 +34,6 @@ kinds:
     entity_kinds: [everything]
     fields:
       batch: {type: string}
-    aliquot_fields:
-      volume_ul: {type: decimal, precision: 10, scale: 1}
-      used: {type: bool, default: false}
 rules:
   - id: FULL01
     description: no negative counts

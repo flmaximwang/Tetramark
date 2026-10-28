@@ -48,11 +48,6 @@ def add_stock_command(
         None, "--quantity", "-q", help="Quantity for each new aliquot."
     ),
     unit: str | None = typer.Option(None, "--unit", "-u", help="Unit of --quantity."),
-    aliquot_values: list[str] = typer.Option(
-        [],
-        "--aliquot-set",
-        help="Kind aliquot field as field=value; repeat for more fields.",
-    ),
     explicit_id: str | None = typer.Option(
         None, "--id", help="Explicit stock id (back-filling/migration)."
     ),
@@ -72,7 +67,6 @@ def add_stock_command(
             slots=slot,
             quantity=quantity,
             unit=unit,
-            aliquot_values=aliquot_values,
             id=explicit_id,
         )
         message = (

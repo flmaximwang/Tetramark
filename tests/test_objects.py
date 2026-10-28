@@ -341,29 +341,6 @@ def test_stock_edit_show_and_ls(ledger_factory) -> None:
         ledger.stocks.edit(stock["id"], values={})
 
 
-def test_aliquot_fields_are_written_to_the_extension_table(ledger_factory) -> None:
-    ledger = make_full_ledger(ledger_factory)
-    plasmid = ledger.entities.add("plasmid", name="p1")
-    stock = ledger.stocks.add(
-        "bacterial",
-        entity=plasmid["id"],
-        values={"strain": "DH5a"},
-        aliquot_values={"glycerol_pct": "20"},
-    )
-    row = ledger.driver.query(
-        "SELECT * FROM `aliquot_bacterial` WHERE `id` = %s",
-        (stock["aliquots"][0],),
-    )[0]
-    assert Decimal(str(row["glycerol_pct"])) == Decimal("20")
-
-    with pytest.raises(UsageError, match="unknown aliquot field"):
-        ledger.stocks.add(
-            "bacterial",
-            entity=plasmid["id"],
-            values={"strain": "DH5a"},
-            aliquot_values={"bogus": "1"},
-        )
-
 
 # ---------------------------------------------------------------------------
 # Aliquots
@@ -505,7 +482,7 @@ def test_aliquot_status_vocabulary_and_slot_consistency(ledger_factory) -> None:
     )[0]["status"] == "stored"
 
 
-def test_aliquot_purge_removes_events_and_extension(ledger_factory) -> None:
+def test_aliquot_purge_removes_events(ledger_factory) -> None:
     ledger = make_full_ledger(ledger_factory)
     plasmid = ledger.entities.add("plasmid", name="p1")
     new_box(ledger, "RACK", "rack")
@@ -530,9 +507,6 @@ def test_aliquot_purge_removes_events_and_extension(ledger_factory) -> None:
     assert events(ledger, alq) == []
     assert ledger.driver.query(
         "SELECT `id` FROM `aliquot` WHERE `id` = %s", (alq,)
-    ) == []
-    assert ledger.driver.query(
-        "SELECT `id` FROM `aliquot_bacterial` WHERE `id` = %s", (alq,)
     ) == []
 
 

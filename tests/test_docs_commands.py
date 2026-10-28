@@ -251,7 +251,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path, docs_server: in
     grid_csv = run("--format", "csv", "box", "show", "BOX-2")
     assert grid_csv.output.splitlines()[0] == "slot,row,col,occupants"
 
-    # Stocks: add/show/edit/ls, aliquots, placement, --aliquot-set.
+    # Stocks: add/show/edit/ls, aliquots, placement.
     construct = run_json(
         "entity", "add", "protein_construct", "--name", "C1",
         "--set", "sequence=atgc", "--alias", "c1",

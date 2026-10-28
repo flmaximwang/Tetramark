@@ -61,9 +61,6 @@ def all_tables(ledger) -> list[str]:
         tables.append(f"entity_{kind_name}")
     for kind_name in ledger.schema.stock_kinds:
         tables.append(f"stock_{kind_name}")
-        kind = ledger.schema.kind(kind_name)
-        if kind.aliquot_fields:
-            tables.append(f"aliquot_{kind_name}")
     for kind_name in ledger.schema.box_kinds:
         tables.append(f"box_{kind_name}")
     return tables
@@ -117,7 +114,6 @@ def make_source(ledger):
         slots=["A1", "A2"],
         quantity="500",
         unit="ul",
-        aliquot_values={"volume_ul": "250"},
     )
     bacterial = ledger.stocks.add(
         "bacterial",
@@ -128,7 +124,6 @@ def make_source(ledger):
         slots=["top"],
         quantity="1",
         unit="ml",
-        aliquot_values={"glycerol_pct": "20"},
     )
     lot = ledger.stocks.add(
         "lot",

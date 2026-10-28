@@ -1,6 +1,0 @@
-preset: aliquot_reserved_id
-kinds:
-  lot:
-    object: stock
-    aliquot_fields:
-      id: {type: string}

@@ -86,7 +86,6 @@ def test_load_schema_resolves_mixins_and_cross_refs() -> None:
         "medium",
     }
     assert schema.kinds["bacterial"].entity_kinds == ["item", "plasmid"]
-    assert set(schema.kinds["bacterial"].aliquot_fields) == {"glycerol_pct"}
 
     everything = schema.kinds["everything"]
     assert everything.fields["code"].pattern == "^[A-Z]{3}$"
@@ -214,8 +213,6 @@ kinds:
       amount: {type: decimal, precision: 10, scale: 2, default: 0}
       strain: {type: string, required: true}
       medium: {type: enum, values: [lb, tb, soc]}
-    aliquot_fields:
-      glycerol_pct: {type: decimal, default: 15}
 rules:
   - id: CH01
     description: plasmids should have a sequence
@@ -292,7 +289,7 @@ INVALID_CASES = [
     ("ref_unknown", "neither a kind nor a core object"),
     ("box_without_geometry", "require a 'geometry'"),
     ("geometry_on_stock", "'geometry' is only valid on box"),
-    ("aliquot_on_entity", "'aliquot_fields' is only valid on stock"),
+    ("aliquot_on_entity", "migration/spec/2-to-3/README.md"),
     ("entity_kinds_on_entity", "'entity_kinds' is only valid on stock"),
     ("entity_kinds_unknown", "not an entity kind"),
     ("entity_kinds_not_entity", "not an entity kind"),
@@ -303,7 +300,6 @@ INVALID_CASES = [
     ("missing_mixin", "unknown mixin"),
     ("mixin_collision", "more than one mixin"),
     ("mixin_bad_name", "identifier"),
-    ("aliquot_reserved_id", "generated core column"),
     ("string_bad_length", "positive integer"),
     ("pattern_invalid", "not a valid regular expression"),
     ("bool_bad_default", "must be true or false"),
@@ -339,6 +335,22 @@ def test_missing_preset_reports_presets_path() -> None:
     with pytest.raises(SchemaError, match="not found") as caught:
         load_schema(config, base_dir=Path.cwd())
     assert caught.value.path == "presets"
+
+
+def test_aliquot_fields_is_rejected_with_the_migration_pointer() -> None:
+    """Spec 3 removed the key: an old preset fails to load, with the step named."""
+    config = LedgerConfig(
+        name="bad", presets=[str(INVALID / "aliquot_on_entity")]
+    )
+    with pytest.raises(SchemaError) as caught:
+        load_schema(config, base_dir=Path.cwd())
+    error = caught.value
+    message = str(error)
+    assert "'aliquot_fields' was removed in Tetramark 0.2.0" in message
+    assert "migration/spec/2-to-3/README.md" in message
+    # The error names the document and the exact dotted path of the old key.
+    assert error.path == "kinds.item.aliquot_fields"
+    assert "aliquot_on_entity" in (error.file or "")
 
 
 def test_duplicate_kind_across_presets() -> None:
