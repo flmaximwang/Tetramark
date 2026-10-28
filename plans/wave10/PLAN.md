@@ -2,14 +2,14 @@
 
 > Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.
 
-**进度** 6/13 块（46%） · 状态 `active` · 更新于 2026-10-28 23:39
+**进度** 8/13 块（62%） · 状态 `active` · 更新于 2026-10-29 00:47
 
 **参与方** lead(agent) · Maxim(human) · w25(agent) · w26(agent) · w27(agent) · w28(agent) · w29(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
 - `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** — 待批准 · @maxim
-- `T-004#B-001` **implement ticket 28 in worktree w28** — 进行中 · @w28 · 在做 @w28
+- `T-005#B-001` **implement ticket 29 in worktree w29** — 进行中 · @w29 · 在做 @w29
 
 ## 图
 
@@ -41,11 +41,11 @@ flowchart LR
   T-006_B-001 --> T-006_B-002
   T-006_B-002 --> T-006_B-003
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002 done;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002,T-004_B-001,T-004_B-002 done;
   classDef running stroke-width:1px;
-  class T-004_B-001 running;
+  class T-005_B-001 running;
   classDef waiting stroke-width:1px;
-  class T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 waiting;
+  class T-005_B-002,T-006_B-001,T-006_B-002 waiting;
   classDef blocked stroke-width:1px;
   class T-006_B-003 blocked;
 ```
@@ -102,25 +102,30 @@ flowchart LR
     - run 2026-10-28 23:30 lead pending→running Reviewed the step design, frozen snapshots byte-identical to 6faa557/6552b9b, runner additions validated; merged to main 902f6d0, full suite running.
     - run 2026-10-28 23:39 lead running→done Reviewed; merged; full suite on main 802 passed / 1 skipped (518s).
 
-### T-004 28 cellbio bundle (immuno, viral_vectors, biosamples) — 进行中
+### T-004 28 cellbio bundle (immuno, viral_vectors, biosamples) — 已完成
 @w28
-- [ ] `T-004#B-001` **implement ticket 28 in worktree w28** _impl_ — 进行中 @w28
+- [x] `T-004#B-001` **implement ticket 28 in worktree w28** _impl_ — 已完成 @w28
     - 做什么：Read docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv). First check what the loader does with an entity_kinds entry that is not loaded, then take the smallest option, preferring the split cell_biosample/animal_biosample with no core change; record the choice in the part description and presets/README.md. No commit, leave the tree dirty.
     - 判据：Ticket 28 Verify passes: tm init --preset cellbio creates the expected tables and passes tm check; tm lineage <virus> shows no payload edge while <cell_line> shows parental; presets [molbio, cellbio] loads with shared parts loaded once and tm check clean; a biosample from a cell vial aliquot appears under it in tm lineage.
     - 依赖：T-003#B-002
-    - 在做：@w28
+    - 产物：`.dsh/gitworktree/w28 @ 9343c49`
     - run 2026-10-28 23:39 w28 pending→running Dispatched to teammate w28 in worktree .dsh/gitworktree/w28 (branch wave10/t28 from main 902f6d0): immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 with a frozen v1 copy.
-- [ ] `T-004#B-002` **review and merge ticket 28** _review_ — 等前置 @lead
+    - run 2026-10-29 00:47 w28 running→done immuno/viral_vectors/biosamples parts, cellbio bundle, cell_culture v2 + 1->2 step (frozen copies), option (a) biosamples split; 824 passed 1 skipped.
+- [x] `T-004#B-002` **review and merge ticket 28** _review_ — 已完成 @lead
     - 做什么：Lead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main.
     - 判据：Diff reviewed; entity_kinds choice documented and minimal; full suite green; branch committed and merged to main.
     - 依赖：T-004#B-001
+    - 产物：`main f027bd9`
+    - run 2026-10-29 00:47 lead pending→done Reviewed: frozen cell_culture copies byte-identical (v1 from 902f6d0, v2 from repo), no core change, loader behaviour for entity_kinds verified, retrofitted base/molbio 2-to-3 steps ship cell_culture-1; merged.
 
-### T-005 29 angenet bundle (drosophila, c_elegans, zebrafish, mouse) — 待排
+### T-005 29 angenet bundle (drosophila, c_elegans, zebrafish, mouse) — 进行中
 @w29
-- [ ] `T-005#B-001` **implement ticket 29 in worktree w29** _impl_ — 等前置 @w29
+- [ ] `T-005#B-001` **implement ticket 29 in worktree w29** _impl_ — 进行中 @w29
     - 做什么：Read docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt biosamples to ticket 28's choice. No core change: if one turns out necessary, stop and report instead of adding it. Document the litter recipe with exact tm commands in presets/README.md and skills/tetramark/SKILL.md. No commit, leave the tree dirty.
     - 判据：Ticket 29 Verify passes through the CLI: tm init --preset angenet passes tm check; the mouse strain -> cohort -> litter -> genotyping split chain works with dam/sire refs and tm lineage up/down reaches both parents; alive -> euthanized allowed, euthanized -> alive refused without --force; fly cross vial with a virgins aliquot; worm_cryo stored -> thawed then refused; v_stock_mouse_cohort drops aliquots_in_stock as mice are euthanized.
     - 依赖：T-004#B-002
+    - 在做：@w29
+    - run 2026-10-29 00:47 w29 pending→running Dispatched: drosophila/c_elegans/zebrafish/mouse parts (kinds exactly fly_line/worm_strain/fish_line/mouse_strain), angenet bundle with biosamples, cage box kind, litter recipe; docs in presets/README + SKILL + spec 08.
 - [ ] `T-005#B-002` **review and merge ticket 29** _review_ — 等前置 @lead
     - 做什么：Lead: review the diff, check no core change was needed, run the full suite, then commit on wave10/t29 and merge into main.
     - 判据：Diff reviewed; no core change; full suite green; branch committed and merged to main.
@@ -143,12 +148,6 @@ flowchart LR
 
 ## 日志（近 20 条）
 
-- `2026-10-28 22:07` **agent** [exec] T-001#B-001: 线程登记已清除（@w25 收工）
-- `2026-10-28 22:07` **agent** [status] T-001#B-001: running → done（Report: spec 4 (status sets, transitions with --force/--note, in-stock views, 3-to-4 + base/library steps), full suite 767 passed in worktree. Accepted decisions: molbio version stays 2 (ticket 27 owns molbio/2-to-3); per-status counts/total_quantity dropped from v_stock_status (design says views show in-stock state); migration steps place preset copies before opening.）
-- `2026-10-28 22:07` **agent** [status] T-001#B-002: pending → running（Merged main into wave10/t25 (docs/spec split, template harness, molbio-1 fixture); ported spec text to docs/spec/*; legacy-statuses read path and spec-4-only test gating for the migration runner; full suite running.）
-- `2026-10-28 22:07` **lead** [decision] Ticket 25 review notes: (1) molbio stays version 2 — ticket 27 creates the single migration/presets/molbio/2-to-3 that installs the parts bundle (this supersedes the earlier 2->3-then-rewrite note). (2) Migration path: load_ledger_schema/open gained allow_legacy_statuses and legacy stock kinds get the implied spec-3 default set; normal tm reads still refuse. (3) migrate runner omits core_status_event_allowed below spec 4. (4) tests/test_lineage.py inline presets now declare status_sets. (5) The molbio-1 drift-guard rebuild test is skipped (checked-in v1 preset copy carries statuses now) — follow-up.
-- `2026-10-28 22:13` **agent** [exec] T-001#B-002: 线程登记已清除（@lead 收工）
-- `2026-10-28 22:13` **agent** [status] T-001#B-002: running → done（Merged after full suite 788 passed / 1 skipped (drift-guard rebuild skip, documented). Docs ported to docs/spec/*; legacy-statuses read path and spec-4 test gating added.）
 - `2026-10-28 22:13` **agent** [status] T-001: pending → done（Ticket 25 merged to main at 6552b9b.）
 - `2026-10-28 22:13` **lead** [summary] Ticket 25 merged (6552b9b); full suite on the merged branch 788 passed, 1 skipped. Next: ticket 27 (molbio into parts) — worktree w27 from main, then 28, 29.
 - `2026-10-28 22:15` **agent** [status] T-003: pending → running（Dispatched to teammate w27 in worktree .dsh/gitworktree/w27 (branch wave10/t27 from main 6552b9b).）
@@ -163,6 +162,12 @@ flowchart LR
 - `2026-10-28 23:39` **agent** [status] T-003: running → done（Ticket 27 merged at 902f6d0; full suite green.）
 - `2026-10-28 23:39` **agent** [status] T-004#B-001: pending → running（Dispatched to teammate w28 in worktree .dsh/gitworktree/w28 (branch wave10/t28 from main 902f6d0): immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 with a frozen v1 copy.）
 - `2026-10-28 23:39` **lead** [summary] Ticket 27 merged (902f6d0); full suite 802 passed / 1 skipped. Ticket 28 dispatched: new parts immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 (frozen cell_culture-1.yaml), biosamples option (a) preferred.
+- `2026-10-29 00:47` **agent** [exec] T-004#B-001: 线程登记已清除（@w28 收工）
+- `2026-10-29 00:47` **agent** [status] T-004#B-001: running → done（immuno/viral_vectors/biosamples parts, cellbio bundle, cell_culture v2 + 1->2 step (frozen copies), option (a) biosamples split; 824 passed 1 skipped.）
+- `2026-10-29 00:47` **agent** [status] T-004#B-002: pending → done（Reviewed: frozen cell_culture copies byte-identical (v1 from 902f6d0, v2 from repo), no core change, loader behaviour for entity_kinds verified, retrofitted base/molbio 2-to-3 steps ship cell_culture-1; merged.）
+- `2026-10-29 00:47` **agent** [status] T-004: pending → done（Ticket 28 merged at f027bd9.）
+- `2026-10-29 00:47` **agent** [status] T-005: pending → running（Dispatched to teammate w29 in worktree .dsh/gitworktree/w29 (branch wave10/t29 from main f027bd9).）
+- `2026-10-29 00:47` **agent** [status] T-005#B-001: pending → running（Dispatched: drosophila/c_elegans/zebrafish/mouse parts (kinds exactly fly_line/worm_strain/fish_line/mouse_strain), angenet bundle with biosamples, cage box kind, litter recipe; docs in presets/README + SKILL + spec 08.）
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave10` 生成。

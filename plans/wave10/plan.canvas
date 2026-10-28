@@ -67,8 +67,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-004#B-001\nimplement ticket 28 in worktree w28\n\n`running` · @w28 · 在做 @w28\n\nRead docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv"
+   "color": "4",
+   "text": "### T-004#B-001\nimplement ticket 28 in worktree w28\n\n`done` · @w28\n\nRead docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv"
   },
   {
    "id": "T-004#B-002",
@@ -77,8 +77,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-004#B-002\nreview and merge ticket 28\n\n`waiting` · @lead\n\nLead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main."
+   "color": "4",
+   "text": "### T-004#B-002\nreview and merge ticket 28\n\n`done` · @lead\n\nLead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main."
   },
   {
    "id": "T-005#B-001",
@@ -87,8 +87,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-005#B-001\nimplement ticket 29 in worktree w29\n\n`waiting` · @w29\n\nRead docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt "
+   "color": "5",
+   "text": "### T-005#B-001\nimplement ticket 29 in worktree w29\n\n`running` · @w29 · 在做 @w29\n\nRead docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt "
   },
   {
    "id": "T-005#B-002",
