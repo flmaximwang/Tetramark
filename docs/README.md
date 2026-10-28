@@ -4,10 +4,10 @@
 |---|---|
 | [`spec/`](spec/README.md) | **The specification** — how Tetramark works, one file per chapter (§1…§10). Start here. |
 | [`guides/`](guides/) | How-to guides: [migrating a legacy ledger](guides/migrating-a-legacy-ledger.md), [the test harness](guides/test-harness.md). |
-| [`records/`](records/) | Dated records of things done to real data: [the zsqlab10 migration](records/zsqlab10-migration.md). |
+| [`records/`](records/) | Dated delivery records: [the zsqlab10 migration](records/zsqlab10-migration.md), [wave 10 (tickets 25–29, 0.3.0)](records/wave10-delivery.md). |
 | [`issues/`](issues/) | Open design issues that are not yet tickets (e.g. `001-tm-upgrade`). |
 | [`tickets/`](tickets/README.md) | **Open work only** — the current wave's tickets and its handover. |
-| `preset-parts.md` | Design of the in-flight preset-parts wave (§ source of truth for tickets 25–29); moves under `spec/` when that wave lands. |
+| `preset-parts.md` | Design record of the delivered preset-parts wave (tickets 25–29); the behaviour itself is spec §2/§8 and `presets/README.md`. |
 
 Conventions:
 

@@ -5,7 +5,7 @@
   "goal": "Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.",
   "status": "active",
   "created_at": "2026-10-28T15:33:00+08:00",
-  "updated_at": "2026-10-29T00:47:37+08:00",
+  "updated_at": "2026-10-29T01:52:04+08:00",
   "cadence": {
     "digest_hours": 12.0,
     "quiet_hours": "8"
@@ -423,14 +423,14 @@
       "id": "T-005",
       "title": "29 angenet bundle (drosophila, c_elegans, zebrafish, mouse)",
       "owner": "w29",
-      "status": "running",
+      "status": "done",
       "deps": [],
       "blocks": [
         {
           "id": "T-005#B-001",
           "title": "implement ticket 29 in worktree w29",
           "kind": "impl",
-          "status": "running",
+          "status": "done",
           "owner": "w29",
           "doc": "Read docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt biosamples to ticket 28's choice. No core change: if one turns out necessary, stop and report instead of adding it. Document the litter recipe with exact tm commands in presets/README.md and skills/tetramark/SKILL.md. No commit, leave the tree dirty.",
           "input": "",
@@ -439,17 +439,16 @@
           "done_when": [
             "Ticket 29 Verify passes through the CLI: tm init --preset angenet passes tm check; the mouse strain -> cohort -> litter -> genotyping split chain works with dam/sire refs and tm lineage up/down reaches both parents; alive -> euthanized allowed, euthanized -> alive refused without --force; fly cross vial with a virgins aliquot; worm_cryo stored -> thawed then refused; v_stock_mouse_cohort drops aliquots_in_stock as mice are euthanized."
           ],
-          "artifacts": [],
+          "artifacts": [
+            ".dsh/gitworktree/w29 @ 44e294a"
+          ],
           "deps": [
             "T-004#B-002"
           ],
           "review_of": "",
           "feedback": "",
-          "exec": {
-            "by": "w29",
-            "started": "2026-10-29T00:47:37+08:00"
-          },
-          "status_since": "2026-10-29T00:47:37+08:00",
+          "exec": {},
+          "status_since": "2026-10-29T01:52:04+08:00",
           "runs": [
             {
               "at": "2026-10-29T00:47:37+08:00",
@@ -457,6 +456,13 @@
               "from": "pending",
               "to": "running",
               "note": "Dispatched: drosophila/c_elegans/zebrafish/mouse parts (kinds exactly fly_line/worm_strain/fish_line/mouse_strain), angenet bundle with biosamples, cage box kind, litter recipe; docs in presets/README + SKILL + spec 08."
+            },
+            {
+              "at": "2026-10-29T01:52:04+08:00",
+              "by": "w29",
+              "from": "running",
+              "to": "done",
+              "note": "drosophila/c_elegans/zebrafish/mouse parts + angenet v1, no core change, no migration; 844 passed 1 skipped. Choices: non-sex BioManager selects are strings; breeding pair = two cohorts; organism parts carry no rules."
             }
           ]
         },
@@ -464,7 +470,7 @@
           "id": "T-005#B-002",
           "title": "review and merge ticket 29",
           "kind": "review",
-          "status": "pending",
+          "status": "done",
           "owner": "lead",
           "doc": "Lead: review the diff, check no core change was needed, run the full suite, then commit on wave10/t29 and merge into main.",
           "input": "",
@@ -473,23 +479,30 @@
           "done_when": [
             "Diff reviewed; no core change; full suite green; branch committed and merged to main."
           ],
-          "artifacts": [],
+          "artifacts": [
+            "main 49e168a"
+          ],
           "deps": [
             "T-005#B-001"
           ],
           "review_of": "T-005#B-001",
           "feedback": "",
           "exec": {},
-          "status_since": "2026-10-28T15:33:45+08:00",
-          "runs": []
+          "status_since": "2026-10-29T01:52:04+08:00",
+          "runs": [
+            {
+              "at": "2026-10-29T01:52:04+08:00",
+              "by": "lead",
+              "from": "pending",
+              "to": "done",
+              "note": "Reviewed the parts/bundle/status sets against design 3, biosamples kind names, lineage refs, cage box; merged to main; final suite running."
+            }
+          ]
         }
       ],
       "note": "",
-      "exec": {
-        "by": "w29",
-        "started": "2026-10-29T00:47:36+08:00"
-      },
-      "status_since": "2026-10-29T00:47:36+08:00"
+      "exec": {},
+      "status_since": "2026-10-29T01:52:04+08:00"
     },
     {
       "id": "T-006",
@@ -1075,7 +1088,49 @@
       "kind": "status",
       "text": "T-005#B-001: pending → running（Dispatched: drosophila/c_elegans/zebrafish/mouse parts (kinds exactly fly_line/worm_strain/fish_line/mouse_strain), angenet bundle with biosamples, cage box kind, litter recipe; docs in presets/README + SKILL + spec 08.）",
       "ref": "T-005#B-001"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "agent",
+      "kind": "exec",
+      "text": "T-005#B-001: 线程登记已清除（@w29 收工）",
+      "ref": "T-005#B-001"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-005#B-001: running → done（drosophila/c_elegans/zebrafish/mouse parts + angenet v1, no core change, no migration; 844 passed 1 skipped. Choices: non-sex BioManager selects are strings; breeding pair = two cohorts; organism parts carry no rules.）",
+      "ref": "T-005#B-001"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-005#B-002: pending → done（Reviewed the parts/bundle/status sets against design 3, biosamples kind names, lineage refs, cage box; merged to main; final suite running.）",
+      "ref": "T-005#B-002"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "agent",
+      "kind": "exec",
+      "text": "T-005: 线程登记已清除（@w29 收工）",
+      "ref": "T-005"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-005: running → done（Ticket 29 merged at 49e168a.）",
+      "ref": "T-005"
+    },
+    {
+      "at": "2026-10-29T01:52:04+08:00",
+      "actor": "lead",
+      "kind": "summary",
+      "text": "Tickets 25-29 all merged on main (49e168a): spec 4 status sets/transitions/in-stock views, tm lineage, molbio parts v3, cellbio v1, angenet v1. Next: acceptance on main, release 0.3.0, wave report, zsqlab10 follow-up proposal to the user.",
+      "ref": ""
     }
   ],
-  "rev": "7575dfd3e41c"
+  "rev": "fdf16905b62f"
 }

@@ -10,21 +10,11 @@ Each ticket: implement, add pytest tests (real `dolt`, no mocks), stay inside th
 working tree dirty for review (no commit). Tickets in the same wave are independent and may run in
 parallel (separate git worktrees); review each diff before dispatching the next.
 
-## Wave 10 · preset parts, statuses, lineage (tickets 25–29)
+## Wave 10 · preset parts, statuses, lineage (tickets 25–29) — delivered
 
-Design: [`preset-parts.md`](../preset-parts.md) (source of truth) · handover:
-[`HANDOVER-wave10.md`](HANDOVER-wave10.md) · source issue: git-bug `0a9acec` · starts after wave 9
-(released as 0.2.0).
-
-| # | Ticket | Depends on |
-|---|---|---|
-| 25 | Status sets per stock kind, transition rules, in-stock views (spec 4) | 23 |
-| 26 | `lineage: true` on ref fields and `tm lineage` | 23 |
-| 27 | Split molbio into parts (molbio 2 → 3) | 22, 25 |
-| 28 | `cellbio` bundle: `immuno`, `viral_vectors`, `biosamples` | 26, 27 |
-| 29 | `angenet` bundle: drosophila, c_elegans, zebrafish, mouse | 25–28 |
-
-25 and 26 can run in parallel; 27–29 are sequential.
+Delivered in **0.3.0** (spec 4). Design: [`preset-parts.md`](../preset-parts.md); what shipped, the
+settled decisions and the upgrade order for existing ledgers:
+[the wave 10 delivery record](../records/wave10-delivery.md). Source issue: git-bug `0a9acec`.
 
 ## Wave 11 · box views (ticket 30)
 
