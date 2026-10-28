@@ -34,6 +34,21 @@ settled decisions; do not re-open them.
 
 20 and 21 can run in parallel; 22–24 are sequential.
 
+Tickets 25–29 are the **preset-parts wave** (from git-bug issue `0a9acec`, "BioManager Presets"). It
+covers status sets per stock kind with transition rules, `tm lineage`, presets split into shared parts,
+and the new `cellbio` and `angenet` bundles. The design is in `docs/preset-parts.md`. It starts after
+wave 9.
+
+| # | Ticket | Depends on | Wave |
+|---|---|---|---|
+| 25 | Status sets per stock kind, transition rules, in-stock views (spec 4) | 23 | 10 |
+| 26 | `lineage: true` on ref fields and `tm lineage` | 23 | 10 |
+| 27 | Split molbio into parts (molbio 2 → 3) | 22, 25 | 10 |
+| 28 | `cellbio` bundle: `immuno`, `viral_vectors`, `biosamples` | 26, 27 | 10 |
+| 29 | `angenet` bundle: drosophila, c_elegans, zebrafish, mouse | 25–28 | 10 |
+
+25 and 26 can run in parallel; 27–29 are sequential.
+
 Each ticket: implement, add pytest tests (real `dolt`, no mocks), stay inside the listed files where
 possible, leave the working tree dirty for review (no commit). Tickets in the same wave are
 independent and may run in parallel (separate git worktrees/copies).
