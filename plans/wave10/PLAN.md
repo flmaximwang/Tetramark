@@ -2,14 +2,14 @@
 
 > Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.
 
-**进度** 4/13 块（31%） · 状态 `active` · 更新于 2026-10-28 22:15
+**进度** 6/13 块（46%） · 状态 `active` · 更新于 2026-10-28 23:39
 
 **参与方** lead(agent) · Maxim(human) · w25(agent) · w26(agent) · w27(agent) · w28(agent) · w29(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
 - `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** — 待批准 · @maxim
-- `T-003#B-001` **implement ticket 27 in worktree w27** — 进行中 · @w27 · 在做 @w27
+- `T-004#B-001` **implement ticket 28 in worktree w28** — 进行中 · @w28 · 在做 @w28
 
 ## 图
 
@@ -41,11 +41,11 @@ flowchart LR
   T-006_B-001 --> T-006_B-002
   T-006_B-002 --> T-006_B-003
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002 done;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002 done;
   classDef running stroke-width:1px;
-  class T-003_B-001 running;
+  class T-004_B-001 running;
   classDef waiting stroke-width:1px;
-  class T-003_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 waiting;
+  class T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 waiting;
   classDef blocked stroke-width:1px;
   class T-006_B-003 blocked;
 ```
@@ -84,26 +84,32 @@ flowchart LR
     - run 2026-10-28 16:27 lead pending→running Reviewing diff; committed 35a3b5c, merged main, re-running full suite on the branch before merging to main.
     - run 2026-10-28 16:44 lead running→done Reviewed: attribute is ref-only + entity/stock-only, fingerprint only when set, accessor single-reader, cycle guard, JSON/text/dot shapes, no real ledger touched. Ported the spec text onto the new docs/spec split (02/05/06) after another session's docs reorg; targeted suite 208 passed. Full suite on main started.
 
-### T-003 27 split molbio into parts (molbio 2 to 3) — 进行中
+### T-003 27 split molbio into parts (molbio 2 to 3) — 已完成
 @w27
-- [ ] `T-003#B-001` **implement ticket 27 in worktree w27** _impl_ — 进行中 @w27
+- [x] `T-003#B-001` **implement ticket 27 in worktree w27** _impl_ — 已完成 @w27
     - 做什么：Read docs/tickets/27-molbio-into-parts.md and docs/preset-parts.md section 2. Work only in the worktree .dsh/gitworktree/w27 (branch wave10/t27, own .venv). Decide and record: which part includes which for plasmid.construct -> protein_construct, and where sequence_fields lives. migration/presets/molbio/2-to-3 must add oligo tables, replace preset copies, bump preset_versions. Check the zsqlab10 path only on a copy (spec/3-to-4 then molbio 2-to-3). No commit, leave the tree dirty.
     - 判据：Ticket 27 Verify passes: tm init --preset molbio gives the same kinds as v2 plus entity_oligo and stock_oligo_stock, tm check clean, preset_versions lists molbio 3 plus each part; [molbio, cellbio] loads once ticket 28 exists (until then the test-only preset with cell_culture); a molbio-v2 fixture with data migrates to v3 keeping every row and tm check clean.
     - 依赖：T-001#B-002
     - 依赖：T-002#B-002
-    - 在做：@w27
+    - 产物：`.dsh/gitworktree/w27 @ a0c7480`
     - run 2026-10-28 22:15 w27 pending→running Dispatched: parts nucleic_acids/bacteria/proteins/cell_culture, molbio v3 bundle, base 2->3 (incubator), molbio 2->3 + presets/README; docs in the split spec tree.
-- [ ] `T-003#B-002` **review and merge ticket 27** _review_ — 等前置 @lead
+    - run 2026-10-28 23:30 w27 running→done Parts nucleic_acids/bacteria/proteins/cell_culture, molbio v3 bundle, base v3 incubator, molbio 2->3 + base 2->3, frozen v1->2 snapshots, preset_versions_extra/vendor_preset_files in the runner; 802 passed 1 skipped.
+- [x] `T-003#B-002` **review and merge ticket 27** _review_ — 已完成 @lead
     - 做什么：Lead: review diff against ticket and design, verify no table or kind rename slipped in, run the full suite, then commit on wave10/t27 and merge into main. Record the two open choices the agent made and whether they match the preferred options.
     - 判据：Diff reviewed; no unintended renames; full suite green; open choices recorded; branch committed and merged to main.
     - 依赖：T-003#B-001
+    - 产物：`main 902f6d0`
+    - run 2026-10-28 23:30 lead pending→running Reviewed the step design, frozen snapshots byte-identical to 6faa557/6552b9b, runner additions validated; merged to main 902f6d0, full suite running.
+    - run 2026-10-28 23:39 lead running→done Reviewed; merged; full suite on main 802 passed / 1 skipped (518s).
 
-### T-004 28 cellbio bundle (immuno, viral_vectors, biosamples) — 待排
+### T-004 28 cellbio bundle (immuno, viral_vectors, biosamples) — 进行中
 @w28
-- [ ] `T-004#B-001` **implement ticket 28 in worktree w28** _impl_ — 等前置 @w28
+- [ ] `T-004#B-001` **implement ticket 28 in worktree w28** _impl_ — 进行中 @w28
     - 做什么：Read docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv). First check what the loader does with an entity_kinds entry that is not loaded, then take the smallest option, preferring the split cell_biosample/animal_biosample with no core change; record the choice in the part description and presets/README.md. No commit, leave the tree dirty.
     - 判据：Ticket 28 Verify passes: tm init --preset cellbio creates the expected tables and passes tm check; tm lineage <virus> shows no payload edge while <cell_line> shows parental; presets [molbio, cellbio] loads with shared parts loaded once and tm check clean; a biosample from a cell vial aliquot appears under it in tm lineage.
     - 依赖：T-003#B-002
+    - 在做：@w28
+    - run 2026-10-28 23:39 w28 pending→running Dispatched to teammate w28 in worktree .dsh/gitworktree/w28 (branch wave10/t28 from main 902f6d0): immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 with a frozen v1 copy.
 - [ ] `T-004#B-002` **review and merge ticket 28** _review_ — 等前置 @lead
     - 做什么：Lead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main.
     - 判据：Diff reviewed; entity_kinds choice documented and minimal; full suite green; branch committed and merged to main.
@@ -137,16 +143,6 @@ flowchart LR
 
 ## 日志（近 20 条）
 
-- `2026-10-28 15:37` **lead** [summary] Lead took over wave 10 at 15:30. Evidence: main = 3831fb2 (wave 9 merged, v0.2.0); docs/preset-parts.md + tickets 25-29 committed; no implementation. Worktrees w25/w26 created from main and venvs synced; tickets 25 and 26 dispatched in parallel. Another DSH session is still committing the last wave-9 docs in the parent checkout; its run was left alone.
-- `2026-10-28 15:47` **lead** [decision] DECISION (version numbering, inherited ambiguity): ticket 25 bumps molbio 2->3 to add statuses; ticket 27 therefore keeps molbio at 3 and REWRITES migration/presets/molbio/2-to-3 to install the final parts bundle (0.3.0 not shipped, so no ledger sees the interim step; two folders for one counter bump would violate migration/README). base: 25 does 1->2 (status sets), 27 adds incubator as 2->3. library: 25 does 1->2. cell_culture: 27 creates at 1, 28 does 1->2. Tell w27 this explicitly when dispatching.
-- `2026-10-28 15:48` **lead** [summary] Baseline green: full suite on main fbdfe24 = 748 passed in 438s (contended machine; -n 6). This is the post-F1 evidence the wave-9 session was missing.
-- `2026-10-28 16:27` **agent** [exec] T-002#B-001: 线程登记已清除（@w26 收工）
-- `2026-10-28 16:27` **agent** [status] T-002#B-001: running → done（Report received: ops/lineage.py 622 lines + cli/lineage.py + 21 tests; 768-pass full run in the worktree; accessor STOCK_COUNT_COLUMNS is the only column-name reader.）
-- `2026-10-28 16:27` **agent** [status] T-002#B-002: pending → running（Reviewing diff; committed 35a3b5c, merged main, re-running full suite on the branch before merging to main.）
-- `2026-10-28 16:44` **agent** [exec] T-002#B-002: 线程登记已清除（@lead 收工）
-- `2026-10-28 16:44` **agent** [status] T-002#B-002: running → done（Reviewed: attribute is ref-only + entity/stock-only, fingerprint only when set, accessor single-reader, cycle guard, JSON/text/dot shapes, no real ledger touched. Ported the spec text onto the new docs/spec split (02/05/06) after another session's docs reorg; targeted suite 208 passed. Full suite on main started.）
-- `2026-10-28 16:44` **agent** [status] T-002: pending → done（Ticket 26 merged to main at a635762.）
-- `2026-10-28 16:44` **lead** [decision] Ticket 26 merged (a635762). Two choices recorded: (1) aliquot->owning-stock hop carries the naming relation's via (needed for ticket 29 dam/sire chains); (2) JSON root is the id string. Docs reorg by another session (79c9d6d, spec split into docs/spec/) landed first; ticket docs are ported into docs/spec/02/05/06 - tickets 27-29 must write docs there, not docs/spec.md.
 - `2026-10-28 22:07` **agent** [exec] T-001#B-001: 线程登记已清除（@w25 收工）
 - `2026-10-28 22:07` **agent** [status] T-001#B-001: running → done（Report: spec 4 (status sets, transitions with --force/--note, in-stock views, 3-to-4 + base/library steps), full suite 767 passed in worktree. Accepted decisions: molbio version stays 2 (ticket 27 owns molbio/2-to-3); per-status counts/total_quantity dropped from v_stock_status (design says views show in-stock state); migration steps place preset copies before opening.）
 - `2026-10-28 22:07` **agent** [status] T-001#B-002: pending → running（Merged main into wave10/t25 (docs/spec split, template harness, molbio-1 fixture); ported spec text to docs/spec/*; legacy-statuses read path and spec-4-only test gating for the migration runner; full suite running.）
@@ -157,6 +153,16 @@ flowchart LR
 - `2026-10-28 22:13` **lead** [summary] Ticket 25 merged (6552b9b); full suite on the merged branch 788 passed, 1 skipped. Next: ticket 27 (molbio into parts) — worktree w27 from main, then 28, 29.
 - `2026-10-28 22:15` **agent** [status] T-003: pending → running（Dispatched to teammate w27 in worktree .dsh/gitworktree/w27 (branch wave10/t27 from main 6552b9b).）
 - `2026-10-28 22:15` **agent** [status] T-003#B-001: pending → running（Dispatched: parts nucleic_acids/bacteria/proteins/cell_culture, molbio v3 bundle, base 2->3 (incubator), molbio 2->3 + presets/README; docs in the split spec tree.）
+- `2026-10-28 23:30` **agent** [exec] T-003#B-001: 线程登记已清除（@w27 收工）
+- `2026-10-28 23:30` **agent** [status] T-003#B-001: running → done（Parts nucleic_acids/bacteria/proteins/cell_culture, molbio v3 bundle, base v3 incubator, molbio 2->3 + base 2->3, frozen v1->2 snapshots, preset_versions_extra/vendor_preset_files in the runner; 802 passed 1 skipped.）
+- `2026-10-28 23:30` **agent** [status] T-003#B-002: pending → running（Reviewed the step design, frozen snapshots byte-identical to 6faa557/6552b9b, runner additions validated; merged to main 902f6d0, full suite running.）
+- `2026-10-28 23:30` **lead** [decision] Ticket 27 merged (902f6d0). Decisions: nucleic_acids includes proteins (preferred); sequence_fields lives in proteins; MB05 moved to cell_culture because a bundle cannot carry rules; historical base/molbio 1->2 steps now ship frozen v2 copies. Ticket 28 must freeze cell_culture-1.yaml for its 1->2 bump and use preset_versions_extra if the bundle step adds part counters.
+- `2026-10-28 23:39` **agent** [exec] T-003#B-002: 线程登记已清除（@lead 收工）
+- `2026-10-28 23:39` **agent** [status] T-003#B-002: running → done（Reviewed; merged; full suite on main 802 passed / 1 skipped (518s).）
+- `2026-10-28 23:39` **agent** [exec] T-003: 线程登记已清除（@w27 收工）
+- `2026-10-28 23:39` **agent** [status] T-003: running → done（Ticket 27 merged at 902f6d0; full suite green.）
+- `2026-10-28 23:39` **agent** [status] T-004#B-001: pending → running（Dispatched to teammate w28 in worktree .dsh/gitworktree/w28 (branch wave10/t28 from main 902f6d0): immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 with a frozen v1 copy.）
+- `2026-10-28 23:39` **lead** [summary] Ticket 27 merged (902f6d0); full suite 802 passed / 1 skipped. Ticket 28 dispatched: new parts immuno/viral_vectors/biosamples, cellbio bundle, cell_culture 1->2 (frozen cell_culture-1.yaml), biosamples option (a) preferred.
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave10` 生成。
