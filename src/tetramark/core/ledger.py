@@ -81,6 +81,7 @@ from tetramark.schema.model import (
     SPEC_VERSION,
     EffectiveSchema,
     LedgerConfig,
+    SchemaError,
 )
 from tetramark.schema.tests_gen import CheckReport, install_tests, run_check
 
@@ -284,7 +285,9 @@ def _preset_sources(
         )
 
     closure = expand_presets(
-        [preset.path for preset in top], base_dir=Path.cwd()
+        [preset.path for preset in top],
+        base_dir=Path.cwd(),
+        require_self_contained=True,
     )
     by_name: dict[str, PresetFile] = {}
     for preset in closure:
@@ -306,18 +309,37 @@ def _preset_sources(
 
 
 def _write_presets(
-    target: Path, copies: Sequence[PresetCopy]
+    target: Path,
+    copies: Sequence[PresetCopy],
+    written: list[tuple[Path, bytes | None]] | None = None,
 ) -> list[tuple[Path, bytes | None]]:
     """Copy the preset closure into ``<ledger>/presets/``.
 
-    Returns ``(path, previous bytes)`` for every written file (``None`` when it
-    did not exist) so an adopt rollback can undo exactly this write.
+    Each destination is appended to ``written`` *before* it is written, so a
+    failure midway still leaves :func:`_restore_presets` the exact list of files
+    this attempt touched (the ticket-20 adopt-rollback promise).  Each entry is
+    ``(path, previous bytes)`` — ``None`` when the file did not exist.
     """
     root = target / "presets"
     root.mkdir(parents=True, exist_ok=True)
-    written: list[tuple[Path, bytes | None]] = []
+    written = written if written is not None else []
+    resolved_root = root.resolve()
     for copy in copies:
         destination = root / copy.destination
+        if (
+            copy.destination.is_absolute()
+            or ".." in copy.destination.parts
+            or not copy.destination.parts
+        ):
+            raise UsageError(
+                f"refusing to write preset {copy.name!r} outside {root}: "
+                f"invalid destination {str(copy.destination)!r}"
+            )
+        if not destination.resolve().is_relative_to(resolved_root):
+            raise UsageError(
+                f"refusing to write preset {copy.name!r} outside {root}: "
+                f"{destination} resolves outside the ledger's presets directory"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         previous = destination.read_bytes() if destination.is_file() else None
         written.append((destination, previous))
@@ -325,16 +347,63 @@ def _write_presets(
     return written
 
 
-def _restore_presets(written: Sequence[tuple[Path, bytes | None]]) -> None:
-    """Undo :func:`_write_presets` after a failed adopt (best effort)."""
-    roots: set[Path] = set()
+def _verify_preset_copy(target: Path, expected: EffectiveSchema) -> None:
+    """Prove the ledger reopens from its own ``<ledger>/presets/`` copy.
+
+    ``tm init`` promises a self-contained ledger: after writing the copies and
+    ``ledger.yaml`` (and before any database work, hence before the commit), the
+    ledger must reload from itself with exactly the planned schema.  Unsupported
+    include shapes (a path include, an include name that differs from the
+    included preset's own name) are rejected earlier; this is the safety net
+    that also catches anything the copy logic missed.
+    """
+    presets_dir = target / "presets"
+    try:
+        _config, reloaded = load_ledger_schema(target)
+    except SchemaError as error:
+        raise LedgerError(
+            f"the presets copied into {presets_dir} do not reopen from the ledger "
+            f"itself: {error.message}. 'include:' must list bare preset names "
+            "matching each included preset's own 'preset:' field so that the "
+            "ledger's presets/ copy is self-contained; fix the preset and re-run"
+        ) from error
+    if (
+        reloaded.fingerprint() != expected.fingerprint()
+        or reloaded.preset_versions != expected.preset_versions
+    ):
+        raise LedgerError(
+            f"the presets copied into {presets_dir} do not reproduce the planned "
+            f"schema (planned fingerprint {expected.fingerprint()}, reloaded "
+            f"{reloaded.fingerprint()}); the copy is not self-contained"
+        )
+
+
+def _restore_presets(
+    written: Sequence[tuple[Path, bytes | None]],
+    *,
+    presets_root: Path | None = None,
+) -> None:
+    """Undo :func:`_write_presets` after a failed adopt (best effort).
+
+    Restores (or removes) every recorded file and prunes the directories the
+    copy created; with ``presets_root`` the now-empty root is pruned too (the
+    caller passes it only when this attempt created that directory).
+    """
+    directories: set[Path] = set()
     for destination, previous in reversed(written):
         if previous is None:
             destination.unlink(missing_ok=True)
         else:
             destination.write_bytes(previous)
-        roots.add(destination.parent)
-    for directory in sorted(roots, key=lambda item: len(item.parts), reverse=True):
+        directory = destination.parent
+        directories.add(directory)
+        if presets_root is not None:
+            while directory != presets_root and directory.parent != directory:
+                directory = directory.parent
+                directories.add(directory)
+                if directory == presets_root:
+                    break
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
         with suppress(OSError):
             directory.rmdir()
 
@@ -710,6 +779,7 @@ def init_ledger(
         # The ledger is self-contained: its presets live in <ledger>/presets/.
         _write_presets(target, plan.preset_copies)
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
+        _verify_preset_copy(target, plan.schema)
 
         driver = EmbeddedDriver(target, env=plan.workspace.env)
         with driver.transaction():
@@ -844,6 +914,20 @@ def _rollback_statements(statements: Sequence[Statement]) -> list[str]:
     return sql
 
 
+def _missing_object_error(error: BaseException) -> bool:
+    """True when DDL failed only because the object does not exist (yet)."""
+    text = str(error).lower()
+    markers = (
+        "table not found",
+        "doesn't exist",
+        "does not exist",
+        "check that column/key exists",
+        "check that table",
+        "unknown table",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _rollback_adopt(
     workspace: Workspace,
     name: str,
@@ -854,6 +938,7 @@ def _rollback_adopt(
     config_path: Path,
     previous_config: str | None,
     preset_writes: Sequence[tuple[Path, bytes | None]] = (),
+    presets_root: Path | None = None,
 ) -> None:
     """Best-effort undo of a failed adopt.  Never deletes the database.
 
@@ -875,7 +960,13 @@ def _rollback_adopt(
             for sql in _rollback_statements(statements):
                 try:
                     driver.execute(sql)
-                except Exception as error:  # a missing object is fine
+                except Exception as error:
+                    # A missing object is fine: this attempt never created it
+                    # (e.g. the failure happened before the DDL, or only part of
+                    # it ran).  Dropping a non-existent FK/table/view must not be
+                    # reported as an incomplete rollback.
+                    if _missing_object_error(error):
+                        continue
                     failed.append(f"{sql.split()[0].lower()} failed: {error}")
             driver.execute("CALL DOLT_RESET('--hard', %s)", (pre_head,))
         except Exception as error:  # pragma: no cover - defensive
@@ -891,7 +982,7 @@ def _rollback_adopt(
     except OSError as error:  # pragma: no cover - defensive
         failed.append(f"could not restore {config_path}: {error}")
     try:
-        _restore_presets(preset_writes)
+        _restore_presets(preset_writes, presets_root=presets_root)
     except OSError as error:  # pragma: no cover - defensive
         failed.append(f"could not restore presets/: {error}")
     if failed:
@@ -980,10 +1071,15 @@ def adopt_ledger(
         config_path.read_text(encoding="utf-8") if config_path.is_file() else None
     )
     preset_writes: list[tuple[Path, bytes | None]] = []
+    presets_dir = target / "presets"
+    presets_root_existed = presets_dir.exists()
     try:
         # The ledger is self-contained: its presets live in <ledger>/presets/.
-        preset_writes = _write_presets(target, plan.preset_copies)
+        # The mutable list is filled as each file is written, so the rollback
+        # can undo a half-finished copy too (ticket-20 F6).
+        _write_presets(target, plan.preset_copies, preset_writes)
         config_path.write_text(plan.ledger_yaml, encoding="utf-8")
+        _verify_preset_copy(target, plan.schema)
         with driver.transaction():
             for statement in plan.statements:
                 driver.execute(statement.sql)
@@ -1009,6 +1105,7 @@ def adopt_ledger(
             config_path=config_path,
             previous_config=previous_config,
             preset_writes=preset_writes,
+            presets_root=None if presets_root_existed else presets_dir,
         )
         raise
 
@@ -1068,6 +1165,7 @@ def init_ledger_on_server(
         # The ledger is self-contained: its presets live in <ledger>/presets/.
         _write_presets(target, plan.preset_copies)
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
+        _verify_preset_copy(target, plan.schema)
 
         driver = ServerDriver(ws.config.host, ws.config.port, name)
         with driver.transaction():
