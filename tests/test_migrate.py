@@ -555,16 +555,30 @@ RENAME_MAP = {
 }
 
 
-def write_preset(directory: Path, kinds: dict[str, Any], *, version: int) -> Path:
+def write_preset(
+    directory: Path,
+    kinds: dict[str, Any],
+    *,
+    version: int,
+    ledger: Ledger | None = None,
+) -> Path:
+    """Write a ``rn`` preset, and with ``ledger`` its own copy as well.
+
+    Ticket 20: a ledger reads presets only from ``<ledger>/presets/``, so
+    changing the source directory of an existing ledger has no effect. Tests
+    that evolve a live ledger's schema must write the ledger's copy too.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "preset.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {"preset": "rn", "version": version, "kinds": kinds},
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    text = yaml.safe_dump(
+        {"preset": "rn", "version": version, "kinds": kinds},
+        sort_keys=False,
     )
+    path.write_text(text, encoding="utf-8")
+    if ledger is not None:
+        copy = ledger.path / "presets" / "rn" / "preset.yaml"
+        assert copy.is_file(), f"ledger has no own preset copy at {copy}"
+        copy.write_text(text, encoding="utf-8")
     return path
 
 
@@ -630,8 +644,8 @@ def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
     for ledger in (ledger_map, ledger_rf):
         seed_rename_data(ledger)
 
-    write_preset(preset_map, NEW_KINDS, version=2)
-    write_preset(preset_rf, renamed_from_kinds(), version=2)
+    write_preset(preset_map, NEW_KINDS, version=2, ledger=ledger_map)
+    write_preset(preset_rf, renamed_from_kinds(), version=2, ledger=ledger_rf)
     reload_schema(ledger_map)
     reload_schema(ledger_rf)
 
