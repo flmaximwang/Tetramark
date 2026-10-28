@@ -1405,7 +1405,11 @@ def set_aliquot_status(
 
 
 def purge_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """Hard-delete an aliquot, its events and its kind extension row."""
+    """Hard-delete an aliquot and its events.
+
+    Spec 3 has no per-stock-kind extension tables (an aliquot is a generic
+    tube), so there is no extension row to delete.
+    """
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
 

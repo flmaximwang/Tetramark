@@ -169,9 +169,13 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   `alias_list`/`occupant_alias_list` columns to the generated views. Version 3
   removes the `aliquot_<stockkind>` extension tables (an aliquot is a generic
   tube; the per-stock-kind tube-field key no longer loads) and adds the
-  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. A v1/v2 ledger upgrades to v3 with
-  the hand-run `migration/spec/2-to-3/` step (`migration/README.md`); within one
-  version `tm schema plan` → `tm schema apply` stays additive.
+  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. A **v2**
+  ledger upgrades to v3 with the hand-run `migration/spec/2-to-3/` step; a v1
+  ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs
+  `migration/presets/molbio/1-to-2`, which needs the last tool version that
+  still reads `aliquot_fields` (a 0.2.0+ tool cannot open such a ledger at
+  all). See `migration/README.md`; within one version `tm schema plan` →
+  `tm schema apply` stays additive.
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger
