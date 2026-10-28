@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLAN</title>
+<style>
+  /* loomerto 的**共用主题**：只读看板（plan.html）与可编辑画布（canvas.html）都注入这一段。
+   颜色 / 字体 / 状态色 / 状态胶囊 / 面板 / 按钮 / 分隔线 / 进度条只有这一份来源 ——
+   改这里，两个页面一起变；页面里只留各自**布局**规则。
+   注入方式：页面里放一个 CSS 注释标记，render.py（plan.html）与 serve.py（canvas.html）
+   在生成 / 送出时把那个标记换成这份文本（两页因此仍然是自包含的单文件）。 */
+:root{
+  --bg:#f7f8fa; --panel:#fff; --ink:#1f2328; --dim:#6b7280; --line:#e3e6ea;
+  /* 状态色：图例顺序 = 一个块的一生（待批准 → 等前置 → 待认领 → 已认领 → 进行中 → 待评审 → 已完成） */
+  --blocked:#e03131; --waiting:#98a2b3; --ready:#f08c00; --claimed:#0c8599;
+  --running:#1c7ed6; --review:#7048e8; --done:#2f9e44;
+  /* 「待排」与「等前置」同色：都还没轮到人动手；「已取消」也同色，靠虚线/空心方框区分 */
+  --pending:#98a2b3; --cancelled:#98a2b3;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 4px 14px rgba(16,24,40,.06);
+  --font:-apple-system,"SF Pro SC","PingFang SC","Helvetica Neue",Segoe UI,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#14161a; --panel:#1c1f24; --ink:#e6e8eb; --dim:#9aa4b2; --line:#2b3038;
+         --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.35); }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--font)}
+a{color:var(--running)}
+code,kbd,pre{font-family:var(--mono)}
+h1{margin:0 0 4px;font-size:20px;letter-spacing:.2px}
+.goal{margin:0;color:var(--dim);max-width:70ch}
+.meta{margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;color:var(--dim);font-size:12.5px}
+.meta code{background:var(--bg);padding:2px 6px;border-radius:5px;border:1px solid var(--line)}
+.kv{margin:8px 0;color:var(--dim)}
+
+/* 状态胶囊：一处定义，两页共用（颜色一律走上面的 token） */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:99px;
+      font-size:12px;font-weight:600;color:#fff;background:var(--waiting);white-space:nowrap}
+.pill.done{background:var(--done)} .pill.running{background:var(--running)}
+.pill.claimed{background:var(--claimed)} .pill.review{background:var(--review)}
+.pill.ready{background:var(--ready)} .pill.waiting{background:var(--waiting)}
+.pill.pending{background:var(--pending)} .pill.blocked{background:var(--blocked)}
+.pill.cancelled{background:var(--cancelled)}
+
+/* 平面与按钮：卡片 / 泳道 / 面板 / 工具条在两页是同一套观感 */
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.panel > h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+            color:var(--dim);border-bottom:1px solid var(--line)}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--dim);border-radius:6px;
+     padding:3px 10px;font-size:12px;line-height:1.7;cursor:pointer;font-family:inherit}
+.btn:hover{color:var(--ink);border-color:var(--dim)}
+.btn.primary{background:var(--running);border-color:var(--running);color:#fff}
+.btn.primary:hover{background:#1864ab;border-color:#1864ab;color:#fff}
+.btn.ghost{border-style:dashed}
+
+/* 拖动分隔线：1px 细线，hover / 拖动时变 3px 并换成 --running 色（两页同一套手感） */
+#splitter{position:fixed;top:0;bottom:0;width:9px;z-index:61;cursor:col-resize;background:transparent}
+#splitter::after{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;background:var(--line)}
+#splitter:hover::after,#splitter.dragging::after,#splitter:focus-visible::after{
+          left:3px;width:3px;background:var(--running)}
+body.resizing{user-select:none;cursor:col-resize}
+
+/* 进度条与图例 */
+.track{margin-top:12px;height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.track > i{display:block;height:100%;border-radius:99px;transition:width .4s;
+           background:linear-gradient(90deg,var(--running),var(--done))}
+.legend{display:flex;flex-wrap:wrap;gap:12px;padding:10px 16px;color:var(--dim);font-size:12px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+.legend .zebra{border:1px dashed var(--dim);background:transparent}
+
+  /* ↓ 下面只放这一页的**布局**规则：颜色 / 字体 / 状态胶囊(.pill) / 按钮(.btn) / 分隔线(#splitter) /
+     进度条(.track) / 图例(.legend) 都来自上面的共用主题 theme.css —— 改样式去改那里，两个页面一起变。 */
+  :root{ --detail-w:clamp(280px,26vw,420px); }   /* 详情栏宽度：拖动分隔线后由 JS 写成固定 px */
+  header{padding:20px 24px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .wrap{display:block}
+  section.card{margin:16px 24px;background:var(--panel);border:1px solid var(--line);
+               border-radius:12px;box-shadow:var(--shadow)}
+  section.card > h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:.08em;
+                    text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line)}
+  .nodes{padding:16px}
+  .nowlist{display:flex;flex-wrap:wrap;gap:10px;padding:14px 16px}
+  .nowcard{border:1px solid var(--line);border-radius:10px;padding:9px 12px;min-width:220px;
+           background:var(--bg);cursor:pointer;transition:border-color .12s,transform .12s}
+  .nowcard:hover{border-color:var(--running);transform:translateY(-1px)}
+  .nowcard.sel{outline:2px solid var(--running)}
+  .nowcard b{display:block;font-size:13px}
+  .nowcard .sub{color:var(--dim);font-size:12px}
+  #graph{position:relative;min-height:200px;overflow:auto;padding:8px 8px 8px 0}
+  #edges{position:absolute;inset:0;pointer-events:none}
+  .lane{position:absolute;font-size:12px;color:var(--dim);display:flex;align-items:center;
+        gap:8px;padding-bottom:2px;border-bottom:1px dashed var(--line)}
+  .lane i{width:9px;height:9px;border-radius:3px;display:inline-block;flex:none}
+  .lane b{color:var(--ink);font-weight:600}
+  .lane .lz{margin-left:auto;padding-right:4px}
+  .node{position:absolute;width:216px;height:88px;border-radius:10px;background:var(--panel);
+        border:1px solid var(--line);border-left:4px solid var(--waiting);padding:8px 10px;
+        cursor:pointer;box-shadow:var(--shadow);transition:transform .12s;overflow:hidden}
+        /* 宽度由 graph() 按 #graph 可用宽度动态写进行内样式；这里的 216px 只是没有 JS 时的兜底 */
+  .node:hover{transform:translateY(-2px)}
+  .node.sel{outline:2px solid var(--running)}
+  .node .id{font-size:11px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .node .ttl{font-weight:600;margin-top:3px;line-height:1.3;height:34px;overflow:hidden;
+             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .node .own{font-size:11.5px;color:var(--dim);margin-top:4px;display:flex;
+             justify-content:space-between;gap:6px}
+  .node.done{opacity:.6}
+  .node.cancelled{border-left-style:dashed}
+  /* 详情栏：常驻右侧、占满整页高度（不是点开才出现 —— 页面布局因此一次都不跳）；body 常驻让出
+     这段宽度，所以画布不会被盖住。宽度由 #splitter 这条分隔线拖拽控制。 */
+  body{padding-right:var(--detail-w)}
+  #detailpanel{position:fixed;right:0;top:0;bottom:0;width:var(--detail-w);z-index:60;
+               display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line);
+               box-shadow:-10px 0 30px rgba(16,24,40,.10);overflow:hidden}
+  #detailbar{display:flex;align-items:center;justify-content:space-between;gap:8px;
+             padding:6px 8px 6px 12px;border-bottom:1px solid var(--line);background:var(--bg);
+             user-select:none}
+  #splitter{right:var(--detail-w)}     /* 其余（宽度/细线/hover）在共用主题里 */
+  #detailbar b{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  #detailbar button{border:1px solid var(--line);background:var(--panel);color:var(--dim);
+                    border-radius:6px;padding:2px 9px;font-size:11.5px;line-height:1.6;cursor:pointer;
+                    font-family:inherit}
+  #detailbar button:hover{color:var(--ink);border-color:var(--dim)}
+  #detail{padding:14px 16px;font-size:13px;overflow:auto;flex:1 1 auto;min-height:0}
+  @media (max-width:900px){
+    /* 窄屏别让详情栏吃掉画布：默认栏宽收窄（拖过分隔线的话以拖出来的宽度为准） */
+    :root{--detail-w:clamp(240px,42vw,340px)}
+  }
+  #detail h3{margin:0 0 6px;font-size:15px}
+  #detail .kv{margin:8px 0;color:var(--dim)}
+  #detail ul{margin:6px 0 6px 18px;padding:0}
+  #detail p.doc{margin:8px 0;line-height:1.62}
+  #detail pre.cb{margin:8px 0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.5;
+    white-space:pre;color:var(--ink)}
+  #detail .run{border-left:2px solid var(--line);padding:2px 0 2px 8px;margin:6px 0;color:var(--dim);font-size:12px}
+  .journal{padding:6px 16px 16px;font-size:12.5px;max-height:280px;overflow:auto}
+  .journal div{padding:3px 0;border-bottom:1px dashed var(--line);color:var(--dim)}
+  .journal b{color:var(--ink);font-weight:600}
+  .toolbar{padding:8px 16px;display:flex;gap:14px;align-items:center;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">—</h1>
+  <p class="goal" id="goal"></p>
+  <div class="meta">
+    <span id="prog"></span>
+    <span id="status"></span>
+    <span>更新 <span id="updated"></span></span>
+    <span id="who"></span>
+    <span><code id="slug"></code></span>
+  </div>
+  <div class="track"><i id="fill" style="width:0"></i></div>
+</header>
+
+<div class="wrap">
+  <div>
+    <section class="card"><h2>现在该谁动</h2><div class="nowlist" id="nownext"></div></section>
+    <section class="card">
+      <h2>任务图（块 = 文档，边 = 依赖）</h2>
+      <div class="toolbar">
+        <label><input type="checkbox" id="hidedone"> 隐藏已完成</label>
+        <span>点节点或卡片看详情（详情常驻右侧，拖分隔线可调宽度 · Esc 清空）</span>
+      </div>
+      <div id="graph"><svg id="edges"></svg></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="card"><h2>日志</h2><div class="journal" id="journal"></div></section>
+  </div>
+</div>
+
+<div id="splitter" tabindex="0" role="separator" aria-orientation="vertical"
+     aria-label="拖动调整详情栏宽度" title="拖动调整详情栏宽度（方向键微调）"></div>
+<aside id="detailpanel">
+  <div id="detailbar">
+    <b>详情</b>
+    <button id="detailclear" title="清空详情内容（Esc）—— 只清内容，边栏常驻不动">清空</button>
+  </div>
+  <div id="detail"><p class="goal">点任务图里的节点，或「现在该谁动」里的卡片。</p></div>
+</aside>
+
+<script>
+const PLAN = {"schema": "plan-weave/plan@1", "slug": "wave10", "title": "Wave 10: preset parts, status sets, lineage (tickets 25-29)", "goal": "Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.", "status": "active", "created_at": "2026-10-28T15:33:00+08:00", "updated_at": "2026-10-28T15:37:17+08:00", "cadence": {"digest_hours": 12.0, "quiet_hours": "8"}, "participants": [{"id": "lead", "kind": "agent", "label": "lead", "channel": ""}, {"id": "maxim", "kind": "human", "label": "Maxim", "channel": ""}, {"id": "w25", "kind": "agent", "label": "w25", "channel": ""}, {"id": "w26", "kind": "agent", "label": "w26", "channel": ""}, {"id": "w27", "kind": "agent", "label": "w27", "channel": ""}, {"id": "w28", "kind": "agent", "label": "w28", "channel": ""}, {"id": "w29", "kind": "agent", "label": "w29", "channel": ""}, {"id": "you", "kind": "human", "label": "本人", "channel": ""}], "tasks": [{"id": "T-001", "title": "25 status sets, transition rules, in-stock views (spec 4)", "owner": "w25", "status": "pending", "deps": [], "blocks": [{"id": "T-001#B-001", "title": "implement ticket 25 in worktree w25", "kind": "impl", "status": "running", "owner": "w25", "doc": "Read docs/tickets/25-status-sets-transitions.md and docs/preset-parts.md section 4. Work only in the worktree .dsh/gitworktree/w25 (branch wave10/t25, own .venv). Real dolt, no mocks, no commit, leave the tree dirty. Do not touch real ledgers. Report what you chose wherever the ticket leaves a choice.", "input": "", "output": "", "command": "cd .dsh/gitworktree/w25 && uv sync -q && .venv/bin/python -m pytest -q -n 4", "done_when": ["Every item of ticket 25 Verify passes: status-set load errors; tube stored->consumed allow, consumed->stored refuse, --force --note allow with forced=TRUE, --force without --note usage error; creation as consumed works; a hand-written illegal status event is FAIL in tm check; v_stock_<kind> active/depleted/empty and counts as specified; spec/3-to-4 on a spec-3 fixture drops the key, adds forced, tm check passes; custom list refuses writing nothing."], "artifacts": [], "deps": [], "review_of": "", "feedback": "", "exec": {"by": "w25", "started": "2026-10-28T15:37:17+08:00"}, "status_since": "2026-10-28T15:37:17+08:00", "runs": [{"at": "2026-10-28T15:37:17+08:00", "by": "w25", "from": "pending", "to": "running", "note": "Dispatched to teammate w25 in worktree .dsh/gitworktree/w25 (branch wave10/t25, from main 3831fb2)."}]}, {"id": "T-001#B-002", "title": "review and merge ticket 25", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review the worktree diff against the ticket and the design doc, run the full suite in the worktree, check no real ledger was touched, then commit on wave10/t25 and merge into main with the wave 9 style merge commit. Record review findings as a note.", "input": "", "output": "", "command": "git -C .dsh/gitworktree/w25 diff main --stat", "done_when": ["Diff reviewed line by line; full suite green in the worktree; no real ledger touched; branch committed and merged to main; plans/ updated."], "artifacts": [], "deps": ["T-001#B-001"], "review_of": "T-001#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:19+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-002", "title": "26 lineage true on ref fields + tm lineage", "owner": "w26", "status": "pending", "deps": [], "blocks": [{"id": "T-002#B-001", "title": "implement ticket 26 in worktree w26", "kind": "impl", "status": "running", "owner": "w26", "doc": "Read docs/tickets/26-tm-lineage.md and docs/preset-parts.md section 5. Work only in the worktree .dsh/gitworktree/w26 (branch wave10/t26, own .venv). Real dolt, no mocks, no commit, leave the tree dirty. Read whatever count columns v_stock_<kind> has through one small accessor so ticket 25 only changes the accessor. Record where the lineage flags were added.", "input": "", "output": "", "command": "cd .dsh/gitworktree/w26 && uv sync -q && .venv/bin/python -m pytest -q -n 4", "done_when": ["Every item of ticket 26 Verify passes: construct->plasmid->bacterial stock->child stock->source aliquot chain and cell_line parental line show in tm lineage; --up/--down/--depth trim; diamond prints see-above once and JSON lists the node once; --format dot parses with dot -Tsvg if installed; lineage: true on a string field fails to load; no SPEC_VERSION bump."], "artifacts": [], "deps": [], "review_of": "", "feedback": "", "exec": {"by": "w26", "started": "2026-10-28T15:37:17+08:00"}, "status_since": "2026-10-28T15:37:17+08:00", "runs": [{"at": "2026-10-28T15:37:17+08:00", "by": "w26", "from": "pending", "to": "running", "note": "Dispatched to teammate w26 in worktree .dsh/gitworktree/w26 (branch wave10/t26, from main 3831fb2)."}]}, {"id": "T-002#B-002", "title": "review and merge ticket 26", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review the worktree diff against the ticket and design, run the full suite, check the lineage accessor is the single place that reads stock counts, then commit on wave10/t26 and merge into main. Record findings as a note.", "input": "", "output": "", "command": "git -C .dsh/gitworktree/w26 diff main --stat", "done_when": ["Diff reviewed; full suite green; accessor is the only count reader; no real ledger touched; branch committed and merged to main."], "artifacts": [], "deps": ["T-002#B-001"], "review_of": "T-002#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:28+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-003", "title": "27 split molbio into parts (molbio 2 to 3)", "owner": "w27", "status": "pending", "deps": [], "blocks": [{"id": "T-003#B-001", "title": "implement ticket 27 in worktree w27", "kind": "impl", "status": "pending", "owner": "w27", "doc": "Read docs/tickets/27-molbio-into-parts.md and docs/preset-parts.md section 2. Work only in the worktree .dsh/gitworktree/w27 (branch wave10/t27, own .venv). Decide and record: which part includes which for plasmid.construct -> protein_construct, and where sequence_fields lives. migration/presets/molbio/2-to-3 must add oligo tables, replace preset copies, bump preset_versions. Check the zsqlab10 path only on a copy (spec/3-to-4 then molbio 2-to-3). No commit, leave the tree dirty.", "input": "", "output": "", "command": "cd .dsh/gitworktree/w27 && uv sync -q && .venv/bin/python -m pytest -q -n 4", "done_when": ["Ticket 27 Verify passes: tm init --preset molbio gives the same kinds as v2 plus entity_oligo and stock_oligo_stock, tm check clean, preset_versions lists molbio 3 plus each part; [molbio, cellbio] loads once ticket 28 exists (until then the test-only preset with cell_culture); a molbio-v2 fixture with data migrates to v3 keeping every row and tm check clean."], "artifacts": [], "deps": ["T-001#B-002", "T-002#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:37+08:00", "runs": []}, {"id": "T-003#B-002", "title": "review and merge ticket 27", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review diff against ticket and design, verify no table or kind rename slipped in, run the full suite, then commit on wave10/t27 and merge into main. Record the two open choices the agent made and whether they match the preferred options.", "input": "", "output": "", "command": "git -C .dsh/gitworktree/w27 diff main --stat", "done_when": ["Diff reviewed; no unintended renames; full suite green; open choices recorded; branch committed and merged to main."], "artifacts": [], "deps": ["T-003#B-001"], "review_of": "T-003#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:37+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-004", "title": "28 cellbio bundle (immuno, viral_vectors, biosamples)", "owner": "w28", "status": "pending", "deps": [], "blocks": [{"id": "T-004#B-001", "title": "implement ticket 28 in worktree w28", "kind": "impl", "status": "pending", "owner": "w28", "doc": "Read docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv). First check what the loader does with an entity_kinds entry that is not loaded, then take the smallest option, preferring the split cell_biosample/animal_biosample with no core change; record the choice in the part description and presets/README.md. No commit, leave the tree dirty.", "input": "", "output": "", "command": "cd .dsh/gitworktree/w28 && uv sync -q && .venv/bin/python -m pytest -q -n 4", "done_when": ["Ticket 28 Verify passes: tm init --preset cellbio creates the expected tables and passes tm check; tm lineage <virus> shows no payload edge while <cell_line> shows parental; presets [molbio, cellbio] loads with shared parts loaded once and tm check clean; a biosample from a cell vial aliquot appears under it in tm lineage."], "artifacts": [], "deps": ["T-003#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:37+08:00", "runs": []}, {"id": "T-004#B-002", "title": "review and merge ticket 28", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main.", "input": "", "output": "", "command": "git -C .dsh/gitworktree/w28 diff main --stat", "done_when": ["Diff reviewed; entity_kinds choice documented and minimal; full suite green; branch committed and merged to main."], "artifacts": [], "deps": ["T-004#B-001"], "review_of": "T-004#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:37+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-005", "title": "29 angenet bundle (drosophila, c_elegans, zebrafish, mouse)", "owner": "w29", "status": "pending", "deps": [], "blocks": [{"id": "T-005#B-001", "title": "implement ticket 29 in worktree w29", "kind": "impl", "status": "pending", "owner": "w29", "doc": "Read docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt biosamples to ticket 28's choice. No core change: if one turns out necessary, stop and report instead of adding it. Document the litter recipe with exact tm commands in presets/README.md and skills/tetramark/SKILL.md. No commit, leave the tree dirty.", "input": "", "output": "", "command": "cd .dsh/gitworktree/w29 && uv sync -q && .venv/bin/python -m pytest -q -n 4", "done_when": ["Ticket 29 Verify passes through the CLI: tm init --preset angenet passes tm check; the mouse strain -> cohort -> litter -> genotyping split chain works with dam/sire refs and tm lineage up/down reaches both parents; alive -> euthanized allowed, euthanized -> alive refused without --force; fly cross vial with a virgins aliquot; worm_cryo stored -> thawed then refused; v_stock_mouse_cohort drops aliquots_in_stock as mice are euthanized."], "artifacts": [], "deps": ["T-004#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:45+08:00", "runs": []}, {"id": "T-005#B-002", "title": "review and merge ticket 29", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review the diff, check no core change was needed, run the full suite, then commit on wave10/t29 and merge into main.", "input": "", "output": "", "command": "git -C .dsh/gitworktree/w29 diff main --stat", "done_when": ["Diff reviewed; no core change; full suite green; branch committed and merged to main."], "artifacts": [], "deps": ["T-005#B-001"], "review_of": "T-005#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:45+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-006", "title": "wave 10 close: acceptance, release, handover", "owner": "lead", "status": "pending", "deps": [], "blocks": [{"id": "T-006#B-001", "title": "wave 10 acceptance on main", "kind": "impl", "status": "pending", "owner": "lead", "doc": "Lead: on main after all five merges, run the full suite, tm init for molbio, cellbio, angenet and [molbio, cellbio] and tm check each; confirm docs/spec.md, README and skills/tetramark/SKILL.md match the shipped behaviour and migration/README explains the preset parts.", "input": "", "output": "", "command": ".venv/bin/python -m pytest -q -n 6", "done_when": ["Full suite green on main; the four tm init combinations pass tm check; docs and skill agree with the code; no leftover temporary files or half-applied migrations in the repo."], "artifacts": [], "deps": ["T-005#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:46+08:00", "runs": []}, {"id": "T-006#B-002", "title": "release 0.3.0 and wave 10 handover", "kind": "impl", "status": "pending", "owner": "lead", "doc": "Lead: bump the version, write docs/tickets/HANDOVER-wave11.md (or a wave 10 closing note), commit plans/ and the wave, push nothing unless asked.", "input": "", "output": "", "command": "git status --short && git log --oneline -3", "done_when": ["Version bumped and committed with the wave 10 merge; handover names what shipped, the open choices made, and the zsqlab10 follow-up as a proposal only."], "artifacts": [], "deps": ["T-006#B-001"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:46+08:00", "runs": []}, {"id": "T-006#B-003", "title": "close git-bug 0a9acec and ask about zsqlab10", "kind": "decision", "status": "blocked", "owner": "maxim", "doc": "Needs the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (proposal only until the user agrees).", "input": "", "output": "", "command": "git-bug bug show 0a9acec", "done_when": ["git-bug 0a9acec closed with the release pointer, and the user has answered the zsqlab10 follow-up question."], "artifacts": [], "deps": ["T-006#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-28T15:33:46+08:00", "runs": []}], "note": "", "exec": {}}], "log": [{"at": "2026-10-28T15:33:00+08:00", "actor": "agent", "kind": "created", "text": "建立 plan：Wave 10: preset parts, status sets, lineage (tickets 25-29)"}, {"at": "2026-10-28T15:33:10+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-001「25 status sets, transition rules, in-stock views (spec 4)」", "ref": "T-001"}, {"at": "2026-10-28T15:33:10+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-002「26 lineage true on ref fields + tm lineage」", "ref": "T-002"}, {"at": "2026-10-28T15:33:11+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-003「27 split molbio into parts (molbio 2 to 3)」", "ref": "T-003"}, {"at": "2026-10-28T15:33:11+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-004「28 cellbio bundle (immuno, viral_vectors, biosamples)」", "ref": "T-004"}, {"at": "2026-10-28T15:33:11+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-005「29 angenet bundle (drosophila, c_elegans, zebrafish, mouse)」", "ref": "T-005"}, {"at": "2026-10-28T15:33:11+08:00", "actor": "agent", "kind": "task", "text": "新增任务 T-006「wave 10 close: acceptance, release, handover」", "ref": "T-006"}, {"at": "2026-10-28T15:33:19+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-001#B-001「implement ticket 25 in worktree w25」", "ref": "T-001#B-001"}, {"at": "2026-10-28T15:33:19+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-001#B-002「review and merge ticket 25」", "ref": "T-001#B-002"}, {"at": "2026-10-28T15:33:27+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-002#B-001「implement ticket 26 in worktree w26」", "ref": "T-002#B-001"}, {"at": "2026-10-28T15:33:28+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-002#B-002「review and merge ticket 26」", "ref": "T-002#B-002"}, {"at": "2026-10-28T15:33:37+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-003#B-001「implement ticket 27 in worktree w27」", "ref": "T-003#B-001"}, {"at": "2026-10-28T15:33:37+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-003#B-002「review and merge ticket 27」", "ref": "T-003#B-002"}, {"at": "2026-10-28T15:33:37+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-004#B-001「implement ticket 28 in worktree w28」", "ref": "T-004#B-001"}, {"at": "2026-10-28T15:33:37+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-004#B-002「review and merge ticket 28」", "ref": "T-004#B-002"}, {"at": "2026-10-28T15:33:45+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-005#B-001「implement ticket 29 in worktree w29」", "ref": "T-005#B-001"}, {"at": "2026-10-28T15:33:45+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-005#B-002「review and merge ticket 29」", "ref": "T-005#B-002"}, {"at": "2026-10-28T15:33:46+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-006#B-001「wave 10 acceptance on main」", "ref": "T-006#B-001"}, {"at": "2026-10-28T15:33:46+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-006#B-002「release 0.3.0 and wave 10 handover」", "ref": "T-006#B-002"}, {"at": "2026-10-28T15:33:46+08:00", "actor": "agent", "kind": "block", "text": "新增块 T-006#B-003「close git-bug 0a9acec and ask about zsqlab10」", "ref": "T-006#B-003"}, {"at": "2026-10-28T15:33:55+08:00", "actor": "agent", "kind": "block", "text": "T-001#B-001 改了 命令", "ref": "T-001#B-001"}, {"at": "2026-10-28T15:33:55+08:00", "actor": "agent", "kind": "block", "text": "T-002#B-001 改了 命令", "ref": "T-002#B-001"}, {"at": "2026-10-28T15:33:55+08:00", "actor": "agent", "kind": "block", "text": "T-003#B-001 改了 命令", "ref": "T-003#B-001"}, {"at": "2026-10-28T15:33:55+08:00", "actor": "agent", "kind": "block", "text": "T-004#B-001 改了 命令", "ref": "T-004#B-001"}, {"at": "2026-10-28T15:33:55+08:00", "actor": "agent", "kind": "block", "text": "T-005#B-001 改了 命令", "ref": "T-005#B-001"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-001#B-002 改了 命令", "ref": "T-001#B-002"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-002#B-002 改了 命令", "ref": "T-002#B-002"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-003#B-002 改了 命令", "ref": "T-003#B-002"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-004#B-002 改了 命令", "ref": "T-004#B-002"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-005#B-002 改了 命令", "ref": "T-005#B-002"}, {"at": "2026-10-28T15:33:56+08:00", "actor": "agent", "kind": "block", "text": "T-006#B-001 改了 命令", "ref": "T-006#B-001"}, {"at": "2026-10-28T15:33:57+08:00", "actor": "agent", "kind": "block", "text": "T-006#B-002 改了 命令", "ref": "T-006#B-002"}, {"at": "2026-10-28T15:33:57+08:00", "actor": "agent", "kind": "block", "text": "T-006#B-003 改了 命令", "ref": "T-006#B-003"}, {"at": "2026-10-28T15:34:06+08:00", "actor": "agent", "kind": "block", "text": "T-006#B-003 改了 命令", "ref": "T-006#B-003"}, {"at": "2026-10-28T15:37:17+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-001: pending → running（Dispatched to teammate w25 in worktree .dsh/gitworktree/w25 (branch wave10/t25, from main 3831fb2).）", "ref": "T-001#B-001"}, {"at": "2026-10-28T15:37:17+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-001: pending → running（Dispatched to teammate w26 in worktree .dsh/gitworktree/w26 (branch wave10/t26, from main 3831fb2).）", "ref": "T-002#B-001"}, {"at": "2026-10-28T15:37:17+08:00", "actor": "lead", "kind": "summary", "text": "Lead took over wave 10 at 15:30. Evidence: main = 3831fb2 (wave 9 merged, v0.2.0); docs/preset-parts.md + tickets 25-29 committed; no implementation. Worktrees w25/w26 created from main and venvs synced; tickets 25 and 26 dispatched in parallel. Another DSH session is still committing the last wave-9 docs in the parent checkout; its run was left alone.", "ref": ""}], "rev": "5b06f5a1d91e"};
+// 视图渲染失败时把原因显示出来，而不是留一片空白
+function boom(where, e){
+  const el = document.getElementById('graph') || document.body;
+  el.insertAdjacentHTML('afterbegin',
+    `<pre style="color:var(--blocked);white-space:pre-wrap;padding:8px">渲染失败 @${where}: ${e && (e.stack||e.message||e)}</pre>`);
+  console.error(where, e);
+}
+const view = (name, fn) => { try { fn(); } catch (e) { boom(name, e); } };
+// 图例顺序 = 一个块要走的流程：待批准(要人点头) → 等前置 → 待认领 → 已认领 → 进行中 → 待评审 → 已完成，旁支（已取消）放最后
+/* 状态色**只从共用主题取**（theme.css 里的 --blocked / --running / …）：
+   这里再写一遍十六进制，两个页面迟早各长一套颜色。键序 = 图例顺序 = 一个块的一生。 */
+const C = {blocked:'var(--blocked)',waiting:'var(--waiting)',ready:'var(--ready)',claimed:'var(--claimed)',
+           running:'var(--running)',review:'var(--review)',done:'var(--done)',cancelled:'var(--cancelled)'};
+const ZH = {blocked:'待批准',done:'已完成',running:'进行中',claimed:'已认领',
+            review:'待评审',ready:'待认领',waiting:'等前置',pending:'待排',
+            cancelled:'已取消'};
+const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* 块文档：``` 围起来的分成等宽 <pre>（保留空格，能画目录树/命令块），其余仍按 \n 换行 */
+const docHtml = d => String(d??'').split('```')
+  .map((s,i) => i%2
+     ? `<pre class="cb">${esc(s.replace(/^\n/,'').replace(/\n$/,''))}</pre>`
+     : (s.trim() ? `<p class="doc">${esc(s.replace(/^\n/,'').replace(/\n$/,'')).replace(/\n/g,'<br>')}</p>` : ''))
+  .join('');
+
+let BLOCKS = [], TASKS = new Map();
+PLAN.tasks.forEach(t => { TASKS.set(t.id, t); t.blocks.forEach(b => BLOCKS.push(b)); });
+const byId = id => BLOCKS.find(b => b.id === id);
+const taskOf = b => TASKS.get(b.id.split('#')[0]);
+// 返工次数 = 被打回几次。打回 = 从「待评审」走出去、且不是通过（review → claimed/running/blocked）。
+// 块本身没变、owner 也没变，所以它不是新节点：状态上就是回到「已认领」再重走一遍。
+// （老的 plan.json 里可能还留着 to === 'needs_changes' 的 run，一并算。）
+const reworkCount = b => (b.runs || []).filter(r =>
+  r.to === 'needs_changes' || (r.from === 'review' && r.to !== 'done')).length;
+
+// 块的实际前置 = 自身 deps ∪ 所属任务的任务级 deps 里的每一个块（与 plan.py 的 block_deps 一致）
+function depBlocks(b){
+  const out = new Set(b.deps || []);
+  if (b.review_of) out.add(b.review_of);
+  const t = taskOf(b);
+  ((t && t.deps) || []).forEach(tid => {
+    const dt = TASKS.get(tid); if (!dt) return;
+    dt.blocks.forEach(x => { if (x.status !== 'cancelled') out.add(x.id); });
+  });
+  return [...out].filter(id => byId(id));
+}
+function eff(b){
+  if (b.status !== 'pending') return b.status;
+  for (const d of depBlocks(b)){
+    const db = byId(d);
+    if (!db || db.status !== 'done') return 'waiting';
+  }
+  // 待认领 = 依赖就绪 **且没人接**；有 owner 的块是「已认领」（有人接了、还没开干）
+  return b.owner ? 'claimed' : 'ready';
+}
+// 画边用的前置：显式 deps + review_of + 任务级交接（只从本任务首块引到前置任务的收尾块）
+function edgeDeps(b){
+  const out = new Set(b.deps || []);
+  if (b.review_of) out.add(b.review_of);
+  const t = taskOf(b);
+  if (t){
+    const live = t.blocks.filter(x => x.status !== 'cancelled');
+    if (live.length && live[0].id === b.id){
+      (t.deps || []).forEach(tid => {
+        const dt = TASKS.get(tid); if (!dt) return;
+        const dl = dt.blocks.filter(x => x.status !== 'cancelled');
+        if (dl.length) out.add(dl[dl.length - 1].id);
+      });
+    }
+  }
+  return [...out].filter(id => byId(id));
+}
+function depth(visible){
+  // 只在"可见子图"里算深度：被隐藏（已完成）的前置当作已折叠，否则它们会把可见节点推到屏幕外
+  const D = {}, seen = new Set();
+  const go = id => {
+    if (id in D) return D[id];
+    const b = byId(id); if (!b || seen.has(id)) return 0;
+    seen.add(id);
+    let d = 0;
+    for (const dep of depBlocks(b)) if (!visible || visible.has(dep)) d = Math.max(d, go(dep)+1);
+    seen.delete(id);
+    return D[id] = d;
+  };
+  BLOCKS.forEach(b => go(b.id));
+  return D;
+}
+
+function header(){
+  const live = BLOCKS.filter(b => b.status !== 'cancelled');
+  const done = live.filter(b => b.status === 'done').length;
+  const pct = live.length ? Math.round(100*done/live.length) : 0;
+  document.getElementById('title').textContent = PLAN.title;
+  document.getElementById('goal').textContent = PLAN.goal || '';
+  document.getElementById('prog').textContent = `进度 ${done}/${live.length} 块 · ${pct}%`;
+  document.getElementById('status').textContent = `状态 ${PLAN.status}`;
+  document.getElementById('updated').textContent = (PLAN.updated_at||'').slice(0,16).replace('T',' ');
+  document.getElementById('who').textContent =
+    (PLAN.participants||[]).map(p => `${p.label}(${p.kind})`).join(' · ');
+  document.getElementById('slug').textContent = PLAN.slug;
+  document.getElementById('fill').style.width = pct + '%';
+  document.title = `PLAN · ${PLAN.title}`;
+}
+
+function nownext(){
+  const order = {blocked:0, review:1, running:2, claimed:3, ready:4};
+  const rows = BLOCKS.map(b => [eff(b), b]).filter(([e,b]) => e in order)
+    .sort((a,b) => (order[a[0]]-order[b[0]]) || a[1].id.localeCompare(b[1].id));
+  const el = document.getElementById('nownext');
+  if (!rows.length){ el.innerHTML = '<span class="sub">没有在途工作。</span>'; return; }
+  const CAP = 12, shown = rows.slice(0, CAP);
+  el.innerHTML = shown.map(([e,b]) => `
+    <div class="nowcard" data-id="${esc(b.id)}" style="border-left:4px solid ${C[e]}" title="点开看详情">
+      <b>${esc(b.title)}</b>
+      <span class="sub">${esc(b.id)} · ${ZH[e]||e} · @${esc(b.owner||'未指派')}${
+        (b.exec && b.exec.by) ? ` · 在做 @${esc(b.exec.by)}` : ''}</span>
+      ${b.feedback ? `<span class="sub" style="color:${C.blocked}">⚠ ${esc(b.feedback)}</span>`:''}
+    </div>`).join('')
+    + (rows.length > shown.length
+        ? `<div class="sub" style="padding:4px 0">…… 另有 ${rows.length - shown.length} 条同类块（多为同一个 owner 的待批准项）—— 去下面的任务图点节点看全部。</div>`
+        : '');
+  // 卡片本身也能点开详情（原来只能去任务图里点节点）
+  el.querySelectorAll('.nowcard').forEach(c =>
+    c.onclick = () => detail(byId(c.dataset.id), {reveal:true}));
+}
+
+function graph(){
+  const hideDone = document.getElementById('hidedone').checked;
+  const shown = BLOCKS.filter(b => !(hideDone && b.status === 'done'));
+  const visible = new Set(shown.map(b => b.id));
+  const H = 88, LAB = 24, GY = 26, PAD = 18;
+  const g = document.getElementById('graph');
+  [...g.querySelectorAll('.node,.lane')].forEach(n => n.remove());
+  const svg = document.getElementById('edges');
+  const pos = {};
+  const lanes = PLAN.tasks
+    .map(t => ({t, blocks: t.blocks.filter(b => visible.has(b.id))}))
+    .filter(l => l.blocks.length);
+
+  // 节点宽度与「一行几块」都按 #graph 的实际宽度算（窗口一改就重算，见文件末尾的 resize）：
+  // 先取宽度放得下的列数（列宽不低于 WMIN），再把剩余宽度摊到每列 —— 宽屏上块更宽、一行放得更多，
+  // 不再无故折到第二行；列数不超过「块最多的那条泳道」，多出来的列本来也是空的。
+  const mostBlocks = lanes.reduce((m, l) => Math.max(m, l.blocks.length), 1);
+  const avail = Math.max(180, g.clientWidth);
+  const WMIN = 216, WMAX = 380, GXMIN = 56, GAPCAP = 120;
+  const byWidth = Math.floor((avail - 2 * PAD + GXMIN) / (WMIN + GXMIN));
+  const PER = Math.max(1, Math.min(mostBlocks, byWidth));
+  const W = Math.round(Math.min(WMAX, Math.max(WMIN, (avail - 2 * PAD - (PER - 1) * GXMIN) / PER)));
+  // 宽度被 WMAX/WMIN 夹住后剩下的空间摊到列间距上（有上限，别把边拉成一条长线）
+  const GX = PER > 1
+    ? Math.min(GAPCAP, Math.max(GXMIN, Math.floor((avail - 2 * PAD - PER * W) / (PER - 1))))
+    : GXMIN;
+  let maxX = W + PAD, y = PAD;
+
+  lanes.forEach(l => {
+    const sts = l.blocks.map(eff);
+    let st = 'waiting';
+    if (sts.every(s => s === 'done')) st = 'done';
+    else if (sts.some(s => ['running','claimed','review'].includes(s))) st = 'running';
+    else if (sts.some(s => s === 'blocked')) st = 'blocked';
+    else if (sts.some(s => s === 'ready')) st = 'ready';
+    const lab = document.createElement('div');
+    lab.className = 'lane';
+    lab.style.cssText = `left:${PAD}px;top:${y}px;right:${PAD}px`;
+    lab.innerHTML = `<i style="background:${C[st]||C.waiting}"></i>
+      <b>${esc(l.t.id)} ${esc(l.t.title)}</b>
+      <span class="lz">${ZH[st]||st} · @${esc(l.t.owner || '—')}</span>`;
+    g.appendChild(lab);
+    const top = y + LAB;
+    // 一行最多 PER 块（PER 由上面的可用宽度算出），放不下的才折到下一行
+    let rowsN = 1;
+    l.blocks.forEach((b, j) => {
+      const row = Math.floor(j / PER), colIdx = j % PER;
+      rowsN = Math.max(rowsN, row + 1);
+      const x = PAD + colIdx * (W + GX);
+      const ny = top + row * (H + GY);
+      pos[b.id] = {x, y: ny};
+      const e = eff(b), rw = reworkCount(b), n = document.createElement('div');
+      n.className = 'node ' + e + (b.status === 'done' ? ' done' : '');
+      n.dataset.id = b.id;
+      n.style.cssText = `left:${x}px;top:${ny}px;width:${W}px;border-left-color:${C[e]||C.waiting}`;
+      // 「认领的人」与「在做的人」可能不是同一个（记录员认领、子代理在做）：
+      // 一样就写 @A ⚙，不一样写 @A→@B；完整线程路径放在 title 里（悬停可见）
+      const ex = b.exec || {};
+      const who = !ex.by ? esc(b.owner || '—')
+        : (ex.by === b.owner ? `${esc(b.owner || '—')} ⚙` : `${esc(b.owner || '—')}→${esc(ex.by)}`);
+      n.innerHTML = `<div class="id">${esc(b.id)} · ${esc(b.kind)}</div>
+        <div class="ttl">${esc(b.title)}</div>
+        <div class="own"><span>${ZH[e]||e}${rw ? ` ⟲${rw}` : ''}</span><span>@${who}</span></div>`;
+      if (ex.by){
+        n.title = `在做 @${ex.by}`
+          + (ex.delegation ? ` · 线程 ${ex.delegation}#${ex.task_index ?? 0}` : '')
+          + (ex.transcript ? `\n${ex.transcript}` : '');
+      }
+      n.onclick = () => detail(b, {reveal:false});
+      g.appendChild(n);
+      maxX = Math.max(maxX, x + W);
+    });
+    y = top + rowsN * (H + GY);
+  });
+
+  const maxY = y - GY + PAD;
+  svg.setAttribute('width', maxX + PAD); svg.setAttribute('height', maxY);
+  svg.setAttribute('viewBox', `0 0 ${maxX + PAD} ${maxY}`);
+  svg.style.width = (maxX + PAD) + 'px'; svg.style.height = maxY + 'px';
+  let paths = '';
+  BLOCKS.forEach(b => {
+    if (!pos[b.id]) return;
+    edgeDeps(b).forEach(d => {
+      if (!pos[d]) return;
+      const a = pos[d], z = pos[b.id];
+      const x1 = a.x + W, y1 = a.y + H/2, x2 = z.x, y2 = z.y + H/2;
+      paths += `<path d="M${x1},${y1} C${x1+40},${y1} ${x2-40},${y2} ${x2},${y2}"
+        fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="1.6"/>`;
+    });
+  });
+  svg.innerHTML = `<g style="color:var(--ink)">${paths}</g>`;
+  g.style.minHeight = (maxY + 10) + 'px';
+  if (CUR) markSel(CUR.id);            // 重画后恢复选中高亮
+}
+
+let CUR = null;                        // 当前在详情里看的块
+// 初始提示就是「清空后」的样子：直接取 DOM 里那份，别在 JS 里再抄一遍文案
+// （innerHTML 这里不是外部输入：取的就是本文件 <div id="detail"> 里那段静态提示，写回去也是同一段）
+const DETAIL_HINT = document.getElementById('detail').innerHTML;
+function markSel(bid){
+  document.querySelectorAll('.node,.nowcard').forEach(m =>
+    m.classList.toggle('sel', m.dataset.id === bid));
+}
+function clearDetail(){                // 只清内容：详情栏常驻，所以布局一点都没动（不要再重排画布）
+  document.getElementById('detail').innerHTML = DETAIL_HINT;
+  CUR = null; markSel(null);
+}
+function detail(b, opts){
+  if (!b) return;
+  CUR = b;
+  const e = eff(b), rw = reworkCount(b), t = TASKS.get(b.id.split('#')[0]);
+  const ex = b.exec || {};
+  document.getElementById('detail').innerHTML = `
+    <h3>${esc(b.title)}</h3>
+    <div class="kv"><span class="pill" style="background:${C[e]||C.waiting}">${ZH[e]||e}</span>
+      &nbsp;<code>${esc(b.id)}</code> · ${esc(b.kind)} · 认领 @${esc(b.owner||'未指派')}</div>
+    ${ex.by ? `<b>谁在做</b>
+      <div class="kv">@${esc(ex.by)}${ex.delegation ? ` · 线程 <code>${esc(ex.delegation)}#${ex.task_index ?? 0}</code>` : ''}${
+        ex.started ? ` · 起于 ${esc((ex.started||'').slice(0,16).replace('T',' '))}` : ''}</div>
+      ${ex.transcript ? `<div class="kv"><a href="file://${esc(ex.transcript)}">${esc(ex.transcript)}</a></div>` : ''}
+      ${ex.note ? `<div class="kv">${esc(ex.note)}</div>` : ''}` : ''}
+    ${b.doc ? docHtml(b.doc) : ''}
+    ${(b.done_when||[]).length ? `<b>完成判据</b><ul>${b.done_when.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
+    ${(b.deps||[]).length ? `<b>依赖</b><div class="kv">${b.deps.map(esc).join(' · ')}</div>`:''}
+    ${b.review_of ? `<b>评审对象</b><div class="kv">${esc(b.review_of)}</div>`:''}
+    ${b.feedback ? `<b style="color:${C.blocked}">评审意见</b><div class="kv">${esc(b.feedback)}</div>`:''}
+    ${rw ? `<b>返工</b><div class="kv">⟲ 被打回 ${rw} 次（待评审 →（打回）已认领 →（重做）进行中 →（再送审）待评审，块还是原 owner 的，所以不产生新节点）</div>`:''}
+    ${(b.artifacts||[]).length ? `<b>产物</b><ul>${b.artifacts.map(a=>`<li><code>${esc(a)}</code></li>`).join('')}</ul>`:''}
+    ${t ? `<div class="kv">所属任务：${esc(t.id)} ${esc(t.title)}（${ZH[t.status]||t.status||''}）</div>`:''}
+    ${(b.runs||[]).length ? `<b>run 记录</b>${b.runs.slice().reverse().map(r=>
+        `<div class="run">${esc((r.at||'').slice(0,16).replace('T',' '))} ${esc(r.by||'')}
+         ${esc(r.from||'')}→${esc(r.to||'')}<br>${esc(r.note||'')}</div>`).join('')}`:''}
+  `;
+  markSel(b.id);
+  if (opts && opts.reveal){
+    const n = [...document.querySelectorAll('.node')].find(m => m.dataset.id === b.id);
+    if (n) n.scrollIntoView({block:'nearest', behavior:'smooth'});
+  }
+}
+
+function legend(){
+  // 已取消与等前置同色：图例里用「空心 + 虚线」方框区分，不靠颜色
+  document.getElementById('legend').innerHTML =
+    Object.entries(C).map(([k,v]) => k === 'cancelled'
+      ? `<span><i style="background:transparent;border:1.5px dashed ${v}"></i>${ZH[k]||k}</span>`
+      : `<span><i style="background:${v}"></i>${ZH[k]||k}</span>`).join('')
+    + `<span style="opacity:.85">节点右下 <b>@A→@B</b> = 认领的人 → 此刻在做的人（同一个只写 <b>@A ⚙</b>）；
+       悬停看子代理线程，详情栏里有转录文件的路径</span>`;
+}
+
+function journal(){
+  const el = document.getElementById('journal');
+  const logs = (PLAN.log||[]).slice().reverse();
+  el.innerHTML = logs.length ? logs.map(e =>
+      `<div><b>${esc(e.actor)}</b> [${esc(e.kind)}] ${esc(e.text)}
+       <span style="float:right">${esc((e.at||'').slice(5,16).replace('T',' '))}</span></div>`).join('')
+    : '<div>（空）</div>';
+}
+
+// ── 详情栏：常驻右侧（不是点开才出现，所以点节点不会改动页面布局）；一条分隔线同时改
+//    「详情栏宽」与「画布宽」（画布宽 = 窗口宽 − 详情栏宽，body 让出同样的 padding-right）
+//    必须放在下面 view('graph', …) 之前：先把宽度（含 localStorage 里记着的）定下来，
+//    否则首帧会按默认宽排一遍、再按记住的宽排第二遍（白白跳一次）
+const DWKEY = 'plan.detailw.' + (PLAN.slug || '');
+const DWMIN = 240, CANVASMIN = 360;    // 栏最小宽 / 画布最小宽
+let detailW = null;                    // null = 用 CSS 里的默认宽度（clamp，随窗口伸缩）
+let redrawRAF = 0;
+function scheduleRedraw(){             // 一帧内多次触发只重排一次
+  if (redrawRAF) return;
+  redrawRAF = requestAnimationFrame(() => { redrawRAF = 0; view('graph', graph); });
+}
+function setDetailW(px, redraw){
+  detailW = Math.max(DWMIN, Math.min(Math.round(px), Math.max(DWMIN, window.innerWidth - CANVASMIN)));
+  document.documentElement.style.setProperty('--detail-w', detailW + 'px');
+  if (redraw) scheduleRedraw();
+}
+try { const s = localStorage.getItem(DWKEY); if (s) setDetailW(parseFloat(s), false); } catch(e){}
+(function(){
+  const sp = document.getElementById('splitter');
+  const panel = document.getElementById('detailpanel');
+  let dragging = false;
+  const curW = () => (detailW != null ? detailW : panel.getBoundingClientRect().width);
+  sp.addEventListener('mousedown', ev => {
+    dragging = true; sp.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    ev.preventDefault();
+  });
+  window.addEventListener('mousemove', ev => {
+    if (dragging) setDetailW(window.innerWidth - ev.clientX, true);   // 分隔线跟着指针，画布跟着重排
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false; sp.classList.remove('dragging'); document.body.style.userSelect = '';
+    try { localStorage.setItem(DWKEY, String(detailW)); } catch(e){}
+    scheduleRedraw();
+  });
+  // 焦点在分隔线上时左右方向键微调（左 = 变宽）
+  sp.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    setDetailW(curW() + (ev.key === 'ArrowLeft' ? 24 : -24), true);
+    try { localStorage.setItem(DWKEY, String(detailW)); } catch(e){}
+  });
+})();
+
+view('header', header); view('nownext', nownext); view('legend', legend);
+view('graph', graph); view('journal', journal);
+document.getElementById('detailclear').onclick = clearDetail;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') clearDetail(); });
+document.getElementById('hidedone').onchange = () => view('graph', graph);
+// 窗口尺寸变了：先把详情栏宽度夹进新窗口，再按新宽度重排；拖动窗口会连发 resize，用 rAF 合帧
+window.addEventListener('resize', () => {
+  if (detailW != null) setDetailW(detailW, false);
+  scheduleRedraw();
+});
+</script>
+</body>
+</html>
