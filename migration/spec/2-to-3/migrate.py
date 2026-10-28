@@ -1,6 +1,6 @@
 """spec 2 -> 3: drop the per-stock-kind aliquot tables, recreate the views.
 
-Spec 3 (0.2.0, ticket 23) settles git-bug ``2f6a0d5`` by making the model
+Spec 3 (0.2.0) settles git-bug ``2f6a0d5`` by making the model
 explicit: an **aliquot is a generic tube** (location, quantity, unit, status,
 label, notes) and every property of the material belongs on the **stock kind**.
 The generated shape therefore changes twice:
@@ -99,7 +99,7 @@ def populated_extension_columns(ledger: Ledger) -> dict[str, dict[str, list[str]
     An empty extension table, or one whose every property column is NULL, has
     nothing to lose and is dropped.  A table with a value is a different
     material property recorded per tube, which spec 3 cannot store: the step
-    must refuse and name it (spec 3 decisions, ticket 23).
+    must refuse and name it (spec 3 decisions).
     """
     found: dict[str, dict[str, list[str]]] = {}
     for table in _extension_tables(ledger):

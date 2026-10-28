@@ -1,7 +1,6 @@
-# Test Harness v2 — Server-Backed Fixtures (route C)
+# Test harness — server-backed pytest fixtures
 
-Status: **implemented (tickets 15–19)** · Owner: Lead · Depends on: current test suite (`dolt 2.3.5`) ·
-Related measurement report: `docs/test-runtime-optimization.md` (route C, §2.4).
+Status: **implemented** · Depends on: current test suite (`dolt 2.3.5`). Measurement history: §9b.
 
 ## 1. Problem
 
@@ -33,8 +32,8 @@ Non-goals
 - Removing `EmbeddedDriver` or changing its public contract.
 - Reworking the CLI UX or output formats.
 - CI configuration, Windows support, or dolt version bumps.
-- Product performance work from `docs/test-runtime-optimization.md` P0-1/P0-3/P1-* (they are
-  complementary; this spec only changes the test harness + the small helper it needs).
+- Product performance work (separate from the test-harness change, which only covers the harness and
+  the small helper it needs).
 
 ## 3. Measured inputs
 
