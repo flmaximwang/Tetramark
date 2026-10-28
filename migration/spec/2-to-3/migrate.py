@@ -42,9 +42,12 @@ from tetramark.migrate import MigrationStep, main
 from tetramark.schema.ddl import view_statements
 from tetramark.schema.model import EffectiveSchema
 
-#: Per-stock-kind extension tables were named ``aliquot_<stockkind>``; the two
-#: core tables with the same prefix are not extensions.  The LIKE pattern
-#: escapes the ``_`` so ``aliquot_`` is a literal prefix, not a wildcard.
+#: Per-stock-kind extension tables were named ``aliquot_<stockkind>``.  On
+#: Dolt 2.3.5 LIKE does not honour the backslash escape (``\_`` is a
+#: single-character wildcard, not a literal underscore), so this pattern also
+#: matches core tables such as ``aliquot_event``; the explicit
+#: CORE_ALIQUOT_TABLES exclusion below is what keeps the filter correct, not the
+#: escape (verified on the ticket-24 migration, see the step README).
 _EXTENSION_LIKE = "aliquot" + r"\_%"
 CORE_ALIQUOT_TABLES = frozenset({"aliquot", "aliquot_event"})
 
