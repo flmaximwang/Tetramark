@@ -819,4 +819,6 @@ def test_bundled_molbio_loads_through_load_preset_too() -> None:
     preset = load_preset(str(MOLBIO))
     assert preset.kinds["plasmid"].fields["construct"].lineage is True
     assert preset.kinds["cell_line"].fields["parental"].lineage is True
-    assert preset.version == 2  # a read-only flag needs no version bump
+    # molbio is version 3 since the parts split (ticket 27); ``lineage: true``
+    # itself stays a read-only flag that needs no bump of its own.
+    assert preset.version == 3

@@ -738,7 +738,16 @@ def test_cli_presets_list_and_show(
         app, ["--workspace", str(data), "presets", "list"]
     )
     assert listed.exit_code == 0, listed.output
-    assert listed.output.split() == ["base", "library", "molbio"]
+    # The parts are listed next to the bundles: molbio is `include:`-only now.
+    assert listed.output.split() == [
+        "bacteria",
+        "base",
+        "cell_culture",
+        "library",
+        "molbio",
+        "nucleic_acids",
+        "proteins",
+    ]
 
     shown = runner.invoke(
         app, ["--workspace", str(data), "presets", "show", "molbio"]

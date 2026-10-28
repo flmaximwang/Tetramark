@@ -47,12 +47,17 @@ commit** (MB02 now checks `stock_bacterial_glycerol`, MB04
 `ledger_meta.fingerprint` is written from the v2 schema, not from the old one.
 
 Presets are files, not Dolt content: **`<ledger>/presets/molbio.yaml` (the
-ledger's own copy) is replaced with this repository's v2 copy after the commit**
-(the runner's `after_commit` hook), then the step reopens the ledger and checks
-that its fingerprint equals the migrated one. Without that file swap the next
+ledger's own copy) is replaced with the frozen v2 copy after the commit** (the
+runner's `after_commit` hook), then the step reopens the ledger and checks that
+its fingerprint equals the migrated one. Without that file swap the next
 `tm open` would load molbio v1 while `preset_versions.molbio` says 2.
-`base.yaml` is unchanged at version 1 and is only re-copied if the ledger's copy
-differs from the repository one.
+
+The content is frozen next to `migrate.py` (`molbio-2.yaml` and `base-2.yaml`),
+not read from `presets/`: after a later release the repository copy is molbio 3
+(a bundle) and base 3, which this step must not install. `base-2.yaml` is the
+base v2 that carries the `tube`/`cryo`/`animal` status sets the molbio v2 stock
+kinds name; its own counter (`preset_versions.base`, still 1) is bumped by
+`migration/presets/base/1-to-2`.
 
 ## A 0.2.0+ caveat: run this step with the last tool that accepts the v1 preset
 
@@ -87,10 +92,11 @@ migrates zsqlab10.
   (`tm schema apply --allow-destructive`, or fix the ledger's local
   `kinds/`/`rules/`), then re-run this step.  A ledger that loads additional
   presets keeps them: the target schema is built from the ledger's own
-  preset list with only molbio and base replaced by the repository copies.
-- Run it from a Tetramark checkout that contains the v2 `presets/` (the step
-  reads `presets/molbio.yaml` and `presets/base.yaml` from the repository), and
-  with the matching tool version (`uv run` resolves the checkout's venv).
+  preset list with only molbio and base replaced by the frozen v2 copies.
+- Run it from any Tetramark checkout at or after 0.2.0: the step reads the
+  frozen `molbio-2.yaml`/`base-2.yaml` next to `migrate.py`, so it keeps working
+  after `presets/` has moved on to a newer version (`uv run` resolves the
+  checkout's venv).
 
 ## Running it
 
@@ -151,17 +157,20 @@ A local kind that still *defines* an old molbio kind name (for example a local
 same edit or delete it, then `tm schema plan`/`tm schema apply` before running
 the step.
 
-**Restoring the preset files.**  The v2 copies come from the repository.  If
-the post-commit step failed (the step prints `commit <hash> was made but the
-post-commit preset copy update failed: ...`), the database is migrated and only
-the files are stale:
+**Restoring the preset files.**  The v2 copies are frozen next to this
+`migrate.py` (`molbio-2.yaml`, `base-2.yaml`). If the post-commit step failed
+(the step prints `commit <hash> was made but the post-commit preset copy update
+failed: ...`), the database is migrated and only the files are stale:
 
 ```sh
-cp <tetramark-checkout>/presets/molbio.yaml "$LEDGER/presets/molbio.yaml"
-cp <tetramark-checkout>/presets/base.yaml   "$LEDGER/presets/base.yaml"  # unchanged, only if edited
+cp <tetramark-checkout>/migration/presets/molbio/1-to-2/molbio-2.yaml "$LEDGER/presets/molbio.yaml"
+cp <tetramark-checkout>/migration/presets/molbio/1-to-2/base-2.yaml   "$LEDGER/presets/base.yaml"
 # then:
 uv run tm -w <workspace> -l <ledger> check
 ```
+
+Do **not** copy a newer checkout's `presets/molbio.yaml`: it is version 3 (a
+bundle) and does not match this step's counter.
 
 To return to the pre-migration state, reset Dolt to the tag **and** restore the
 preset directory from the backup you made above:

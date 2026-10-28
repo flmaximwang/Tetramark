@@ -38,8 +38,13 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs
   `migration/presets/molbio/1-to-2`, which needs the last tool version that
   still reads `aliquot_fields` (a 0.2.0+ tool cannot open such a ledger at
-  all). See `migration/README.md`; within one version `tm schema plan` →
-  `tm schema apply` stays additive.
+  all). Presets have their own counters: a molbio-2 ledger moves to 3 with
+  `migration/presets/molbio/2-to-3/` (the preset becomes a bundle of parts and
+  gains the oligo kinds) and a base-2 ledger to 3 with
+  `migration/presets/base/2-to-3/` (the slotless `incubator` box kind), in
+  either order; a bundle step also records the counters of the parts it
+  introduces. See `migration/README.md`; within one version
+  `tm schema plan` → `tm schema apply` stays additive.
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger

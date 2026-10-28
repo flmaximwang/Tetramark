@@ -48,17 +48,24 @@ tm box add grid9x9 WFL-08-02
 ```
 
 `presets_dir` is the directory holding the preset YAML files (this repository's `presets/`,
-or your own copy); `tm init --preset molbio` copies `molbio.yaml` and everything it includes
-into `<ledger>/presets/`, and the ledger is then opened from that copy only — later edits to
-the source preset do not change it. To change a ledger's presets on purpose, replace the files
+or your own copy). `molbio` is a **bundle**: `tm init --preset molbio` copies `molbio.yaml` and
+everything it includes — the `base`, `nucleic_acids`, `bacteria`, `proteins` and `cell_culture`
+parts — into `<ledger>/presets/`, and the ledger is then opened from that copy only. Later edits to
+the source presets do not change it. To change a ledger's presets on purpose, replace the files
 under `<ledger>/presets/` together with the schema change: they are not Dolt content, so a
 migration script copies them from the repository right after its one commit (and verifies that
 the ledger reopens with the migrated fingerprint).
 
-An existing Tetramark ledger created with molbio version 1 (0.1.x) is upgraded in
-place first: run `migration/presets/molbio/1-to-2/migrate.py` (its README has the
-kind-mapping table and the grep for hand-written rules) and only then import.
-`tm init` always gives a ledger the current preset version (molbio 2).
+An existing Tetramark ledger is upgraded in place first: run the step for every counter it still
+carries, oldest first, and only then import. A molbio-2 ledger (0.2.x) runs
+`migration/spec/3-to-4` while it is still spec 3 (place the current preset copies first, as that
+step's README says), then `migration/presets/base/2-to-3` and
+`migration/presets/molbio/2-to-3` — one commit each, in either order, because each step places the
+whole current preset closure and refuses a counter that is not the one it upgrades. An older
+molbio-1/base-1 ledger runs the matching `1-to-2` steps first (their READMEs have the kind-mapping
+tables and the greps for hand-written rules); those historical steps ship the preset content they
+install next to their `migrate.py`, so they keep working after a later version is released.
+`tm init` always gives a ledger the current preset version (molbio 3).
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.

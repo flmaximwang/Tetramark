@@ -38,7 +38,11 @@ nothing is written.
 
   ```sh
   LEDGER=/path/to/ledger
-  cp presets/base.yaml presets/library.yaml presets/molbio.yaml "$LEDGER/presets/"
+  # molbio is a bundle: copy it and every part it includes, or the copy will
+  # not reopen ("include: preset 'nucleic_acids' not found").
+  cp presets/base.yaml presets/library.yaml presets/molbio.yaml \
+     presets/nucleic_acids.yaml presets/bacteria.yaml presets/proteins.yaml \
+     presets/cell_culture.yaml "$LEDGER/presets/"
   ```
 
   The wave-10 preset steps (`migration/presets/*/N-to-N+1/`) also place their copies before opening
@@ -95,7 +99,9 @@ file (and the matching `ledger_meta.ledger_yaml` update) on a real apply.
 
 4. **Counters**: after this step the ledger is spec 4 but its preset copies are newer than
    `preset_versions`. Run the matching `migration/presets/<name>/N-to-N+1/` step for every preset
-   whose version was bumped (base, library and — in ticket 27 — molbio).
+   whose version was bumped: `base/2-to-3` and `molbio/2-to-3` for a molbio ledger (in either
+   order), `library/1-to-2` for a library ledger, and the older `1-to-2` steps a pre-0.2.0 ledger
+   still carries.
 
 ## Verification
 

@@ -7,8 +7,10 @@ declarative YAML **schemas** called **presets**. Pick presets, run `tm init`, an
 validated, versioned ledger. Biology is one preset (`molbio`), not the scope: `library` keeps books,
 `base` keeps generic lab items.
 
-The presets live in this repository's `presets/` directory (`base.yaml`, `molbio.yaml`,
-`library.yaml`); they are not package data. A workspace points `presets_dir` at the directory that
+The presets live in this repository's `presets/` directory (`base.yaml`, the `nucleic_acids`,
+`bacteria`, `proteins` and `cell_culture` parts, the `molbio` bundle, `library.yaml`); they are not
+package data. A preset is a **part** (an includable slice of the model) or a **bundle** (only an
+`include:` list, such as `molbio`); `presets/README.md` maps them and explains how to add one. A workspace points `presets_dir` at the directory that
 holds them, and `tm init` copies the chosen preset **and its `include:` closure** into
 `<ledger>/presets/`. From then on the ledger resolves presets only from that copy, so a ledger is
 self-contained and keeps the schema it was created with even if the source preset changes later.

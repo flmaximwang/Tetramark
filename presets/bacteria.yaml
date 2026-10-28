@@ -1,0 +1,91 @@
+preset: bacteria
+version: 1
+description: >-
+  Bacterial strains and the stocks made from them: glycerol freezer stocks and
+  harvested cell pellets, both holding a plasmid, a strain or both. Included by
+  the molbio bundle. Adapted from BioManager (MIT).
+
+include: [base, nucleic_acids]
+
+kinds:
+  bacterial_strain:
+    object: entity
+    description: A microbial strain (the old zsqlab10 stock_strains lineage) used for cultures.
+    mixins: [named_fields]
+    fields:
+      genotype:
+        type: text
+        description: Genotype / relevant markers of the strain.
+      species:
+        type: string
+        length: 64
+        default: Escherichia coli
+        description: Species name, defaulting to Escherichia coli.
+      source:
+        type: string
+        length: 128
+        description: Where the strain came from (lab stock, vendor, collaborator).
+
+  bacterial_glycerol:
+    object: stock
+    statuses: tube
+    description: A bacterial glycerol stock of a plasmid or bacterial strain.
+    entity_kinds: [plasmid, bacterial_strain]
+    fields:
+      strain:
+        type: string
+        length: 64
+        required: true
+        description: Host strain used for the culture, e.g. BL21(DE3).
+      medium:
+        type: string
+        length: 64
+        description: Growth medium, e.g. LB, TB or SOC.
+      batch:
+        type: string
+        length: 8
+        description: Short batch code from the old zsqlab batch column.
+      glycerol_pct:
+        type: decimal
+        precision: 5
+        scale: 2
+        default: 15
+        description: Glycerol concentration of the frozen stock, in percent.
+
+  bacterial_pellet:
+    object: stock
+    statuses: tube
+    description: >-
+      A bacterial cell pellet harvested from a culture. Aliquot volumes live in
+      the core aliquot quantity, matching the zsqlab10 pellet aliquots model.
+    entity_kinds: [plasmid, bacterial_strain]
+    fields:
+      culture_volume_ml:
+        type: decimal
+        precision: 10
+        scale: 2
+        description: Volume of culture harvested for this pellet, in mL.
+      od600:
+        type: decimal
+        precision: 6
+        scale: 2
+        description: Optical density at 600 nm when the culture was harvested.
+      induction:
+        type: enum
+        values: [iptg, auto, lactose, none]
+        default: none
+        description: Induction regime used before harvesting the culture.
+      induction_temp_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Temperature during induction, in degrees Celsius.
+
+rules:
+  - id: MB02
+    description: glycerol percentage of bacterial glycerol stocks stays between 0 and 50
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_bacterial_glycerol
+      WHERE glycerol_pct IS NOT NULL AND (glycerol_pct < 0 OR glycerol_pct > 50)
+    expect: {single_value: 0}

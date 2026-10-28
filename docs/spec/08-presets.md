@@ -1,11 +1,18 @@
 # 8. Presets
 
 Presets are YAML schema documents, not package data. They live in the repository's `presets/`
-directory (`base.yaml`, `library.yaml`, `molbio.yaml`); the wheel ships no `*.yaml` files. A
-**preset** is a single YAML file containing kinds, mixins and rules; a preset given by path may also
-be a directory containing `preset.yaml` plus optional `kinds/*.yaml` and `rules/*.yaml`. `preset:`
-is the name, `version:` an integer, `include:` a list of bare preset names (path includes cannot be
-copied into a self-contained ledger, see below).
+directory; the wheel ships no `*.yaml` files. A **preset** is a single YAML file containing kinds,
+mixins and rules; a preset given by path may also be a directory containing `preset.yaml` plus
+optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the name, `version:` an integer, `include:`
+a list of bare preset names (path includes cannot be copied into a self-contained ledger, see below).
+
+A **part** is a preset meant to be included: it owns a coherent slice of the model (`base`,
+`nucleic_acids`, `bacteria`, `proteins`, `cell_culture`, …) and includes only the parts it
+references. A **bundle** is a preset whose only content is `include:` — no kinds, mixins, rules or
+status sets — so one bundle can assemble several parts and two bundles can share them. Includes are
+loaded once each, so listing `molbio` and `cellbio` in one ledger loads the shared parts once; kind
+names remain one global namespace. A part never includes a bundle. `presets/README.md` has the
+part/bundle table, the include graph and the rule for adding a part.
 
 - **Selecting.** `tm init NAME --preset ...` is repeatable. A value containing `/` (or `\`) or
   ending in `.yaml`/`.yml` is a **path**, used as-is from the caller's cwd. Anything else is a bare
@@ -39,25 +46,45 @@ copied into a self-contained ledger, see below).
 
 Preset catalogue:
 
-- `base` (**version 2**) — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named),
-  `shelf`/`freezer`/`drawer` (slotless); entity kind `item` (name, category, description); stock kind
-  `lot` (supplier, catalog_no, received_on, expires_on, `statuses: tube`); the status sets `tube`,
-  `cryo` and `animal` (§2.4).
-- `molbio` (includes `base`, **version 2**) — derived from zsqlab08/10: entities `protein_construct`
-  (protein: sequence, molecular_weight_da, extinction coefficients as computed), `plasmid` (sequence,
-  backbone, resistance, ref protein_construct), `bacterial_strain` (genotype, species), `cell_line`
-  (species, cell_type, source, genotype, `parental` ref → cell_line); stocks `bacterial_glycerol`
-  (entity_kinds plasmid|bacterial_strain; strain, medium, glycerol_pct **on the stock**),
-  `plasmid_prep` (concentration_ng_ul, prep_method), `protein_prep` (concentration_mg_ml, buffer,
-  purification_id), `bacterial_pellet` (culture volume, OD600, induction; aliquots carry volume via
-  core quantity), `cell_vial` (passage, medium, freezing_medium, cells_per_vial, dmso_pct) and
-  `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
-  transfection). Molbio 2 has no per-tube fields: all aliquots of one stock are the same, so a
-  property belongs on the stock kind. Its stock kinds use `statuses: tube` except `cell_vial`
-  (`statuses: cryo`); the preset's `version:` stays 2 until the parts split (ticket 27) that vendors
-  the `status_sets` together with the part files. Spec 3 removed the per-stock-kind tube-field schema key
-  entirely, so a molbio-1 ledger is upgraded by `migration/presets/molbio/1-to-2/` and then
-  `migration/spec/2-to-3/`.
+- `base` (**version 3**) — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named),
+  `shelf`/`freezer`/`drawer` (slotless, with a capacity) and `incubator` (slotless, unbounded);
+  entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
+  received_on, expires_on, `statuses: tube`); the status sets `tube`, `cryo` and `animal` (§2.4).
+- `proteins` (**version 1**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
+  molecular_weight_da, pI, extinction coefficients as computed, tag) and stock `protein_prep`
+  (concentration_mg_ml, buffer, purification_id, purity_pct, `statuses: tube`). It also owns the
+  `sequence_fields` mixin (sequence + `length_bp`), because it is the deepest part both
+  `protein_construct` and `plasmid` load. Included by the `molbio` bundle; `nucleic_acids` includes
+  it because a plasmid points at the protein design it expresses.
+- `nucleic_acids` (**version 1**, includes `base`, `proteins`) — entities `plasmid` (sequence,
+  backbone, resistance, ref `construct` → protein_construct with `lineage: true`) and `oligo`
+  (sequence, direction fwd/rev, target, modification, purification, tm_c, `length_nt`/`gc_pct`
+  computed from the sequence); stocks `plasmid_prep` (concentration_ng_ul, prep_method,
+  elution_buffer) and `oligo_stock` (concentration_um, solvent), both `statuses: tube`. Included by
+  `molbio`, `cellbio` and `angenet`.
+- `bacteria` (**version 1**, includes `base`, `nucleic_acids`) — entity `bacterial_strain` (genotype,
+  species, source); stocks `bacterial_glycerol` (entity_kinds plasmid|bacterial_strain; strain,
+  medium, batch, glycerol_pct **on the stock**) and `bacterial_pellet` (culture volume, OD600,
+  induction; aliquots carry volume via core quantity), both `statuses: tube`. Included by `molbio`.
+- `cell_culture` (**version 1**, includes `base`, `nucleic_acids`) — entity `cell_line` (species,
+  cell_type, source, genotype, `parental` ref → cell_line with `lineage: true`); stocks `cell_vial`
+  (passage, medium, freezing_medium, cells_per_vial, dmso_pct, `statuses: cryo`) and `cell_pellet`
+  (cell_count, passage, transfection, harvested_on; a plasmid records a transient transfection,
+  `statuses: tube`). Included by `molbio` and `cellbio`.
+- `molbio` (a **bundle**, **version 3**) — `include: [base, nucleic_acids, bacteria, proteins,
+  cell_culture]`, no kinds or rules of its own. It keeps the name existing ledgers already list,
+  and every kind/table name of a molbio ledger is unchanged by the parts split; the only new tables
+  are the `nucleic_acids` `entity_oligo`/`stock_oligo_stock` pair (and base v3's `box_incubator`).
+  Molbio has no per-tube fields: all aliquots of one stock are the same, so a property belongs on
+  the stock kind. The bundled rules moved with their tables and kept their ids: `MB01` (plasmid
+  sequence) → `nucleic_acids`, `MB02` (glycerol percentage) → `bacteria`, `MB03`/`MB04` (protein
+  preps/constructs) → `proteins`, `MB05` (DMSO) → `cell_culture`. Spec 3 removed the
+  per-stock-kind tube-field schema key entirely, so a molbio-1 ledger is upgraded by
+  `migration/presets/molbio/1-to-2/` (and then `migration/spec/2-to-3/`), and a molbio-2 ledger by
+  `migration/presets/molbio/2-to-3/` (plus `migration/presets/base/2-to-3/` for base's counter).
 - `library` (**version 2**, includes `base`) — entity `book` (title, authors, isbn pattern, year);
   stock `copy` (acquired_on, condition enum, `statuses: tube`). Exists to prove generality; used in
   tests.
+
+Tickets 28/29 add the `immuno`, `viral_vectors`, `biosamples` and organism parts and the `cellbio`
+and `angenet` bundles; `presets/README.md` lists the target catalogue.
