@@ -231,6 +231,15 @@ class RenameMap:
     ``<object>.<new kind>`` — e.g. ``stock.bacterial_glycerol`` or
     ``aliquot.bacterial_glycerol`` — and their values map old column names to
     new column names.
+
+    An explicit entry is **strict**: when the planner runs, the old table or
+    column it names must exist in the live ledger, or its renamed target must
+    already be there (a re-run after a partial apply).  Otherwise the planner
+    raises :class:`~tetramark.errors.UsageError` naming the map entry, the
+    expected old table/column and the live names it compared against — a typo
+    in a step's ``renames.yaml`` must not produce a commit that bumps the
+    counter while renaming nothing.  ``renamed_from`` in the YAML schema keeps
+    its historic tolerant skip.
     """
 
     entity: Mapping[str, str] = field(default_factory=dict)
@@ -243,9 +252,10 @@ class RenameMap:
         """Validate a ``renames.yaml`` mapping (``None``/``{}`` is empty).
 
         Raises :class:`~tetramark.errors.UsageError` for an unknown key, a
-        malformed identifier or a ``fields`` scope that is not
-        ``<object>.<kind>``, so a typo in a migration step fails loudly instead
-        of silently renaming nothing.
+        malformed identifier, a self-mapping or a ``fields`` scope that is not
+        ``<object>.<kind>``.  Whether the named old tables/columns exist is
+        checked against the live ledger later, by the planner, which also
+        raises instead of silently renaming nothing.
         """
         if payload is None:
             return cls()
@@ -1189,16 +1199,20 @@ def _as_rename_map(
 
 def _kind_rename_pairs(
     schema: EffectiveSchema, renames: RenameMap | None
-) -> list[tuple[str, str, str]]:
-    """``(object, old kind, new kind)`` from ``renamed_from`` plus the map.
+) -> list[tuple[str, str, str, bool]]:
+    """``(object, old kind, new kind, explicit)`` from ``renamed_from`` + map.
 
     The map is the alternative to ``renamed_from`` (presets do not carry it);
-    both can be combined.  A contradiction between the two, an unknown new
-    kind or two old kinds aiming at one new kind is a ``UsageError`` — a
-    migration must fail loudly instead of renaming the wrong table.
+    both can be combined.  ``explicit`` is true for entries the map names: the
+    planner then fails loudly when the old table is absent instead of skipping,
+    whereas ``renamed_from`` keeps its historic tolerant skip.  A contradiction
+    between the two, an unknown new kind or two old kinds aiming at one new
+    kind is a ``UsageError`` — a migration must fail loudly instead of renaming
+    the wrong table.
     """
     pairs: dict[tuple[str, str], str] = {}
     targets: dict[tuple[str, str], str] = {}
+    explicit_pairs: set[tuple[str, str]] = set()
 
     for kind_name, kind in schema.kinds.items():
         old_kind = kind.renamed_from
@@ -1238,11 +1252,39 @@ def _kind_rename_pairs(
                     )
                 pairs[(object_name, old_kind)] = new_kind
                 targets[(object_name, new_kind)] = old_kind
+                explicit_pairs.add((object_name, old_kind))
 
     return [
-        (object_name, old_kind, new_kind)
+        (object_name, old_kind, new_kind, (object_name, old_kind) in explicit_pairs)
         for (object_name, old_kind), new_kind in sorted(pairs.items())
     ]
+
+
+def _short_names(names: Sequence[str], *, limit: int = 6) -> str:
+    """``a, b, c`` (truncated) for the "live …" part of an error message."""
+    ordered = list(names)
+    if not ordered:
+        return "(none)"
+    text = ", ".join(ordered[:limit])
+    if len(ordered) > limit:
+        text += f", ... {len(ordered) - limit} more"
+    return text
+
+
+def _live_table_signature(live: _LiveState, prefix: str) -> str:
+    """Short list of the live tables of one object (``entity_*``) for errors."""
+    return _short_names(
+        sorted(
+            name
+            for name in live.columns
+            if name == prefix or name.startswith(f"{prefix}_")
+        )
+    )
+
+
+def _live_column_signature(columns: Mapping[str, Any]) -> str:
+    """Short list of a live table's columns, for errors."""
+    return _short_names(sorted(columns), limit=8)
 
 
 def _plan_renames(
@@ -1256,15 +1298,17 @@ def _plan_renames(
     table_renames: dict[str, str] = {}
     renamed_kinds: list[tuple[str, str, str, str, str]] = []
 
-    for object_name, old_kind, kind_name in _kind_rename_pairs(schema, renames):
+    for object_name, old_kind, kind_name, explicit in _kind_rename_pairs(
+        schema, renames
+    ):
         kind = schema.kinds[kind_name]
         old_table = table_name(object_name, old_kind)
         new_table = table_name(object_name, kind_name)
-        if (
-            old_table in live.columns
-            and new_table not in live.columns
-            and new_table in desired
-        ):
+        if new_table in live.columns:
+            # The target is already there: a re-run after a partial apply (or a
+            # table an earlier apply created) must plan nothing, not fail.
+            pass
+        elif old_table in live.columns and new_table in desired:
             buckets.renames.append(
                 _step(
                     "rename_table",
@@ -1279,16 +1323,25 @@ def _plan_renames(
             renamed_kinds.append(
                 (object_name, old_kind, kind_name, old_table, new_table)
             )
+        elif explicit:
+            # A typo in renames.yaml must not commit a counter bump that
+            # renames nothing: neither the old table nor its target is live.
+            raise UsageError(
+                f"renames.{object_name}: {old_kind!r} -> {kind_name!r}: the map "
+                f"entry matches nothing: expected the old table {old_table!r} "
+                f"(or the already-renamed {new_table!r} from a previous run) in "
+                f"the ledger. Live {object_name} tables: "
+                f"{_live_table_signature(live, object_name)}"
+            )
+        # ``renamed_from`` keeps its historic tolerant skip (nothing to rename).
 
         if object_name != ObjectType.stock.value or not kind.aliquot_fields:
             continue
         old_extension = table_name("aliquot", old_kind)
         new_extension = table_name("aliquot", kind_name)
-        if (
-            old_extension in live.columns
-            and new_extension not in live.columns
-            and new_extension in desired
-        ):
+        if new_extension in live.columns:
+            continue
+        if old_extension in live.columns and new_extension in desired:
             buckets.renames.append(
                 _step(
                     "rename_table",
@@ -1304,6 +1357,16 @@ def _plan_renames(
                 )
             )
             table_renames[old_extension] = new_extension
+        elif explicit:
+            raise UsageError(
+                f"renames.{object_name}: {old_kind!r} -> {kind_name!r}: the new "
+                f"kind has aliquot_fields, but the map entry matches nothing: "
+                f"expected the old extension table {old_extension!r} (or the "
+                f"already-renamed {new_extension!r} from a previous run) in the "
+                "ledger. If the old kind had no aliquot_fields, add them in a "
+                "separate step rather than in the renaming one. Live aliquot "
+                f"tables: {_live_table_signature(live, 'aliquot')}"
+            )
 
     return table_renames, renamed_kinds
 
@@ -1399,7 +1462,14 @@ def _plan_explicit_column_renames(
     renames_out: dict[str, dict[str, str]],
     renames: RenameMap,
 ) -> None:
-    """Plan the ``renames.fields`` half of an explicit rename map."""
+    """Plan the ``renames.fields`` half of an explicit rename map.
+
+    Every entry must match the live ledger: the old column must exist, or the
+    new one must already be there (a re-run after a partial apply).  A typo
+    raises :class:`~tetramark.errors.UsageError` instead of silently planning
+    nothing, because the step would otherwise commit and bump its counter with
+    the rename skipped.
+    """
     for scope, mapping in sorted(renames.fields.items()):
         object_name, kind_name = scope.split(".", 1)
         table = table_name(object_name, kind_name)
@@ -1412,8 +1482,6 @@ def _plan_explicit_column_renames(
         columns = desired[table].columns
         source = final_to_live.get(table, table)
         live_columns = live.columns.get(source, {})
-        if not live_columns:
-            continue
         merged = renames_out.setdefault(table, {})
         for old_name, new_name in sorted(mapping.items()):
             if new_name not in columns:
@@ -1421,8 +1489,26 @@ def _plan_explicit_column_renames(
                     f"renames.fields[{scope!r}]: the loaded schema has no "
                     f"column {new_name!r} in {table!r}"
                 )
-            if old_name not in live_columns or new_name in live_columns:
+            if new_name in live_columns:
+                # Already renamed by an earlier (partial) run: nothing to do.
                 continue
+            if not live_columns:
+                raise UsageError(
+                    f"renames.fields[{scope!r}]: {old_name!r} -> {new_name!r}: "
+                    f"the map entry matches nothing: the table {source!r} does "
+                    "not exist in the ledger (the loaded schema is about to "
+                    "create it). Live "
+                    f"{object_name} tables: "
+                    f"{_live_table_signature(live, object_name)}"
+                )
+            if old_name not in live_columns:
+                raise UsageError(
+                    f"renames.fields[{scope!r}]: {old_name!r} -> {new_name!r}: "
+                    f"the map entry matches nothing: the old column "
+                    f"{old_name!r} (nor the already-renamed {new_name!r}) "
+                    f"does not exist in {source!r}. Live columns: "
+                    f"{_live_column_signature(live_columns)}"
+                )
             buckets.renames.append(
                 _step(
                     "rename_column",
