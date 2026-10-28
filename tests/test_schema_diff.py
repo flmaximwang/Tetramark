@@ -23,11 +23,12 @@ from typer.testing import CliRunner
 from tetramark import __version__
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies
-from tetramark.errors import EXIT_ERROR, LedgerError
+from tetramark.errors import EXIT_ERROR, LedgerError, UsageError
 from tetramark.schema.ddl import view_statements
 from tetramark.schema.diff import (
     ADDITIVE,
     DESTRUCTIVE,
+    RenameMap,
     SchemaPlan,
     apply,
     plan,
@@ -634,6 +635,219 @@ def test_stock_kind_rename_moves_the_extension_table(
         "SELECT volume_ul FROM aliquot_culture WHERE id = 'S1.1'"
     )[0]
     assert Decimal(str(row["volume_ul"])) == Decimal("7.5")
+
+
+# ---------------------------------------------------------------------------
+# Explicit rename map (migration steps, ticket 21): strict old-name checks
+# ---------------------------------------------------------------------------
+
+
+def rename_map_kinds(
+    kinds: dict[str, Any], *, label_to_title: bool
+) -> dict[str, Any]:
+    """``sample`` -> ``specimen`` (optionally ``label`` -> ``title``)."""
+    specimen = {**kinds.pop("sample")}
+    fields = specimen["fields"]
+    if label_to_title:
+        fields["title"] = fields.pop("label")
+    kinds["specimen"] = specimen
+    kinds["bacterial"] = {**kinds["bacterial"], "entity_kinds": ["specimen"]}
+    return kinds
+
+
+def test_rename_map_applies_and_a_rerun_skips_cleanly(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """The strict checks must not break a valid map, nor its idempotent re-run."""
+    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
+    preset.write(rename_map_kinds(kinds, label_to_title=True))
+    reload_schema(ledger)
+
+    renames = RenameMap.from_dict(
+        {
+            "entity": {"sample": "specimen"},
+            "fields": {"entity.specimen": {"label": "title"}},
+        }
+    )
+    current = plan(ledger, renames=renames)
+    assert not current.destructive
+    assert ("additive", "rename_table", "entity_specimen") in actions(current)
+    assert ("additive", "rename_column", "entity_specimen.title") in actions(current)
+
+    result = apply(ledger, schema_plan=current)
+    assert result.applied is True
+    assert_clean(ledger)
+    assert ledger.driver.query("SELECT id, kind FROM entity") == [
+        {"id": "E1", "kind": "specimen"}
+    ]
+    assert ledger.driver.query("SELECT title FROM entity_specimen") == [
+        {"title": "kept"}
+    ]
+
+    # A second run (the old names are gone, the targets exist) plans nothing
+    # and raises nothing: the entry is satisfied, not broken.
+    rerun = plan(ledger, renames=renames)
+    assert rerun.is_empty, actions(rerun)
+    assert not rerun.meta_stale
+
+
+def test_rename_map_typo_in_old_kind_raises(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A kind the map names must exist in the ledger, or nothing is renamed."""
+    insert_entity(ledger, "sample", "E1", label="kept")
+    preset.write(rename_map_kinds(kinds, label_to_title=False))
+    reload_schema(ledger)
+    before = commit_count(ledger)
+
+    with pytest.raises(UsageError) as excinfo:
+        plan(ledger, renames=RenameMap.from_dict({"entity": {"sampl": "specimen"}}))
+    message = str(excinfo.value)
+    assert "renames.entity" in message
+    assert "'sampl'" in message and "'specimen'" in message
+    assert "expected the old table 'entity_sampl'" in message
+    assert "entity_sample" in message  # the live-tables signature
+    assert commit_count(ledger) == before  # a failed plan writes nothing
+
+
+def test_rename_map_typo_in_old_column_raises(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A column the map names must exist, or the entry matches nothing.
+
+    The kind table stays live under its own name here, so the failure is the
+    column entry, not a missing table.
+    """
+    insert_entity(ledger, "sample", "E1", label="kept")
+    fields = kinds["sample"]["fields"]
+    fields["title"] = fields.pop("label")
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    with pytest.raises(UsageError) as excinfo:
+        plan(
+            ledger,
+            renames=RenameMap.from_dict(
+                {"fields": {"entity.sample": {"lable": "title"}}}
+            ),
+        )
+    message = str(excinfo.value)
+    assert "renames.fields['entity.sample']" in message
+    assert "'lable'" in message and "'title'" in message
+    assert "the old column 'lable'" in message
+    assert "label" in message  # the live-columns signature
+
+
+def test_rename_map_field_scope_on_a_missing_table_raises(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A fields entry for a table the schema is about to create is a no-op."""
+    insert_entity(ledger, "sample", "E1", label="kept")
+    extra = {**copy.deepcopy(kinds["sample"])}
+    extra["fields"] = {"note": {"type": "string"}}
+    kinds["new_kind"] = extra
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    with pytest.raises(UsageError) as excinfo:
+        plan(
+            ledger,
+            renames=RenameMap.from_dict(
+                {"fields": {"entity.new_kind": {"label": "note"}}}
+            ),
+        )
+    message = str(excinfo.value)
+    assert "renames.fields['entity.new_kind']" in message
+    assert "entity_new_kind" in message
+    assert "does not exist in the ledger" in message
+
+
+def test_rename_map_moves_the_aliquot_extension_table(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A mapped stock kind rename reuses the ``aliquot_<kind>`` rename."""
+    kinds["bacterial"]["aliquot_fields"] = {
+        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
+    }
+    preset.write(kinds)
+    reload_schema(ledger)
+    apply_clean(ledger)
+
+    insert_entity(ledger, "sample", "E1", label="kept")
+    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
+    ledger.driver.execute(
+        "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`) "
+        "VALUES ('S1.1', 'S1', 1, 'stored')"
+    )
+    ledger.driver.execute(
+        "INSERT INTO `aliquot_bacterial` (`id`, `volume_ul`) VALUES ('S1.1', 7.5)"
+    )
+
+    kinds["culture"] = {**kinds.pop("bacterial")}
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    current = plan(ledger, renames=RenameMap.from_dict({"stock": {"bacterial": "culture"}}))
+    assert not current.destructive
+    assert ("additive", "rename_table", "stock_culture") in actions(current)
+    assert ("additive", "rename_table", "aliquot_culture") in actions(current)
+
+    result = apply(ledger, schema_plan=current)
+    assert result.applied is True
+    assert_clean(ledger)
+    assert "stock_bacterial" not in table_names(ledger)
+    assert "aliquot_bacterial" not in table_names(ledger)
+    assert ledger.driver.query("SELECT kind FROM stock") == [{"kind": "culture"}]
+    volume = ledger.driver.query(
+        "SELECT volume_ul FROM aliquot_culture WHERE id = 'S1.1'"
+    )[0]["volume_ul"]
+    assert Decimal(str(volume)) == Decimal("7.5")
+
+
+def test_rename_map_missing_old_extension_raises(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """The extension half of a stock kind rename obeys the same strict rule."""
+    # The live ``bacterial`` kind has no aliquot_fields, so there is no
+    # ``aliquot_bacterial`` table to rename even though the new kind adds one.
+    culture = {**kinds.pop("bacterial")}
+    culture["aliquot_fields"] = {
+        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
+    }
+    kinds["culture"] = culture
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    with pytest.raises(UsageError) as excinfo:
+        plan(ledger, renames=RenameMap.from_dict({"stock": {"bacterial": "culture"}}))
+    message = str(excinfo.value)
+    assert "renames.stock" in message
+    assert "expected the old extension table 'aliquot_bacterial'" in message
+    assert "separate step" in message
+    assert "aliquot_event" in message  # the live aliquot-tables signature
+
+
+def test_rename_map_skips_a_target_that_already_exists(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A half-applied rename (target table present) must plan, not fail."""
+    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
+    preset.write(rename_map_kinds(kinds, label_to_title=True))
+    reload_schema(ledger)
+
+    # Simulate a step that renamed the kind table and then failed before the
+    # column rename.
+    ledger.driver.execute("ALTER TABLE `entity_sample` RENAME TO `entity_specimen`")
+
+    renames = RenameMap.from_dict(
+        {
+            "entity": {"sample": "specimen"},
+            "fields": {"entity.specimen": {"label": "title"}},
+        }
+    )
+    current = plan(ledger, renames=renames)
+    assert ("additive", "rename_table", "entity_specimen") not in actions(current)
+    assert ("additive", "rename_column", "entity_specimen.title") in actions(current)
 
 
 def test_computed_expression_change_is_a_generated_rebuild(
