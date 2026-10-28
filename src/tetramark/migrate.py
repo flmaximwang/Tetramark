@@ -37,6 +37,21 @@ A preset step may ship ``renames.yaml`` next to its ``migrate.py``; load it with
 machinery (kind table, ``aliquot_<kind>`` table, columns, core ``kind`` values)
 does the work instead of hand-written SQL.
 
+A step whose target schema differs from the ledger's current one (a preset
+step always does) declares it with ``MigrationStep(schema=...)``: a callable
+``(ledger) -> EffectiveSchema`` that loads the **new** schema from the
+repository (the ledger itself still opens with its old preset copy).  The
+runner then, in the same commit, writes that schema's fingerprint and
+regenerates the derived ``dolt_tests`` from it — otherwise the commit would
+record a stale fingerprint and tests that still name the old tables.  The
+step's ``plan`` may call the same function itself to build the diff.
+
+Files are not Dolt content, so a step that also replaces ``<ledger>/presets/``
+(``tm init`` copies presets into the ledger; a preset step must vendor the new
+copy) passes ``after_commit=...``: a callable ``(ledger, result) -> note`` that
+the runner runs **only on a real apply**, after the commit.  Its failure is
+reported as "the commit exists, the files were not updated" and exits 1.
+
 A step script looks like::
 
     from tetramark.migrate import MigrationStep, main
@@ -79,12 +94,17 @@ from tetramark.driver.base import ensure_ascii, literal
 from tetramark.driver.workspace import WORKSPACE_FILE, Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.diff import RenameMap
+from tetramark.schema.model import EffectiveSchema
+from tetramark.schema.tests_gen import generate_tests, install_tests
 
 __all__ = [
+    "AfterCommitCallable",
     "MigrationError",
     "MigrationResult",
     "MigrationStep",
     "PlanCallable",
+    "ReopenedSchemaCallable",
+    "SchemaCallable",
     "counter",
     "load_renames",
     "main",
@@ -94,6 +114,15 @@ __all__ = [
 
 #: A step's SQL builder: ``(ledger) -> ordered SQL statements``.
 PlanCallable = Callable[[Ledger], Sequence[str]]
+
+#: A step's target-schema loader: ``(ledger) -> the schema after this step``.
+SchemaCallable = Callable[[Ledger], EffectiveSchema]
+
+#: A post-commit hook: ``(ledger, result) -> report note or None``.
+AfterCommitCallable = Callable[[Ledger, "MigrationResult"], str | None]
+
+#: Loads the schema the ledger now opens with, from its own files.
+ReopenedSchemaCallable = Callable[[Ledger], EffectiveSchema]
 
 #: Kinds of counter a step can bump.
 _STEP_KINDS = ("spec", "preset")
@@ -122,6 +151,23 @@ class MigrationStep:
     ``kind`` is ``"spec"`` (bump ``ledger_meta.spec_version``) or ``"preset"``
     (bump one entry of ``ledger_meta.preset_versions``); a preset step must
     name its ``preset``.
+
+    ``schema`` — optional ``(ledger) -> EffectiveSchema`` loader of the schema
+    **after** the step.  When set, the runner records that schema's
+    fingerprint (never the ledger's current one) and regenerates the derived
+    ``dolt_tests`` from it, both inside the migration commit.  The step's
+    ``plan`` normally calls the same loader to diff against the new schema.
+
+    ``after_commit`` — optional ``(ledger, result) -> note`` hook for changes
+    that are **not** Dolt content (a preset step replaces
+    ``<ledger>/presets/`` with the repository copy).  It runs only on a real
+    apply, after the commit; ``after_commit_note`` describes it in a dry run.
+
+    ``reopened_schema`` — optional ``(ledger) -> EffectiveSchema`` loader of
+    the schema the ledger **now** opens with (its own preset copy, re-read
+    from disk).  It runs after ``after_commit`` and before the success
+    report; its fingerprint must equal the one the commit recorded, so a
+    stale or wrong preset copy can never pass as migrated.
     """
 
     kind: str
@@ -129,6 +175,10 @@ class MigrationStep:
     plan: PlanCallable
     preset: str | None = None
     description: str = ""
+    schema: SchemaCallable | None = None
+    after_commit: AfterCommitCallable | None = None
+    after_commit_note: str = ""
+    reopened_schema: ReopenedSchemaCallable | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _STEP_KINDS:
@@ -203,6 +253,15 @@ class MigrationResult:
     tag_created: bool = False
     commit_hash: str | None = None
     dry_run: bool = False
+    #: The schema after the step, when the step declared a ``schema`` loader.
+    #: Its fingerprint is written in the commit and its generated tests installed.
+    target_schema: EffectiveSchema | None = field(default=None, repr=False)
+    #: Generated ``dolt_tests`` rows the commit installs (0: not regenerated).
+    tests_regenerated: int = 0
+    #: True when the step's ``after_commit`` file hook ran successfully.
+    after_commit_done: bool = False
+    #: Human note about the post-commit file change (dry-run text before a run).
+    after_commit_note: str = ""
 
     @property
     def applied(self) -> bool:
@@ -363,17 +422,24 @@ def _plan_statements(step: MigrationStep, ledger: Ledger) -> list[str]:
     return statements
 
 
-def _meta_statements(step: MigrationStep, ledger: Ledger) -> list[str]:
+def _meta_statements(
+    step: MigrationStep,
+    ledger: Ledger,
+    target_schema: EffectiveSchema | None = None,
+) -> list[str]:
     """The counter, ``tetramark_version`` and fingerprint updates.
 
     They are ordinary statements of the same write session, so they land in the
-    one migration commit.
+    one migration commit.  The fingerprint is the **target** schema's when the
+    step declares one: the ledger's current (old) preset fingerprint would make
+    every later ``open`` warn about a mismatch.
     """
     from tetramark import __version__
 
+    schema = target_schema if target_schema is not None else ledger.schema
     values: dict[str, str] = {
         META_TETRAMARK_VERSION: __version__,
-        META_FINGERPRINT: ledger.schema.fingerprint(),
+        META_FINGERPRINT: schema.fingerprint(),
     }
     if step.kind == "spec":
         values[META_SPEC_VERSION] = str(step.to_version)
@@ -487,11 +553,24 @@ def _prepare(
     _require_clean(ledger)
     head = _head(ledger)
     tag_statement, tag_note = _tag_plan(step, ledger, head)
+    # The target schema is loaded before the plan: a step that declares one
+    # gets the new fingerprint and the regenerated dolt_tests in its commit.
+    target_schema = step.schema(ledger) if step.schema is not None else None
+    if target_schema is not None and step.kind == "preset":
+        assert step.preset is not None
+        version = target_schema.preset_versions.get(step.preset)
+        if version != step.to_version:
+            raise LedgerError(
+                f"refusing to run {step.title}: the target schema loads "
+                f"preset_versions[{step.preset}] = {version}, expected "
+                f"{step.to_version}; the repository preset is not the "
+                "version this step upgrades to"
+            )
     statements = [
         *_plan_statements(step, ledger),
-        *_meta_statements(step, ledger),
+        *_meta_statements(step, ledger, target_schema),
     ]
-    return MigrationResult(
+    state = MigrationResult(
         step=step,
         ledger=ledger.name,
         path=ledger.path,
@@ -503,7 +582,12 @@ def _prepare(
         tag_statement=tag_statement,
         tag_note=tag_note,
         dry_run=dry_run,
+        target_schema=target_schema,
+        after_commit_note=step.after_commit_note,
     )
+    if target_schema is not None:
+        state.tests_regenerated = len(generate_tests(target_schema))
+    return state
 
 
 def _print_plan(
@@ -527,6 +611,14 @@ def _print_plan(
     stdout.write(f"statements: {len(state.statements)}\n")
     for statement in state.statements:
         stdout.write(f"  {statement};\n")
+    if state.target_schema is not None:
+        stdout.write(
+            f"dolt tests: replace with {state.tests_regenerated} generated "
+            "test(s) from the target schema (same commit)\n"
+        )
+    if step.after_commit is not None:
+        note = step.after_commit_note or "run the step's post-commit file hook"
+        stdout.write(f"after commit: {note}\n")
 
 
 def _apply(
@@ -547,20 +639,73 @@ def _apply(
         ) as session:
             for statement in state.statements:
                 session.execute(statement)
+            # Derived state (spec §4): the generated dolt_tests are regenerated
+            # from the target schema in the same transaction, never left naming
+            # the pre-migration tables.  ``WriteSession`` is driver-shaped.
+            if state.target_schema is not None:
+                state.tests_regenerated = len(
+                    install_tests(session, state.target_schema)  # type: ignore[arg-type]
+                )
     except BaseException as error:
         _report_failure(step, ledger, state.head_before, error, stderr=stderr)
         raise MigrationError(f"{step.title} failed: {error}") from error
 
     state.commit_hash = session.commit_hash
-    ledger.read_meta()
-    _verify_after(step, ledger, state)
     expected = f"migrate(ledger): {step.commit_summary}"
+    stdout.write(f"committed {state.commit_hash}: {expected}\n")
+    # Files outside Dolt first, then read the ledger back from its own
+    # preset copy and verify that reality, not just the statements we ran.
+    if step.after_commit is not None:
+        _run_after_commit(step, ledger, state, stdout=stdout, stderr=stderr)
+    ledger.read_meta()
+    try:
+        _verify_after(step, ledger, state)
+    except MigrationError as error:
+        # This failure happens after the commit, where no other report is
+        # printed: say why the run is exiting 1.
+        stderr.write(f"error: {error}\n")
+        raise
     stdout.write(
-        f"committed {state.commit_hash}: {expected}\n"
         f"ledger {ledger.name!r} is now at {step.counter_label} {step.to_version} "
         f"({META_TETRAMARK_VERSION} {ledger.meta.get(META_TETRAMARK_VERSION)})\n"
     )
     return state
+
+
+def _run_after_commit(
+    step: MigrationStep,
+    ledger: Ledger,
+    state: MigrationResult,
+    *,
+    stdout: Any,
+    stderr: Any,
+) -> None:
+    """Run the step's post-commit file hook; its failure never hides the commit.
+
+    The migration commit exists by now, so a failure here is not a failed
+    migration: the report says exactly that, names the commit, and exits 1 so
+    the operator fixes the files (the step README documents them) before the
+    ledger is reopened.
+    """
+    assert step.after_commit is not None
+    try:
+        note = step.after_commit(ledger, state)
+    except BaseException as error:
+        stderr.write(
+            f"{step.title}: commit {state.commit_hash} was made but the "
+            f"post-commit preset copy update failed: {error}\n"
+            "The Dolt database is migrated; only files outside Dolt (the "
+            "preset copy under <ledger>/presets/) were not updated. Fix them "
+            "by hand as the step README says, then reopen the ledger.\n"
+        )
+        raise MigrationError(
+            f"{step.title}: commit {state.commit_hash} was made but the "
+            f"post-commit preset copy update failed: {error}"
+        ) from error
+    state.after_commit_done = True
+    state.after_commit_note = note or state.after_commit_note
+    if note:
+        stdout.write(f"post-commit: {note}\n")
 
 
 def _verify_after(step: MigrationStep, ledger: Ledger, state: MigrationResult) -> None:
@@ -573,6 +718,24 @@ def _verify_after(step: MigrationStep, ledger: Ledger, state: MigrationResult) -
             f"{step.title}: the commit was made, but {step.counter_label} is "
             f"{current}, expected {step.to_version}"
         )
+    if state.target_schema is not None:
+        live = ledger.meta.get(META_FINGERPRINT)
+        expected = state.target_schema.fingerprint()
+        if live != expected:
+            raise MigrationError(
+                f"{step.title}: the commit was made, but the recorded "
+                f"{META_FINGERPRINT} is {live}, expected the target schema's "
+                f"{expected}"
+            )
+    if step.reopened_schema is not None:
+        recorded = ledger.meta.get(META_FINGERPRINT)
+        actual = step.reopened_schema(ledger)
+        if actual.fingerprint() != recorded:
+            raise MigrationError(
+                f"{step.title}: the commit was made, but the ledger now "
+                f"opens with fingerprint {actual.fingerprint()} (its own "
+                f"preset copy) while the commit recorded {recorded}"
+            )
     expected = f"migrate(ledger): {step.commit_summary}"
     rows = ledger.driver.query(
         "SELECT `message` FROM `dolt_log` WHERE `commit_hash` = %s",

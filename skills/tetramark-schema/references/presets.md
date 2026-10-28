@@ -56,35 +56,40 @@ A sequence is stored normalised (uppercase, whitespace stripped) and fingerprint
 
 | Kind | Fields beyond `sequence`/`length_bp` |
 |---|---|
-| `construct` | `mature_sequence` (sequence), `aliases`, `molecular_weight_da`, `pi`, `extinction_coefficient_reduced_m1cm1`, `extinction_coefficient_oxidized_m1cm1`, two computed `*_0p1pct` columns (`CAST(eps AS DECIMAL(20,10)) / molecular_weight_da`), `tag` |
-| `plasmid` | `construct` (ref → `construct`), `backbone`, `resistance` (enum `amp, kan, cm, spec, tet`), `origin_of_replication`, `promoter`, `affinity_tags` |
-| `strain` | `genotype` (text), `species` (default `Escherichia coli`), `source` |
+| `protein_construct` | `mature_sequence` (sequence), `aliases`, `molecular_weight_da`, `pi`, `extinction_coefficient_reduced_m1cm1`, `extinction_coefficient_oxidized_m1cm1`, two computed `*_0p1pct` columns (`CAST(eps AS DECIMAL(20,10)) / molecular_weight_da`), `tag` |
+| `plasmid` | `construct` (ref → `protein_construct`), `backbone`, `resistance` (enum `amp, kan, cm, spec, tet`), `origin_of_replication`, `promoter`, `affinity_tags` |
+| `bacterial_strain` | `genotype` (text), `species` (default `Escherichia coli`), `source` |
+| `cell_line` | `species`, `cell_type`, `source`, `genotype`, `parental` (ref → `cell_line`, the parent of a derived/stable line) |
 
-`construct` and `plasmid` mix in `named_fields` + `sequence_fields`. The two computed extinction
-columns are the zsqlab08 Excel formulas, now generated columns: they cannot drift and cannot be
-written.
+`protein_construct`, `plasmid` and `cell_line` mix in `named_fields`; the two sequence-carrying ones
+also mix in `sequence_fields`. The two computed extinction columns are the zsqlab08 Excel formulas,
+now generated columns: they cannot drift and cannot be written.
 
 ### Stocks
 
-| Kind | `entity_kinds` | Fields | Aliquot fields |
-|---|---|---|---|
-| `bacterial` | `plasmid`, `strain` | `strain` (required), `medium`, `batch` | `glycerol_pct` (decimal, default 15) |
-| `plasmid_prep` | `plasmid` | `concentration_ng_ul`, `prep_method`, `elution_buffer` | — |
-| `protein_prep` | `construct` | `concentration_mg_ml`, `buffer`, `purification_id`, `purity_pct` | — |
-| `pellet` | `plasmid`, `strain` | `culture_volume_ml`, `od600`, `induction` (enum `iptg, auto, lactose, none`, default `none`), `induction_temp_c` | — |
+| Kind | `entity_kinds` | Fields |
+|---|---|---|
+| `bacterial_glycerol` | `plasmid`, `bacterial_strain` | `strain` (required), `medium`, `batch`, `glycerol_pct` (decimal 5,2, default 15) |
+| `plasmid_prep` | `plasmid` | `concentration_ng_ul`, `prep_method`, `elution_buffer` |
+| `protein_prep` | `protein_construct` | `concentration_mg_ml`, `buffer`, `purification_id`, `purity_pct` |
+| `bacterial_pellet` | `plasmid`, `bacterial_strain` | `culture_volume_ml`, `od600`, `induction` (enum `iptg, auto, lactose, none`, default `none`), `induction_temp_c` |
+| `cell_vial` | `cell_line` | `passage`, `medium`, `freezing_medium`, `cells_per_vial`, `dmso_pct` (decimal 5,2, default 10) |
+| `cell_pellet` | `cell_line`, `plasmid` | `cell_count`, `passage`, `transfection`, `harvested_on` |
 
-`pellet` volumes live in the core aliquot `quantity`/`unit` (one tube = one aliquot), matching the
-zsqlab10 pellet-aliquots model. `bacterial` stores host strain and medium on the stock; the glycerol
-percentage is per tube.
+Molbio 2 has **no `aliquot_fields`**: a property of the material lives on the stock kind (the user
+rule is "all aliquots of one stock are the same"). `bacterial_pellet` volumes still live in the core
+aliquot `quantity`/`unit` (one tube = one aliquot); a plasmid on `cell_pellet` records a transient
+transfection / transduction harvest.
 
 ### Rules
 
 | ID | Severity | Checks |
 |---|---|---|
-| `MB01` | fail | a plasmid with `construct` has a sequence |
-| `MB02` | fail | bacterial `glycerol_pct` is between 0 and 50 |
+| `MB01` | fail | a plasmid with a protein construct has a sequence |
+| `MB02` | fail | `bacterial_glycerol.glycerol_pct` is between 0 and 50 |
 | `MB03` | fail | protein-prep concentration is > 0 when set |
-| `MB04` | info | constructs with a sequence record `molecular_weight_da` |
+| `MB04` | info | protein constructs with a sequence record `molecular_weight_da` |
+| `MB05` | fail | `cell_vial.dmso_pct` is between 0 and 100 |
 
 ## `library` — proof of generality
 

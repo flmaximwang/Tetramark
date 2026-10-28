@@ -1,8 +1,10 @@
-"""``migration/`` steps and the shared runner (ticket 21, spec §5).
+"""``migration/`` steps and the shared runner (tickets 21-22, spec §5).
 
-Every test uses a **real** Dolt database (no mocks): the spec/1-to-2 step and
-the rename-map hook are exercised end to end, either embedded or through a
-worker's ``dolt sql-server`` (the driver the ticket-24 migration will use).
+Every test uses a **real** Dolt database (no mocks): the spec/1-to-2 and
+presets/molbio/1-to-2 steps, the rename-map hook and the runner's
+target-schema / post-commit-file hooks are exercised end to end, either
+embedded or through a worker's ``dolt sql-server`` (the driver the ticket-24
+migration will use).
 
 The spec-1 fixture is built from the current tool (init, then downgrade the
 generated views to their pre-``861faae`` shape and stamp ``spec_version=1``
@@ -12,6 +14,7 @@ as an alternative to checking in a historical DDL dump.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import os
@@ -28,7 +31,7 @@ from typer.testing import CliRunner
 from tetramark import __version__
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies, open as open_ledger
-from tetramark.errors import UsageError
+from tetramark.errors import LedgerError, UsageError
 from tetramark.migrate import (
     MigrationStep,
     counter,
@@ -36,16 +39,19 @@ from tetramark.migrate import (
     open_target,
     run,
 )
-from tetramark.schema.ddl import view_statements
+from tetramark.schema.ddl import table_name, view_statements
 from tetramark.schema.diff import RenameMap, apply, plan
 from tetramark.schema.loader import load_ledger_schema
 
 import tetramark.schema.model as model
 
-from conftest import PRESETS
+from conftest import PRESETS, REPO_PRESETS
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
+MOLBIO_STEP = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "migrate.py"
+MOLBIO_V1 = PRESETS / "molbio-v1" / "molbio-v1.yaml"
+MOLBIO_V2 = REPO_PRESETS / "molbio.yaml"
 
 
 def base_args(ledger: Ledger) -> list[str]:
@@ -223,17 +229,28 @@ def write_step(
     from_version: int,
     statements: list[str],
     preset: str | None = None,
+    hook_source: str = "",
+    step_args: str = "",
 ) -> Path:
-    """A throwaway ``migrate.py`` importing the shared runner."""
+    """A throwaway ``migrate.py`` importing the shared runner.
+
+    ``hook_source`` may define ``after(ledger, result)`` (and use ``MARKER``, a
+    path in ``directory``) and ``step_args`` appends MigrationStep keywords.
+    """
     script = directory / "step.py"
     script.write_text(
+        "from pathlib import Path\n"
         "from tetramark.migrate import MigrationStep, main\n"
+        "\n"
+        f"MARKER = Path({str(directory / 'marker.txt')!r})\n"
         "\n"
         "def plan(ledger):\n"
         f"    return {statements!r}\n"
         "\n"
+        f"{hook_source}"
+        "\n"
         f"step = MigrationStep(kind={kind!r}, from_version={from_version!r}, "
-        f"preset={preset!r}, plan=plan)\n"
+        f"preset={preset!r}, plan=plan{step_args})\n"
         "\n"
         'if __name__ == "__main__":\n'
         "    main(step)\n",
@@ -828,3 +845,453 @@ def test_counter_reads_spec_and_preset_counters(
     assert result.commit_hash
     ledger.read_meta()
     assert json.loads(ledger.meta["preset_versions"]) == {"base": 2}
+
+
+# ---------------------------------------------------------------------------
+# presets/molbio/1-to-2: the real step (ticket 22)
+# ---------------------------------------------------------------------------
+
+#: Every old molbio kind, a bacterial stock with two agreeing aliquots (S1), a
+#: second bacterial stock with a different value (S2), and one row of each other
+#: stock kind.  S1/S2 differ from each other on purpose: the value is per stock.
+def seed_molbio_v1(ledger: Ledger) -> None:
+    execute = ledger.driver.execute
+    execute(
+        "INSERT INTO `entity` (`id`, `kind`) VALUES "
+        "('E1','construct'),('E2','plasmid'),('E3','strain')"
+    )
+    execute(
+        "INSERT INTO `entity_construct` (`id`, `name`, `sequence`, `molecular_weight_da`) "
+        "VALUES ('E1','c01','ATGC', 12345.67)"
+    )
+    execute(
+        "INSERT INTO `entity_plasmid` (`id`, `name`, `sequence`, `construct`) "
+        "VALUES ('E2','p01','ATGG','E1')"
+    )
+    execute(
+        "INSERT INTO `entity_strain` (`id`, `name`, `genotype`) "
+        "VALUES ('E3','DH5a','F- endA1')"
+    )
+    execute(
+        "INSERT INTO `alias` (`object_type`, `object_id`, `alias`) "
+        "VALUES ('entity','E1','OLD-C1')"
+    )
+    execute(
+        "INSERT INTO `stock` (`id`, `kind`, `entity_id`) VALUES "
+        "('S1','bacterial','E3'),('S2','bacterial','E2'),"
+        "('S3','plasmid_prep','E2'),('S4','protein_prep','E1'),"
+        "('S5','pellet','E2')"
+    )
+    execute(
+        "INSERT INTO `stock_bacterial` (`id`, `strain`, `medium`) VALUES "
+        "('S1','DH5a','LB'),('S2','BL21(DE3)','TB')"
+    )
+    execute(
+        "INSERT INTO `stock_plasmid_prep` (`id`, `concentration_ng_ul`) "
+        "VALUES ('S3', 120.5)"
+    )
+    execute(
+        "INSERT INTO `stock_protein_prep` (`id`, `concentration_mg_ml`) "
+        "VALUES ('S4', 1.5)"
+    )
+    execute(
+        "INSERT INTO `stock_pellet` (`id`, `culture_volume_ml`, `od600`) "
+        "VALUES ('S5', 500, 2.4)"
+    )
+    execute(
+        "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`) "
+        "VALUES ('S1.1','S1',1,'stored',500,'ul'),('S1.2','S1',2,'stored',500,'ul'),"
+        "('S2.1','S2',1,'stored',500,'ul'),('S3.1','S3',1,'stored',50,'ul'),"
+        "('S4.1','S4',1,'stored',100,'ul'),('S5.1','S5',1,'stored',250,'ml'),"
+        "('S5.2','S5',2,'stored',250,'ml')"
+    )
+    execute(
+        "INSERT INTO `aliquot_bacterial` (`id`, `glycerol_pct`) VALUES "
+        "('S1.1',25),('S1.2',25),('S2.1',15)"
+    )
+    ledger.driver.commit("test: seed molbio v1 rows")
+    ledger.read_meta()
+
+
+def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Verify bullet 2, both drivers: renames, data move, metadata, files, check."""
+    ledger = ledger_factory([MOLBIO_V1], name="molbio-v1", id_prefix="08")
+    seed_molbio_v1(ledger)
+    preset_copy = ledger.path / "presets" / "molbio.yaml"
+    preset_before = preset_copy.read_bytes()
+    assert yaml.safe_load(preset_before)["version"] == 1
+    assert ledger.schema.preset_versions == {"base": 1, "molbio": 1}
+    assert "aliquot_bacterial" in table_names(ledger)
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    # -- dry run: full plan, the data move spliced at its safe point, no writes
+    dry = run_python(
+        MOLBIO_STEP, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    out = dry.stdout
+    assert "migration: molbio 1 -> 2" in out
+    assert "CALL DOLT_TAG('pre-migrate-molbio-1'" in out
+    assert "dolt tests: replace with" in out
+    assert "after commit:" in out
+    add_at = out.index("ADD COLUMN `glycerol_pct`")
+    copy_at = out.index("UPDATE `stock_bacterial_glycerol`")
+    drop_at = out.index("DROP TABLE IF EXISTS `aliquot_bacterial`")
+    assert add_at < copy_at < drop_at, out
+    # The extension rows are keyed by aliquot id: the join goes through aliquot.
+    assert "JOIN `aliquot` AS `a` ON `a`.`stock_id` = `s`.`id`" in out
+    assert "JOIN `aliquot_bacterial` AS `e` ON `e`.`id` = `a`.`id`" in out
+    assert "SET `s`.`glycerol_pct` = `e`.`glycerol_pct`" in out
+
+    # Nothing was written: DDL, tag, meta and the ledger's preset copy.
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    assert preset_copy.read_bytes() == preset_before
+    ledger.read_meta()
+    assert json.loads(ledger.meta["preset_versions"]) == {"base": 1, "molbio": 1}
+    assert "aliquot_bacterial" in table_names(ledger)
+
+    # -- apply -------------------------------------------------------------
+    applied = run_python(MOLBIO_STEP, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "committed" in applied.stdout
+    assert "migrate(ledger): molbio 1 -> 2" in applied.stdout
+    assert "post-commit: replaced molbio.yaml" in applied.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name)
+    try:
+        # The vendored v2 copy reopens without a fingerprint warning.
+        assert reopened.warnings == []
+        assert reopened.check_fingerprint(warn=False) is True
+        assert reopened.schema.preset_versions == {"base": 1, "molbio": 2}
+        assert reopened.meta["fingerprint"] == reopened.schema.fingerprint()
+        assert json.loads(reopened.meta["preset_versions"]) == {"base": 1, "molbio": 2}
+
+        # Renamed tables exist, old ones and the extension table are gone.
+        tables = table_names(reopened)
+        for renamed in (
+            "entity_protein_construct",
+            "entity_bacterial_strain",
+            "entity_cell_line",
+            "stock_bacterial_glycerol",
+            "stock_bacterial_pellet",
+            "stock_cell_vial",
+            "stock_cell_pellet",
+        ):
+            assert renamed in tables, renamed
+            assert f"v_{renamed}" in tables, f"v_{renamed}"
+        for gone in (
+            "entity_construct",
+            "entity_strain",
+            "stock_bacterial",
+            "stock_pellet",
+            "aliquot_bacterial",
+        ):
+            assert gone not in tables, gone
+        # No per-stock extension table is left; aliquot/_event are core.
+        assert {name for name in tables if name.startswith("aliquot_")} == {
+            "aliquot_event"
+        }
+
+        # Every row is kept, under its new name.
+        assert row_count(reopened, "entity") == 3
+        assert row_count(reopened, "stock") == 5
+        assert row_count(reopened, "aliquot") == 7
+        assert reopened.driver.query(
+            "SELECT `id`, `kind` FROM `entity` ORDER BY `id`"
+        ) == [
+            {"id": "E1", "kind": "protein_construct"},
+            {"id": "E2", "kind": "plasmid"},
+            {"id": "E3", "kind": "bacterial_strain"},
+        ]
+        assert {
+            row["id"]: row["kind"]
+            for row in reopened.driver.query("SELECT `id`, `kind` FROM `stock`")
+        } == {
+            "S1": "bacterial_glycerol",
+            "S2": "bacterial_glycerol",
+            "S3": "plasmid_prep",
+            "S4": "protein_prep",
+            "S5": "bacterial_pellet",
+        }
+        # glycerol_pct now lives on the stock, per stock (not per tube).
+        assert {
+            row["id"]: str(row["glycerol_pct"])
+            for row in reopened.driver.query(
+                "SELECT `id`, `glycerol_pct` FROM `stock_bacterial_glycerol` "
+                "ORDER BY `id`"
+            )
+        } == {"S1": "25.00", "S2": "15.00"}
+        assert reopened.driver.query(
+            "SELECT `strain`, `medium` FROM `stock_bacterial_glycerol` "
+            "WHERE `id` = 'S2'"
+        ) == [{"strain": "BL21(DE3)", "medium": "TB"}]
+        # Aliases and the renamed entity fields survive.
+        assert reopened.driver.query("SELECT `alias` FROM `alias`") == [
+            {"alias": "OLD-C1"}
+        ]
+        assert reopened.driver.query(
+            "SELECT `name`, `sequence` FROM `entity_protein_construct`"
+        ) == [{"name": "c01", "sequence": "ATGC"}]
+
+        # The generated dolt_tests were regenerated from v2 in the same commit:
+        # none still references a table/kind that the commit renamed or dropped.
+        stale = reopened.driver.query(
+            "SELECT COUNT(*) AS `n` FROM `dolt_tests` WHERE "
+            "`test_query` LIKE '%entity_construct%' "
+            "OR `test_query` LIKE '%stock_bacterial`%' "
+            "OR `test_query` LIKE '%aliquot_bacterial%'"
+        )
+        assert stale == [{"n": 0}]
+        assert row_count(reopened, "dolt_tests") == len(
+            reopened.check().results
+        )
+
+        # One commit, contract message, tag on the pre-migration commit.
+        assert commit_count(reopened) == commits_before + 1
+        head_after = head(reopened)
+        assert head_after != head_before
+        assert commit_message(reopened, head_after) == "migrate(ledger): molbio 1 -> 2"
+        assert tags(reopened) == {"pre-migrate-molbio-1": head_before}
+
+        # Ticket 20: the ledger's own copy is the repository v2 preset, byte
+        # for byte, and base.yaml is unchanged.
+        assert (reopened.path / "presets" / "molbio.yaml").read_bytes() == (
+            MOLBIO_V2.read_bytes()
+        )
+        assert yaml.safe_load(
+            (reopened.path / "presets" / "molbio.yaml").read_text(encoding="utf-8")
+        )["version"] == 2
+        assert (reopened.path / "presets" / "base.yaml").read_bytes() == (
+            REPO_PRESETS / "base.yaml"
+        ).read_bytes()
+
+        # tm check runs the regenerated tests: no FAIL, no stale-table error.
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        assert "OK:" in checked.output
+    finally:
+        reopened.close()
+
+    # -- a second run refuses (the counter is 2, not 1) --------------------
+    again = run_python(MOLBIO_STEP, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "refusing to run migration molbio 1 -> 2" in again.stdout + again.stderr
+    assert "preset_versions[molbio] 2, expected 1" in again.stdout + again.stderr
+    assert head(ledger) == head_after
+
+
+def test_molbio_1_to_2_refuses_conflicting_glycerol_and_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Verify bullet 3: per-stock disagreement refuses, listing the stock."""
+    ledger = embedded_ledger_factory([MOLBIO_V1], name="molbio-conflict")
+    seed_molbio_v1(ledger)
+    ledger.driver.execute(
+        "UPDATE `aliquot_bacterial` SET `glycerol_pct` = 30 WHERE `id` = 'S1.2'"
+    )
+    ledger.driver.commit("test: aliquots of S1 disagree on glycerol_pct")
+    ledger.read_meta()
+
+    preset_before = (ledger.path / "presets" / "molbio.yaml").read_bytes()
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            MOLBIO_STEP, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate molbio 1 -> 2" in output
+        assert "disagree on glycerol_pct" in output
+        # The offending stock is listed with both values.
+        assert "S1" in output
+        assert "25.00" in output and "30.00" in output
+        # Nothing was written: no commit, no tag, no DDL, no file change.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        assert (ledger.path / "presets" / "molbio.yaml").read_bytes() == preset_before
+        ledger.read_meta()
+        assert json.loads(ledger.meta["preset_versions"]) == {"base": 1, "molbio": 1}
+        assert "entity_construct" in table_names(ledger)
+        assert "aliquot_bacterial" in table_names(ledger)
+
+
+# ---------------------------------------------------------------------------
+# Runner hooks a preset step needs: target schema + post-commit files
+# ---------------------------------------------------------------------------
+
+
+def _make_base_v1_ledger(factory) -> Ledger:
+    """A base-preset ledger whose ``preset_versions`` says base 1."""
+    ledger = factory([PRESETS / "base"])
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '{\"base\": 1}' "
+        "WHERE `key` = 'preset_versions'"
+    )
+    ledger.driver.commit("test: preset version 1")
+    ledger.read_meta()
+    return ledger
+
+
+def test_after_commit_hook_runs_only_on_a_real_apply(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """A preset-file hook is never part of a dry run, and reports its note."""
+    ledger = _make_base_v1_ledger(embedded_ledger_factory)
+    head_before = head(ledger)
+    script = write_step(
+        tmp_path,
+        kind="preset",
+        preset="base",
+        from_version=1,
+        statements=["UPDATE `alias` SET `alias` = `alias` WHERE 1 = 0"],
+        hook_source=(
+            "def after(ledger, result):\n"
+            "    MARKER.write_text(str(result.commit_hash))\n"
+            "    return 'wrote the marker file'\n"
+        ),
+        step_args=", after_commit=after, after_commit_note='write the marker file'",
+    )
+
+    dry = run_python(script, "--ledger", str(ledger.path), "--dry-run", env=script_env)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "after commit: write the marker file" in dry.stdout
+    assert not (tmp_path / "marker.txt").exists()
+    assert head(ledger) == head_before
+
+    applied = run_python(script, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "post-commit: wrote the marker file" in applied.stdout
+    assert (tmp_path / "marker.txt").read_text(encoding="utf-8") == head(ledger)
+
+
+def test_failed_after_commit_hook_reports_that_the_commit_exists(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """The commit cannot be undone by a file error, so the report must say so."""
+    ledger = _make_base_v1_ledger(embedded_ledger_factory)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    script = write_step(
+        tmp_path,
+        kind="preset",
+        preset="base",
+        from_version=1,
+        statements=["UPDATE `alias` SET `alias` = `alias` WHERE 1 = 0"],
+        hook_source=(
+            "def after(ledger, result):\n"
+            "    raise RuntimeError('boom in the file step')\n"
+        ),
+        step_args=", after_commit=after",
+    )
+
+    result = run_python(script, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    head_after = head(ledger)
+    assert head_after != head_before
+    assert commit_count(ledger) == commits_before + 1
+    assert (
+        f"commit {head_after} was made but the post-commit preset copy "
+        "update failed" in output
+    )
+    assert "boom in the file step" in output
+    assert "post-commit" in output
+    # The Dolt side of the commit is complete: the counter was bumped.
+    ledger.read_meta()
+    assert json.loads(ledger.meta["preset_versions"]) == {"base": 2}
+
+
+def test_post_commit_verification_failure_is_reported_on_stderr(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """F5: a failure after the commit must name itself, not exit 1 silently.
+
+    ``reopened_schema`` re-reads the ledger from its own preset copy; here the
+    post-commit hook deliberately corrupts that copy, so the fingerprint the
+    commit recorded no longer matches what the ledger opens with.
+    """
+    ledger = _make_base_v1_ledger(embedded_ledger_factory)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    script = write_step(
+        tmp_path,
+        kind="preset",
+        preset="base",
+        from_version=1,
+        statements=["UPDATE `alias` SET `alias` = `alias` WHERE 1 = 0"],
+        hook_source=(
+            "from tetramark.schema.loader import load_ledger_schema\n"
+            "\n"
+            "def reopened(ledger):\n"
+            "    return load_ledger_schema(ledger.path)[1]\n"
+            "\n"
+            "def after(ledger, result):\n"
+            "    kinds = ledger.path / 'presets' / 'base' / 'kinds'\n"
+            "    kinds.mkdir(parents=True, exist_ok=True)\n"
+            "    (kinds / 'late.yaml').write_text(\n"
+            "        'kinds:\\n  late_entity:\\n    object: entity\\n'\n"
+            "    )\n"
+            "    return 'corrupted the preset copy on purpose'\n"
+        ),
+        step_args=", after_commit=after, reopened_schema=reopened",
+    )
+
+    result = run_python(script, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "committed" in result.stdout
+    assert "post-commit: corrupted the preset copy on purpose" in result.stdout
+    assert (
+        "error: migration base 1 -> 2: the commit was made, but the ledger now "
+        "opens with fingerprint" in result.stderr
+    ), result.stderr
+    # The commit exists (the report must not pretend otherwise).
+    assert head(ledger) != head_before
+    assert commit_count(ledger) == commits_before + 1
+    ledger.read_meta()
+    assert json.loads(ledger.meta["preset_versions"]) == {"base": 2}
+
+
+def test_molbio_step_refuses_a_rename_map_that_names_a_missing_old_table(
+    embedded_ledger_factory,
+) -> None:
+    """A typo in ``renames.yaml`` fails loudly before the planner runs.
+
+    The step pre-checks every old kind table its rename map names (derived from
+    the map, so a typo is what is checked), instead of letting the planner skip
+    a rename whose old table does not exist.
+    """
+    ledger = embedded_ledger_factory([PRESETS / "base"])
+    spec = importlib.util.spec_from_file_location("molbio_1_to_2", MOLBIO_STEP)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # "constructs" is the typo: the live table is entity_construct.
+    module.RENAMES = RenameMap.from_dict(
+        {
+            "entity": {
+                "constructs": "protein_construct",
+                "strain": "bacterial_strain",
+            },
+            "stock": {
+                "bacterial": "bacterial_glycerol",
+                "pellet": "bacterial_pellet",
+            },
+        }
+    )
+    assert "entity_constructs" in {
+        table_name(object_name, old_kind)
+        for object_name, mapping in module.RENAMES.kind_maps()
+        for old_kind in mapping
+    }
+    with pytest.raises(LedgerError, match="entity_constructs"):
+        module.plan(ledger)

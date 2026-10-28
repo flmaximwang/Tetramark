@@ -1,0 +1,118 @@
+preset: base
+version: 1
+description: >-
+  Domain-neutral inventory: a generic item, a purchase lot, and the box
+  geometries used by the sample-oriented presets.
+
+mixins:
+  named_fields:
+    name:
+      type: string
+      required: true
+      unique: true
+      description: Human-readable unique name used in lists and searches.
+    description:
+      type: text
+      description: Free-text notes about the object; shown in show/find output.
+
+kinds:
+  item:
+    object: entity
+    description: A generic thing that can be kept in stock (reagent, consumable, part).
+    mixins: [named_fields]
+    fields:
+      category:
+        type: string
+        length: 64
+        description: Coarse grouping for browsing, e.g. reagent, consumable or spare part.
+
+  lot:
+    object: stock
+    description: A purchase or delivery lot of one item, with supplier and shelf life.
+    entity_kinds: [item]
+    fields:
+      supplier:
+        type: string
+        length: 128
+        required: true
+        description: Vendor or internal source the lot was received from.
+      catalog_no:
+        type: string
+        length: 64
+        description: Vendor catalogue / part number of the lot.
+      received_on:
+        type: date
+        description: Date the lot entered the lab (ISO yyyy-mm-dd).
+      expires_on:
+        type: date
+        description: Expiry date printed on the lot; NULL when it does not expire.
+
+  grid9x9:
+    object: box
+    description: Nine-by-nine tube box (rows A-J without I, columns 1-9).
+    geometry:
+      type: grid
+      rows: "A-J!I"
+      cols: "1-9"
+
+  grid96:
+    object: box
+    description: Standard 96-well box or plate (rows A-H, columns 1-12).
+    geometry:
+      type: grid
+      rows: "A-H"
+      cols: "1-12"
+
+  rack:
+    object: box
+    description: Tube rack with ten numbered positions.
+    geometry:
+      type: named
+      slots: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+  shelf:
+    object: box
+    description: A freezer shelf; holds up to twelve racks or boxes and has no slots.
+    geometry:
+      type: slotless
+      capacity: 12
+
+  freezer:
+    object: box
+    description: A freezer; holds up to six shelves and has no slots.
+    geometry:
+      type: slotless
+      capacity: 6
+
+  drawer:
+    object: box
+    description: A single-container drawer; holds one box or rack and has no slots.
+    geometry:
+      type: slotless
+      capacity: 1
+
+rules:
+  - id: BASE01
+    description: a lot cannot expire before it was received
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_lot
+      WHERE received_on IS NOT NULL AND expires_on IS NOT NULL
+        AND expires_on < received_on
+    expect: {single_value: 0}
+
+  - id: BASE02
+    description: every lot records a supplier
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_lot
+      WHERE supplier IS NULL OR TRIM(supplier) = ''
+    expect: {single_value: 0}
+
+  - id: BASE03
+    description: items without any stock (informational)
+    severity: info
+    sql: >-
+      SELECT COUNT(*) FROM entity_item i
+      WHERE NOT EXISTS (SELECT 1 FROM stock s WHERE s.entity_id = i.id)
+    expect: {single_value: 0}

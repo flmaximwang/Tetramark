@@ -10,16 +10,16 @@ tm entity add plasmid --name pZET035 \
   --set backbone=pZET035 --set resistance=kan \
   --set sequence='ATGAAACCCGGGTTT' --alias p035
 
-tm stock add bacterial --entity p035 \
+tm stock add bacterial_glycerol --entity p035 \
   --set strain='BL21(DE3)' --set medium=LB --set batch=01 \
-  --box WFL-12-01 --slot A1 --quantity 500 --unit ul \
-  --aliquot-set glycerol_pct=15
+  --set glycerol_pct=15 \
+  --box WFL-12-01 --slot A1 --quantity 500 --unit ul
 ```
 
 What happened:
 
 - one entity row (`entity` + `entity_plasmid`), with a UUID;
-- one stock (`stock` + `stock_bacterial`) with a date-code ID such as `1226FP01`;
+- one stock (`stock` + `stock_bacterial_glycerol`) with a date-code ID such as `1226FP01`;
 - one aliquot `1226FP01.1` at `WFL-12-01:A1`, quantity `500 ul`, status `stored`;
 - one Dolt commit for the entity and one for the stock (each command = one commit).
 
@@ -47,13 +47,13 @@ tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3
 The slots are consumed in the order given; one slot per new aliquot. A move keeps the aliquot's
 status and quantity and records a `move` event with the old and new positions.
 
-## 3. Use part of a pellet
+## 3. Use part of a bacterial pellet
 
-A pellet stock is one culture; its **aliquots are the tubes and hold the volume**. The stock ID is
+A `bacterial_pellet` stock is one culture; its **aliquots are the tubes and hold the volume**. The stock ID is
 printed by `stock add`; the examples below use `1226KO02` as that ID.
 
 ```sh
-tm stock add pellet --entity p035 --aliquots 3 \
+tm stock add bacterial_pellet --entity p035 --aliquots 3 \
   --quantity 500 --unit ml \
   --set culture_volume_ml=1500 --set od600=2.4 --set induction=iptg
 
@@ -130,8 +130,9 @@ Common failures:
 - `core_stored_aliquot_slot` — a `stored` aliquot has no slot; move it into a box or mark it
   `missing`/`pending`.
 - `schema_<kind>_entity_kinds` — a stock points at an entity kind the stock kind does not accept
-  (e.g. a `pellet` of a `construct`; pellets accept `plasmid`/`strain`).
-- `rule_MB01` — a plasmid has a construct but no sequence; fill `sequence` with `entity edit`.
+  (e.g. a `bacterial_pellet` of a `protein_construct`; bacterial pellets accept
+  `plasmid`/`bacterial_strain`).
+- `rule_MB01` — a plasmid has a protein construct but no sequence; fill `sequence` with `entity edit`.
 
 After a bulk import always run `tm check -v` before calling it done.
 
@@ -139,7 +140,7 @@ After a bulk import always run `tm check -v` before calling it done.
 
 ```sh
 tm export all --out exports/
-# edit exports/bacterial.csv in a spreadsheet, keeping the id column
+# edit exports/bacterial_glycerol.csv in a spreadsheet, keeping the id column
 tm --dry-run import all exports/     # validates first, prints nothing on failure
 tm import all exports/               # all-or-nothing, one commit
 tm check

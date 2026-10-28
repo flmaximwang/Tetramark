@@ -149,7 +149,7 @@ def test_readme_quickstart_runs(docs_env: Path, port: int) -> None:
         created_stock = run_json(
             "stock",
             "add",
-            "bacterial",
+            "bacterial_glycerol",
             "--entity",
             "p035",
             "--set",
@@ -253,8 +253,8 @@ def test_command_reference_object_and_read_flows(docs_env: Path, docs_server: in
 
     # Stocks: add/show/edit/ls, aliquots, placement, --aliquot-set.
     construct = run_json(
-        "entity", "add", "construct", "--name", "C1", "--set", "sequence=atgc",
-        "--alias", "c1",
+        "entity", "add", "protein_construct", "--name", "C1",
+        "--set", "sequence=atgc", "--alias", "c1",
     )
     assert construct["name"] == "C1"
     stock = run_json(
@@ -493,7 +493,7 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     construct_id = "cd0ae0ea-363f-4409-a432-bd50d5a2b7f3"
     plasmid_id = "5fe23f35-21fe-4274-bae8-168a3225ac3c"
     run_json(
-        "entity", "add", "construct", "--id", construct_id,
+        "entity", "add", "protein_construct", "--id", construct_id,
         "--name", "0801_4_Ori_6H.1@pZET043",
         "--set", "sequence=ATGC", "--set", "tag=6H",
     )
@@ -504,7 +504,8 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
         "--set", f"construct={construct_id}", "--alias", "0801_5",
     )
     bacterial = run_json(
-        "stock", "add", "bacterial", "--id", "0826FP02", "--entity", plasmid_id,
+        "stock", "add", "bacterial_glycerol", "--id", "0826FP02",
+        "--entity", plasmid_id,
         "--set", "strain=Top10", "--set", "batch=01",
         "--box", "WFL-08-01", "--slot", "A2",
     )
@@ -518,7 +519,8 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
 
     # A non-date-code old UID becomes an alias (zsqlab10 pellet short code).
     pellet = run_json(
-        "stock", "add", "pellet", "--entity", plasmid_id, "--aliquots", "2",
+        "stock", "add", "bacterial_pellet", "--entity", plasmid_id,
+        "--aliquots", "2",
         "--quantity", "500", "--unit", "ml",
         "--set", "culture_volume_ml=1000", "--set", "od600=2.2",
     )
@@ -534,13 +536,15 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
 
     # Row counts per kind (header included in CSV).
     construct_count = len(
-        run("--format", "csv", "entity", "ls", "construct").output.splitlines()
+        run("--format", "csv", "entity", "ls", "protein_construct")
+        .output.splitlines()
     )
     plasmid_count = len(
         run("--format", "csv", "entity", "ls", "plasmid").output.splitlines()
     )
     bacterial_count = len(
-        run("--format", "csv", "stock", "ls", "bacterial").output.splitlines()
+        run("--format", "csv", "stock", "ls", "bacterial_glycerol")
+        .output.splitlines()
     )
     prep_count = len(
         run("--format", "csv", "stock", "ls", "plasmid_prep").output.splitlines()
@@ -551,11 +555,11 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     exports = Path.cwd() / "exports"
     run("export", "all", "--out", str(exports))
     for name in (
-        "construct.csv",
+        "protein_construct.csv",
         "plasmid.csv",
-        "bacterial.csv",
+        "bacterial_glycerol.csv",
         "plasmid_prep.csv",
-        "pellet.csv",
+        "bacterial_pellet.csv",
         "boxes.csv",
         "aliquots.csv",
         "aliases.csv",
