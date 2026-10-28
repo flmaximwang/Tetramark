@@ -219,7 +219,9 @@ def target_schema(ledger: Ledger) -> EffectiveSchema:
 
 def reopened_schema(ledger: Ledger) -> EffectiveSchema:
     """The schema the ledger opens with from its **own** (just vendored) copy."""
-    _config, schema = load_ledger_schema(ledger.path)
+    _config, schema = load_ledger_schema(
+        ledger.path, allow_legacy_statuses=True
+    )
     return schema
 
 

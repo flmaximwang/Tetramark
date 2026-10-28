@@ -9,12 +9,12 @@ stock(id PK, kind, entity_id FK→entity, parent_stock_id FK→stock, source_ali
       created_at, notes, UNIQUE(id,kind))
 box(id PK, name UNIQUE, kind, parent_box_id FK→box, parent_slot, created_at, notes, UNIQUE(id,kind))
 slot(box_id FK→box, label, row_label, col_label, ordinal, PK(box_id,label))
-aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status CHECK IN vocab,
+aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status VARCHAR NOT NULL,
         quantity DECIMAL, unit, label, created_at, notes, UNIQUE(stock_id,seq),
-        FK(box_id,slot)→slot)
+        FK(box_id,slot)→slot)                    -- status: its stock kind's set (app + tests)
 aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit), amount, unit,
               from_box_id, from_slot, to_box_id, to_slot, old_status, new_status,
-              actor, purpose, note, at)
+              forced BOOLEAN NOT NULL DEFAULT FALSE, actor, purpose, note, at)
 alias(object_type, object_id, alias, PK(object_type, alias))
 ```
 
@@ -27,8 +27,14 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   `alias_list`/`occupant_alias_list` columns to the generated views. Version 3
   removes the `aliquot_<stockkind>` extension tables (an aliquot is a generic
   tube; the per-stock-kind tube-field key no longer loads) and adds the
-  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. A **v2**
-  ledger upgrades to v3 with the hand-run `migration/spec/2-to-3/` step; a v1
+  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. Version 4
+  moved the status vocabulary out of `ledger.yaml` into per-stock-kind status
+  sets, dropped the global `aliquot.status` CHECK, added `aliquot_event.forced`
+  and replaced the stock views' `aliquots_stored`/`quantity_stored`/five-value
+  `status` with in-stock counts, `quantity_in_stock` + `unit` and a three-value
+  `status`. A **v2** ledger upgrades to v3 with the hand-run
+  `migration/spec/2-to-3/` step (`migration/spec/3-to-4/` then moves v3 to v4);
+  a v1
   ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs
   `migration/presets/molbio/1-to-2`, which needs the last tool version that
   still reads `aliquot_fields` (a 0.2.0+ tool cannot open such a ledger at
@@ -81,19 +87,22 @@ Kind tables (generated from schema):
 - `stock_<kind>(…)` and `box_<kind>(…)` likewise.
 
 Views (generated):
-- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity, status,
-  and `occupant_alias_list` (the occupant's aliases: the aliquot's aliases when the occupant is an
-  aliquot, the box's aliases when it is a nested box, NULL for an empty slot).
+- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity,
+  the occupant stock's `aliquots_in_stock`/`aliquots_total`/`quantity_in_stock` + `unit` and derived
+  `status` (NULL when the slot has no aliquot occupant), and `occupant_alias_list` (the occupant's
+  aliases: the aliquot's aliases when the occupant is an aliquot, the box's aliases when it is a
+  nested box, NULL for an empty slot).
 - `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`) and `alias_list`.
-- `v_stock_status` — stock + derived status (`active` if any aliquot stored; `pending` if any pending
-  and none stored; `depleted` if all consumed; `missing` if all missing/consumed with ≥1 missing; `empty` if 0 aliquots) + aliquot counts + total quantity per unit + `alias_list`.
+- `v_stock_status` — stock + derived status (`active` when at least one aliquot is in stock;
+  `depleted` when it has aliquots but none in stock; `empty` when it has none) +
+  `aliquots_in_stock`/`aliquots_total` + `quantity_in_stock` + `unit` + `alias_list`. "In stock" means
+  the aliquot's status has `in_stock: true` in its stock kind's status set (§2.4).
 - `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench). Every
   `v_stock_<kind>` additionally shows, in this order: `entity_kind`/`entity_name` (the owning design,
-  from core `entity`), `aliquots_stored` (status `stored`: what is still on the shelf),
-  `aliquots_total`, `quantity_stored` + `unit` (the sum of the stored quantities; `unit` is that unit
-  when every stored tube **with a quantity** shares one, otherwise both are NULL), `status` (the same
-  derived status as `v_stock_status`, generated from one shared SQL fragment). The final column is
-  always `alias_list`.
+  from core `entity`), `aliquots_in_stock`, `aliquots_total`, `quantity_in_stock` + `unit` (the sum of
+  the in-stock quantities; `unit` is that unit when every in-stock tube **with a quantity** shares one,
+  otherwise both are NULL), `status` (the same derived status as `v_stock_status`, generated from one
+  shared SQL fragment). The final column is always `alias_list`.
 
 **Aliquots have no kind.** An aliquot is a generic tube — location, quantity, unit, status, label,
 notes — and everything specific to a type of material lives on the stock kind (tubes that differ in a
@@ -115,6 +124,7 @@ What the DB enforces vs the app:
 - DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values.
 - App + Dolt tests (cannot be expressed as DB constraints): slot capacity & aliquot-vs-child-box exclusivity,
   nesting acyclicity, stock→entity kind restriction, `pattern`, status/slot consistency
-  (`stored` in a slotted box ⇒ slot NOT NULL), slotless box capacity.
+  (an in-stock aliquot in a slotted box ⇒ slot NOT NULL), statuses belonging to their stock kind's set,
+  transition rules for unforced `status` events, slotless box capacity.
 
 No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in the app).

@@ -60,7 +60,7 @@ __all__ = [
 #: ``aliquots_in_stock`` when the stock views switch to status sets; that
 #: rename is the only change this module needs (the accessor
 #: :func:`stock_aliquot_counts` is the single reader).
-STOCK_COUNT_COLUMNS: tuple[str, str] = ("aliquots_stored", "aliquots_total")
+STOCK_COUNT_COLUMNS: tuple[str, str] = ("aliquots_in_stock", "aliquots_total")
 
 #: Tie-break order of object types in the tree and in the node list.
 OBJECT_ORDER: dict[str, int] = {"entity": 0, "stock": 1, "aliquot": 2}

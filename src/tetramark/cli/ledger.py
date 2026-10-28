@@ -58,11 +58,6 @@ def init_command(
     author: str | None = typer.Option(
         None, "--author", help='"Name <email>" for commits (default: workspace/git).'
     ),
-    status: list[str] = typer.Option(
-        [],
-        "--status",
-        help="Aliquot status vocabulary (repeat to override the default four).",
-    ),
     adopt: bool = typer.Option(
         False,
         "--adopt",
@@ -94,7 +89,6 @@ def init_command(
             preset,
             id_prefix=id_prefix,
             author=author,
-            statuses=status or None,
             force_config=force_config,
             branch=options.branch,
             dry_run=options.dry_run,
@@ -119,7 +113,6 @@ def init_command(
         preset,
         id_prefix=id_prefix,
         author=author,
-        statuses=status or None,
         dry_run=options.dry_run,
     )
     if isinstance(result, InitPlan):
@@ -226,6 +219,11 @@ def preset_payload(preset: Preset) -> dict[str, Any]:
     payload["version"] = preset.version
     if preset.description:
         payload["description"] = preset.description
+    if preset.status_sets:
+        payload["status_sets"] = {
+            name: preset.status_sets[name].normalised()
+            for name in sorted(preset.status_sets)
+        }
     if preset.mixins:
         payload["mixins"] = {
             mixin: {name: field.normalised() for name, field in fields.items()}
@@ -246,6 +244,12 @@ def kind_payload(kind: Kind) -> dict[str, Any]:
         payload["description"] = kind.description
     if kind.entity_kinds is not None:
         payload["entity_kinds"] = kind.entity_kinds
+    if kind.statuses is not None:
+        payload["statuses"] = (
+            kind.statuses
+            if isinstance(kind.statuses, str)
+            else kind.statuses.normalised()
+        )
     payload["fields"] = {
         name: field.normalised() for name, field in kind.fields.items()
     }

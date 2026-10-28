@@ -39,9 +39,10 @@ copied into a self-contained ledger, see below).
 
 Preset catalogue:
 
-- `base` — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named), `shelf`/`freezer`/`drawer`
-  (slotless); entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
-  received_on, expires_on).
+- `base` (**version 2**) — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named),
+  `shelf`/`freezer`/`drawer` (slotless); entity kind `item` (name, category, description); stock kind
+  `lot` (supplier, catalog_no, received_on, expires_on, `statuses: tube`); the status sets `tube`,
+  `cryo` and `animal` (§2.4).
 - `molbio` (includes `base`, **version 2**) — derived from zsqlab08/10: entities `protein_construct`
   (protein: sequence, molecular_weight_da, extinction coefficients as computed), `plasmid` (sequence,
   backbone, resistance, ref protein_construct), `bacterial_strain` (genotype, species), `cell_line`
@@ -52,8 +53,11 @@ Preset catalogue:
   core quantity), `cell_vial` (passage, medium, freezing_medium, cells_per_vial, dmso_pct) and
   `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
   transfection). Molbio 2 has no per-tube fields: all aliquots of one stock are the same, so a
-  property belongs on the stock kind. Spec 3 removed the per-stock-kind tube-field schema key
+  property belongs on the stock kind. Its stock kinds use `statuses: tube` except `cell_vial`
+  (`statuses: cryo`); the preset's `version:` stays 2 until the parts split (ticket 27) that vendors
+  the `status_sets` together with the part files. Spec 3 removed the per-stock-kind tube-field schema key
   entirely, so a molbio-1 ledger is upgraded by `migration/presets/molbio/1-to-2/` and then
   `migration/spec/2-to-3/`.
-- `library` (includes `base`) — entity `book` (title, authors, isbn pattern, year); stock `copy`
-  (acquired_on, condition enum). Exists to prove generality; used in tests.
+- `library` (**version 2**, includes `base`) — entity `book` (title, authors, isbn pattern, year);
+  stock `copy` (acquired_on, condition enum, `statuses: tube`). Exists to prove generality; used in
+  tests.

@@ -17,6 +17,7 @@ kinds:
   bacterial:
     object: stock
     entity_kinds: [item, plasmid]
+    statuses: tube
     mixins: [measured]
     fields:
       strain: {type: string, required: true}

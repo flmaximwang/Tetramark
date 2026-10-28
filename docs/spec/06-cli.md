@@ -31,14 +31,15 @@ tm schema show [KIND] | plan | apply [--allow-destructive]
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity edit ID --set f=v ; tm entity ls [KIND] [--where f=v]
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
-                 [--aliquots N] [--box NAME --slot A1 [--slot A2 ...]] [--quantity 500 --unit ml]
+                 [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
+                 [--quantity 500 --unit ml]
 tm stock show|edit|ls ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
-tm aliquot add STOCK [--count N] [--box NAME --slot S ...] [--quantity Q --unit U]
+tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot move ALQ --box NAME [--slot S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
-tm aliquot status ALQ stored|missing|consumed|pending
+tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT --slot S]
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
@@ -49,10 +50,16 @@ tm history ID               # aliquot_event + dolt_log entries touching the obje
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 tm check [-v] [--group G]
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
+                                # a 'status' column is a creation status (any set status)
 tm export KIND|all [--out DIR]
 tm remote add NAME URL | push | pull ; tm backup [DIR]
 tm branch ls | create NAME [--from REF] | delete NAME
 ```
+
+Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
+column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
+`aliquot_event.forced = TRUE` and is the only way to make an unforced-illegal change; without
+`--force` the CLI refuses and names the allowed next status(es).
 
 `tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
 `aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays

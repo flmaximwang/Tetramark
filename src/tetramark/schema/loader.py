@@ -54,6 +54,7 @@ from tetramark.schema.model import (
     IDENTIFIER_RE,
     RESERVED_SQL_WORDS,
     EffectiveSchema,
+    ObjectType,
     Field,
     FieldType,
     Kind,
@@ -62,6 +63,7 @@ from tetramark.schema.model import (
     Preset,
     Rule,
     SchemaError,
+    StatusSet,
 )
 
 __all__ = [
@@ -282,10 +284,57 @@ def _validate(
         raise _validation_error(exc, display, prefix) from exc
 
 
+#: True only while a migration step loads a pre-spec-4 ledger: its preset copies
+#: predate ``statuses:`` on stock kinds.  Set by
+#: :func:`load_ledger_schema` (``allow_legacy_statuses``) and read by
+#: :func:`_validate_preset`; never set by a normal ``tm`` read.
+_LEGACY_PRESET_STATUSES = False
+
+#: The spec-3 vocabulary, as the permissive set a legacy stock kind is given:
+#: every status may have changed into any other (spec 3 had no transition rules),
+#: and only ``stored`` counted as on the shelf.
+_LEGACY_STATUS_SET: dict[str, dict[str, Any]] = {
+    name: {
+        "in_stock": name == "stored",
+        "to": ["pending", "stored", "missing", "consumed"],
+    }
+    for name in ("pending", "stored", "missing", "consumed")
+}
+
+
+def _inject_legacy_statuses(data: dict[str, Any]) -> dict[str, Any]:
+    """Give spec-3 stock kinds the implied default status set.
+
+    A preset copy written before spec 4 has no ``statuses:`` on its stock kinds.
+    A migration step still has to load it (that is the shape it is about to
+    upgrade), so in legacy mode the spec-3 default set is filled in rather than
+    failing with a load error meant for the user.
+    """
+    kinds = data.get("kinds")
+    if not isinstance(kinds, dict):
+        return data
+    patched = dict(data)
+    new_kinds = dict(kinds)
+    changed = False
+    for name, kind in kinds.items():
+        if (
+            isinstance(kind, dict)
+            and kind.get("object") == "stock"
+            and "statuses" not in kind
+        ):
+            new_kinds[name] = {**kind, "statuses": _LEGACY_STATUS_SET}
+            changed = True
+    if changed:
+        patched["kinds"] = new_kinds
+    return patched
+
+
 def _validate_preset(data: Any, display: str, prefix: str = "") -> Preset:
     if not isinstance(data, dict):
         raise SchemaError("preset document must be a YAML mapping", file=display)
     _reject_removed_kind_key(data, display, prefix)
+    if _LEGACY_PRESET_STATUSES:
+        data = _inject_legacy_statuses(data)
     return _validate(Preset, data, display, prefix)
 
 
@@ -335,7 +384,13 @@ def _load_rules_document(data: Any, display: str, prefix: str = "") -> Preset:
         raise SchemaError(
             "rules document must be a list or a YAML mapping", file=display
         )
-    if "rules" in data or "preset" in data or "version" in data or "include" in data:
+    if (
+        "rules" in data
+        or "status_sets" in data
+        or "preset" in data
+        or "version" in data
+        or "include" in data
+    ):
         return _validate_preset(data, display, prefix)
     if {"id", "sql", "expect"} <= set(data):
         return _validate(Preset, {"rules": [data]}, display, prefix)
@@ -347,10 +402,21 @@ def _load_rules_document(data: Any, display: str, prefix: str = "") -> Preset:
 def _load_kinds_document(data: Any, display: str, prefix: str = "") -> Preset:
     if not isinstance(data, dict):
         raise SchemaError("kinds document must be a YAML mapping", file=display)
-    if any(key in data for key in ("kinds", "mixins", "rules", "preset", "version", "include")):
+    if any(
+        key in data
+        for key in (
+            "kinds",
+            "mixins",
+            "rules",
+            "status_sets",
+            "preset",
+            "version",
+            "include",
+        )
+    ):
         return _validate_preset(data, display, prefix)
     # Bare mapping: the document *is* the kinds mapping.
-    return _validate(Preset, {"kinds": data}, display, prefix)
+    return _validate_preset({"kinds": data}, display, prefix)
 
 
 def _load_unit(source: _Source) -> _PresetUnit:
@@ -461,6 +527,12 @@ class _KindEntry:
 
 
 @dataclass
+class _StatusSetEntry:
+    statuses: StatusSet
+    display: str
+
+
+@dataclass
 class _MixinEntry:
     fields: dict[str, Field]
     display: str
@@ -478,8 +550,23 @@ class _Collector:
         self.kinds: dict[str, _KindEntry] = {}
         self.mixins: dict[str, _MixinEntry] = {}
         self.rules: dict[str, _RuleEntry] = {}
+        self.status_sets: dict[str, _StatusSetEntry] = {}
 
     def add(self, doc: Preset, display: str, *, source: str = "preset") -> None:
+        for set_name, statuses in doc.status_sets.items():
+            _check_identifier(set_name, display, f"status_sets.{set_name}")
+            if set_name in self.status_sets:
+                raise SchemaError(
+                    f"duplicate status set {set_name!r} (also defined in "
+                    f"{self.status_sets[set_name].display}); set names are "
+                    "global, like kind names",
+                    file=display,
+                    path=f"status_sets.{set_name}",
+                )
+            self.status_sets[set_name] = _StatusSetEntry(
+                statuses=statuses, display=display
+            )
+
         for mixin_name, fields in doc.mixins.items():
             _check_identifier(mixin_name, display, f"mixins.{mixin_name}")
             if mixin_name in self.mixins:
@@ -598,6 +685,42 @@ def _apply_mixins(collector: _Collector) -> dict[str, Kind]:
     return resolved
 
 
+def _resolve_status_sets(
+    collector: _Collector, kinds: dict[str, Kind]
+) -> dict[str, Kind]:
+    """Resolve every stock kind's ``statuses:`` to a concrete :class:`StatusSet`.
+
+    A stock kind names a set from ``status_sets`` or gives an inline set; the
+    loader replaces the name with the resolved content so views, rules and the
+    status-change check can read one shape.  Entity and box kinds never carry
+    one (the model already rejects it).
+    """
+    resolved: dict[str, Kind] = {}
+    for kind_name, kind in kinds.items():
+        entry = collector.kinds[kind_name]
+        if kind.object is not ObjectType.stock:
+            resolved[kind_name] = kind
+            continue
+        statuses = kind.statuses
+        if isinstance(statuses, str):
+            status_entry = collector.status_sets.get(statuses)
+            if status_entry is None:
+                known = ", ".join(sorted(collector.status_sets)) or "(none)"
+                raise SchemaError(
+                    f"unknown status set {statuses!r} (defined sets: {known}); "
+                    "define it under the top-level 'status_sets:' key of a "
+                    "preset or kinds file",
+                    file=entry.display,
+                    path=f"kinds.{kind_name}.statuses",
+                )
+            resolved[kind_name] = kind.model_copy(
+                update={"statuses": status_entry.statuses}
+            )
+        else:
+            # Inline set: the model validated its transitions already.
+            assert isinstance(statuses, StatusSet)  # model guarantees it
+            resolved[kind_name] = kind
+    return resolved
 def _validate_lineage_ref(
     kind_name: str,
     object_type: ObjectType,
@@ -607,7 +730,6 @@ def _validate_lineage_ref(
     display: str,
 ) -> None:
     """A ``lineage: true`` ref must be an edge of the lineage graph (spec §6).
-
     ``tm lineage`` nodes are entities and stocks, with aliquots as edge
     endpoints, so the flag only makes sense on entity and stock kinds and only
     when it points at one of those: a ref to a box is not a descent edge.
@@ -692,6 +814,14 @@ def _merge_units(units: Iterable[_PresetUnit]) -> Preset:
     seen: dict[str, str] = {}
     for unit in units:
         for display, doc in [(unit.source.primary_display, unit.primary), *unit.extras]:
+            for name in doc.status_sets:
+                if name in merged.status_sets:
+                    raise SchemaError(
+                        f"duplicate status set {name!r}",
+                        file=display,
+                        path=f"status_sets.{name}",
+                    )
+                merged.status_sets[name] = doc.status_sets[name]
             for name in doc.mixins:
                 if name in merged.mixins:
                     raise SchemaError(
@@ -743,8 +873,17 @@ def load_preset(
     return merged
 
 
-def load_ledger_config(path: str | Path) -> LedgerConfig:
-    """Parse a ``ledger.yaml`` file."""
+def load_ledger_config(
+    path: str | Path, *, allow_legacy_statuses: bool = False
+) -> LedgerConfig:
+    """Parse a ``ledger.yaml`` file.
+
+    Spec 4 moved the status vocabulary out of ``ledger.yaml`` into the preset
+    stock kinds (``status_sets:``), so a ledger whose config still has a
+    ``statuses:`` key cannot be opened: the error names the migration step.
+    ``allow_legacy_statuses`` is only for ``migration/spec/3-to-4``, which must
+    read the old shape it is about to migrate.
+    """
     candidate = Path(path)
     if candidate.is_dir():
         candidate = candidate / "ledger.yaml"
@@ -754,6 +893,18 @@ def load_ledger_config(path: str | Path) -> LedgerConfig:
     data = _read_yaml(candidate, display)
     if not isinstance(data, dict):
         raise SchemaError("ledger.yaml must be a YAML mapping", file=display)
+    if "statuses" in data:
+        if not allow_legacy_statuses:
+            raise SchemaError(
+                "ledger.yaml no longer holds 'statuses': since spec 4 the "
+                "status vocabulary belongs to each stock kind in the presets "
+                "(top-level 'status_sets:' and a 'statuses:' reference on the "
+                "kind). Remove the key with migration/spec/3-to-4/README.md, "
+                "then reopen the ledger",
+                file=display,
+                path="statuses",
+            )
+        data = {key: value for key, value in data.items() if key != "statuses"}
     return _validate(LedgerConfig, data, display)
 
 
@@ -1158,6 +1309,7 @@ def load_schema(
             collector.add(doc, display, source="local")
 
     resolved_kinds = _apply_mixins(collector)
+    resolved_kinds = _resolve_status_sets(collector, resolved_kinds)
     _validate_references(resolved_kinds, collector.kinds)
 
     return EffectiveSchema(
@@ -1166,7 +1318,9 @@ def load_schema(
         rule_sources={
             rule_id: entry.source for rule_id, entry in collector.rules.items()
         },
-        statuses=list(config.statuses),
+        status_sets={
+            name: entry.statuses for name, entry in collector.status_sets.items()
+        },
         preset_versions=versions,
     )
 
@@ -1175,35 +1329,49 @@ def load_ledger_schema(
     ledger_dir: str | Path,
     *,
     search_paths: Sequence[str | Path] = (),
+    allow_legacy_statuses: bool = False,
 ) -> tuple[LedgerConfig, EffectiveSchema]:
     """Load ``<ledger_dir>/ledger.yaml`` and its effective schema.
 
     Presets resolve only from ``<ledger_dir>/presets/`` (spec §8); when the
     ledger's copy is incomplete the error names the expected file.
+    ``allow_legacy_statuses`` is the migration path (a spec-3 ledger still has
+    the removed ``statuses:`` key); normal reads keep the spec-4 refusal.
     """
+    global _LEGACY_PRESET_STATUSES
+    without_statuses = _LEGACY_PRESET_STATUSES
     path = Path(ledger_dir)
     if path.is_file():
         path = path.parent
-    config = load_ledger_config(path / "ledger.yaml")
-    presets = resolve_ledger_presets(path, config)
-    effective = config.model_copy(update={"presets": [str(preset.path) for preset in presets]})
+    if allow_legacy_statuses:
+        _LEGACY_PRESET_STATUSES = True
     try:
-        return config, load_schema(
-            effective, base_dir=path, search_paths=search_paths
+        config = load_ledger_config(
+            path / "ledger.yaml", allow_legacy_statuses=allow_legacy_statuses
         )
-    except SchemaError as error:
-        # A missing *include* copy (e.g. <ledger>/presets/base.yaml deleted) is
-        # still "the ledger's own copy is incomplete": append the same hint the
-        # top-level preset error carries, naming the expected file candidates.
-        # Other include errors (a cycle, an invalid included document) keep
-        # their own message.
-        if error.path != "include" or "not found" not in error.message:
-            raise
-        raise SchemaError(
-            f"{error.message}. A ledger resolves presets only from "
-            f"{path / 'presets'}: copy the missing included preset file there (a "
-            "manual copy works), or run the matching migration/ script (see "
-            "docs/guides/migrating-a-legacy-ledger.md)",
-            file=error.file,
-            path=error.path,
-        ) from error
+        presets = resolve_ledger_presets(path, config)
+        effective = config.model_copy(
+            update={"presets": [str(preset.path) for preset in presets]}
+        )
+        try:
+            return config, load_schema(
+                effective, base_dir=path, search_paths=search_paths
+            )
+        except SchemaError as error:
+            # A missing *include* copy (e.g. <ledger>/presets/base.yaml deleted)
+            # is still "the ledger's own copy is incomplete": append the same
+            # hint the top-level preset error carries, naming the expected file
+            # candidates.  Other include errors (a cycle, an invalid included
+            # document) keep their own message.
+            if error.path != "include" or "not found" not in error.message:
+                raise
+            raise SchemaError(
+                f"{error.message}. A ledger resolves presets only from "
+                f"{path / 'presets'}: copy the missing included preset file there "
+                "(a manual copy works), or run the matching migration/ script "
+                "(see docs/guides/migrating-a-legacy-ledger.md)",
+                file=error.file,
+                path=error.path,
+            ) from error
+    finally:
+        _LEGACY_PRESET_STATUSES = without_statuses

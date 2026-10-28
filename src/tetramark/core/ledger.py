@@ -77,7 +77,6 @@ from tetramark.schema.loader import (
     resolve_preset_spec,
 )
 from tetramark.schema.model import (
-    DEFAULT_STATUSES,
     SPEC_VERSION,
     EffectiveSchema,
     LedgerConfig,
@@ -414,7 +413,6 @@ def _ledger_yaml(
     presets: Sequence[str],
     id_prefix: str | None,
     author: str,
-    statuses: Sequence[str] | None,
 ) -> tuple[dict[str, Any], str]:
     ids: dict[str, dict[str, Any]] = {"entity": {"strategy": "uuid"}}
     if id_prefix is None or not str(id_prefix).strip():
@@ -427,7 +425,6 @@ def _ledger_yaml(
     payload: dict[str, Any] = {"name": name, "presets": list(presets)}
     payload["author"] = author
     payload["ids"] = ids
-    payload["statuses"] = list(statuses or DEFAULT_STATUSES)
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
     return payload, text
 
@@ -567,7 +564,6 @@ def _ledger_plan(
     *,
     id_prefix: str | None,
     author: str | None,
-    statuses: Sequence[str] | None,
 ) -> InitPlan:
     """Build the configuration, schema and DDL of a new ledger (no disk writes).
 
@@ -603,7 +599,6 @@ def _ledger_plan(
         presets=preset_names,
         id_prefix=id_prefix,
         author=canonical_author,
-        statuses=statuses,
     )
     try:
         config = LedgerConfig(**payload)
@@ -639,7 +634,6 @@ def _prepare_init(
     *,
     id_prefix: str | None,
     author: str | None,
-    statuses: Sequence[str] | None,
 ) -> InitPlan:
     ws = _as_workspace(workspace)
     _check_name(name)
@@ -654,7 +648,6 @@ def _prepare_init(
         presets,
         id_prefix=id_prefix,
         author=author,
-        statuses=statuses,
     )
 
 
@@ -665,7 +658,6 @@ def _prepare_adopt(
     *,
     id_prefix: str | None,
     author: str | None,
-    statuses: Sequence[str] | None,
     force_config: bool,
 ) -> InitPlan:
     """Validation of the adopt target that needs no database connection.
@@ -702,7 +694,6 @@ def _prepare_adopt(
         presets,
         id_prefix=id_prefix,
         author=author,
-        statuses=statuses,
     )
 
 
@@ -750,7 +741,6 @@ def init_ledger(
     *,
     id_prefix: str | None = None,
     author: str | None = None,
-    statuses: Sequence[str] | None = None,
     dry_run: bool = False,
 ) -> Ledger | InitPlan:
     """Create a ledger (spec §1.1, §3).
@@ -764,7 +754,6 @@ def init_ledger(
         presets,
         id_prefix=id_prefix,
         author=author,
-        statuses=statuses,
     )
     if dry_run:
         return plan
@@ -1000,7 +989,6 @@ def adopt_ledger(
     *,
     id_prefix: str | None = None,
     author: str | None = None,
-    statuses: Sequence[str] | None = None,
     force_config: bool = False,
     branch: str | None = None,
     dry_run: bool = False,
@@ -1034,7 +1022,6 @@ def adopt_ledger(
         presets,
         id_prefix=id_prefix,
         author=author,
-        statuses=statuses,
         force_config=force_config,
     )
     target = plan.path
@@ -1129,7 +1116,6 @@ def init_ledger_on_server(
     *,
     id_prefix: str | None = None,
     author: str | None = None,
-    statuses: Sequence[str] | None = None,
 ) -> Ledger:
     """Create a ledger inside a running workspace ``dolt sql-server``.
 
@@ -1153,7 +1139,6 @@ def init_ledger_on_server(
         presets,
         id_prefix=id_prefix,
         author=author,
-        statuses=statuses,
     )
     target = plan.path
     created = False
@@ -1213,6 +1198,7 @@ def open(
     branch: str | None = None,
     dry_run: bool = False,
     no_commit: bool = False,
+    allow_legacy_statuses: bool = False,
 ) -> Ledger:
     """Open an existing ledger, choosing a server or embedded driver (spec §6).
 
@@ -1246,7 +1232,9 @@ def open(
 
     # The configuration is needed to resolve the default branch, so read it
     # before opening a connection.
-    config, schema = load_ledger_schema(path)
+    config, schema = load_ledger_schema(
+        path, allow_legacy_statuses=allow_legacy_statuses
+    )
     selected = branch if branch is not None else (config.branch or None)
     driver = ws.driver_for(name, branch=selected)
     try:

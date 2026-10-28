@@ -30,10 +30,10 @@ apply`` (ticket 09) calls it after changing the physical schema.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from tetramark.driver.base import Driver, literal
-from tetramark.schema.ddl import table_name
+from tetramark.schema.ddl import _in_stock_sql, table_name
 from tetramark.schema.model import (
     EffectiveSchema,
     Field,
@@ -293,37 +293,47 @@ def _acyclic_test() -> TestDefinition:
     )
 
 
-def _stored_slot_test(schema: EffectiveSchema) -> TestDefinition | None:
+def _in_stock_slot_test(schema: EffectiveSchema) -> TestDefinition | None:
+    """An **in-stock** aliquot in a slotted box has a slot (spec §3, §4)."""
     slotted = _slotted_box_kinds(schema)
     if not slotted:
         return None
-    vocabulary = ", ".join(_lit(name) for name in slotted)
+    in_stock = _in_stock_sql(
+        schema, kind=f"st.{_q('kind')}", status=f"a.{_q('status')}"
+    )
+    if in_stock == "FALSE":
+        return None
     condition = (
-        f"a.{_q('status')} = {_lit('stored')} "
-        f"AND a.{_q('slot')} IS NULL "
-        f"AND b.{_q('kind')} IN ({vocabulary})"
+        f"({in_stock})\n"
+        f"  AND a.{_q('slot')} IS NULL\n"
+        f"  AND b.{_q('kind')} IN ("
+        + ", ".join(_lit(name) for name in slotted)
+        + ")"
     )
     body = (
         f"SELECT a.{_q('id')}\n"
         f"FROM {_q('aliquot')} a\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
         f"JOIN {_q('box')} b ON b.{_q('id')} = a.{_q('box_id')}\n"
         f"WHERE {condition}"
     )
     detail = (
         f"SELECT a.{_q('id')} AS {_q('aliquot_id')}, "
         f"a.{_q('stock_id')} AS {_q('stock_id')}, "
-        f"b.{_q('name')} AS {_q('box')}, a.{_q('status')} AS {_q('status')}\n"
+        f"a.{_q('status')} AS {_q('status')}, "
+        f"b.{_q('name')} AS {_q('box')}\n"
         f"FROM {_q('aliquot')} a\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
         f"JOIN {_q('box')} b ON b.{_q('id')} = a.{_q('box_id')}\n"
         f"WHERE {condition}\n"
         f"ORDER BY a.{_q('id')}"
     )
     return TestDefinition(
-        name="core_stored_aliquot_slot",
+        name="core_in_stock_aliquot_slot",
         group=CORE_GROUP,
         query=_count(body),
         detail=detail,
-        description="a stored aliquot in a slotted box has a slot",
+        description="an in-stock aliquot in a slotted box has a slot",
     )
 
 
@@ -385,11 +395,139 @@ def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
     tests.append(_slot_exclusive_test())
     tests.append(_single_child_test())
     tests.append(_acyclic_test())
-    stored = _stored_slot_test(schema)
-    if stored is not None:
-        tests.append(stored)
+    in_stock = _in_stock_slot_test(schema)
+    if in_stock is not None:
+        tests.append(in_stock)
     tests.extend(_slotless_capacity_tests(schema))
+    status = _status_known_test(schema)
+    if status is not None:
+        tests.append(status)
+    transitions = _status_transition_test(schema)
+    if transitions is not None:
+        tests.append(transitions)
     return tests
+
+
+# ---------------------------------------------------------------------------
+# Status sets (spec §4)
+# ---------------------------------------------------------------------------
+
+
+def _status_known_test(schema: EffectiveSchema) -> TestDefinition | None:
+    """Every aliquot's status belongs to its stock kind's status set."""
+    body = (
+        f"SELECT a.{_q('id')}\n"
+        f"FROM {_q('aliquot')} a\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
+        "WHERE NOT (\n"
+        f"  {_in_stock_case(schema)}\n"
+        ")"
+    )
+    detail = (
+        f"SELECT a.{_q('id')} AS {_q('aliquot_id')}, "
+        f"a.{_q('stock_id')} AS {_q('stock_id')}, "
+        f"a.{_q('status')} AS {_q('status')}, "
+        f"st.{_q('kind')} AS {_q('stock_kind')}\n"
+        f"FROM {_q('aliquot')} a\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
+        f"WHERE NOT (\n  {_in_stock_case(schema)}\n)\n"
+        f"ORDER BY a.{_q('id')}"
+    )
+    return TestDefinition(
+        name="core_aliquot_status_known",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description="every aliquot's status belongs to its stock kind's status set",
+    )
+
+
+def _in_stock_case(schema: EffectiveSchema) -> str:
+    """``CASE`` over ``st.kind`` testing ``a.status`` against the kind's set.
+
+    Unlike :func:`_in_stock_sql` (which only knows the *in stock* statuses),
+    this tests membership in the whole set.  Generated from the schema, so the
+    rule follows every status set change without hand-written SQL.
+    """
+    branches: list[str] = []
+    for kind_name in sorted(schema.stock_kinds):
+        names = schema.statuses_for(kind_name)
+        values = ", ".join(_lit(name) for name in names)
+        branches.append(
+            f"    WHEN {_lit(kind_name)} THEN a.{_q('status')} IN ({values})"
+        )
+    if not branches:  # pragma: no cover - caller skips a kind-less schema
+        return "FALSE"
+    return (
+        f"CASE st.{_q('kind')}\n" + "\n".join(branches) + "\n    ELSE FALSE\n  END"
+    )
+
+
+def _transition_pairs(schema: EffectiveSchema) -> dict[str, list[str]]:
+    """``kind`` → ``old>new`` strings the kind's status set allows."""
+    pairs: dict[str, list[str]] = {}
+    for kind_name in sorted(schema.stock_kinds):
+        status_set = schema.status_set(kind_name)
+        assert status_set is not None
+        allowed: list[str] = []
+        for old in status_set.names:
+            for new in status_set.root[old].to:
+                allowed.append(f"{old}>{new}")
+        pairs[kind_name] = allowed
+    return pairs
+
+
+def _status_transition_test(schema: EffectiveSchema) -> TestDefinition | None:
+    """Every unforced ``status`` event follows its stock kind's ``to:`` rules."""
+    pairs = _transition_pairs(schema)
+    if not pairs:  # pragma: no cover - caller skips a kind-less schema
+        return None
+    branches: list[str] = []
+    for kind_name in sorted(pairs):
+        allowed = pairs[kind_name]
+        pair_expr = ", ".join(_lit(pair) for pair in allowed)
+        branches.append(
+            f"    WHEN {_lit(kind_name)} THEN "
+            f"CONCAT(e.{_q('old_status')}, '>', e.{_q('new_status')}) "
+            f"IN ({pair_expr})"
+        )
+    case = (
+        f"CASE st.{_q('kind')}\n" + "\n".join(branches) + "\n    ELSE FALSE\n  END"
+    )
+    condition = (
+        f"e.{_q('event')} = {_lit('status')} "
+        f"AND e.{_q('forced')} = FALSE "
+        f"AND NOT ({case})"
+    )
+    body = (
+        f"SELECT e.{_q('id')}\n"
+        f"FROM {_q('aliquot_event')} e\n"
+        f"JOIN {_q('aliquot')} a ON a.{_q('id')} = e.{_q('aliquot_id')}\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
+        f"WHERE {condition}"
+    )
+    detail = (
+        f"SELECT e.{_q('id')} AS {_q('event_id')}, "
+        f"e.{_q('aliquot_id')} AS {_q('aliquot_id')}, "
+        f"st.{_q('kind')} AS {_q('stock_kind')}, "
+        f"e.{_q('old_status')} AS {_q('old_status')}, "
+        f"e.{_q('new_status')} AS {_q('new_status')}\n"
+        f"FROM {_q('aliquot_event')} e\n"
+        f"JOIN {_q('aliquot')} a ON a.{_q('id')} = e.{_q('aliquot_id')}\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
+        f"WHERE {condition}\n"
+        f"ORDER BY e.{_q('id')}"
+    )
+    return TestDefinition(
+        name="core_status_event_allowed",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description=(
+            "every unforced status event follows its stock kind's allowed "
+            "transitions (--force records forced = TRUE)"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -590,14 +728,22 @@ def generate_tests(schema: EffectiveSchema) -> list[TestDefinition]:
     return definitions
 
 
-def install_tests(driver: Driver, schema: EffectiveSchema) -> list[TestDefinition]:
+def install_tests(
+    driver: Driver,
+    schema: EffectiveSchema,
+    *,
+    tests: Sequence[TestDefinition] | None = None,
+) -> list[TestDefinition]:
     """Replace ``dolt_tests`` wholesale with ``schema``'s generated rows.
 
     Generated tests are derived state (spec §4), so replacement is the only
     supported operation.  Call inside a :meth:`Driver.transaction` together
     with the rest of a write to make the change part of one Dolt commit.
+
+    ``tests`` overrides the generated list (the migration runner omits tests
+    that depend on core tables a not-yet-upgraded ledger does not have).
     """
-    definitions = generate_tests(schema)
+    definitions = list(tests) if tests is not None else generate_tests(schema)
     driver.execute("DELETE FROM `dolt_tests`")
     columns = ", ".join(_q(column) for column in TEST_COLUMNS)
     placeholders = ", ".join("%s" for _ in TEST_COLUMNS)

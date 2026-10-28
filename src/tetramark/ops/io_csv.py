@@ -54,6 +54,8 @@ from tetramark.core.objects import (
     _parse_quantity_unit,
     _require_fields,
     _update,
+    default_aliquot_status,
+    validate_creation_status,
 )
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows, table_name
@@ -1199,11 +1201,9 @@ class _Planner:
         status = _text(data, "status")
         if status is not None:
             status = status.lower()
-        if status is not None and status not in self.schema.statuses:
-            raise UsageError(
-                f"unknown status {status!r}; choose from: "
-                + ", ".join(self.schema.statuses)
-            )
+            # Creation of a stock's aliquots is not a transition: any status of
+            # the stock kind's set is allowed (spec 4).
+            status = validate_creation_status(self.ledger, kind_name, status)
         if count == 0 and (
             box_text is not None
             or any(slots)
@@ -1275,7 +1275,13 @@ class _Planner:
                 )
             elif slot is not None:
                 raise UsageError("'slot' requires a 'box'")
-            aliquot_status = status or ("stored" if box_id is not None else "pending")
+            aliquot_status = (
+                status
+                if status is not None
+                else default_aliquot_status(
+                    self.ledger, kind_name, placed=box_id is not None
+                )
+            )
             alq_id = f"{raw.id}.{index}"
             self._aliquot_ids.add(alq_id)
             self._aliquot_seqs.setdefault(raw.id, set()).add(index)
@@ -1442,13 +1448,14 @@ class _Planner:
         status = _text(data, "status")
         if status is not None:
             status = status.lower()
-        if status is not None and status not in self.schema.statuses:
-            raise UsageError(
-                f"unknown status {status!r}; choose from: "
-                + ", ".join(self.schema.statuses)
-            )
+            # A CSV import only inserts aliquots (an existing id is refused
+            # below), so a status here is a creation status, not a transition:
+            # it must belong to the stock kind's set (spec 4).
+            status = validate_creation_status(self.ledger, kind_name, status)
         if status is None:
-            status = "stored" if box_id is not None else "pending"
+            status = default_aliquot_status(
+                self.ledger, kind_name, placed=box_id is not None
+            )
         label = _text(data, "label")
         if label is not None and len(label) > 255:
             raise UsageError(

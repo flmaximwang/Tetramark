@@ -32,6 +32,7 @@ kinds:
   prep:
     object: stock
     entity_kinds: [everything]
+    statuses: tube
     fields:
       batch: {type: string}
 rules:

@@ -184,24 +184,34 @@ def test_server_factory_honours_arguments(server_ledger_factory) -> None:
         name="custom-db",
         id_prefix="AB",
         author="Someone Else <someone@tetramark.invalid>",
-        statuses=["fresh", "quarantined"],
     )
 
     assert ledger.name == "custom-db"
     assert ledger.database == "custom-db"
     assert ledger.author == "Someone Else <someone@tetramark.invalid>"
-    assert ledger.schema.statuses == ["fresh", "quarantined"]
+    assert ledger.schema.statuses_for("lot") == [
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    ]
     assert ledger.next_id("stock").startswith("AB")
 
-    create = ledger.driver.query("SHOW CREATE TABLE aliquot")[0]["Create Table"]
-    assert "'fresh'" in create
-    assert "'quarantined'" in create
-    assert "'consumed'" not in create
+    create = ledger.driver.query("SHOW CREATE TABLE `aliquot`")[0]["Create Table"]
+    assert "CHECK" not in create
+    event_columns = {
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT `column_name` AS `name` FROM `information_schema`.`columns` "
+            "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot_event'"
+        )
+    }
+    assert "forced" in event_columns
 
     config = (ledger.path / "ledger.yaml").read_text(encoding="utf-8")
     assert "name: custom-db" in config
     assert "prefix: AB" in config
-    assert "quarantined" in config
+    assert "statuses" not in config
 
 
 # ---------------------------------------------------------------------------

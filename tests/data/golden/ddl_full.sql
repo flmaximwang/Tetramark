@@ -61,8 +61,7 @@ CREATE TABLE `aliquot` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `notes` MEDIUMTEXT,
   CONSTRAINT `pk_aliquot` PRIMARY KEY (`id`),
-  CONSTRAINT `uq_aliquot_stock_id_seq` UNIQUE (`stock_id`, `seq`),
-  CONSTRAINT `ck_aliquot_status` CHECK (`status` IN ('pending', 'stored', 'missing', 'consumed'))
+  CONSTRAINT `uq_aliquot_stock_id_seq` UNIQUE (`stock_id`, `seq`)
 );
 
 CREATE TABLE `aliquot_event` (
@@ -77,6 +76,7 @@ CREATE TABLE `aliquot_event` (
   `to_slot` VARCHAR(64),
   `old_status` VARCHAR(32),
   `new_status` VARCHAR(32),
+  `forced` BOOLEAN NOT NULL DEFAULT FALSE,
   `actor` VARCHAR(255),
   `purpose` MEDIUMTEXT,
   `note` MEDIUMTEXT,
@@ -275,7 +275,18 @@ SELECT
   a.`stock_id` AS `stock_id`,
   st.`entity_id` AS `entity_id`,
   e.`kind` AS `entity_kind`,
-  a.`status` AS `status`,
+  agg.`aliquots_in_stock` AS `aliquots_in_stock`,
+  agg.`aliquots_total` AS `aliquots_total`,
+  agg.`quantity_in_stock` AS `quantity_in_stock`,
+  agg.`unit` AS `unit`,
+  CASE
+    WHEN a.`id` IS NULL THEN NULL
+    ELSE CASE
+    WHEN COALESCE(agg.`aliquots_total`, 0) = 0 THEN 'empty'
+    WHEN COALESCE(agg.`aliquots_in_stock`, 0) > 0 THEN 'active'
+    ELSE 'depleted'
+  END
+  END AS `status`,
   c.`id` AS `child_box_id`,
   c.`name` AS `child_box_name`,
   CASE
@@ -288,7 +299,43 @@ JOIN `box` b ON b.`id` = s.`box_id`
 LEFT JOIN `aliquot` a ON a.`box_id` = s.`box_id` AND a.`slot` = s.`label`
 LEFT JOIN `box` c ON c.`parent_box_id` = s.`box_id` AND c.`parent_slot` = s.`label`
 LEFT JOIN `stock` st ON st.`id` = a.`stock_id`
-LEFT JOIN `entity` e ON e.`id` = st.`entity_id`;
+LEFT JOIN `entity` e ON e.`id` = st.`entity_id`
+LEFT JOIN (
+  SELECT
+    a.`stock_id` AS `stock_id`,
+    COUNT(a.`id`) AS `aliquots_total`,
+    SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN 1 ELSE 0 END) AS `aliquots_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `unit`
+  FROM `aliquot` a
+  JOIN `stock` st ON st.`id` = a.`stock_id`
+  GROUP BY a.`stock_id`, st.`kind`
+) agg ON agg.`stock_id` = a.`stock_id`;
 
 CREATE VIEW `v_aliquot_location` AS
 WITH RECURSIVE `box_path` AS (
@@ -333,38 +380,52 @@ SELECT
   s.`id` AS `stock_id`,
   s.`kind` AS `kind`,
   s.`entity_id` AS `entity_id`,
+  COALESCE(agg.`aliquots_in_stock`, 0) AS `aliquots_in_stock`,
+  COALESCE(agg.`aliquots_total`, 0) AS `aliquots_total`,
+  agg.`quantity_in_stock` AS `quantity_in_stock`,
+  agg.`unit` AS `unit`,
   CASE
-    WHEN COALESCE(agg.`aliquot_count`, 0) = 0 THEN 'empty'
-    WHEN COALESCE(agg.`stored_count`, 0) > 0 THEN 'active'
-    WHEN COALESCE(agg.`pending_count`, 0) > 0 THEN 'pending'
-    WHEN COALESCE(agg.`missing_count`, 0) > 0 AND COALESCE(agg.`remaining_count`, 0) = 0 THEN 'missing'
-    WHEN COALESCE(agg.`consumed_count`, 0) = COALESCE(agg.`aliquot_count`, 0) THEN 'depleted'
-    ELSE 'pending'
+    WHEN COALESCE(agg.`aliquots_total`, 0) = 0 THEN 'empty'
+    WHEN COALESCE(agg.`aliquots_in_stock`, 0) > 0 THEN 'active'
+    ELSE 'depleted'
   END AS `status`,
-  COALESCE(agg.`aliquot_count`, 0) AS `aliquot_count`,
-  COALESCE(agg.`stored_count`, 0) AS `stored_count`,
-  COALESCE(agg.`pending_count`, 0) AS `pending_count`,
-  COALESCE(agg.`missing_count`, 0) AS `missing_count`,
-  COALESCE(agg.`consumed_count`, 0) AS `consumed_count`,
-  agg.`total_quantity` AS `total_quantity`,
-  agg.`total_unit` AS `unit`,
   (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = s.`id`) AS `alias_list`
 FROM `stock` s
 LEFT JOIN (
   SELECT
     a.`stock_id` AS `stock_id`,
-    COUNT(a.`id`) AS `aliquot_count`,
-    SUM(CASE WHEN a.`status` = 'stored' THEN 1 ELSE 0 END) AS `stored_count`,
-    SUM(CASE WHEN a.`status` = 'pending' THEN 1 ELSE 0 END) AS `pending_count`,
-    SUM(CASE WHEN a.`status` = 'missing' THEN 1 ELSE 0 END) AS `missing_count`,
-    SUM(CASE WHEN a.`status` = 'consumed' THEN 1 ELSE 0 END) AS `consumed_count`,
-    SUM(CASE WHEN a.`status` NOT IN ('missing', 'consumed') THEN 1 ELSE 0 END) AS `remaining_count`,
-    SUM(a.`quantity`) AS `total_quantity`,
-    CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `total_unit`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN a.`status` = 'stored' THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_stored`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `stored_unit`
+    COUNT(a.`id`) AS `aliquots_total`,
+    SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN 1 ELSE 0 END) AS `aliquots_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `unit`
   FROM `aliquot` a
-  GROUP BY a.`stock_id`
+  JOIN `stock` st ON st.`id` = a.`stock_id`
+  GROUP BY a.`stock_id`, st.`kind`
 ) agg ON agg.`stock_id` = s.`id`;
 
 CREATE VIEW `v_entity_everything` AS
@@ -434,17 +495,14 @@ SELECT
   k.`medium` AS `medium`,
   e.`kind` AS `entity_kind`,
   e.`name` AS `entity_name`,
-  COALESCE(agg.`stored_count`, 0) AS `aliquots_stored`,
-  COALESCE(agg.`aliquot_count`, 0) AS `aliquots_total`,
-  agg.`quantity_stored` AS `quantity_stored`,
-  agg.`stored_unit` AS `unit`,
+  COALESCE(agg.`aliquots_in_stock`, 0) AS `aliquots_in_stock`,
+  COALESCE(agg.`aliquots_total`, 0) AS `aliquots_total`,
+  agg.`quantity_in_stock` AS `quantity_in_stock`,
+  agg.`unit` AS `unit`,
   CASE
-    WHEN COALESCE(agg.`aliquot_count`, 0) = 0 THEN 'empty'
-    WHEN COALESCE(agg.`stored_count`, 0) > 0 THEN 'active'
-    WHEN COALESCE(agg.`pending_count`, 0) > 0 THEN 'pending'
-    WHEN COALESCE(agg.`missing_count`, 0) > 0 AND COALESCE(agg.`remaining_count`, 0) = 0 THEN 'missing'
-    WHEN COALESCE(agg.`consumed_count`, 0) = COALESCE(agg.`aliquot_count`, 0) THEN 'depleted'
-    ELSE 'pending'
+    WHEN COALESCE(agg.`aliquots_total`, 0) = 0 THEN 'empty'
+    WHEN COALESCE(agg.`aliquots_in_stock`, 0) > 0 THEN 'active'
+    ELSE 'depleted'
   END AS `status`,
   (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_bacterial` k
@@ -453,18 +511,38 @@ JOIN `entity` e ON e.`id` = c.`entity_id`
 LEFT JOIN (
   SELECT
     a.`stock_id` AS `stock_id`,
-    COUNT(a.`id`) AS `aliquot_count`,
-    SUM(CASE WHEN a.`status` = 'stored' THEN 1 ELSE 0 END) AS `stored_count`,
-    SUM(CASE WHEN a.`status` = 'pending' THEN 1 ELSE 0 END) AS `pending_count`,
-    SUM(CASE WHEN a.`status` = 'missing' THEN 1 ELSE 0 END) AS `missing_count`,
-    SUM(CASE WHEN a.`status` = 'consumed' THEN 1 ELSE 0 END) AS `consumed_count`,
-    SUM(CASE WHEN a.`status` NOT IN ('missing', 'consumed') THEN 1 ELSE 0 END) AS `remaining_count`,
-    SUM(a.`quantity`) AS `total_quantity`,
-    CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `total_unit`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN a.`status` = 'stored' THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_stored`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `stored_unit`
+    COUNT(a.`id`) AS `aliquots_total`,
+    SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN 1 ELSE 0 END) AS `aliquots_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `unit`
   FROM `aliquot` a
-  GROUP BY a.`stock_id`
+  JOIN `stock` st ON st.`id` = a.`stock_id`
+  GROUP BY a.`stock_id`, st.`kind`
 ) agg ON agg.`stock_id` = c.`id`;
 
 CREATE VIEW `v_stock_lot` AS
@@ -480,17 +558,14 @@ SELECT
   k.`received_on` AS `received_on`,
   e.`kind` AS `entity_kind`,
   e.`name` AS `entity_name`,
-  COALESCE(agg.`stored_count`, 0) AS `aliquots_stored`,
-  COALESCE(agg.`aliquot_count`, 0) AS `aliquots_total`,
-  agg.`quantity_stored` AS `quantity_stored`,
-  agg.`stored_unit` AS `unit`,
+  COALESCE(agg.`aliquots_in_stock`, 0) AS `aliquots_in_stock`,
+  COALESCE(agg.`aliquots_total`, 0) AS `aliquots_total`,
+  agg.`quantity_in_stock` AS `quantity_in_stock`,
+  agg.`unit` AS `unit`,
   CASE
-    WHEN COALESCE(agg.`aliquot_count`, 0) = 0 THEN 'empty'
-    WHEN COALESCE(agg.`stored_count`, 0) > 0 THEN 'active'
-    WHEN COALESCE(agg.`pending_count`, 0) > 0 THEN 'pending'
-    WHEN COALESCE(agg.`missing_count`, 0) > 0 AND COALESCE(agg.`remaining_count`, 0) = 0 THEN 'missing'
-    WHEN COALESCE(agg.`consumed_count`, 0) = COALESCE(agg.`aliquot_count`, 0) THEN 'depleted'
-    ELSE 'pending'
+    WHEN COALESCE(agg.`aliquots_total`, 0) = 0 THEN 'empty'
+    WHEN COALESCE(agg.`aliquots_in_stock`, 0) > 0 THEN 'active'
+    ELSE 'depleted'
   END AS `status`,
   (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_lot` k
@@ -499,18 +574,38 @@ JOIN `entity` e ON e.`id` = c.`entity_id`
 LEFT JOIN (
   SELECT
     a.`stock_id` AS `stock_id`,
-    COUNT(a.`id`) AS `aliquot_count`,
-    SUM(CASE WHEN a.`status` = 'stored' THEN 1 ELSE 0 END) AS `stored_count`,
-    SUM(CASE WHEN a.`status` = 'pending' THEN 1 ELSE 0 END) AS `pending_count`,
-    SUM(CASE WHEN a.`status` = 'missing' THEN 1 ELSE 0 END) AS `missing_count`,
-    SUM(CASE WHEN a.`status` = 'consumed' THEN 1 ELSE 0 END) AS `consumed_count`,
-    SUM(CASE WHEN a.`status` NOT IN ('missing', 'consumed') THEN 1 ELSE 0 END) AS `remaining_count`,
-    SUM(a.`quantity`) AS `total_quantity`,
-    CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `total_unit`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN a.`status` = 'stored' THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_stored`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `stored_unit`
+    COUNT(a.`id`) AS `aliquots_total`,
+    SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN 1 ELSE 0 END) AS `aliquots_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `unit`
   FROM `aliquot` a
-  GROUP BY a.`stock_id`
+  JOIN `stock` st ON st.`id` = a.`stock_id`
+  GROUP BY a.`stock_id`, st.`kind`
 ) agg ON agg.`stock_id` = c.`id`;
 
 CREATE VIEW `v_stock_prep` AS
@@ -525,17 +620,14 @@ SELECT
   k.`batch` AS `batch`,
   e.`kind` AS `entity_kind`,
   e.`name` AS `entity_name`,
-  COALESCE(agg.`stored_count`, 0) AS `aliquots_stored`,
-  COALESCE(agg.`aliquot_count`, 0) AS `aliquots_total`,
-  agg.`quantity_stored` AS `quantity_stored`,
-  agg.`stored_unit` AS `unit`,
+  COALESCE(agg.`aliquots_in_stock`, 0) AS `aliquots_in_stock`,
+  COALESCE(agg.`aliquots_total`, 0) AS `aliquots_total`,
+  agg.`quantity_in_stock` AS `quantity_in_stock`,
+  agg.`unit` AS `unit`,
   CASE
-    WHEN COALESCE(agg.`aliquot_count`, 0) = 0 THEN 'empty'
-    WHEN COALESCE(agg.`stored_count`, 0) > 0 THEN 'active'
-    WHEN COALESCE(agg.`pending_count`, 0) > 0 THEN 'pending'
-    WHEN COALESCE(agg.`missing_count`, 0) > 0 AND COALESCE(agg.`remaining_count`, 0) = 0 THEN 'missing'
-    WHEN COALESCE(agg.`consumed_count`, 0) = COALESCE(agg.`aliquot_count`, 0) THEN 'depleted'
-    ELSE 'pending'
+    WHEN COALESCE(agg.`aliquots_total`, 0) = 0 THEN 'empty'
+    WHEN COALESCE(agg.`aliquots_in_stock`, 0) > 0 THEN 'active'
+    ELSE 'depleted'
   END AS `status`,
   (SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`
 FROM `stock_prep` k
@@ -544,18 +636,38 @@ JOIN `entity` e ON e.`id` = c.`entity_id`
 LEFT JOIN (
   SELECT
     a.`stock_id` AS `stock_id`,
-    COUNT(a.`id`) AS `aliquot_count`,
-    SUM(CASE WHEN a.`status` = 'stored' THEN 1 ELSE 0 END) AS `stored_count`,
-    SUM(CASE WHEN a.`status` = 'pending' THEN 1 ELSE 0 END) AS `pending_count`,
-    SUM(CASE WHEN a.`status` = 'missing' THEN 1 ELSE 0 END) AS `missing_count`,
-    SUM(CASE WHEN a.`status` = 'consumed' THEN 1 ELSE 0 END) AS `consumed_count`,
-    SUM(CASE WHEN a.`status` NOT IN ('missing', 'consumed') THEN 1 ELSE 0 END) AS `remaining_count`,
-    SUM(a.`quantity`) AS `total_quantity`,
-    CASE WHEN COUNT(DISTINCT a.`unit`) = 1 THEN MAX(a.`unit`) ELSE NULL END AS `total_unit`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN a.`status` = 'stored' THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_stored`,
-    CASE WHEN COUNT(DISTINCT CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN a.`status` = 'stored' AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `stored_unit`
+    COUNT(a.`id`) AS `aliquots_total`,
+    SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN 1 ELSE 0 END) AS `aliquots_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN SUM(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) THEN a.`quantity` ELSE NULL END) ELSE NULL END AS `quantity_in_stock`,
+    CASE WHEN COUNT(DISTINCT CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) = 1 THEN MAX(CASE WHEN (CASE st.`kind`
+    WHEN 'bacterial' THEN a.`status` IN ('stored')
+    WHEN 'lot' THEN a.`status` IN ('stored')
+    WHEN 'prep' THEN a.`status` IN ('stored')
+    ELSE FALSE
+  END) AND a.`quantity` IS NOT NULL THEN a.`unit` END) ELSE NULL END AS `unit`
   FROM `aliquot` a
-  GROUP BY a.`stock_id`
+  JOIN `stock` st ON st.`id` = a.`stock_id`
+  GROUP BY a.`stock_id`, st.`kind`
 ) agg ON agg.`stock_id` = c.`id`;
 
 CREATE VIEW `v_box_grid96` AS

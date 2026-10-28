@@ -4,7 +4,9 @@
 1 = any FAIL. `-v` prints offending rows (each generated test has a companion detail query).
 
 Tests are generated into `dolt_tests` on `init` / `init --adopt` / `schema apply`, grouped:
-- `core` — the app-enforced invariants in §3.
+- `core` — the app-enforced invariants in §3, including `core_aliquot_status_known` (every aliquot's
+  status is in its stock kind's set) and `core_status_event_allowed` (every unforced `status` event
+  follows its stock kind's `to:` rules; `--force` events are exempt).
 - `schema:<kind>` — patterns, required refs, entity_kinds restriction.
 - `rules:<preset|local>` — custom rules. `severity: info` tests are reported but never fail the exit code
   (stored with a group suffix `:info`). Preset rules are read from the ledger's own

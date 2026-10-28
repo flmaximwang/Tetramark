@@ -1,5 +1,5 @@
 preset: library
-version: 1
+version: 2
 description: >-
   A small library catalogue: one entity per book title and one stock per
   physical copy, proving that the core model is not biology-specific.
@@ -39,6 +39,7 @@ kinds:
     object: stock
     description: A physical copy of a book held by the library.
     entity_kinds: [book]
+    statuses: tube
     fields:
       acquired_on:
         type: date

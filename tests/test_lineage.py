@@ -39,6 +39,16 @@ MOLBIO = REPO_PRESETS / "molbio.yaml"
 #: ``via`` values the settled design allows (core relations + ``<kind>.<field>``).
 CORE_VIA = {"entity", "parent_stock", "source_aliquot"}
 
+#: A minimal status set for the inline presets below: since spec 4 every stock
+#: kind must name one (the bundled ``tube`` set, trimmed to what these tests use).
+TUBE_SET = {
+    "tube": {
+        "pending": {"in_stock": False, "to": ["stored", "consumed"]},
+        "stored": {"in_stock": True, "to": ["consumed"]},
+        "consumed": {"in_stock": False},
+    }
+}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -220,10 +230,12 @@ def test_lineage_normalisation_is_emitted_only_when_set(tmp_path: Path) -> None:
         "without",
         {
             "preset": "without",
+            "status_sets": TUBE_SET,
             "kinds": {
                 "design": {"object": "entity", "fields": {"name": {"type": "string"}}},
                 "batch": {
                     "object": "stock",
+                    "statuses": "tube",
                     "entity_kinds": ["design"],
                     "fields": {
                         "from_design": {"type": "ref", "to": "design"},
@@ -237,10 +249,12 @@ def test_lineage_normalisation_is_emitted_only_when_set(tmp_path: Path) -> None:
         "with",
         {
             "preset": "with",
+            "status_sets": TUBE_SET,
             "kinds": {
                 "design": {"object": "entity", "fields": {"name": {"type": "string"}}},
                 "batch": {
                     "object": "stock",
+                    "statuses": "tube",
                     "entity_kinds": ["design"],
                     "fields": {
                         "from_design": {
@@ -637,6 +651,7 @@ def test_lineage_ref_to_an_aliquot_and_to_a_stock_kind(
         "aliquotref",
         {
             "preset": "aliquotref",
+            "status_sets": TUBE_SET,
             "kinds": {
                 "line": {
                     "object": "entity",
@@ -644,6 +659,7 @@ def test_lineage_ref_to_an_aliquot_and_to_a_stock_kind(
                 },
                 "culture": {
                     "object": "stock",
+                    "statuses": "tube",
                     "entity_kinds": ["line"],
                     "fields": {
                         "dam": {"type": "ref", "to": "aliquot", "lineage": True},

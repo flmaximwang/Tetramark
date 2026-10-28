@@ -4,6 +4,17 @@ description: >-
   Domain-neutral inventory: a generic item, a purchase lot, and the box
   geometries used by the sample-oriented presets.
 
+status_sets:
+  tube:
+    pending: {in_stock: false, to: [stored, missing, consumed]}
+    stored: {in_stock: true, to: [missing, consumed]}
+    missing: {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}
+  cryo:
+    stored: {in_stock: true, to: [thawed, missing]}
+    missing: {in_stock: false, to: [stored, thawed]}
+    thawed: {in_stock: false}
+
 mixins:
   named_fields:
     name:
@@ -30,6 +41,7 @@ kinds:
     object: stock
     description: A purchase or delivery lot of one item, with supplier and shelf life.
     entity_kinds: [item]
+    statuses: tube
     fields:
       supplier:
         type: string

@@ -17,7 +17,7 @@ The full suite is still real-Dolt end to end: ``ledger_factory``,
 *session template* (one real ``init_ledger``/``init_ledger_on_server`` per
 standard shape, then copies) so a fresh ledger costs a directory copy instead of
 a full ``tm init``. Anything that changes what ``init`` produces — a custom
-preset, several presets, another ``id_prefix``/``author``/``statuses`` — keeps
+preset, several presets, another ``id_prefix``/``author`` — keeps
 the real init path; see :data:`TEMPLATE_SHAPES`.
 """
 
@@ -46,7 +46,6 @@ from tetramark.core.ledger import (
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError
 from tetramark.schema.loader import resolve_preset_spec
-from tetramark.schema.model import DEFAULT_STATUSES
 
 DOLT_BINARY = shutil.which("dolt")
 
@@ -297,7 +296,6 @@ def embedded_ledger_factory(
         name: str | None = None,
         id_prefix: str | None = "77",
         author: str | None = FACTORY_AUTHOR,
-        statuses: list[str] | None = None,
         real_init: bool = False,
     ) -> Ledger:
         workspace_dir = tmp_path / "workspace"
@@ -311,7 +309,7 @@ def embedded_ledger_factory(
         sources = list(presets) if presets else [PRESETS / "base"]
         key = None
         if not real_init and template_matches_options(
-            id_prefix=id_prefix, author=author, statuses=statuses
+            id_prefix=id_prefix, author=author
         ):
             key = template_key(sources, workspace)
         if key is None:
@@ -321,7 +319,6 @@ def embedded_ledger_factory(
                 sources,
                 id_prefix=id_prefix,
                 author=author,
-                statuses=statuses,
             )
         else:
             ledger = template_ledgers.install(key, workspace, ledger_name)
@@ -417,14 +414,13 @@ def server_ledger_factory(
         name: str | None = None,
         id_prefix: str | None = "77",
         author: str | None = FACTORY_AUTHOR,
-        statuses: list[str] | None = None,
         real_init: bool = False,
     ) -> Ledger:
         ledger_name = name or f"t_{worker_id()}_{next(_server_ledger_sequence)}"
         sources = list(presets) if presets else [PRESETS / "base"]
         key = None
         if not real_init and template_matches_options(
-            id_prefix=id_prefix, author=author, statuses=statuses
+            id_prefix=id_prefix, author=author
         ):
             key = template_key(sources, server_workspace)
         if key is None:
@@ -434,7 +430,6 @@ def server_ledger_factory(
                 sources,
                 id_prefix=id_prefix,
                 author=author,
-                statuses=statuses,
             )
         else:
             ledger = template_ledgers.restore_into_server(
@@ -501,14 +496,10 @@ def template_key(
 
 
 def template_matches_options(
-    *, id_prefix: str | None, author: str | None, statuses: Sequence[str] | None
+    *, id_prefix: str | None, author: str | None
 ) -> bool:
     """Whether the requested options are the ones the templates were built with."""
-    return (
-        id_prefix == TEMPLATE_ID_PREFIX
-        and author == FACTORY_AUTHOR
-        and (statuses is None or list(statuses) == list(DEFAULT_STATUSES))
-    )
+    return id_prefix == TEMPLATE_ID_PREFIX and author == FACTORY_AUTHOR
 
 
 def _rewrite_ledger_name(ledger_dir: Path, name: str) -> None:

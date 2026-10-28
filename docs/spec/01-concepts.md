@@ -38,6 +38,5 @@ author: "Your Name <you@example.com>"   # fallback: git config user.name/email
 ids:
   stock: {strategy: datecode, prefix: "12"}   # → 1226JT01
   entity: {strategy: uuid}
-statuses: [pending, stored, missing, consumed]  # aliquot status vocabulary (override allowed)
 rules_dir: rules/                # optional custom validation rules (YAML)
 ```

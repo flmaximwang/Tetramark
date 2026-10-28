@@ -142,7 +142,8 @@ def test_init_writes_ledger_yaml_and_ledger_meta(
         "entity": {"strategy": "uuid"},
         "stock": {"strategy": "datecode", "prefix": "08"},
     }
-    assert config["statuses"] == ["pending", "stored", "missing", "consumed"]
+    # Spec 4: the status vocabulary lives in the presets, not in ledger.yaml.
+    assert "statuses" not in config
 
     meta = ledger.meta
     assert set(meta) == {
@@ -170,22 +171,51 @@ def test_init_writes_ledger_yaml_and_ledger_meta(
     )
 
 
-def test_init_custom_statuses_reach_the_ddl(
+def test_init_has_no_global_status_check_or_statuses_option(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
+    """Spec 4: the global CHECK is gone; the vocabulary belongs to stock kinds."""
     workspace = make_workspace(tmp_path, dolt_env)
     ledger = init_ledger(
-        workspace,
-        "statuses",
-        [PRESETS / "base"],
-        author=FACTORY_AUTHOR,
-        statuses=["pending", "stored", "quarantined"],
+        workspace, "statuses", [PRESETS / "base"], author=FACTORY_AUTHOR
     )
-    assert ledger.schema.statuses == ["pending", "stored", "quarantined"]
-    assert read_config(ledger)["statuses"] == ["pending", "stored", "quarantined"]
-    create = ledger.driver.query("SHOW CREATE TABLE aliquot")[0]["Create Table"]
-    assert "'quarantined'" in create
-    assert "'consumed'" not in create
+    schema = ledger.schema
+    assert schema.status_set("lot").names == [
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    ]
+    create = ledger.driver.query("SHOW CREATE TABLE `aliquot`")[0]["Create Table"]
+    assert "CHECK" not in create
+    event_columns = {
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT `column_name` AS `name` FROM `information_schema`.`columns` "
+            "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot_event'"
+        )
+    }
+    assert "forced" in event_columns
+    # ``tm init --statuses`` is gone (typer reports the unknown option).
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace.data_dir),
+            "init",
+            "no-statuses-option",
+            "--preset",
+            str(PRESETS / "base"),
+            "--statuses",
+            "pending",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "statuses" in result.output.lower() or "no such option" in result.output.lower()
 
 
 def test_init_without_id_prefix_uses_uuid_stock_ids(
@@ -762,7 +792,19 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     assert payload["preset_versions"] == {"base": 2, "chain": 3, "full": 1}
     assert payload["fingerprint"] == ledger.fingerprint
     assert set(payload["kinds"]) >= {"item", "plasmid", "grid9x9", "everything"}
-    assert payload["statuses"] == ["pending", "stored", "missing", "consumed"]
+    assert set(payload["status_sets"]) == {"tube", "cryo"}
+    assert payload["status_sets"]["tube"]["stored"] == {
+        "in_stock": True,
+        "to": ["consumed", "missing"],
+    }
+    event_columns = {
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT `column_name` AS `name` FROM `information_schema`.`columns` "
+            "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot_event'"
+        )
+    }
+    assert "forced" in event_columns
 
     as_json = runner.invoke(
         app,

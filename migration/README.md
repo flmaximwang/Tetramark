@@ -153,4 +153,7 @@ constraints/views — no hand-written SQL, no data loss.
 |---|---|---|
 | [`spec/1-to-2`](spec/1-to-2/README.md) | `spec_version` 1 → 2 | Recreates the generated views in the spec-2 shape (`alias_list`/`occupant_alias_list`). |
 | [`spec/2-to-3`](spec/2-to-3/README.md) | `spec_version` 2 → 3 | Drops the empty `aliquot_<stockkind>` extension tables (refusing if one still holds values), recreates the views with the stock entity/aliquot/quantity/status columns, and regenerates `dolt_tests`. |
+| [`spec/3-to-4`](spec/3-to-4/README.md) | `spec_version` 3 → 4 | Drops the global `aliquot.status` CHECK, adds `aliquot_event.forced`, recreates the in-stock views, removes the default `statuses:` list from `ledger.yaml`/`ledger_meta` (refusing a custom list), and regenerates `dolt_tests` including the two status rules. |
+| [`presets/base/1-to-2`](presets/base/1-to-2/README.md) | `preset_versions.base` 1 → 2 | Places the v2 base copy (status sets `tube`/`cryo`/`animal`, `lot` uses `tube`), recreates the generated views; no table changes. |
+| [`presets/library/1-to-2`](presets/library/1-to-2/README.md) | `preset_versions.library` 1 → 2 | Places the v2 library copy (`copy` uses the base `tube` set), recreates the generated views; no table changes. |
 | [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the v2 preset copy. |

@@ -53,6 +53,9 @@ class Event:
     to_slot: str | None = None
     old_status: str | None = None
     new_status: str | None = None
+    #: True when ``--force`` overrode a status transition rule (spec 4); the
+    #: generated ``core_status_event_allowed`` test skips forced events.
+    forced: bool = False
     actor: str | None = None
     purpose: str | None = None
     note: str | None = None
@@ -69,6 +72,7 @@ _EVENT_COLUMNS = (
     "to_slot",
     "old_status",
     "new_status",
+    "forced",
     "actor",
     "purpose",
     "note",

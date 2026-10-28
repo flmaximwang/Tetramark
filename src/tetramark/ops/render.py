@@ -39,12 +39,18 @@ __all__ = [
     "render_box_text",
 ]
 
-#: Colour assigned to each aliquot status in the grid/list renderings.
+#: Colour assigned to each status in the grid/list renderings.  The raw
+#: aliquot statuses colour ``box show``'s slotless list; ``v_box_slots``
+#: (spec 4) reports the derived stock status instead, hence the extra three
+#: values.
 STATUS_STYLES: dict[str, str] = {
     "stored": "green",
     "pending": "yellow",
     "missing": "red",
     "consumed": "dim",
+    "active": "green",
+    "depleted": "dim",
+    "empty": "yellow",
 }
 
 

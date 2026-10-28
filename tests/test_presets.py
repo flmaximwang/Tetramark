@@ -45,8 +45,9 @@ from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 BUNDLED = ("base", "molbio", "library")
 
-#: Current preset versions: molbio is at 2 (ticket 22).
-EXPECTED_VERSIONS = {"base": 1, "molbio": 2, "library": 1}
+#: Current preset versions: molbio 2 (ticket 22), base/library 2 (spec 4
+#: status sets, ticket 25).  Molbio's own 2 -> 3 bump is ticket 27's part split.
+EXPECTED_VERSIONS = {"base": 2, "molbio": 2, "library": 2}
 
 EXPECTED_KINDS = {
     "base": {
@@ -162,7 +163,7 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
     # molbio and library both include base.
     if name != "base":
-        assert schema.preset_versions["base"] == 1
+        assert schema.preset_versions["base"] == 2
 
     own_prefix = {"base": "BASE", "molbio": "MB", "library": "LIB"}[name]
     own_rules = [rule for rule in schema.rules if rule.id.startswith(own_prefix)]
@@ -351,7 +352,7 @@ def test_combining_base_with_molbio_is_deduplicated() -> None:
     )
     alone = load_repo_preset("molbio")
     assert combined.fingerprint() == alone.fingerprint()
-    assert combined.preset_versions == {"base": 1, "molbio": 2}
+    assert combined.preset_versions == {"base": 2, "molbio": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +599,10 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
     assert slot["occupant_id"] == "CPY-0001.1"
     assert slot["stock_id"] == "CPY-0001"
     assert slot["entity_id"] == "book-0001"
-    assert slot["status"] == "stored"
+    # v_box_slots reports the derived stock status since spec 4.
+    assert slot["status"] == "active"
+    assert slot["aliquots_in_stock"] == 1
+    assert slot["aliquots_total"] == 1
 
     location = ledger.driver.query(
         "SELECT * FROM v_aliquot_location WHERE aliquot_id = %s",
@@ -611,8 +615,8 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
         "SELECT * FROM v_stock_status WHERE stock_id = %s", ("CPY-0001",)
     )[0]
     assert status["status"] == "active"
-    assert status["aliquot_count"] == 1
-    assert status["stored_count"] == 1
+    assert status["aliquots_in_stock"] == 1
+    assert status["aliquots_total"] == 1
 
     book = ledger.driver.query(
         "SELECT * FROM v_entity_book WHERE id = %s", ("book-0001",)
@@ -643,7 +647,7 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
     assert (copies / "molbio.yaml").read_bytes() == (source / "molbio.yaml").read_bytes()
     assert (copies / "base.yaml").read_bytes() == (source / "base.yaml").read_bytes()
     fingerprint = ledger.fingerprint
-    assert ledger.schema.preset_versions == {"base": 1, "molbio": 2}
+    assert ledger.schema.preset_versions == {"base": 2, "molbio": 2}
     assert yaml.safe_load((ledger.path / "ledger.yaml").read_text())["presets"] == [
         "molbio"
     ]
@@ -655,7 +659,7 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
     try:
         assert reopened.fingerprint == fingerprint
         assert {"plasmid", "item"} <= set(reopened.schema.kinds)
-        assert reopened.schema.preset_versions == {"base": 1, "molbio": 2}
+        assert reopened.schema.preset_versions == {"base": 2, "molbio": 2}
     finally:
         reopened.close()
 
@@ -705,7 +709,7 @@ kinds:
     reopened = open_ledger(workspace, "customled")
     try:
         assert reopened.fingerprint == fingerprint
-        assert reopened.schema.preset_versions == {"base": 1, "custom": 1}
+        assert reopened.schema.preset_versions == {"base": 2, "custom": 1}
     finally:
         reopened.close()
 

@@ -1,5 +1,9 @@
 preset: entity_kinds_unknown
+status_sets:
+  tube:
+    stored: {in_stock: true}
 kinds:
   lot:
     object: stock
     entity_kinds: [ghost]
+    statuses: tube

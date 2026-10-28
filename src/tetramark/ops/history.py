@@ -39,6 +39,7 @@ HISTORY_COLUMNS: tuple[str, ...] = (
     "to_slot",
     "old_status",
     "new_status",
+    "forced",
     "actor",
     "purpose",
     "note",
@@ -303,6 +304,8 @@ def _event_line(event: dict[str, Any]) -> str:
         parts.append(f"to={target}")
     old_status = event.get("old_status")
     new_status = event.get("new_status")
+    if event.get("forced") in (1, True):
+        parts.append("(forced)")
     if old_status and new_status and old_status != new_status:
         parts.append(f"status={old_status}->{new_status}")
     elif new_status:
@@ -349,6 +352,7 @@ def history_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "to_slot": event.get("to_slot"),
                 "old_status": event.get("old_status"),
                 "new_status": event.get("new_status"),
+                "forced": event.get("forced"),
                 "actor": event.get("actor"),
                 "purpose": event.get("purpose"),
                 "note": event.get("note"),
@@ -373,6 +377,7 @@ def history_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "to_slot": "",
                 "old_status": "",
                 "new_status": "",
+                "forced": "",
                 "actor": commit.get("author"),
                 "purpose": "",
                 "note": "",

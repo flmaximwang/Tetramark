@@ -60,7 +60,8 @@ def new_box(ledger, name: str = "BOX", kind: str = "grid96", **kwargs):
 def events(ledger, aliquot_id: str) -> list[dict[str, object]]:
     return ledger.driver.query(
         "SELECT `event`, `amount`, `unit`, `from_box_id`, `from_slot`, "
-        "`to_box_id`, `to_slot`, `old_status`, `new_status`, `actor`, `purpose` "
+        "`to_box_id`, `to_slot`, `old_status`, `new_status`, `forced`, "
+        "`actor`, `purpose`, `note` "
         "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
         (aliquot_id,),
     )
@@ -378,10 +379,19 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
     assert Decimal(emptied["quantity"]) == 0
     assert emptied["status"] == "consumed"
 
+    # ``consumed`` is final in the tube set: the change needs --force + note.
     before = commit_count(ledger)
-    changed = ledger.aliquots.status(alq, "missing")
+    changed = ledger.aliquots.status(
+        alq, "missing", force=True, note="tube found in the back of the shelf"
+    )
     assert commit_count(ledger) == before + 1
-    assert changed == {"object": "aliquot", "id": alq, "old_status": "consumed", "status": "missing"}
+    assert changed == {
+        "object": "aliquot",
+        "id": alq,
+        "old_status": "consumed",
+        "status": "missing",
+        "forced": True,
+    }
 
     history = events(ledger, alq)
     assert [row["event"] for row in history] == [
@@ -397,6 +407,8 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
     assert history[1]["to_slot"] == "A3"
     assert history[4]["old_status"] == "consumed"
     assert history[4]["new_status"] == "missing"
+    assert history[4]["forced"] in (1, True)
+    assert history[4]["note"] == "tube found in the back of the shelf"
     assert history[0]["actor"] == "Ledger Factory"
     assert ledger.author == FACTORY_AUTHOR
 
@@ -757,3 +769,111 @@ def test_stock_show_resolves_stock_aliases(ledger_factory) -> None:
     ledger.aliases.add("stock", stock["id"], "LOT1")
     assert ledger.stocks.show("LOT1")["id"] == stock["id"]
     assert ledger.aliquots.add("LOT1")["stock_id"] == stock["id"]
+
+
+# ---------------------------------------------------------------------------
+# Status sets and transitions (spec 4)
+# ---------------------------------------------------------------------------
+
+
+def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="transitions")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+    assert ledger.aliquots.status(alq, "stored")["status"] == "stored"
+    consumed = ledger.aliquots.status(alq, "consumed")
+    assert consumed["old_status"] == "stored"
+    assert consumed["status"] == "consumed"
+    assert consumed["forced"] is False
+
+    # ``consumed`` is final: the unforced change is refused, nothing is written.
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="final status"):
+        ledger.aliquots.status(alq, "stored")
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "consumed"}]
+
+    # --force overrides it and records the exception.
+    forced = ledger.aliquots.status(alq, "stored", force=True, note="found the tube")
+    assert forced["forced"] is True
+    assert ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "stored"}]
+    last = events(ledger, alq)[-1]
+    assert last["event"] == "status"
+    assert last["old_status"] == "consumed"
+    assert last["new_status"] == "stored"
+    assert last["forced"] in (1, True)
+    assert last["note"] == "found the tube"
+
+
+def test_force_requires_a_note(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="force-note")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+    ledger.aliquots.status(alq, "stored")
+    ledger.aliquots.status(alq, "consumed")
+    with pytest.raises(UsageError, match="--force requires --note"):
+        ledger.aliquots.status(alq, "stored", force=True)
+    with pytest.raises(UsageError, match="--force requires --note"):
+        ledger.aliquots.status(alq, "stored", force=True, note="   ")
+
+
+def test_creation_accepts_any_status_in_the_set(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="created-consumed")
+    item = new_item(ledger)
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=2, status="consumed"
+    )
+    statuses = ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `stock_id` = %s ORDER BY `seq`",
+        (stock["id"],),
+    )
+    assert statuses == [{"status": "consumed"}, {"status": "consumed"}]
+    # A later change away from ``consumed`` still needs --force.
+    with pytest.raises(LedgerError, match="final status"):
+        ledger.aliquots.status(stock["aliquots"][0], "stored")
+    # ``aliquot add`` takes a creation status too.
+    added = ledger.aliquots.add(stock["id"], count=1, status="missing")
+    assert ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (added["ids"][0],)
+    ) == [{"status": "missing"}]
+    # A status outside the stock kind's set is a usage error.
+    with pytest.raises(UsageError, match="unknown status 'quarantined'"):
+        ledger.aliquots.add(stock["id"], count=1, status="quarantined")
+    with pytest.raises(UsageError, match="unknown status 'quarantined'"):
+        ledger.stocks.add(
+            "lot", entity=item["id"], aliquots=1, status="quarantined"
+        )
+
+
+def test_cryo_set_uses_stored_on_creation_and_has_no_consumed(ledger_factory) -> None:
+    from conftest import REPO_PRESETS
+
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"], name="cryo"
+    )
+    line = ledger.entities.add("cell_line", name="HEK293T")
+    vial = ledger.stocks.add("cell_vial", entity=line["id"], aliquots=1)
+    alq = vial["aliquots"][0]
+    # The cryo set has no ``pending``; creation without a box defaults to stored.
+    assert ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "stored"}]
+    with pytest.raises(UsageError, match="unknown status 'pending'"):
+        ledger.aliquots.status(alq, "pending")
+    # The cryo set has no ``consumed`` either: a zero quantity keeps the status.
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `quantity` = 1, `unit` = 'ml' WHERE `id` = %s", (alq,)
+    )
+    ledger.driver.commit("test: give the vial a quantity")
+    used = ledger.aliquots.use(alq, "1", "ml")
+    assert used["status"] == "stored"
+    assert Decimal(used["quantity"]) == Decimal("0")
+    # A thawed cryo vial is a plain unforced transition.
+    thawed = ledger.aliquots.status(alq, "thawed")
+    assert thawed["status"] == "thawed"

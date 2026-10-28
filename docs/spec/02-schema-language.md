@@ -10,6 +10,12 @@ collisions are an error.
 preset: molbio
 version: 2
 include: [base]
+status_sets:                     # global set names; usually defined in base
+  tube:
+    pending: {in_stock: false, to: [stored, missing, consumed]}
+    stored: {in_stock: true, to: [missing, consumed]}
+    missing: {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}
 mixins:
   sequence_fields:
     sequence: {type: sequence, unique: true}
@@ -26,6 +32,7 @@ kinds:
   bacterial_glycerol:
     object: stock
     entity_kinds: [plasmid, bacterial_strain]
+    statuses: tube               # required on every stock kind
     fields:
       strain: {type: string, required: true}
       medium: {type: string}
@@ -80,3 +87,31 @@ Optional on box kind: `slot_capacity` (default 1).
 
 Custom rule = `id`, `description`, `severity: fail|info`, `sql` (read-only SELECT), `expect`:
 `{single_value: X}` | `{rows: 0}` | `{rows_at_most: N}`. Compiled into `dolt_tests` (§4).
+
+### 2.4 Status sets
+
+Statuses belong to **stock kinds**, not to the ledger (spec 4). A preset or a
+ledger `kinds/` file may declare top-level `status_sets`, and every stock kind
+names one with `statuses:` (or gives an inline set); entity and box kinds must
+not have it. Set names are global, like kind names; a duplicate name is a load
+error, and every `to:` target must be a status of the same set.
+
+```yaml
+status_sets:
+  tube:
+    pending:  {in_stock: false, to: [stored, missing, consumed]}
+    stored:   {in_stock: true,  to: [missing, consumed]}   # on the shelf
+    missing:  {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}                            # no to: = final
+```
+
+`in_stock` decides what the stock views count as still in stock. Creating an
+aliquot (`tm stock add`, `tm aliquot add`, `tm import`) accepts any status of
+the stock kind's set; **changing** one must follow `to:`. `tm aliquot status …
+--force --note TEXT` overrides a rule and records `aliquot_event.forced = TRUE`;
+an unforced event that breaks a rule fails `tm check` (§4).
+
+The bundled sets live in `base`: `tube` (general tubes: pending/stored/missing
+and a final consumed), `cryo` (frozen vials: stored/missing/thawed) and `animal`
+(living organisms: planned/alive/…). Every existing stock kind uses `tube`;
+molbio's `cell_vial` uses `cryo`.

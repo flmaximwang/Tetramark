@@ -363,8 +363,8 @@ def test_stored_aliquot_in_slotted_box_requires_a_slot(server_ledger_factory) ->
     add_aliquot(ledger, "s1.1", 1, box_id="b1", slot=None, status="stored")
 
     report = ledger.check(group="core", verbose=True)
-    assert "core_stored_aliquot_slot" in failed_names(report)
-    detail = next(r for r in report.results if r.name == "core_stored_aliquot_slot")
+    assert "core_in_stock_aliquot_slot" in failed_names(report)
+    detail = next(r for r in report.results if r.name == "core_in_stock_aliquot_slot")
     assert detail.detail_rows[0]["aliquot_id"] == "s1.1"
 
 
@@ -504,10 +504,16 @@ def test_rule_expectations_map_to_dolt_assertions_and_groups() -> None:
 
 
 def test_empty_entity_kinds_forbids_the_stock_kind() -> None:
-    from tetramark.schema.model import Kind
+    from tetramark.schema.model import Kind, Status, StatusSet
 
     schema = EffectiveSchema(
-        kinds={"orphan": Kind(object="stock", entity_kinds=[])},
+        kinds={
+            "orphan": Kind(
+                object="stock",
+                entity_kinds=[],
+                statuses=StatusSet({"stored": Status(in_stock=True)}),
+            )
+        },
     )
     tests = {test.name: test for test in generate_tests(schema)}
     test = tests["schema_orphan_entity_kinds"]
@@ -645,3 +651,57 @@ def test_check_python_api_matches_the_generated_tests(server_ledger_factory) -> 
     )
     assert isinstance(report.as_dict(), dict)
     assert ledger.driver.query("SELECT * FROM dolt_status") == []
+
+
+# ---------------------------------------------------------------------------
+# Status rules catch rows written by hand (spec 4)
+# ---------------------------------------------------------------------------
+
+
+def test_handmade_status_rows_fail_check_and_a_forced_event_is_accepted(
+    embedded_ledger_factory,
+) -> None:
+    ledger = embedded_ledger_factory([BASE], name="handmade")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=1
+    )
+    alq = stock["aliquots"][0]
+    ledger.aliquots.status(alq, "stored")
+    ledger.aliquots.status(alq, "consumed")
+    # A row written by hand (Workbench/SQL): ``consumed`` is final, so this
+    # unforced event is illegal; the DB has no CHECK to stop it.
+    ledger.driver.execute(
+        "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, `old_status`, "
+        "`new_status`) VALUES (%s, 'status', 'consumed', 'stored')",
+        (alq,),
+    )
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `status` = 'quarantined' WHERE `id` = %s", (alq,)
+    )
+    ledger.driver.commit("test: hand-made illegal status rows")
+    ledger.read_meta()
+
+    report = ledger.check(group="core", verbose=True)
+    assert not report.passed
+    assert {"core_aliquot_status_known", "core_status_event_allowed"} <= failed_names(
+        report
+    )
+    details = next(
+        result for result in report.results if result.name == "core_status_event_allowed"
+    )
+    assert details.detail_rows[0]["old_status"] == "consumed"
+    assert details.detail_rows[0]["new_status"] == "stored"
+
+    # A forced event is the legitimate exception: the same transition passes.
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `status` = 'stored' WHERE `id` = %s", (alq,)
+    )
+    ledger.driver.execute(
+        "UPDATE `aliquot_event` SET `forced` = TRUE WHERE `aliquot_id` = %s "
+        "AND `event` = 'status' AND `old_status` = 'consumed'",
+        (alq,),
+    )
+    ledger.driver.commit("test: mark the exception forced")
+    ledger.read_meta()
+    assert ledger.check(group="core").passed
