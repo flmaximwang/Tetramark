@@ -31,6 +31,9 @@ from tetramark.core.ids import (
 )
 from tetramark.errors import LedgerError, UsageError
 
+#: No database and no ``dolt`` binary: safe for the fast lane (``-m fast``).
+pytestmark = pytest.mark.fast
+
 # 2026-06-24 is the example date of the spec: prefix 08 → 0826FP01.
 TODAY = date(2026, 6, 24)
 

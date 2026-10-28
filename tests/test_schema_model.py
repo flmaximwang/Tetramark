@@ -26,6 +26,9 @@ from tetramark.schema.model import (
     parse_labels,
 )
 
+#: No database and no ``dolt`` binary: safe for the fast lane (``-m fast``).
+pytestmark = pytest.mark.fast
+
 # ---------------------------------------------------------------------------
 # Fields
 # ---------------------------------------------------------------------------
