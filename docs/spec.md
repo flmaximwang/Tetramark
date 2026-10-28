@@ -56,7 +56,6 @@ author: "Your Name <you@example.com>"   # fallback: git config user.name/email
 ids:
   stock: {strategy: datecode, prefix: "12"}   # → 1226JT01
   entity: {strategy: uuid}
-statuses: [pending, stored, missing, consumed]  # aliquot status vocabulary (override allowed)
 rules_dir: rules/                # optional custom validation rules (YAML)
 ```
 
@@ -74,6 +73,12 @@ collisions are an error.
 preset: molbio
 version: 2
 include: [base]
+status_sets:                     # global set names; usually defined in base
+  tube:
+    pending: {in_stock: false, to: [stored, missing, consumed]}
+    stored: {in_stock: true, to: [missing, consumed]}
+    missing: {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}
 mixins:
   sequence_fields:
     sequence: {type: sequence, unique: true}
@@ -90,6 +95,7 @@ kinds:
   bacterial_glycerol:
     object: stock
     entity_kinds: [plasmid, bacterial_strain]
+    statuses: tube               # required on every stock kind
     fields:
       strain: {type: string, required: true}
       medium: {type: string}
@@ -138,6 +144,34 @@ Optional on box kind: `slot_capacity` (default 1).
 Custom rule = `id`, `description`, `severity: fail|info`, `sql` (read-only SELECT), `expect`:
 `{single_value: X}` | `{rows: 0}` | `{rows_at_most: N}`. Compiled into `dolt_tests` (§4).
 
+### 2.4 Status sets
+
+Statuses belong to **stock kinds**, not to the ledger (spec 4). A preset or a
+ledger `kinds/` file may declare top-level `status_sets`, and every stock kind
+names one with `statuses:` (or gives an inline set); entity and box kinds must
+not have it. Set names are global, like kind names; a duplicate name is a load
+error, and every `to:` target must be a status of the same set.
+
+```yaml
+status_sets:
+  tube:
+    pending:  {in_stock: false, to: [stored, missing, consumed]}
+    stored:   {in_stock: true,  to: [missing, consumed]}   # on the shelf
+    missing:  {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}                            # no to: = final
+```
+
+`in_stock` decides what the stock views count as still in stock. Creating an
+aliquot (`tm stock add`, `tm aliquot add`, `tm import`) accepts any status of
+the stock kind's set; **changing** one must follow `to:`. `tm aliquot status …
+--force --note TEXT` overrides a rule and records `aliquot_event.forced = TRUE`;
+an unforced event that breaks a rule fails `tm check` (§4).
+
+The bundled sets live in `base`: `tube` (general tubes: pending/stored/missing
+and a final consumed), `cryo` (frozen vials: stored/missing/thawed) and `animal`
+(living organisms: planned/alive/…). Every existing stock kind uses `tube`;
+molbio's `cell_vial` uses `cryo`.
+
 ---
 
 ## 3. Physical model (generated DDL)
@@ -151,12 +185,12 @@ stock(id PK, kind, entity_id FK→entity, parent_stock_id FK→stock, source_ali
       created_at, notes, UNIQUE(id,kind))
 box(id PK, name UNIQUE, kind, parent_box_id FK→box, parent_slot, created_at, notes, UNIQUE(id,kind))
 slot(box_id FK→box, label, row_label, col_label, ordinal, PK(box_id,label))
-aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status CHECK IN vocab,
+aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status VARCHAR NOT NULL,
         quantity DECIMAL, unit, label, created_at, notes, UNIQUE(stock_id,seq),
-        FK(box_id,slot)→slot)
+        FK(box_id,slot)→slot)                    -- status: its stock kind's set (app + tests)
 aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit), amount, unit,
               from_box_id, from_slot, to_box_id, to_slot, old_status, new_status,
-              actor, purpose, note, at)
+              forced BOOLEAN NOT NULL DEFAULT FALSE, actor, purpose, note, at)
 alias(object_type, object_id, alias, PK(object_type, alias))
 ```
 
@@ -169,8 +203,14 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   `alias_list`/`occupant_alias_list` columns to the generated views. Version 3
   removes the `aliquot_<stockkind>` extension tables (an aliquot is a generic
   tube; the per-stock-kind tube-field key no longer loads) and adds the
-  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. A **v2**
-  ledger upgrades to v3 with the hand-run `migration/spec/2-to-3/` step; a v1
+  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. Version 4
+  moved the status vocabulary out of `ledger.yaml` into per-stock-kind status
+  sets, dropped the global `aliquot.status` CHECK, added `aliquot_event.forced`
+  and replaced the stock views' `aliquots_stored`/`quantity_stored`/five-value
+  `status` with in-stock counts, `quantity_in_stock` + `unit` and a three-value
+  `status`. A **v2** ledger upgrades to v3 with the hand-run
+  `migration/spec/2-to-3/` step (`migration/spec/3-to-4/` then moves v3 to v4);
+  a v1
   ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs
   `migration/presets/molbio/1-to-2`, which needs the last tool version that
   still reads `aliquot_fields` (a 0.2.0+ tool cannot open such a ledger at
@@ -223,19 +263,22 @@ Kind tables (generated from schema):
 - `stock_<kind>(…)` and `box_<kind>(…)` likewise.
 
 Views (generated):
-- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity, status,
-  and `occupant_alias_list` (the occupant's aliases: the aliquot's aliases when the occupant is an
-  aliquot, the box's aliases when it is a nested box, NULL for an empty slot).
+- `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity,
+  the occupant stock's `aliquots_in_stock`/`aliquots_total`/`quantity_in_stock` + `unit` and derived
+  `status` (NULL when the slot has no aliquot occupant), and `occupant_alias_list` (the occupant's
+  aliases: the aliquot's aliases when the occupant is an aliquot, the box's aliases when it is a
+  nested box, NULL for an empty slot).
 - `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`) and `alias_list`.
-- `v_stock_status` — stock + derived status (`active` if any aliquot stored; `pending` if any pending
-  and none stored; `depleted` if all consumed; `missing` if all missing/consumed with ≥1 missing; `empty` if 0 aliquots) + aliquot counts + total quantity per unit + `alias_list`.
+- `v_stock_status` — stock + derived status (`active` when at least one aliquot is in stock;
+  `depleted` when it has aliquots but none in stock; `empty` when it has none) +
+  `aliquots_in_stock`/`aliquots_total` + `quantity_in_stock` + `unit` + `alias_list`. "In stock" means
+  the aliquot's status has `in_stock: true` in its stock kind's status set (§2.4).
 - `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench). Every
   `v_stock_<kind>` additionally shows, in this order: `entity_kind`/`entity_name` (the owning design,
-  from core `entity`), `aliquots_stored` (status `stored`: what is still on the shelf),
-  `aliquots_total`, `quantity_stored` + `unit` (the sum of the stored quantities; `unit` is that unit
-  when every stored tube **with a quantity** shares one, otherwise both are NULL), `status` (the same
-  derived status as `v_stock_status`, generated from one shared SQL fragment). The final column is
-  always `alias_list`.
+  from core `entity`), `aliquots_in_stock`, `aliquots_total`, `quantity_in_stock` + `unit` (the sum of
+  the in-stock quantities; `unit` is that unit when every in-stock tube **with a quantity** shares one,
+  otherwise both are NULL), `status` (the same derived status as `v_stock_status`, generated from one
+  shared SQL fragment). The final column is always `alias_list`.
 
 **Aliquots have no kind.** An aliquot is a generic tube — location, quantity, unit, status, label,
 notes — and everything specific to a type of material lives on the stock kind (tubes that differ in a
@@ -257,7 +300,8 @@ What the DB enforces vs the app:
 - DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values.
 - App + Dolt tests (cannot be expressed as DB constraints): slot capacity & aliquot-vs-child-box exclusivity,
   nesting acyclicity, stock→entity kind restriction, `pattern`, status/slot consistency
-  (`stored` in a slotted box ⇒ slot NOT NULL), slotless box capacity.
+  (an in-stock aliquot in a slotted box ⇒ slot NOT NULL), statuses belonging to their stock kind's set,
+  transition rules for unforced `status` events, slotless box capacity.
 
 No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in the app).
 
@@ -269,7 +313,9 @@ No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in t
 1 = any FAIL. `-v` prints offending rows (each generated test has a companion detail query).
 
 Tests are generated into `dolt_tests` on `init` / `init --adopt` / `schema apply`, grouped:
-- `core` — the app-enforced invariants in §3.
+- `core` — the app-enforced invariants in §3, including `core_aliquot_status_known` (every aliquot's
+  status is in its stock kind's set) and `core_status_event_allowed` (every unforced `status` event
+  follows its stock kind's `to:` rules; `--force` events are exempt).
 - `schema:<kind>` — patterns, required refs, entity_kinds restriction.
 - `rules:<preset|local>` — custom rules. `severity: info` tests are reported but never fail the exit code
   (stored with a group suffix `:info`). Preset rules are read from the ledger's own
@@ -348,14 +394,15 @@ tm schema show [KIND] | plan | apply [--allow-destructive]
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity edit ID --set f=v ; tm entity ls [KIND] [--where f=v]
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
-                 [--aliquots N] [--box NAME --slot A1 [--slot A2 ...]] [--quantity 500 --unit ml]
+                 [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
+                 [--quantity 500 --unit ml]
 tm stock show|edit|ls ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
-tm aliquot add STOCK [--count N] [--box NAME --slot S ...] [--quantity Q --unit U]
+tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot move ALQ --box NAME [--slot S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
-tm aliquot status ALQ stored|missing|consumed|pending
+tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT --slot S]
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
@@ -365,10 +412,16 @@ tm find QUERY               # id → alias → name/text match across all object
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm check [-v] [--group G]
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
+                                # a 'status' column is a creation status (any set status)
 tm export KIND|all [--out DIR]
 tm remote add NAME URL | push | pull ; tm backup [DIR]
 tm branch ls | create NAME [--from REF] | delete NAME
 ```
+
+Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
+column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
+`aliquot_event.forced = TRUE` and is the only way to make an unforced-illegal change; without
+`--force` the CLI refuses and names the allowed next status(es).
 
 `tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
 `aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays
@@ -474,9 +527,10 @@ copied into a self-contained ledger, see below).
 
 Preset catalogue:
 
-- `base` — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named), `shelf`/`freezer`/`drawer`
-  (slotless); entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
-  received_on, expires_on).
+- `base` (**version 2**) — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named),
+  `shelf`/`freezer`/`drawer` (slotless); entity kind `item` (name, category, description); stock kind
+  `lot` (supplier, catalog_no, received_on, expires_on, `statuses: tube`); the status sets `tube`,
+  `cryo` and `animal` (§2.4).
 - `molbio` (includes `base`, **version 2**) — derived from zsqlab08/10: entities `protein_construct`
   (protein: sequence, molecular_weight_da, extinction coefficients as computed), `plasmid` (sequence,
   backbone, resistance, ref protein_construct), `bacterial_strain` (genotype, species), `cell_line`
@@ -487,11 +541,14 @@ Preset catalogue:
   core quantity), `cell_vial` (passage, medium, freezing_medium, cells_per_vial, dmso_pct) and
   `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
   transfection). Molbio 2 has no per-tube fields: all aliquots of one stock are the same, so a
-  property belongs on the stock kind. Spec 3 removed the per-stock-kind tube-field schema key
+  property belongs on the stock kind. Its stock kinds use `statuses: tube` except `cell_vial`
+  (`statuses: cryo`); the preset's `version:` stays 2 until the parts split (ticket 27) that vendors
+  the `status_sets` together with the part files. Spec 3 removed the per-stock-kind tube-field schema key
   entirely, so a molbio-1 ledger is upgraded by `migration/presets/molbio/1-to-2/` and then
   `migration/spec/2-to-3/`.
-- `library` (includes `base`) — entity `book` (title, authors, isbn pattern, year); stock `copy`
-  (acquired_on, condition enum). Exists to prove generality; used in tests.
+- `library` (**version 2**, includes `base`) — entity `book` (title, authors, isbn pattern, year);
+  stock `copy` (acquired_on, condition enum, `statuses: tube`). Exists to prove generality; used in
+  tests.
 
 ---
 

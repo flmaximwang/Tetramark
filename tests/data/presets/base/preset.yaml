@@ -1,6 +1,16 @@
 preset: base
 version: 2
 description: Base fixture preset used by the schema loader tests.
+status_sets:
+  tube:
+    pending: {in_stock: false, to: [stored, missing, consumed]}
+    stored: {in_stock: true, to: [missing, consumed]}
+    missing: {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}
+  cryo:
+    stored: {in_stock: true, to: [thawed, missing]}
+    missing: {in_stock: false, to: [stored, thawed]}
+    thawed: {in_stock: false}
 mixins:
   named_fields:
     name: {type: string, required: true, unique: true}
@@ -14,6 +24,7 @@ kinds:
   lot:
     object: stock
     entity_kinds: [item]
+    statuses: tube
     fields:
       supplier: {type: string, default: unknown}
       received_on: {type: date}

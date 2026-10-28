@@ -109,7 +109,10 @@ __all__ = [
     "load_renames",
     "main",
     "open_target",
+    "preset_args",
+    "restore_files",
     "run",
+    "vendor_repo_presets",
 ]
 
 #: A step's SQL builder: ``(ledger) -> ordered SQL statements``.
@@ -855,3 +858,127 @@ def load_renames(path: str | Path) -> RenameMap:
             "'entity', 'stock', 'box' and/or 'fields' keys"
         )
     return RenameMap.from_dict(payload)
+
+
+# ---------------------------------------------------------------------------
+# Preset-file placement (wave-10 preset steps)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommonArgs:
+    """The ``--ledger/--branch/--dry-run`` arguments every step accepts."""
+
+    ledger: str
+    branch: str | None
+    dry_run: bool
+
+
+def preset_args(argv: Sequence[str] | None = None) -> CommonArgs:
+    """Parse the common step arguments before the ledger is opened.
+
+    A wave-10 preset step must place the repository preset copies **before**
+    opening the ledger (the spec-4 loader refuses a stock kind without
+    ``statuses:``), so the step script needs these arguments outside the shared
+    runner as well.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--ledger", required=True, metavar="PATH")
+    parser.add_argument("--branch", metavar="B", default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parsed, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    return CommonArgs(
+        ledger=parsed.ledger,
+        branch=parsed.branch,
+        dry_run=bool(parsed.dry_run),
+    )
+
+
+def _preset_include_closure(
+    names: Sequence[str], *, repo_presets_dir: Path
+) -> list[str]:
+    """``names`` plus the repository ``include:`` closure of every bundled preset."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        source = repo_presets_dir / f"{name}.yaml"
+        if not source.is_file():
+            ordered.append(name)
+            return
+        try:
+            payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):  # pragma: no cover - defensive
+            ordered.append(name)
+            return
+        include = payload.get("include") if isinstance(payload, dict) else None
+        for included in include or []:
+            visit(str(included))
+        ordered.append(name)
+
+    for name in names:
+        visit(name)
+    return ordered
+
+
+def vendor_repo_presets(
+    ledger_dir: str | Path, repo_presets_dir: str | Path
+) -> list[tuple[Path, bytes | None]]:
+    """Place the repository copy of every bundled preset the ledger lists.
+
+    A preset step of the wave-10 preset-content change (spec 4 status sets)
+    cannot open an old ledger first: the spec-4 loader refuses a stock kind
+    without ``statuses:``, and that key lives in the preset copy.  The copies
+    are files, not Dolt content, so the step places them before the runner
+    opens the ledger; the per-preset counters are bumped by the preset steps
+    themselves.
+
+    Returns ``[(path, previous_bytes_or_None), ...]`` so a dry run or a refused
+    step can call :func:`restore_files` and leave the ledger byte-identical.
+    """
+    root = Path(ledger_dir).expanduser().resolve()
+    repo = Path(repo_presets_dir).expanduser().resolve()
+    config = root / LEDGER_FILE
+    if not config.is_file():
+        raise UsageError(f"{root} is not a Tetramark ledger (no {LEDGER_FILE})")
+    try:
+        payload = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as error:
+        raise UsageError(f"invalid {config}: {error}") from error
+    listed = payload.get("presets") if isinstance(payload, dict) else None
+    if not isinstance(listed, list):
+        raise UsageError(f"{config} has no 'presets' list")
+    names = [
+        Path(str(raw)).stem if Path(str(raw)).suffix else Path(str(raw)).name
+        for raw in listed
+    ]
+    saved: list[tuple[Path, bytes | None]] = []
+    copies = root / "presets"
+    for name in _preset_include_closure(names, repo_presets_dir=repo):
+        source = repo / f"{name}.yaml"
+        if not source.is_file():
+            continue
+        target = copies / f"{name}.yaml"
+        data = source.read_bytes()
+        if target.is_file() and target.read_bytes() == data:
+            continue
+        previous = target.read_bytes() if target.is_file() else None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        saved.append((target, previous))
+    return saved
+
+
+def restore_files(saved: Sequence[tuple[Path, bytes | None]]) -> None:
+    """Undo :func:`vendor_repo_presets` (best effort, back to front)."""
+    for target, previous in reversed(list(saved)):
+        try:
+            if previous is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_bytes(previous)
+        except OSError:  # pragma: no cover - the report already says what broke
+            pass

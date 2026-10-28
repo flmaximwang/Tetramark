@@ -570,6 +570,26 @@ RENAME_MAP = {
 }
 
 
+#: The status set the throwaway ``rn`` presets use (spec 4).
+PRESET_STATUS_SETS = {
+    "tube": {
+        "pending": {"in_stock": False, "to": ["stored", "missing", "consumed"]},
+        "stored": {"in_stock": True, "to": ["missing", "consumed"]},
+        "missing": {"in_stock": False, "to": ["stored", "consumed"]},
+        "consumed": {"in_stock": False},
+    }
+}
+
+
+def _with_status_sets(kinds: dict[str, Any]) -> dict[str, Any]:
+    """Give every stock kind of a throwaway preset the ``tube`` set (spec 4)."""
+    payload = json.loads(json.dumps(kinds))
+    for kind in payload.values():
+        if kind.get("object") == "stock" and "statuses" not in kind:
+            kind["statuses"] = "tube"
+    return payload
+
+
 def write_preset(
     directory: Path,
     kinds: dict[str, Any],
@@ -586,7 +606,12 @@ def write_preset(
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "preset.yaml"
     text = yaml.safe_dump(
-        {"preset": "rn", "version": version, "kinds": kinds},
+        {
+            "preset": "rn",
+            "version": version,
+            "status_sets": PRESET_STATUS_SETS,
+            "kinds": _with_status_sets(kinds),
+        },
         sort_keys=False,
     )
     path.write_text(text, encoding="utf-8")
@@ -1082,9 +1107,14 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
         # The vendored v2 copy reopens without a fingerprint warning.
         assert reopened.warnings == []
         assert reopened.check_fingerprint(warn=False) is True
-        assert reopened.schema.preset_versions == {"base": 1, "molbio": 2}
+        assert reopened.schema.preset_versions == {"base": 2, "molbio": 2}
         assert reopened.meta["fingerprint"] == reopened.schema.fingerprint()
-        assert json.loads(reopened.meta["preset_versions"]) == {"base": 1, "molbio": 2}
+        # The step bumps only its own preset: base's counter is bumped by
+        # migration/presets/base/1-to-2, which is a separate (idempotent) step.
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            "base": 1,
+            "molbio": 2,
+        }
 
         # Renamed tables exist, old ones and the extension table are gone.
         tables = table_names(reopened)
@@ -1386,7 +1416,7 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
 
     module = _load_molbio_step()
     target = module.target_schema(ledger)
-    assert target.preset_versions == {"base": 1, "molbio": 2, "widgets": 1}
+    assert target.preset_versions == {"base": 2, "molbio": 2, "widgets": 1}
     assert "widget" in target.kinds
     schema_plan = plan(ledger, target, renames=module.RENAMES)
     assert schema_plan.destructive == []
@@ -1413,10 +1443,11 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
     try:
         assert "widget" in reopened.schema.kinds
         assert reopened.schema.preset_versions == {
-            "base": 1,
+            "base": 2,
             "molbio": 2,
             "widgets": 1,
         }
+        # Only molbio's counter is bumped by this step.
         assert json.loads(reopened.meta["preset_versions"]) == {
             "base": 1,
             "molbio": 2,
@@ -1670,7 +1701,7 @@ def test_spec_2_to_3_drops_the_empty_extension_and_recreates_the_views(
     """Verify bullet 3: drop all-NULL extension, spec-3 views, one commit, tag."""
     ledger, _stock = spec2_ledger(ledger_factory, populated=False)
     assert "aliquot_lot" in table_names(ledger)
-    assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")
+    assert "aliquots_in_stock" not in column_names(ledger, "v_stock_lot")
     assert row_count(ledger, "dolt_tests") == 0
 
     head_before = head(ledger)
@@ -1692,12 +1723,12 @@ def test_spec_2_to_3_drops_the_empty_extension_and_recreates_the_views(
     columns = column_names(ledger, "v_stock_lot")
     assert set(STOCK_VIEW_COLUMNS) <= columns
     row = ledger.driver.query(
-        "SELECT aliquots_stored, aliquots_total, status FROM `v_stock_lot`"
+        "SELECT aliquots_in_stock, aliquots_total, status FROM `v_stock_lot`"
     )[0]
-    # They were created without a box, so they are pending, not stored.
-    assert row["aliquots_stored"] == 0
+    # They were created without a box, so they are pending, not in stock.
+    assert row["aliquots_in_stock"] == 0
     assert row["aliquots_total"] == 2
-    assert row["status"] == "pending"
+    assert row["status"] == "depleted"
 
     # Counter, fingerprint and the regenerated derived tests, in one commit.
     assert ledger.meta["spec_version"] == "3"
@@ -1754,7 +1785,7 @@ def test_spec_2_to_3_dry_run_writes_nothing(
     ledger.read_meta()
     assert ledger.meta["spec_version"] == "2"
     assert "aliquot_lot" in table_names(ledger)
-    assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")
+    assert "aliquots_in_stock" not in column_names(ledger, "v_stock_lot")
 
 
 def test_spec_2_to_3_refuses_a_populated_extension_and_writes_nothing(
@@ -1784,4 +1815,281 @@ def test_spec_2_to_3_refuses_a_populated_extension_and_writes_nothing(
         assert ledger.meta["spec_version"] == "2"
         assert "aliquot_lot" in table_names(ledger)
         assert row_count(ledger, "aliquot_lot") == 1
-        assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")
+        assert "aliquots_in_stock" not in column_names(ledger, "v_stock_lot")
+
+
+# ---------------------------------------------------------------------------
+# spec/3-to-4: per-stock-kind status sets, forced events, in-stock views
+# ---------------------------------------------------------------------------
+
+SPEC_3_TO_4 = ROOT / "migration" / "spec" / "3-to-4" / "migrate.py"
+BASE_1_TO_2 = ROOT / "migration" / "presets" / "base" / "1-to-2" / "migrate.py"
+LIBRARY_1_TO_2 = ROOT / "migration" / "presets" / "library" / "1-to-2" / "migrate.py"
+
+SPEC3_STATUSES = ["pending", "stored", "missing", "consumed"]
+
+
+def spec3_ledger(factory, *, statuses: list[str] | None = None):
+    """A real spec-4 ledger downgraded to the spec-3 generated shape.
+
+    The presets stay loadable (they already carry ``status_sets``), so the
+    fixture is a normal init followed by hand SQL plus the legacy ``statuses:``
+    key in ``ledger.yaml`` and its ``ledger_meta`` copy, as the ticket allows.
+    The old views are dropped (the step recreates every generated view) and the
+    spec-3 status CHECK is put back so the step has something to drop.
+    """
+    ledger = factory([REPO_PRESETS / "base.yaml"], name="spec3", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        values={"supplier": "acme"},
+        aliquots=2,
+        quantity=1,
+        unit="ml",
+    )
+    for statement in view_statements(ledger.schema):
+        ledger.driver.execute(f"DROP VIEW `{statement.name}`")
+    ledger.driver.execute("ALTER TABLE `aliquot_event` DROP COLUMN `forced`")
+    ledger.driver.execute(
+        "ALTER TABLE `aliquot` ADD CONSTRAINT `ck_aliquot_status` "
+        "CHECK (`status` IN ('pending', 'stored', 'missing', 'consumed'))"
+    )
+    config_path = ledger.path / "ledger.yaml"
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["statuses"] = list(statuses or SPEC3_STATUSES)
+    text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    config_path.write_text(text, encoding="utf-8")
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'ledger_yaml'",
+        (text,),
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '3' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-3 ledger")
+    ledger.read_meta()
+    return ledger, stock
+
+
+def config_payload(ledger: Ledger) -> dict[str, Any]:
+    return yaml.safe_load((ledger.path / "ledger.yaml").read_text(encoding="utf-8"))
+
+
+def test_spec_3_to_4_migrates_statuses_forced_and_views(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    ledger, _stock = spec3_ledger(ledger_factory)
+    assert "statuses" in config_payload(ledger)
+    assert "forced" not in column_names(ledger, "aliquot_event")
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    view_count = len(view_statements(ledger.schema))
+
+    dry = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), "--dry-run", env=script_env)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: spec 3 -> 4" in dry.stdout
+    assert "CALL DOLT_TAG('pre-migrate-spec-3'" in dry.stdout
+    assert "ADD COLUMN `forced`" in dry.stdout
+    assert "DROP CHECK `ck_aliquot_status`" in dry.stdout
+    assert dry.stdout.count("CREATE VIEW") == view_count
+    assert "'spec_version', '4'" in dry.stdout
+    # Dry run writes nothing — including the legacy key in ledger.yaml.
+    assert "statuses" in config_payload(ledger)
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+
+    applied = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): spec 3 -> 4" in applied.stdout
+
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "4"
+    assert ledger.meta["tetramark_version"] == __version__
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert "statuses" not in config_payload(ledger)
+    assert "statuses" not in (yaml.safe_load(ledger.meta["ledger_yaml"]) or {})
+    assert "forced" in column_names(ledger, "aliquot_event")
+    assert "aliquots_in_stock" in column_names(ledger, "v_stock_lot")
+    assert row_count(ledger, "dolt_tests") == len(generate_tests(ledger.schema))
+
+    checks = ledger.driver.query(
+        "SELECT `constraint_name` AS `name` FROM "
+        "`information_schema`.`table_constraints` "
+        "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot' "
+        "AND `constraint_type` = 'CHECK'"
+    )
+    assert checks == []
+    assert commit_count(ledger) == commits_before + 1
+    assert commit_message(ledger, head(ledger)) == "migrate(ledger): spec 3 -> 4"
+    assert tags(ledger) == {"pre-migrate-spec-3": head_before}
+
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+    again = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "spec_version 4, expected 3" in again.stdout + again.stderr
+
+
+def test_spec_3_to_4_refuses_a_custom_status_list_and_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    custom = ["pending", "stored", "quarantined"]
+    ledger, _stock = spec3_ledger(embedded_ledger_factory, statuses=custom)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    config_before = (ledger.path / "ledger.yaml").read_bytes()
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            SPEC_3_TO_4, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate spec 3 -> 4" in output
+        assert "quarantined" in output
+        assert "status_set" in output
+        assert "nothing was written" in output
+        # Nothing was written: no commit, no tag, ledger.yaml byte-identical.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        assert (ledger.path / "ledger.yaml").read_bytes() == config_before
+
+
+# ---------------------------------------------------------------------------
+# presets/base/1-to-2 and presets/library/1-to-2
+# ---------------------------------------------------------------------------
+
+
+def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    ledger = ledger_factory([REPO_PRESETS / "base.yaml"], name="base-v1", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
+    # Pretend the ledger's metadata still records base 1 (the copy is current).
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 1}),),
+    )
+    ledger.driver.commit("test: record the old base counter")
+    ledger.read_meta()
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    view_count = len(view_statements(ledger.schema))
+
+    dry = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: base 1 -> 2" in dry.stdout
+    assert dry.stdout.count("CREATE VIEW") == view_count
+    assert head(ledger) == head_before
+    assert tags(ledger) == {}
+
+    applied = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): base 1 -> 2" in applied.stdout
+
+    ledger.read_meta()
+    assert json.loads(ledger.meta["preset_versions"]) == {"base": 2}
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert commit_count(ledger) == commits_before + 1
+    assert tags(ledger) == {"pre-migrate-base-1": head_before}
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+
+    again = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[base] 2, expected 1" in again.stdout + again.stderr
+
+
+def test_library_1_to_2_bumps_its_counter_after_base(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "library.yaml"], name="library-v1", id_prefix="77"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 2, "library": 1}),),
+    )
+    ledger.driver.commit("test: record the old library counter")
+    ledger.read_meta()
+
+    applied = run_python(LIBRARY_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): library 1 -> 2" in applied.stdout
+    ledger.read_meta()
+    assert json.loads(ledger.meta["preset_versions"]) == {
+        "base": 2,
+        "library": 2,
+    }
+    assert ledger.schema.statuses_for("copy")[1] == "stored"
+
+
+def test_preset_step_refuses_before_spec_4(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml"], name="base-spec3", id_prefix="77"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '3' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 1}),),
+    )
+    ledger.driver.commit("test: spec 3 with an old base counter")
+    ledger.read_meta()
+    head_before = head(ledger)
+
+    result = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "refusing to migrate base 1 -> 2" in output
+    assert "migration/spec/3-to-4" in output
+    assert head(ledger) == head_before
+
+
+def test_spec_3_to_4_refuses_an_aliquot_status_outside_its_stock_kind_set(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    ledger, stock = spec3_ledger(embedded_ledger_factory)
+    alq = stock["aliquots"][0]
+    # A real row whose status is not in the set the upgraded preset declares.
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `status` = 'missing' WHERE `id` = %s", (alq,)
+    )
+    ledger.driver.commit("test: a status the new set no longer knows")
+    ledger.read_meta()
+    # Remove ``missing`` from the ledger's own tube copy (as a wave-10 local
+    # preset edit would); the step opens that copy, so the row is out of set.
+    preset_copy = ledger.path / "presets" / "base.yaml"
+    document = yaml.safe_load(preset_copy.read_text(encoding="utf-8"))
+    document["status_sets"]["tube"].pop("missing")
+    document["status_sets"]["tube"]["stored"]["to"] = ["consumed"]
+    document["status_sets"]["tube"]["pending"]["to"] = ["stored", "consumed"]
+    preset_copy.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    result = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "refusing to migrate spec 3 -> 4" in output
+    assert f"{alq} (lot): missing" in output
+    assert "Nothing was written" in output
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    # The legacy ledger.yaml was restored too.
+    assert "statuses" in config_payload(ledger)

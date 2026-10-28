@@ -15,11 +15,11 @@ from tetramark.schema.loader import (
     load_schema,
 )
 from tetramark.schema.model import (
-    DEFAULT_STATUSES,
     FieldType,
     LedgerConfig,
     ObjectType,
     SchemaError,
+    StatusSet,
 )
 
 DATA = Path(__file__).parent / "data"
@@ -104,7 +104,15 @@ def test_load_schema_resolves_mixins_and_cross_refs() -> None:
 
     assert [rule.id for rule in schema.rules] == ["CH01", "CH02", "FULL01"]
     assert [rule.severity.value for rule in schema.rules] == ["fail", "info", "fail"]
-    assert schema.statuses == list(DEFAULT_STATUSES)
+    # The base fixture defines the status sets; the stock kinds name them.
+    assert set(schema.status_sets) == {"tube", "cryo"}
+    assert schema.statuses_for("lot") == [
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    ]
+    assert schema.statuses_for("bacterial") == schema.statuses_for("lot")
     assert schema.preset_versions == {"base": 2, "chain": 3, "full": 1}
 
 
@@ -130,20 +138,14 @@ def test_preset_directory_kinds_and_rules_subdirectories() -> None:
     assert schema.kinds["extra_box"].geometry.labels == ["a", "b"]
 
 
-def test_local_kinds_dir_rules_dir_and_statuses(tmp_path: Path) -> None:
+def test_local_kinds_dir_rules_dir(tmp_path: Path) -> None:
     path = LEDGERS / "local" / "ledger.yaml"
     config = load_ledger_config(path)
     assert config.name == "local"
     assert config.presets == ["../../presets/chain"]
     assert config.kinds_dir == "kinds/"
     assert config.rules_dir == "rules/"
-    assert config.statuses == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-        "quarantined",
-    ]
+    assert not hasattr(config, "statuses")
     assert config.id_config(ObjectType.stock).prefix == "77"
 
     ledger = tmp_path / "local"
@@ -155,7 +157,13 @@ def test_local_kinds_dir_rules_dir_and_statuses(tmp_path: Path) -> None:
     assert "custom_entity" in schema.kinds
     assert schema.kinds["custom_entity"].fields["label"].required
     assert [rule.id for rule in schema.rules] == ["CH01", "CH02", "LOCAL01"]
-    assert schema.statuses[-1] == "quarantined"
+    assert schema.statuses_for("bacterial") == [
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    ]
+    assert isinstance(schema.status_set("bacterial"), StatusSet)
 
 
 def test_presets_resolve_only_from_the_ledger_copy(tmp_path: Path) -> None:
@@ -208,6 +216,7 @@ kinds:
   bacterial:
     object: stock
     entity_kinds: [item, plasmid]
+    statuses: tube
     fields:
       measured_at: {type: datetime}
       amount: {type: decimal, precision: 10, scale: 2, default: 0}
@@ -379,7 +388,7 @@ def test_duplicate_mixin_across_presets() -> None:
 @pytest.mark.parametrize(
     ("case", "message"),
     [
-        ("bad_config_status", "must match"),
+        ("bad_config_status", "migration/spec/3-to-4"),
         ("bad_config_ids", "unknown id strategy"),
         ("bad_config_extra", "Extra inputs are not permitted"),
     ],
@@ -417,3 +426,128 @@ def test_bad_local_rules_document(tmp_path: Path) -> None:
     config = load_ledger_config(ledger / "ledger.yaml")
     with pytest.raises(SchemaError, match="rules document"):
         load_schema(config, base_dir=ledger)
+
+
+# ---------------------------------------------------------------------------
+# Status sets (spec 4)
+# ---------------------------------------------------------------------------
+
+
+def _write_preset(directory: Path, name: str, text: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_stock_kind_without_statuses_fails_to_load(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path,
+        "nostatus",
+        """preset: nostatus
+kinds:
+  lot:
+    object: stock
+""",
+    )
+    with pytest.raises(SchemaError, match="stock kinds require 'statuses'") as caught:
+        load_schema(LedgerConfig(name="x", presets=[str(path)]))
+    assert caught.value.path == "kinds.lot"
+    assert "migration/spec/3-to-4" in caught.value.message
+
+
+def test_entity_kind_with_statuses_fails_to_load(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path,
+        "entitystatus",
+        """preset: entitystatus
+status_sets:
+  tube:
+    stored: {in_stock: true}
+kinds:
+  thing:
+    object: entity
+    statuses: tube
+""",
+    )
+    with pytest.raises(SchemaError, match="only valid on stock kinds") as caught:
+        load_schema(LedgerConfig(name="x", presets=[str(path)]))
+    assert caught.value.path == "kinds.thing"
+
+
+def test_status_to_target_must_exist_in_the_set(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path,
+        "badto",
+        """preset: badto
+status_sets:
+  tube:
+    stored: {in_stock: true, to: [nowhere]}
+kinds:
+  lot:
+    object: stock
+    statuses: tube
+""",
+    )
+    with pytest.raises(SchemaError, match="not a status of this set"):
+        load_schema(LedgerConfig(name="x", presets=[str(path)]))
+
+
+def test_duplicate_status_set_name_is_a_load_error(tmp_path: Path) -> None:
+    first = _write_preset(
+        tmp_path,
+        "one",
+        """preset: one
+status_sets:
+  tube:
+    stored: {in_stock: true}
+kinds:
+  a:
+    object: entity
+""",
+    )
+    second = _write_preset(
+        tmp_path,
+        "two",
+        """preset: two
+status_sets:
+  tube:
+    stored: {in_stock: true}
+kinds:
+  b:
+    object: entity
+""",
+    )
+    with pytest.raises(SchemaError, match="duplicate status set 'tube'") as caught:
+        load_schema(LedgerConfig(name="x", presets=[str(first), str(second)]))
+    assert caught.value.path == "status_sets.tube"
+    assert "duplicate status set" in caught.value.message
+
+
+def test_unknown_status_set_name_is_a_load_error(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path,
+        "unknown",
+        """preset: unknown
+kinds:
+  lot:
+    object: stock
+    statuses: tube
+""",
+    )
+    with pytest.raises(SchemaError, match="unknown status set 'tube'") as caught:
+        load_schema(LedgerConfig(name="x", presets=[str(path)]))
+    assert caught.value.path == "kinds.lot.statuses"
+
+
+def test_legacy_ledger_statuses_key_points_at_the_migration() -> None:
+    """Spec 4 refuses a ledger.yaml that still holds the spec-3 list."""
+    with pytest.raises(SchemaError, match="migration/spec/3-to-4") as caught:
+        load_ledger_config(INVALID / "bad_config_status" / "ledger.yaml")
+    assert caught.value.path == "statuses"
+
+    # The spec-3 -> 4 step reads the old shape through the explicit opt-in.
+    config = load_ledger_config(
+        INVALID / "bad_config_status" / "ledger.yaml", allow_legacy_statuses=True
+    )
+    assert config.name == "bad"

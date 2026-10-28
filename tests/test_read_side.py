@@ -190,7 +190,8 @@ def test_box_show_grid_json_shape_and_snapshot(ledger_factory) -> None:
     assert [occupant["id"] for occupant in by_label["A1"]["occupants"]] == [
         first_aliquot
     ]
-    assert by_label["A1"]["occupants"][0]["status"] == "stored"
+    # Spec 4: v_box_slots reports the occupant stock's derived status.
+    assert by_label["A1"]["occupants"][0]["status"] == "active"
     assert [occupant["id"] for occupant in by_label["C3"]["occupants"]] == [
         second_aliquot
     ]

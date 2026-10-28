@@ -136,10 +136,12 @@ Every ledger records its format version and tool provenance in `ledger_meta`:
 "meta refresh" hint in `tm schema plan` instead of an error.
 
 A change of **format** (not of a preset) ships with a hand-run step under `migration/`, one folder per
-counter bump: `migration/spec/2-to-3/` is the 0.2.0 step that drops the old `aliquot_<kind>` extension
-tables and recreates the views with the stock entity/aliquot/quantity/status columns.
-`migration/README.md` and the step READMEs carry the preconditions, the manual steps, verification and
-the rollback path.
+counter bump: `migration/spec/2-to-3/` is the 0.2.0 step that dropped the old `aliquot_<kind>`
+extension tables, and `migration/spec/3-to-4/` is the step that moved the status vocabulary into the
+presets (dropping the global `aliquot.status` CHECK, adding `aliquot_event.forced` and recreating the
+in-stock views). A preset's `version:` bump ships a `migration/presets/<name>/N-to-N+1/` step the same
+way. `migration/README.md` and the step READMEs carry the preconditions, the manual steps, verification
+and the rollback path.
 
 ### Branches
 

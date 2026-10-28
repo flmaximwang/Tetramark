@@ -18,8 +18,11 @@ enum checks.  This module adds the rules Dolt cannot express (spec §3):
 * a stock's entity kind must satisfy ``entity_kinds``;
 * placement: the slot exists, the slot's capacity is respected, no child box is
   in an aliquot's slot, and a slotless box's total capacity is respected;
-* a stored aliquot in a slotted box needs a slot;
-* box nesting must be acyclic and a slot holds aliquots *or* one child box.
+* an in-stock aliquot in a slotted box needs a slot;
+* box nesting must be acyclic and a slot holds aliquots *or* one child box;
+* an aliquot's status belongs to its stock kind's status set, creation accepts
+  any status of the set and every later change follows the set's ``to:`` rules
+  (:func:`ensure_status_change`; ``--force --note`` records the exception).
 
 Placement rules are checked through the open :class:`WriteSession`, so several
 aliquots created by one command see each other (the embedded driver replays the
@@ -40,7 +43,7 @@ from tetramark.core.events import purge_events, record_event
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows, table_name
-from tetramark.schema.model import Field, FieldType, Kind
+from tetramark.schema.model import Field, FieldType, Kind, StatusSet
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
@@ -145,6 +148,110 @@ def _kind_for(ledger: Ledger, object_type: str, kind_name: str) -> Kind:
         )
     valid = ", ".join(sorted(kinds)) or "(none defined)"
     raise UsageError(f"unknown {object_type} kind {kind_name!r}; choose from: {valid}")
+
+
+# ---------------------------------------------------------------------------
+# Status sets (spec 4)
+# ---------------------------------------------------------------------------
+
+
+def aliquot_status_set(ledger: Ledger, stock_kind: str) -> StatusSet:
+    """The status set of a stock kind (every stock kind has one, spec 4)."""
+    kind = ledger.schema.kind(stock_kind)
+    status_set = kind.status_set()
+    if status_set is None:  # pragma: no cover - the loader rejects this
+        raise LedgerError(
+            f"stock kind {stock_kind!r} has no status set; reload the ledger "
+            "schema"
+        )
+    return status_set
+
+
+def _status_choice(statuses: Sequence[str]) -> str:
+    return ", ".join(statuses)
+
+
+def validate_creation_status(ledger: Ledger, stock_kind: str, status: str) -> str:
+    """Validate a status chosen when an aliquot is **created** (any set status)."""
+    status_set = aliquot_status_set(ledger, stock_kind)
+    text = str(status).strip()
+    if text not in status_set.names:
+        raise UsageError(
+            f"unknown status {status!r} for stock kind {stock_kind!r}; choose "
+            f"from: {_status_choice(status_set.names)}"
+        )
+    return text
+
+
+def default_aliquot_status(
+    ledger: Ledger, stock_kind: str, *, placed: bool
+) -> str:
+    """The status of a newly created aliquot that did not name one.
+
+    Creation is not a transition (spec 4), so any status of the stock kind's
+    set may be chosen; the default keeps the spec-3 behaviour where possible:
+    ``stored`` when the tube is placed in a box and ``pending`` otherwise.  A
+    set without one of those (e.g. ``cryo`` has no ``pending``) falls back to
+    its first in-stock status, then to its first status.
+    """
+    status_set = aliquot_status_set(ledger, stock_kind)
+    preferred = ("stored", "pending") if placed else ("pending", "stored")
+    for name in preferred:
+        if status_set.has(name):
+            return name
+    in_stock = status_set.in_stock_names
+    if in_stock:
+        return in_stock[0]
+    return status_set.names[0]
+
+
+def ensure_status_change(
+    ledger: Ledger,
+    stock_kind: str,
+    old_status: str,
+    new_status: str,
+    *,
+    force: bool = False,
+) -> None:
+    """The one check every status-changing path goes through (spec 4).
+
+    A change must follow the stock kind's ``to:`` transitions; ``force``
+    overrides a rule (the caller records ``aliquot_event.forced = TRUE`` and
+    therefore must have a note).  Creation does not come through here.
+    """
+    status_set = aliquot_status_set(ledger, stock_kind)
+    old = str(old_status)
+    new = str(new_status)
+    if old not in status_set.names:
+        raise LedgerError(
+            f"aliquot status {old_status!r} is not in the status set of stock "
+            f"kind {stock_kind!r} ({_status_choice(status_set.names)}); fix the "
+            "stored data ('tm check' reports it)"
+        )
+    if new not in status_set.names:
+        raise UsageError(
+            f"unknown status {new_status!r} for stock kind {stock_kind!r}; "
+            f"choose from: {_status_choice(status_set.names)}"
+        )
+    if new == old:
+        raise LedgerError(
+            f"aliquot already has status {old!r}; nothing to change"
+        )
+    if status_set.allows(old, new):
+        return
+    if force:
+        return
+    targets = status_set.root[old].to
+    allowed = (
+        _status_choice(targets)
+        if targets
+        else "(final status: no unforced change)"
+    )
+    raise LedgerError(
+        f"cannot change an aliquot of stock kind {stock_kind!r} from {old!r} to "
+        f"{new!r}: allowed next status(es): {allowed}. Pass --force --note TEXT "
+        "to record a forced exception (aliquot_event.forced = TRUE)"
+    )
 
 
 def _normalise_values(values: Iterable[str] | Mapping[str, Any] | None) -> tuple[str, ...]:
@@ -965,17 +1072,24 @@ def _insert_aliquot(
     ledger: Ledger,
     *,
     stock_id: str,
+    stock_kind: str,
     seq: int,
     box_row: Mapping[str, Any] | None,
     slot: str | None,
     quantity: Decimal | None,
     unit: str | None,
+    status: str | None = None,
 ) -> str:
     alq_id = aliquot_id(stock_id, seq)
     placed_slot: str | None = None
     if box_row is not None:
         placed_slot = _check_aliquot_placement(session, ledger, box_row, slot)
-    status = "stored" if box_row is not None else "pending"
+    if status is None:
+        status = default_aliquot_status(
+            ledger, stock_kind, placed=box_row is not None
+        )
+    else:
+        status = validate_creation_status(ledger, stock_kind, status)
     _insert(
         session,
         "aliquot",
@@ -1018,13 +1132,20 @@ def add_stock(
     quantity: Any = None,
     unit: Any = None,
     id: str | None = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
-    """Create a stock, its kind row, and its aliquots (1 by default)."""
+    """Create a stock, its kind row, and its aliquots (1 by default).
+
+    ``status`` chooses the aliquot status at **creation** (spec 4: any status
+    of the stock kind's set is accepted, creation is not a transition).
+    """
     kind = _kind_for(ledger, "stock", kind_name)
     count = _parse_count(aliquots, option="--aliquots")
     amount, unit_text = _parse_quantity_unit(quantity, unit)
     if count == 0 and (box is not None or list(slots)):
         raise UsageError("cannot place aliquots when --aliquots is 0")
+    if count == 0 and status is not None:
+        raise UsageError("cannot set an aliquot status when --aliquots is 0")
     if box is None and list(slots):
         raise UsageError("--slot requires --box")
     slot_list = _place_slots(slots, count=count)
@@ -1077,17 +1198,26 @@ def add_stock(
                 raise LedgerError(
                     f"box {box_row['name']!r} has slots: give one --slot per aliquot"
                 )
+        chosen_status = (
+            validate_creation_status(ledger, kind_name, status)
+            if status is not None
+            else default_aliquot_status(
+                ledger, kind_name, placed=box_row is not None
+            )
+        )
         created: list[str] = []
         for index in range(1, count + 1):
             alq_id = _insert_aliquot(
                 session,
                 ledger,
                 stock_id=stock_id,
+                stock_kind=kind_name,
                 seq=index,
                 box_row=box_row,
                 slot=slot_list[index - 1],
                 quantity=amount,
                 unit=unit_text,
+                status=chosen_status,
             )
             record_event(
                 session,
@@ -1097,7 +1227,7 @@ def add_stock(
                 unit=unit_text,
                 to_box_id=box_row["id"] if box_row is not None else None,
                 to_slot=slot_list[index - 1] if box_row is not None else None,
-                new_status="stored" if box_row is not None else "pending",
+                new_status=chosen_status,
                 actor=ledger.actor,
             )
             created.append(alq_id)
@@ -1184,8 +1314,13 @@ def add_aliquots(
     slots: Sequence[str | None] = (),
     quantity: Any = None,
     unit: Any = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
-    """Add ``count`` aliquots to an existing stock."""
+    """Add ``count`` aliquots to an existing stock.
+
+    ``status`` chooses the status at creation (any status of the stock kind's
+    set, spec 4).
+    """
     amount, unit_text = _parse_quantity_unit(quantity, unit)
     count = _parse_count(count, option="--count")
     if count < 1:
@@ -1217,17 +1352,26 @@ def add_aliquots(
                 raise LedgerError(
                     f"box {box_row['name']!r} has slots: give one --slot per aliquot"
                 )
+        chosen_status = (
+            validate_creation_status(ledger, kind_name, status)
+            if status is not None
+            else default_aliquot_status(
+                ledger, kind_name, placed=box_row is not None
+            )
+        )
         created: list[str] = []
         for offset in range(count):
             alq_id = _insert_aliquot(
                 session,
                 ledger,
                 stock_id=stock_id,
+                stock_kind=kind_name,
                 seq=first_seq + offset,
                 box_row=box_row,
                 slot=slot_list[offset],
                 quantity=amount,
                 unit=unit_text,
+                status=chosen_status,
             )
             record_event(
                 session,
@@ -1237,7 +1381,7 @@ def add_aliquots(
                 unit=unit_text,
                 to_box_id=box_row["id"] if box_row is not None else None,
                 to_slot=slot_list[offset] if box_row is not None else None,
-                new_status="stored" if box_row is not None else "pending",
+                new_status=chosen_status,
                 actor=ledger.actor,
             )
             created.append(alq_id)
@@ -1296,7 +1440,14 @@ def use_aliquot(
     purpose: str | None = None,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Consume ``amount`` of an aliquot; reaching zero marks it ``consumed``."""
+    """Consume ``amount`` of an aliquot; reaching zero marks it ``consumed``.
+
+    When the aliquot reaches zero the status change goes through the same
+    transition check as ``tm aliquot status`` (:func:`ensure_status_change`).
+    A stock kind whose set has no ``consumed`` status (the bundled ``cryo``
+    set) keeps its current status: the set has no "used up" state, and the
+    operator records the physical fate with ``tm aliquot status``.
+    """
     try:
         used = Decimal(str(amount).strip())
     except (InvalidOperation, ValueError):
@@ -1329,7 +1480,15 @@ def use_aliquot(
                 f"cannot use {used} {unit_text} from aliquot {alq_id!r}: "
                 f"only {current} left"
             )
-        new_status = "consumed" if remaining == 0 else old_status
+        new_status = old_status
+        if remaining == 0:
+            stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
+            assert stock_row is not None  # FK guarantees it
+            kind_name = str(stock_row["kind"])
+            status_set = aliquot_status_set(ledger, kind_name)
+            if status_set.has("consumed"):
+                ensure_status_change(ledger, kind_name, old_status, "consumed")
+                new_status = "consumed"
         _update(
             session,
             "aliquot",
@@ -1363,13 +1522,20 @@ def set_aliquot_status(
     status: str,
     *,
     note: str | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Change an aliquot's status, recording a ``status`` event."""
-    new_status = str(status).strip()
-    if new_status not in ledger.schema.statuses:
+    """Change an aliquot's status, recording a ``status`` event.
+
+    The change must follow the stock kind's status set (spec 4);
+    ``force=True`` overrides a transition rule, must carry a note, and records
+    ``aliquot_event.forced = TRUE`` so ``tm check`` can tell a deliberate
+    exception from a hand-made illegal row.
+    """
+    note_text = None if note is None else str(note).strip()
+    if force and not note_text:
         raise UsageError(
-            f"unknown status {status!r}; choose from: "
-            + ", ".join(ledger.schema.statuses)
+            "--force requires --note: record why the transition rules are "
+            "overridden"
         )
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
@@ -1377,7 +1543,15 @@ def set_aliquot_status(
     with ledger.write(alq_id, verb="status", object="aliquot") as session:
         row = _resolve_core(session, "aliquot", alq_id)
         old_status = str(row.get("status"))
-        if new_status == "stored" and row.get("box_id") is not None:
+        stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
+        assert stock_row is not None  # FK guarantees it
+        kind_name = str(stock_row["kind"])
+        ensure_status_change(
+            ledger, kind_name, old_status, status, force=force
+        )
+        status_set = aliquot_status_set(ledger, kind_name)
+        target = status_set.root[str(status).strip()]
+        if target.in_stock and row.get("box_id") is not None:
             box_row = _fetch_core(session, "box", str(row["box_id"]))
             if box_row is not None:
                 geometry = _box_geometry(ledger.schema.kind(str(box_row["kind"])))
@@ -1386,21 +1560,28 @@ def set_aliquot_status(
                         f"aliquot {alq_id!r} is in slotted box "
                         f"{box_row['name']!r} but has no slot; move it to a slot first"
                     )
-        _update(session, "aliquot", {"id": alq_id}, {"status": new_status})
+        _update(
+            session,
+            "aliquot",
+            {"id": alq_id},
+            {"status": str(status).strip()},
+        )
         record_event(
             session,
             aliquot_id=alq_id,
             event="status",
             old_status=old_status,
-            new_status=new_status,
+            new_status=str(status).strip(),
+            forced=force,
             actor=ledger.actor,
-            note=note,
+            note=note_text,
         )
         return {
             "object": "aliquot",
             "id": alq_id,
             "old_status": old_status,
-            "status": new_status,
+            "status": str(status).strip(),
+            "forced": force,
         }
 
 
@@ -2152,6 +2333,7 @@ class StockOps:
         quantity: Any = None,
         unit: Any = None,
         id: str | None = None,
+        status: str | None = None,
     ) -> dict[str, Any]:
         return add_stock(
             self.ledger,
@@ -2166,6 +2348,7 @@ class StockOps:
             quantity=quantity,
             unit=unit,
             id=id,
+            status=status,
         )
 
     def edit(
@@ -2212,6 +2395,7 @@ class AliquotOps:
         slots: Sequence[str | None] = (),
         quantity: Any = None,
         unit: Any = None,
+        status: str | None = None,
     ) -> dict[str, Any]:
         return add_aliquots(
             self.ledger,
@@ -2221,6 +2405,7 @@ class AliquotOps:
             slots=slots,
             quantity=quantity,
             unit=unit,
+            status=status,
         )
 
     def move(self, ref: str, *, box: str, slot: str | None = None) -> dict[str, Any]:
@@ -2240,9 +2425,16 @@ class AliquotOps:
         )
 
     def status(
-        self, ref: str, status: str, *, note: str | None = None
+        self,
+        ref: str,
+        status: str,
+        *,
+        note: str | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
-        return set_aliquot_status(self.ledger, ref, status, note=note)
+        return set_aliquot_status(
+            self.ledger, ref, status, note=note, force=force
+        )
 
     def purge(self, ref: str) -> dict[str, Any]:
         return purge_aliquot(self.ledger, ref)

@@ -54,6 +54,7 @@ from tetramark.schema.model import (
     IDENTIFIER_RE,
     RESERVED_SQL_WORDS,
     EffectiveSchema,
+    ObjectType,
     Field,
     FieldType,
     Kind,
@@ -61,6 +62,7 @@ from tetramark.schema.model import (
     Preset,
     Rule,
     SchemaError,
+    StatusSet,
 )
 
 __all__ = [
@@ -334,7 +336,13 @@ def _load_rules_document(data: Any, display: str, prefix: str = "") -> Preset:
         raise SchemaError(
             "rules document must be a list or a YAML mapping", file=display
         )
-    if "rules" in data or "preset" in data or "version" in data or "include" in data:
+    if (
+        "rules" in data
+        or "status_sets" in data
+        or "preset" in data
+        or "version" in data
+        or "include" in data
+    ):
         return _validate_preset(data, display, prefix)
     if {"id", "sql", "expect"} <= set(data):
         return _validate(Preset, {"rules": [data]}, display, prefix)
@@ -346,7 +354,18 @@ def _load_rules_document(data: Any, display: str, prefix: str = "") -> Preset:
 def _load_kinds_document(data: Any, display: str, prefix: str = "") -> Preset:
     if not isinstance(data, dict):
         raise SchemaError("kinds document must be a YAML mapping", file=display)
-    if any(key in data for key in ("kinds", "mixins", "rules", "preset", "version", "include")):
+    if any(
+        key in data
+        for key in (
+            "kinds",
+            "mixins",
+            "rules",
+            "status_sets",
+            "preset",
+            "version",
+            "include",
+        )
+    ):
         return _validate_preset(data, display, prefix)
     # Bare mapping: the document *is* the kinds mapping.
     return _validate(Preset, {"kinds": data}, display, prefix)
@@ -460,6 +479,12 @@ class _KindEntry:
 
 
 @dataclass
+class _StatusSetEntry:
+    statuses: StatusSet
+    display: str
+
+
+@dataclass
 class _MixinEntry:
     fields: dict[str, Field]
     display: str
@@ -477,8 +502,23 @@ class _Collector:
         self.kinds: dict[str, _KindEntry] = {}
         self.mixins: dict[str, _MixinEntry] = {}
         self.rules: dict[str, _RuleEntry] = {}
+        self.status_sets: dict[str, _StatusSetEntry] = {}
 
     def add(self, doc: Preset, display: str, *, source: str = "preset") -> None:
+        for set_name, statuses in doc.status_sets.items():
+            _check_identifier(set_name, display, f"status_sets.{set_name}")
+            if set_name in self.status_sets:
+                raise SchemaError(
+                    f"duplicate status set {set_name!r} (also defined in "
+                    f"{self.status_sets[set_name].display}); set names are "
+                    "global, like kind names",
+                    file=display,
+                    path=f"status_sets.{set_name}",
+                )
+            self.status_sets[set_name] = _StatusSetEntry(
+                statuses=statuses, display=display
+            )
+
         for mixin_name, fields in doc.mixins.items():
             _check_identifier(mixin_name, display, f"mixins.{mixin_name}")
             if mixin_name in self.mixins:
@@ -597,6 +637,44 @@ def _apply_mixins(collector: _Collector) -> dict[str, Kind]:
     return resolved
 
 
+def _resolve_status_sets(
+    collector: _Collector, kinds: dict[str, Kind]
+) -> dict[str, Kind]:
+    """Resolve every stock kind's ``statuses:`` to a concrete :class:`StatusSet`.
+
+    A stock kind names a set from ``status_sets`` or gives an inline set; the
+    loader replaces the name with the resolved content so views, rules and the
+    status-change check can read one shape.  Entity and box kinds never carry
+    one (the model already rejects it).
+    """
+    resolved: dict[str, Kind] = {}
+    for kind_name, kind in kinds.items():
+        entry = collector.kinds[kind_name]
+        if kind.object is not ObjectType.stock:
+            resolved[kind_name] = kind
+            continue
+        statuses = kind.statuses
+        if isinstance(statuses, str):
+            status_entry = collector.status_sets.get(statuses)
+            if status_entry is None:
+                known = ", ".join(sorted(collector.status_sets)) or "(none)"
+                raise SchemaError(
+                    f"unknown status set {statuses!r} (defined sets: {known}); "
+                    "define it under the top-level 'status_sets:' key of a "
+                    "preset or kinds file",
+                    file=entry.display,
+                    path=f"kinds.{kind_name}.statuses",
+                )
+            resolved[kind_name] = kind.model_copy(
+                update={"statuses": status_entry.statuses}
+            )
+        else:
+            # Inline set: the model validated its transitions already.
+            assert isinstance(statuses, StatusSet)  # model guarantees it
+            resolved[kind_name] = kind
+    return resolved
+
+
 def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry]) -> None:
     entity_kinds = {
         name for name, kind in kinds.items() if kind.object.value == "entity"
@@ -651,6 +729,14 @@ def _merge_units(units: Iterable[_PresetUnit]) -> Preset:
     seen: dict[str, str] = {}
     for unit in units:
         for display, doc in [(unit.source.primary_display, unit.primary), *unit.extras]:
+            for name in doc.status_sets:
+                if name in merged.status_sets:
+                    raise SchemaError(
+                        f"duplicate status set {name!r}",
+                        file=display,
+                        path=f"status_sets.{name}",
+                    )
+                merged.status_sets[name] = doc.status_sets[name]
             for name in doc.mixins:
                 if name in merged.mixins:
                     raise SchemaError(
@@ -702,8 +788,17 @@ def load_preset(
     return merged
 
 
-def load_ledger_config(path: str | Path) -> LedgerConfig:
-    """Parse a ``ledger.yaml`` file."""
+def load_ledger_config(
+    path: str | Path, *, allow_legacy_statuses: bool = False
+) -> LedgerConfig:
+    """Parse a ``ledger.yaml`` file.
+
+    Spec 4 moved the status vocabulary out of ``ledger.yaml`` into the preset
+    stock kinds (``status_sets:``), so a ledger whose config still has a
+    ``statuses:`` key cannot be opened: the error names the migration step.
+    ``allow_legacy_statuses`` is only for ``migration/spec/3-to-4``, which must
+    read the old shape it is about to migrate.
+    """
     candidate = Path(path)
     if candidate.is_dir():
         candidate = candidate / "ledger.yaml"
@@ -713,6 +808,18 @@ def load_ledger_config(path: str | Path) -> LedgerConfig:
     data = _read_yaml(candidate, display)
     if not isinstance(data, dict):
         raise SchemaError("ledger.yaml must be a YAML mapping", file=display)
+    if "statuses" in data:
+        if not allow_legacy_statuses:
+            raise SchemaError(
+                "ledger.yaml no longer holds 'statuses': since spec 4 the "
+                "status vocabulary belongs to each stock kind in the presets "
+                "(top-level 'status_sets:' and a 'statuses:' reference on the "
+                "kind). Remove the key with migration/spec/3-to-4/README.md, "
+                "then reopen the ledger",
+                file=display,
+                path="statuses",
+            )
+        data = {key: value for key, value in data.items() if key != "statuses"}
     return _validate(LedgerConfig, data, display)
 
 
@@ -1117,6 +1224,7 @@ def load_schema(
             collector.add(doc, display, source="local")
 
     resolved_kinds = _apply_mixins(collector)
+    resolved_kinds = _resolve_status_sets(collector, resolved_kinds)
     _validate_references(resolved_kinds, collector.kinds)
 
     return EffectiveSchema(
@@ -1125,7 +1233,9 @@ def load_schema(
         rule_sources={
             rule_id: entry.source for rule_id, entry in collector.rules.items()
         },
-        statuses=list(config.statuses),
+        status_sets={
+            name: entry.statuses for name, entry in collector.status_sets.items()
+        },
         preset_versions=versions,
     )
 

@@ -1,4 +1,7 @@
 preset: entity_kinds_not_entity
+status_sets:
+  tube:
+    stored: {in_stock: true}
 kinds:
   box_a:
     object: box
@@ -6,3 +9,4 @@ kinds:
   lot:
     object: stock
     entity_kinds: [box_a]
+    statuses: tube

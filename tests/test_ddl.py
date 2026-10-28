@@ -38,7 +38,10 @@ from tetramark.schema.model import (
     LedgerConfig,
     ObjectType,
     SchemaError,
+    Status,
+    StatusSet,
 )
+from tetramark.schema.tests_gen import generate_tests
 
 DATA = Path(__file__).parent / "data"
 PRESETS = DATA / "presets"
@@ -113,7 +116,7 @@ def test_generation_is_deterministic() -> None:
 
 def test_statement_helpers_return_composable_lists() -> None:
     schema = full_schema()
-    core = core_statements(schema.statuses)
+    core = core_statements()
     kinds = kind_statements(schema)
     views = view_statements(schema)
 
@@ -174,9 +177,10 @@ def test_stock_views_share_the_status_fragment_and_column_order() -> None:
     statements = {s.name: s.sql for s in view_statements(full_schema())}
     status = statements["v_stock_status"]
     stock_view = statements["v_stock_bacterial"]
-    # The whole six-branch CASE is literally the same SQL in both views.
+    # The derived three-value CASE is literally the same SQL in both views.
     case = status.split("CASE\n", 1)[1].split("END AS `status`", 1)[0]
-    assert case.count("WHEN") == 5
+    assert case.count("WHEN") == 2
+    assert "'empty'" in case and "'active'" in case and "'depleted'" in case
     assert case in stock_view
     # … and so is the per-stock aggregate block.
     aggregate = status.split("LEFT JOIN (\n", 1)[1].split(") agg ", 1)[0]
@@ -186,9 +190,9 @@ def test_stock_views_share_the_status_fragment_and_column_order() -> None:
     ordered = [
         "`entity_kind`",
         "`entity_name`",
-        "`aliquots_stored`",
+        "`aliquots_in_stock`",
         "`aliquots_total`",
-        "`quantity_stored`",
+        "`quantity_in_stock`",
         "`unit`",
         "`status`",
         "`alias_list`",
@@ -372,6 +376,7 @@ def test_kind_ref_field_gets_a_foreign_key(
             "prep": Kind(
                 object=ObjectType.stock,
                 entity_kinds=["item"],
+                statuses=StatusSet({"stored": Status(in_stock=True)}),
                 fields={
                     "batch": Field(type=FieldType.string),
                     "source": Field(type=FieldType.ref, to="item"),
@@ -508,13 +513,14 @@ def test_slot_fk_rejects_slot_not_in_geometry(
         "('STK-1.2', 'STK-1', 2, 'BOX-1', 'Z9', 'stored')",
         "foreign key",
     )
-    # The status CHECK comes from the schema vocabulary.
-    reject(
+    # Spec 4 dropped the global aliquot.status CHECK: the vocabulary belongs to
+    # the stock kind and the generated ``core_aliquot_status_known`` test (not
+    # the database) catches a status that is not in its set.
+    execute(
         dolt_run,
         full_ledger,
         "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
         "('STK-1.3', 'STK-1', 3, 'lost')",
-        "check constraint",
     )
 
 
@@ -645,23 +651,26 @@ def test_views_report_location_status_and_slots(
         for row in query(
             dolt_run,
             full_ledger,
-            "SELECT stock_id, status, aliquot_count, total_quantity, unit "
-            "FROM v_stock_status",
+            "SELECT stock_id, status, aliquots_in_stock, aliquots_total, "
+            "quantity_in_stock, unit FROM v_stock_status",
         )
     }
+    # Spec 4: three values only; 'stored' is in stock, everything else is not.
     assert statuses["STK-1"]["status"] == "active"
-    assert statuses["STK-2"]["status"] == "pending"
+    assert statuses["STK-2"]["status"] == "depleted"
     assert statuses["STK-3"]["status"] == "depleted"
-    assert statuses["STK-4"]["status"] == "missing"
+    assert statuses["STK-4"]["status"] == "depleted"
     assert statuses["STK-5"]["status"] == "empty"
-    assert statuses["STK-4"]["aliquot_count"] == 2
-    assert float(statuses["STK-1"]["total_quantity"]) == 500.0
+    assert statuses["STK-4"]["aliquots_total"] == 2
+    assert statuses["STK-1"]["aliquots_in_stock"] == 1
+    assert float(statuses["STK-1"]["quantity_in_stock"]) == 500.0
     assert statuses["STK-1"]["unit"] == "ul"
 
     slots = query(
         dolt_run,
         full_ledger,
         "SELECT slot, occupant_type, occupant_id, aliquot_id, entity_id, "
+        "aliquots_in_stock, aliquots_total, status, "
         "occupant_type IS NULL AS is_empty "
         "FROM v_box_slots WHERE box_id = 'B-BOX' ORDER BY ordinal",
     )
@@ -670,6 +679,10 @@ def test_views_report_location_status_and_slots(
     assert slots[0]["occupant_type"] == "aliquot"
     assert slots[0]["aliquot_id"] == "STK-1.1"
     assert slots[0]["entity_id"] == "ENT-1"
+    # Spec 4: the slot shows its occupant stock's derived status and counts.
+    assert slots[0]["status"] == "active"
+    assert slots[0]["aliquots_in_stock"] == 1
+    assert slots[0]["aliquots_total"] == 1
     assert slots[1]["slot"] == "A2"
     assert slots[1]["is_empty"] in (1, True)
     assert "occupant_type" not in slots[1]  # NULL keys are omitted by Dolt JSON
@@ -699,7 +712,7 @@ def molbio_ledger(dolt_repo: Path, dolt_run: Any) -> Path:
     return dolt_repo
 
 
-def test_stock_view_column_list_matches_spec_3(
+def test_stock_view_column_list_matches_spec_4(
     molbio_ledger: Path, dolt_run: Any
 ) -> None:
     """Verify bullet 4: the stock view ends with [kind fields…] + the new columns."""
@@ -715,6 +728,10 @@ def test_stock_view_column_list_matches_spec_3(
         )
     ]
     assert columns[-8:] == [*STOCK_VIEW_COLUMNS, "alias_list"]
+    # Ticket constraint: the ticket-23 names are replaced, not aliased.
+    for old in ("aliquots_stored", "quantity_stored", "stored_count"):
+        assert old not in columns
+    assert "aliquots_in_stock" in columns and "quantity_in_stock" in columns
 
 
 def test_stock_view_shows_entity_aliquots_quantity_and_status(
@@ -743,23 +760,23 @@ def test_stock_view_shows_entity_aliquots_quantity_and_status(
     row = query(
         dolt_run,
         molbio_ledger,
-        "SELECT id, entity_kind, entity_name, aliquots_stored, aliquots_total, "
-        "quantity_stored, unit, status FROM v_stock_bacterial_glycerol "
-        "WHERE id = 'S1'",
+        "SELECT id, entity_kind, entity_name, aliquots_in_stock, "
+        "aliquots_total, quantity_in_stock, unit, status "
+        "FROM v_stock_bacterial_glycerol WHERE id = 'S1'",
     )[0]
     assert row["entity_kind"] == "bacterial_strain"
     assert row["entity_name"] == "DH5a"
-    assert row["aliquots_stored"] == 2
+    assert row["aliquots_in_stock"] == 2
     assert row["aliquots_total"] == 3
-    assert float(row["quantity_stored"]) == 1.5
+    assert float(row["quantity_in_stock"]) == 1.5
     assert row["unit"] == "ml"
     assert row["status"] == "active"
 
-    # Mixed units: both the sum and the unit are NULL, never a wrong total.
+    # Mixed units among the in-stock tubes: quantity and unit are both NULL.
     mixed = query(
         dolt_run,
         molbio_ledger,
-        "SELECT quantity_stored IS NULL AS q_null, unit IS NULL AS unit_null "
+        "SELECT quantity_in_stock IS NULL AS q_null, unit IS NULL AS unit_null "
         "FROM v_stock_bacterial_glycerol WHERE id = 'S2'",
     )[0]
     assert mixed["q_null"] in (1, True)
@@ -769,24 +786,26 @@ def test_stock_view_shows_entity_aliquots_quantity_and_status(
     empty = query(
         dolt_run,
         molbio_ledger,
-        "SELECT aliquots_stored, aliquots_total, quantity_stored, unit, status "
-        "FROM v_stock_bacterial_glycerol WHERE id = 'S3'",
+        "SELECT aliquots_in_stock, aliquots_total, quantity_in_stock, unit, "
+        "status FROM v_stock_bacterial_glycerol WHERE id = 'S3'",
     )[0]
-    assert empty["aliquots_stored"] == 0
+    assert empty["aliquots_in_stock"] == 0
     assert empty["aliquots_total"] == 0
-    assert "quantity_stored" not in empty  # NULL keys are omitted by Dolt JSON
+    assert "quantity_in_stock" not in empty  # NULL keys are omitted by Dolt JSON
     assert "unit" not in empty
     assert empty["status"] == "empty"
 
-    # v_stock_status keeps its own (all-aliquot) semantics.
+    # v_stock_status follows the same in-stock rule now.
     status = query(
         dolt_run,
         molbio_ledger,
-        "SELECT stock_id, status, total_quantity, unit FROM v_stock_status "
-        "ORDER BY stock_id",
+        "SELECT stock_id, status, aliquots_in_stock, aliquots_total, "
+        "quantity_in_stock, unit FROM v_stock_status ORDER BY stock_id",
     )
     assert status[0]["status"] == "active"
-    assert float(status[0]["total_quantity"]) == 1.5
+    assert status[0]["aliquots_in_stock"] == 2
+    assert status[0]["aliquots_total"] == 3
+    assert float(status[0]["quantity_in_stock"]) == 1.5
     assert status[0]["unit"] == "ml"
 
 
@@ -976,28 +995,30 @@ def test_construct_view_keeps_aliases_field_and_alias_list_apart(
 # ---------------------------------------------------------------------------
 
 
-def test_custom_status_vocabulary_is_used_by_the_check(
+def test_aliquot_status_check_is_gone_and_the_generated_rule_enforces_the_set(
     dolt_repo: Path, dolt_run: Any
 ) -> None:
-    schema = full_schema(
-        statuses=["pending", "stored", "missing", "consumed", "quarantined"]
-    )
+    """Spec 4: no DB-level status CHECK; the generated dolt_test catches it."""
+    schema = full_schema()
     install(dolt_run, dolt_repo, schema_statements(schema))
+
+    names = {test.name for test in generate_tests(schema)}
+    assert "core_aliquot_status_known" in names
+    assert "core_status_event_allowed" in names
+    assert not any(
+        "ck_aliquot_status" in statement.sql
+        for statement in schema_statements(schema)
+    )
 
     _insert_entity(dolt_run, dolt_repo, "ENT-1", "Item")
     _insert_stock(dolt_run, dolt_repo, "STK-1", "ENT-1")
+    # A status outside the set is accepted by the DB (no CHECK) so a hand-made
+    # row is visible to ``tm check`` instead of being rejected at write time.
     execute(
         dolt_run,
         dolt_repo,
         "INSERT INTO aliquot (id, stock_id, seq, status) "
-        "VALUES ('STK-1.1', 'STK-1', 1, 'quarantined')",
-    )
-    reject(
-        dolt_run,
-        dolt_repo,
-        "INSERT INTO aliquot (id, stock_id, seq, status) "
-        "VALUES ('STK-1.2', 'STK-1', 2, 'lost')",
-        "check constraint",
+        "VALUES ('STK-1.1', 'STK-1', 1, 'lost')",
     )
 
 

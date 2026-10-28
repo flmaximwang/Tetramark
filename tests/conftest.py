@@ -270,7 +270,6 @@ def embedded_ledger_factory(
         name: str | None = None,
         id_prefix: str | None = "77",
         author: str | None = FACTORY_AUTHOR,
-        statuses: list[str] | None = None,
     ) -> Ledger:
         workspace_dir = tmp_path / "workspace"
         if (workspace_dir / "workspace.yaml").is_file():
@@ -287,7 +286,6 @@ def embedded_ledger_factory(
             sources,
             id_prefix=id_prefix,
             author=author,
-            statuses=statuses,
         )
         assert isinstance(ledger, Ledger)
         created.append(ledger)
@@ -376,7 +374,6 @@ def server_ledger_factory(
         name: str | None = None,
         id_prefix: str | None = "77",
         author: str | None = FACTORY_AUTHOR,
-        statuses: list[str] | None = None,
     ) -> Ledger:
         ledger_name = name or f"t_{worker_id()}_{next(_server_ledger_sequence)}"
         sources = list(presets) if presets else [PRESETS / "base"]
@@ -386,7 +383,6 @@ def server_ledger_factory(
             sources,
             id_prefix=id_prefix,
             author=author,
-            statuses=statuses,
         )
         created.append(ledger)
         return ledger
@@ -443,9 +439,8 @@ def fast_ledger_factory(
         name: str | None = None,
         id_prefix: str | None = "77",
         author: str | None = FACTORY_AUTHOR,
-        statuses: list[str] | None = None,
     ) -> Ledger:
-        del name, id_prefix, author, statuses  # fixed in the template
+        del name, id_prefix, author  # fixed in the template
         sources = list(presets) if presets else [PRESETS / "base"]
         names = {Path(str(source)).name for source in sources}
         key = "base" if names == {"base"} else "full"

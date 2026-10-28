@@ -485,3 +485,64 @@ def test_cli_unknown_field_exits_usage(
         main()
     assert excinfo.value.code == 2
     assert "valid fields" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Status CLI: creation status, transition rules and --force (spec 4)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory) -> None:
+    from tetramark.errors import UsageError
+
+    ledger = ledger_factory([BASE], name="cli-status", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "a", "--json").output
+    )
+    # Creation accepts any status of the stock kind's set.
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "1",
+            "--status",
+            "consumed",
+            "--json",
+        ).output
+    )
+    alq = stock["aliquots"][0]
+
+    # An unforced illegal change is a business error (exit 1 via main()).
+    from tetramark.errors import LedgerError
+
+    refused = invoke(ledger, "aliquot", "status", alq, "stored")
+    assert isinstance(refused.exception, LedgerError)
+    assert refused.exception.exit_code == 1
+    assert "final status" in str(refused.exception)
+
+    # --force without --note is a usage error (main() exits 2).
+    usage = invoke(ledger, "aliquot", "status", alq, "stored", "--force")
+    assert isinstance(usage.exception, UsageError)
+    assert usage.exception.exit_code == 2
+    assert "--force requires --note" in str(usage.exception)
+
+    forced = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "status",
+            alq,
+            "stored",
+            "--force",
+            "--note",
+            "found in the back of the shelf",
+            "--json",
+        ).output
+    )
+    assert forced["forced"] is True
+    assert forced["status"] == "stored"

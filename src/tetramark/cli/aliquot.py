@@ -28,6 +28,15 @@ def add_aliquots_command(
         None, "--quantity", "-q", help="Quantity for each new aliquot."
     ),
     unit: str | None = typer.Option(None, "--unit", "-u", help="Unit of --quantity."),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Status at creation: any status of the stock kind's set (creation "
+            "is not a transition). Default: stored when --box is given, else "
+            "pending (or the set's first in-stock status)."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the created objects as JSON."),
 ) -> None:
     """Add aliquots to an existing stock."""
@@ -40,6 +49,7 @@ def add_aliquots_command(
             slots=slot,
             quantity=quantity,
             unit=unit,
+            status=status,
         )
         ids = result["ids"]
         message = f"Added {len(ids)} aliquot(s) to {result['stock_id']}"
@@ -102,18 +112,37 @@ def use_aliquot_command(
 def status_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
-    status: str = typer.Argument(..., help="New status (from the ledger vocabulary)."),
-    note: str | None = typer.Option(None, "--note", help="Free-text note."),
+    status: str = typer.Argument(
+        ..., help="New status (from the stock kind's status set)."
+    ),
+    note: str | None = typer.Option(
+        None,
+        "--note",
+        help="Free-text note; required with --force, recorded on the event.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help=(
+            "Override a transition rule; requires --note and records "
+            "aliquot_event.forced = TRUE (tm check accepts the event)."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Change an aliquot's status."""
+    """Change an aliquot's status, following its stock kind's transition rules."""
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.status(ref, status, note=note)
+        result = ledger.aliquots.status(ref, status, note=note, force=force)
+        message = (
+            f"Status of {result['id']}: {result['old_status']} -> {result['status']}"
+        )
+        if result.get("forced"):
+            message += " (forced)"
         emit_write(
             ledger,
             result,
-            f"Status of {result['id']}: {result['old_status']} -> {result['status']}",
+            message,
             as_json=json_output(ctx, as_json),
         )
     finally:

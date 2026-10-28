@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from tetramark.schema.model import (
-    DEFAULT_STATUSES,
     UNSET,
     EffectiveSchema,
     Field,
@@ -23,6 +22,8 @@ from tetramark.schema.model import (
     RuleExpect,
     SchemaError,
     SqlType,
+    Status,
+    StatusSet,
     parse_labels,
 )
 
@@ -307,6 +308,7 @@ def test_kind_resolves_object_specific_rules() -> None:
     kind = Kind(
         object="stock",
         entity_kinds=["thing"],
+        statuses=_status_set(),
         fields={"glycerol_pct": Field(type="decimal", default=15)},
     )
     assert kind.object is ObjectType.stock
@@ -404,7 +406,6 @@ def test_preset_defaults_and_validation() -> None:
 
 def test_ledger_config_defaults_and_ids() -> None:
     config = LedgerConfig(name="demo")
-    assert config.statuses == list(DEFAULT_STATUSES)
     assert config.id_config("entity") == IdStrategyConfig(strategy="uuid")
     assert config.id_config("stock").strategy == "datecode"
 
@@ -415,18 +416,14 @@ def test_ledger_config_defaults_and_ids() -> None:
         rules_dir="rules/",
         author="A <a@b.c>",
         ids={"entity": {"strategy": "uuid"}, "stock": {"strategy": "sequence", "prefix": "S"}},
-        statuses=["pending", "stored"],
     )
     assert config.id_config(ObjectType.stock).prefix == "S"
-    assert config.statuses == ["pending", "stored"]
 
 
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        ({"name": "x", "statuses": []}, "statuses must not be empty"),
-        ({"name": "x", "statuses": ["OK"]}, "must match"),
-        ({"name": "x", "statuses": ["ok", "ok"]}, "duplicate status"),
+        ({"name": "x", "statuses": ["pending"]}, "Extra inputs"),
         ({"name": "x", "ids": {"box": {"strategy": "uuid"}}}, "unknown id strategy"),
         ({"name": "x", "ids": {"stock": {"prefix": "12"}}}, "Field required"),
         ({"name": "x", "ids": {"entity": {"strategy": "random"}}}, "strategy must be one of"),
@@ -445,12 +442,21 @@ def test_invalid_ledger_config(payload: dict, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _status_set(*, consumed_to: tuple[str, ...] = ()) -> StatusSet:
+    return StatusSet(
+        {
+            "stored": Status(in_stock=True, to=["consumed"]),
+            "consumed": Status(in_stock=False, to=list(consumed_to)),
+        }
+    )
+
+
 def _schema(
     *,
     fields: dict[str, Field] | None = None,
     description: str | None = None,
     rules: list[Rule] | None = None,
-    statuses: list[str] | None = None,
+    status_sets: dict[str, StatusSet] | None = None,
     preset_versions: dict[str, int] | None = None,
     kind_mixins: list[str] | None = None,
 ) -> EffectiveSchema:
@@ -467,7 +473,7 @@ def _schema(
     return EffectiveSchema(
         kinds={"thing": kind},
         rules=rules or [],
-        statuses=statuses or list(DEFAULT_STATUSES),
+        status_sets=status_sets or {},
         preset_versions=preset_versions or {},
     )
 
@@ -499,9 +505,46 @@ def test_fingerprint_ignores_enum_value_order() -> None:
 def test_fingerprint_ignores_rule_order_and_status_order() -> None:
     rule_a = Rule(id="A", description="a", sql="SELECT 1", expect={"rows": 0})
     rule_b = Rule(id="B", description="b", sql="SELECT 2", expect={"rows": 0})
-    a = _schema(rules=[rule_a, rule_b], statuses=["pending", "stored"])
-    b = _schema(rules=[rule_b, rule_a], statuses=["stored", "pending"])
+    a = _schema(rules=[rule_a, rule_b], status_sets={"tube": _status_set()})
+    b = _schema(rules=[rule_b, rule_a], status_sets={"tube": _status_set()})
     assert a.fingerprint() == b.fingerprint()
+
+
+def test_status_set_validates_transitions() -> None:
+    status_set = StatusSet(
+        {
+            "stored": Status(in_stock=True, to=["consumed", "missing"]),
+            "missing": Status(in_stock=False, to=["stored"]),
+            "consumed": Status(in_stock=False),
+        }
+    )
+    assert status_set.names == ["stored", "missing", "consumed"]
+    assert status_set.in_stock_names == ["stored"]
+    assert status_set.final_names == ["consumed"]
+    assert status_set.allows("stored", "consumed")
+    assert not status_set.allows("consumed", "stored")
+
+    with pytest.raises(ValidationError, match="not a status of this set"):
+        StatusSet({"stored": {"in_stock": True, "to": ["nowhere"]}})
+    with pytest.raises(ValidationError, match="at least one status"):
+        StatusSet({})
+    with pytest.raises(ValidationError, match="must match"):
+        StatusSet({"Stored": {"in_stock": True}})
+    with pytest.raises(ValidationError, match="reserved SQL word"):
+        StatusSet({"set": {"in_stock": True}})
+    with pytest.raises(ValidationError, match="duplicates"):
+        StatusSet({"stored": {"in_stock": True, "to": ["a", "a"]}, "a": {"in_stock": False}})
+
+
+def test_stock_kinds_require_statuses_and_entity_kinds_must_not_have_it() -> None:
+    with pytest.raises(ValidationError, match="stock kinds require 'statuses'"):
+        Kind(object="stock")
+    stock = Kind(object="stock", statuses=_status_set())
+    assert stock.status_set() is not None
+    with pytest.raises(ValidationError, match="only valid on stock kinds"):
+        Kind(object="entity", statuses=_status_set())
+    with pytest.raises(ValidationError, match="only valid on stock kinds"):
+        Kind(object="box", geometry={"type": "slotless"}, statuses="tube")
 
 
 def test_fingerprint_changes_with_semantics() -> None:
@@ -515,7 +558,7 @@ def test_fingerprint_changes_with_semantics() -> None:
     changed_rule = _schema(
         rules=[Rule(id="A", description="a", sql="SELECT 1", expect={"rows": 0})]
     )
-    changed_status = _schema(statuses=["pending", "stored", "extra"])
+    changed_status = _schema(status_sets={"tube": _status_set(consumed_to=("stored",))})
     fingerprints = {
         base.fingerprint(),
         changed_default.fingerprint(),
@@ -527,7 +570,7 @@ def test_fingerprint_changes_with_semantics() -> None:
 
 def test_schema_lookup_helpers() -> None:
     entity = Kind(object="entity")
-    stock = Kind(object="stock")
+    stock = Kind(object="stock", statuses=_status_set())
     box = Kind(object="box", geometry={"type": "slotless"})
     schema = EffectiveSchema(kinds={"e": entity, "s": stock, "b": box})
     assert list(schema.entity_kinds) == ["e"]

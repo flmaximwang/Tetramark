@@ -25,13 +25,12 @@ import string
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 from pydantic import Field as PydanticField
 
 from tetramark.errors import LedgerError
 
 __all__ = [
-    "DEFAULT_STATUSES",
     "SPEC_VERSION",
     "UNSET",
     "EffectiveSchema",
@@ -49,6 +48,8 @@ __all__ = [
     "RuleSeverity",
     "SchemaError",
     "SqlType",
+    "Status",
+    "StatusSet",
     "parse_labels",
 ]
 
@@ -57,10 +58,13 @@ __all__ = [
 #: generated views so the ``alias`` table is visible there; v3 removed the
 #: ``aliquot_<stockkind>`` extension tables (an aliquot is a generic tube now)
 #: and added the entity/aliquot/quantity/status columns to every
-#: ``v_stock_<kind>``.
-SPEC_VERSION = 3
-
-DEFAULT_STATUSES: tuple[str, ...] = ("pending", "stored", "missing", "consumed")
+#: ``v_stock_<kind>``; v4 moved the status vocabulary out of ``ledger.yaml``
+#: into per-stock-kind ``status_sets``, dropped the global ``aliquot.status``
+#: CHECK, added ``aliquot_event.forced`` and replaced the stock views'
+#: ``aliquots_stored``/``quantity_stored``/five-value ``status`` with
+#: ``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock`` + ``unit`` and
+#: ``status`` ∈ {active, depleted, empty}.
+SPEC_VERSION = 4
 
 #: Order-independent schema rendering version.  Bump when the normalised
 #: representation changes (invalidates stored fingerprints).
@@ -679,12 +683,120 @@ class ObjectType(StrEnum):
     box = "box"
 
 
+# ---------------------------------------------------------------------------
+# Status sets (spec 4, design §4)
+# ---------------------------------------------------------------------------
+
+
+class Status(BaseModel):
+    """One status of a :class:`StatusSet`.
+
+    ``in_stock`` says whether an aliquot in this status counts as physically in
+    stock (it drives the generated stock views).  ``to`` lists the statuses it
+    may change to; an empty ``to`` means the status is **final** and no
+    unforced change away from it is allowed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_stock: bool
+    to: list[str] = PydanticField(default_factory=list)
+
+    @field_validator("to")
+    @classmethod
+    def _validate_targets(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("'to' must not contain duplicates")
+        for target in value:
+            if not isinstance(target, str) or not IDENTIFIER_RE.match(target):
+                raise ValueError(
+                    f"'to' entry {target!r} must match [a-z][a-z0-9_]*"
+                )
+        return value
+
+    def normalised(self) -> dict[str, Any]:
+        return {"in_stock": self.in_stock, "to": sorted(self.to)}
+
+
+class StatusSet(RootModel[dict[str, Status]]):
+    """A named set of statuses and their transitions (spec 4).
+
+    A preset declares sets under the top-level ``status_sets:`` key::
+
+        status_sets:
+          tube:
+            pending: {in_stock: false, to: [stored, missing, consumed]}
+            stored:  {in_stock: true,  to: [missing, consumed]}
+
+    Every ``to:`` target must exist in the same set (a set is never merged
+    across documents), and set names are global, like kind names.  A stock kind
+    names its set through ``statuses: tube`` (or gives an inline set); an
+    aliquot's allowed statuses are always its stock kind's set.
+    """
+
+    @model_validator(mode="after")
+    def _validate_statuses(self) -> StatusSet:
+        if not self.root:
+            raise ValueError("a status set must define at least one status")
+        for name in self.root:
+            if not isinstance(name, str) or not IDENTIFIER_RE.match(name):
+                raise ValueError(
+                    f"status name {name!r} must match [a-z][a-z0-9_]*"
+                )
+            if name in RESERVED_SQL_WORDS:
+                raise ValueError(f"status name {name!r} is a reserved SQL word")
+        for name, status in self.root.items():
+            for target in status.to:
+                if target not in self.root:
+                    raise ValueError(
+                        f"status {name!r}: 'to' target {target!r} is not a "
+                        "status of this set"
+                    )
+        return self
+
+    # -- lookups ------------------------------------------------------------
+
+    @property
+    def names(self) -> list[str]:
+        """Status names in declaration order."""
+        return list(self.root)
+
+    @property
+    def in_stock_names(self) -> list[str]:
+        """Statuses that count as in stock, in declaration order."""
+        return [name for name, status in self.root.items() if status.in_stock]
+
+    @property
+    def final_names(self) -> list[str]:
+        """Statuses with no ``to:`` targets (final states)."""
+        return [name for name, status in self.root.items() if not status.to]
+
+    def has(self, name: str) -> bool:
+        return name in self.root
+
+    def allows(self, old: str, new: str) -> bool:
+        """True when an unforced change ``old`` → ``new`` is allowed."""
+        current = self.root.get(old)
+        if current is None:
+            return False
+        return new in current.to
+
+    def normalised(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: self.root[name].normalised() for name in sorted(self.root)
+        }
+
+
+
 class Kind(BaseModel):
     """One kind (a table extension of entity, stock or box).
 
     There is no per-kind aliquot table: an aliquot is a **generic tube**
     (location, quantity, unit, status, label, notes) and every property of the
     material belongs on the stock kind (spec §3).
+
+    A **stock** kind must name the status set that applies to its aliquots
+    (``statuses: tube``) or give an inline set; entity and box kinds must not.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -694,6 +806,7 @@ class Kind(BaseModel):
     fields: dict[str, Field] = PydanticField(default_factory=dict)
     mixins: list[str] = PydanticField(default_factory=list)
     entity_kinds: list[str] | None = None
+    statuses: str | StatusSet | None = None
     geometry: Geometry | None = None
     slot_capacity: int = 1
     renamed_from: str | None = None
@@ -717,7 +830,21 @@ class Kind(BaseModel):
             if self.object is ObjectType.entity:
                 if self.entity_kinds is not None:
                     raise ValueError("'entity_kinds' is only valid on stock kinds")
+        if self.object is not ObjectType.stock:
+            if self.statuses is not None:
+                raise ValueError("'statuses' is only valid on stock kinds")
+        elif self.statuses is None:
+            raise ValueError(
+                "stock kinds require 'statuses': name a set from 'status_sets' "
+                "(e.g. 'statuses: tube') or give an inline set; a spec-3 preset "
+                "that predates status sets is upgraded with "
+                "migration/spec/3-to-4 and the wave-10 preset steps"
+            )
         return self
+
+    def status_set(self) -> StatusSet | None:
+        """The kind's resolved status set (``None`` for entity/box kinds)."""
+        return self.statuses if isinstance(self.statuses, StatusSet) else None
 
     def normalised(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -730,6 +857,11 @@ class Kind(BaseModel):
             out["entity_kinds"] = sorted(self.entity_kinds)
         if self.geometry is not None:
             out["geometry"] = self.geometry.normalised()
+        if self.object is ObjectType.stock:
+            # A named set and an inline set with the same content describe the
+            # same ledger, so the fingerprint uses the resolved content.
+            assert isinstance(self.statuses, StatusSet)
+            out["statuses"] = self.statuses.normalised()
         if self.object is ObjectType.box:
             out["slot_capacity"] = self.slot_capacity
         if self.renamed_from is not None:
@@ -851,6 +983,7 @@ class Preset(BaseModel):
     version: int = 1
     description: str | None = None
     include: list[str] = PydanticField(default_factory=list)
+    status_sets: dict[str, StatusSet] = PydanticField(default_factory=dict)
     mixins: dict[str, dict[str, Field]] = PydanticField(default_factory=dict)
     kinds: dict[str, Kind] = PydanticField(default_factory=dict)
     rules: list[Rule] = PydanticField(default_factory=list)
@@ -900,29 +1033,12 @@ class LedgerConfig(BaseModel):
     rules_dir: str | None = None
     author: str | None = None
     ids: dict[str, IdStrategyConfig] = PydanticField(default_factory=dict)
-    statuses: list[str] = PydanticField(default_factory=lambda: list(DEFAULT_STATUSES))
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("ledger name must not be empty")
-        return value
-
-    @field_validator("statuses")
-    @classmethod
-    def _validate_statuses(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("statuses must not be empty")
-        seen: set[str] = set()
-        for status in value:
-            if not IDENTIFIER_RE.match(status):
-                raise ValueError(
-                    f"status {status!r} must match [a-z][a-z0-9_]*"
-                )
-            if status in seen:
-                raise ValueError(f"duplicate status {status!r}")
-            seen.add(status)
         return value
 
     @model_validator(mode="after")
@@ -966,7 +1082,9 @@ class EffectiveSchema(BaseModel):
     #: ``rules:<preset|local>`` group of the generated dolt_tests; excluded
     #: from the fingerprint because it does not change the physical schema.
     rule_sources: dict[str, str] = PydanticField(default_factory=dict)
-    statuses: list[str] = PydanticField(default_factory=lambda: list(DEFAULT_STATUSES))
+    #: Every declared status set, by global name (spec 4).  Stock kinds carry
+    #: their resolved set; this map is for introspection and drift checks.
+    status_sets: dict[str, StatusSet] = PydanticField(default_factory=dict)
     preset_versions: dict[str, int] = PydanticField(default_factory=dict)
 
     # -- lookups ------------------------------------------------------------
@@ -1001,6 +1119,16 @@ class EffectiveSchema(BaseModel):
         except KeyError:
             raise SchemaError(f"unknown kind {name!r}") from None
 
+    def status_set(self, kind_name: str) -> StatusSet | None:
+        """The status set of a stock kind (``None`` for entity/box kinds)."""
+        kind = self.kind(kind_name)
+        return kind.status_set()
+
+    def statuses_for(self, kind_name: str) -> list[str]:
+        """The allowed aliquot statuses of a stock kind, in declared order."""
+        status_set = self.status_set(kind_name)
+        return status_set.names if status_set is not None else []
+
     def has_kind(self, name: str) -> bool:
         return name in self.kinds
 
@@ -1028,7 +1156,10 @@ class EffectiveSchema(BaseModel):
         return {
             "fingerprint_version": FINGERPRINT_VERSION,
             "spec_version": SPEC_VERSION,
-            "statuses": sorted(self.statuses),
+            "status_sets": {
+                name: self.status_sets[name].normalised()
+                for name in sorted(self.status_sets)
+            },
             "kinds": {
                 name: self.kinds[name].normalised() for name in sorted(self.kinds)
             },

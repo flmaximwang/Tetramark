@@ -18,6 +18,12 @@ An aliquot has no kind table of its own: it is a **generic tube** (location,
 quantity, unit, status, label, notes) and every property of the material lives
 on the stock kind (spec §3).  ``aliquot_event`` stays one shared table.
 
+Spec 4 makes the status vocabulary a property of the **stock kind**
+(``status_sets``): there is no global ``aliquot.status`` CHECK, the stock views
+derive ``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock`` + ``unit``
+and a three-value ``status`` from the schema's in-stock statuses, and the
+transition rules become generated ``dolt_tests`` (``schema/tests_gen.py``).
+
 Foreign keys are emitted as separate ``ALTER TABLE ... ADD CONSTRAINT``
 statements, after *all* tables exist.  This is the only way to express the
 mutual references in the core model (``stock`` → ``aliquot`` → ``stock``),
@@ -37,7 +43,6 @@ from typing import Any
 
 from tetramark.driver.base import literal
 from tetramark.schema.model import (
-    DEFAULT_STATUSES,
     EffectiveSchema,
     Field,
     FieldType,
@@ -255,9 +260,7 @@ def field_sql_type(field: Field) -> str:
 # ---------------------------------------------------------------------------
 
 
-def core_statements(
-    statuses: Sequence[str] = DEFAULT_STATUSES,
-) -> list[Statement]:
+def core_statements() -> list[Statement]:
     """DDL for the eight core tables and their foreign keys."""
     statements: list[Statement] = [
         _create_ledger_meta(),
@@ -265,7 +268,7 @@ def core_statements(
         _create_stock(),
         _create_box(),
         _create_slot(),
-        _create_aliquot(statuses),
+        _create_aliquot(),
         _create_aliquot_event(),
         _create_alias(),
     ]
@@ -367,8 +370,11 @@ def _create_slot() -> Statement:
     )
 
 
-def _create_aliquot(statuses: Sequence[str]) -> Statement:
-    vocabulary = ", ".join(literal(status) for status in statuses)
+def _create_aliquot() -> Statement:
+    # No CHECK on ``status``: since spec 4 the allowed vocabulary is the stock
+    # kind's status set, which a CHECK cannot express (Dolt has no cross-table
+    # CHECK).  The app refuses an unknown or illegal status, and the generated
+    # ``core_aliquot_status_known`` test catches rows written by hand.
     return Statement(
         sql=(
             f"CREATE TABLE {_ident('aliquot')} (\n"
@@ -385,9 +391,7 @@ def _create_aliquot(statuses: Sequence[str]) -> Statement:
             f"  {_ident('notes')} MEDIUMTEXT,\n"
             f"  CONSTRAINT {_ident(_pk('aliquot'))} PRIMARY KEY ({_ident('id')}),\n"
             f"  CONSTRAINT {_ident(_uq('aliquot', 'stock_id', 'seq'))} "
-            f"UNIQUE ({_ident('stock_id')}, {_ident('seq')}),\n"
-            f"  CONSTRAINT {_ident(_ck('aliquot', 'status'))} "
-            f"CHECK ({_ident('status')} IN ({vocabulary}))\n"
+            f"UNIQUE ({_ident('stock_id')}, {_ident('seq')})\n"
             ")"
         ),
         object="table",
@@ -411,6 +415,7 @@ def _create_aliquot_event() -> Statement:
             f"  {_ident('to_slot')} VARCHAR(64),\n"
             f"  {_ident('old_status')} VARCHAR(32),\n"
             f"  {_ident('new_status')} VARCHAR(32),\n"
+            f"  {_ident('forced')} BOOLEAN NOT NULL DEFAULT FALSE,\n"
             f"  {_ident('actor')} VARCHAR(255),\n"
             f"  {_ident('purpose')} MEDIUMTEXT,\n"
             f"  {_ident('note')} MEDIUMTEXT,\n"
@@ -662,18 +667,29 @@ def view_statements(schema: EffectiveSchema) -> list[Statement]:
     name avoids the domain field ``aliases`` a kind may define.
     """
     statements = [
-        _view_box_slots(),
+        _view_box_slots(schema),
         _view_aliquot_location(),
-        _view_stock_status(),
+        _view_stock_status(schema),
     ]
     for object_type in (ObjectType.entity, ObjectType.stock, ObjectType.box):
         core = object_type.value
         for kind_name in sorted(schema.kinds_for(object_type)):
-            statements.append(_view_kind(core, kind_name, schema.kinds[kind_name]))
+            statements.append(
+                _view_kind(schema, core, kind_name, schema.kinds[kind_name])
+            )
     return statements
 
 
-def _view_box_slots() -> Statement:
+def _view_box_slots(schema: EffectiveSchema) -> Statement:
+    """Every slot with its occupant and the occupant stock's in-stock summary.
+
+    The per-aliquot ``status`` of ticket 23 is replaced (spec 4) by the derived
+    stock status (``active``/``depleted``/``empty``) plus the stock's
+    ``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock``/``unit``:
+    a slot describes a tube, and the useful question about a tube's stock is
+    how much of it is still in stock.  An empty slot and a nested-box occupant
+    have NULL in those columns.
+    """
     sql = (
         f"CREATE VIEW {_ident('v_box_slots')} AS\n"
         "SELECT\n"
@@ -694,7 +710,17 @@ def _view_box_slots() -> Statement:
         f"  a.{_ident('stock_id')} AS {_ident('stock_id')},\n"
         f"  st.{_ident('entity_id')} AS {_ident('entity_id')},\n"
         f"  e.{_ident('kind')} AS {_ident('entity_kind')},\n"
-        f"  a.{_ident('status')} AS {_ident('status')},\n"
+        f"  {_STOCK_AGGREGATE}.{_ident('aliquots_in_stock')} "
+        f"AS {_ident('aliquots_in_stock')},\n"
+        f"  {_STOCK_AGGREGATE}.{_ident('aliquots_total')} "
+        f"AS {_ident('aliquots_total')},\n"
+        f"  {_STOCK_AGGREGATE}.{_ident('quantity_in_stock')} "
+        f"AS {_ident('quantity_in_stock')},\n"
+        f"  {_STOCK_AGGREGATE}.{_ident('unit')} AS {_ident('unit')},\n"
+        "  CASE\n"
+        f"    WHEN a.{_ident('id')} IS NULL THEN NULL\n"
+        f"    ELSE {_stock_status_case()}\n"
+        f"  END AS {_ident('status')},\n"
         f"  c.{_ident('id')} AS {_ident('child_box_id')},\n"
         f"  c.{_ident('name')} AS {_ident('child_box_name')},\n"
         f"{_occupant_alias_list_sql()}\n"
@@ -707,7 +733,9 @@ def _view_box_slots() -> Statement:
         f"ON c.{_ident('parent_box_id')} = s.{_ident('box_id')} "
         f"AND c.{_ident('parent_slot')} = s.{_ident('label')}\n"
         f"LEFT JOIN {_ident('stock')} st ON st.{_ident('id')} = a.{_ident('stock_id')}\n"
-        f"LEFT JOIN {_ident('entity')} e ON e.{_ident('id')} = st.{_ident('entity_id')}"
+        f"LEFT JOIN {_ident('entity')} e ON e.{_ident('id')} = st.{_ident('entity_id')}\n"
+        f"LEFT JOIN {_stock_aggregates_sql(schema)} {_STOCK_AGGREGATE} "
+        f"ON {_STOCK_AGGREGATE}.{_ident('stock_id')} = a.{_ident('stock_id')}"
     )
     return Statement(sql=sql, object="view", name="v_box_slots")
 
@@ -766,16 +794,16 @@ def _view_aliquot_location() -> Statement:
 
 
 #: Columns every ``v_stock_<kind>`` inserts before its final ``alias_list``
-#: (spec §3).  They answer the two questions a stock row is read for: which
-#: design it belongs to (``entity_kind``/``entity_name``) and what is still on
-#: the shelf (aliquot counts, stored quantity and the derived status).  They
-#: are reserved view column names, like ``alias_list``.
+#: (spec §3/§4).  They answer the two questions a stock row is read for: which
+#: design it belongs to (``entity_kind``/``entity_name``) and what is still in
+#: stock (aliquot counts, in-stock quantity and the derived status).  They are
+#: reserved view column names, like ``alias_list``.
 STOCK_VIEW_COLUMNS: tuple[str, ...] = (
     "entity_kind",
     "entity_name",
-    "aliquots_stored",
+    "aliquots_in_stock",
     "aliquots_total",
-    "quantity_stored",
+    "quantity_in_stock",
     "unit",
     "status",
 )
@@ -784,76 +812,81 @@ STOCK_VIEW_COLUMNS: tuple[str, ...] = (
 _STOCK_AGGREGATE = "agg"
 
 
-def _stock_aggregate_items(alias: str) -> list[tuple[str, str]]:
-    """``(column, expression)`` of the one-row-per-stock aliquot aggregate.
+def _in_stock_sql(schema: EffectiveSchema, *, kind: str, status: str) -> str:
+    """``CASE`` over a stock kind telling whether ``status`` counts as in stock.
 
-    ``v_stock_status`` and every ``v_stock_<kind>`` select this block, so the
-    count/quantity expressions are generated once.  :func:`_stock_status_case`
-    then derives the status from these columns, again once for both views.
+    A status counts as in stock when its own :class:`~tetramark.schema.model.
+    Status` says ``in_stock: true``.  The statuses come from the schema, so the
+    generated views never hard-code a vocabulary; a kind the schema does not
+    know counts as not in stock.
     """
+    branches: list[str] = []
+    for kind_name in sorted(schema.stock_kinds):
+        status_set = schema.status_set(kind_name)
+        assert status_set is not None  # every stock kind has one
+        in_stock = status_set.in_stock_names
+        if in_stock:
+            values = ", ".join(literal(name) for name in in_stock)
+            branches.append(
+                f"    WHEN {literal(kind_name)} THEN {status} IN ({values})"
+            )
+        else:
+            branches.append(f"    WHEN {literal(kind_name)} THEN FALSE")
+    if not branches:  # pragma: no cover - a ledger always has stock kinds here
+        return "FALSE"
+    return "CASE " + kind + "\n" + "\n".join(branches) + "\n    ELSE FALSE\n  END"
+
+
+def _stock_aggregate_items(schema: EffectiveSchema) -> list[tuple[str, str]]:
+    """``(column, expression)`` of the one-row-per-stock in-stock aggregate.
+
+    ``v_stock_status``, every ``v_stock_<kind>`` and ``v_box_slots`` select this
+    block, so the count/quantity expressions are generated once.  The in-stock
+    statuses come from the schema (:func:`_in_stock_sql`); the quantity and its
+    unit are only reported when every in-stock tube that records a quantity
+    shares one unit (otherwise both are NULL, spec §4).
+    """
+
     def column(name: str) -> str:
-        return f"{alias}.{_ident(name)}"
+        return f"a.{_ident(name)}"
 
-    def count_where(condition: str) -> str:
-        return f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)"
-
-    stored = f"{column('status')} = {literal('stored')}"
-    pending = f"{column('status')} = {literal('pending')}"
-    missing = f"{column('status')} = {literal('missing')}"
-    consumed = f"{column('status')} = {literal('consumed')}"
-    # Rows that are neither missing nor consumed (so 'missing' requires that
-    # every remaining aliquot is missing or consumed).
-    remaining = (
-        f"{column('status')} NOT IN ({literal('missing')}, {literal('consumed')})"
+    in_stock = _in_stock_sql(
+        schema, kind=f"st.{_ident('kind')}", status=column("status")
     )
-    # The stored quantity and its unit are only reported when every stored
-    # tube that records a quantity shares one unit (spec §3); otherwise both
-    # are NULL.  Tubes without a quantity never choose the unit.
-    stored_units = (
-        f"CASE WHEN {column('status')} = {literal('stored')} "
-        f"AND {column('quantity')} IS NOT NULL THEN {column('unit')} END"
+    in_stock_units = (
+        f"CASE WHEN ({in_stock}) AND {column('quantity')} IS NOT NULL "
+        f"THEN {column('unit')} END"
     )
-    shared_stored_unit = f"COUNT(DISTINCT {stored_units}) = 1"
+    shared_unit = f"COUNT(DISTINCT {in_stock_units}) = 1"
+    quantity_in_stock = (
+        f"CASE WHEN {shared_unit} THEN "
+        f"SUM(CASE WHEN ({in_stock}) THEN {column('quantity')} ELSE NULL END) "
+        "ELSE NULL END"
+    )
+    unit = f"CASE WHEN {shared_unit} THEN MAX({in_stock_units}) ELSE NULL END"
     return [
-        ("aliquot_count", f"COUNT({column('id')})"),
-        ("stored_count", count_where(stored)),
-        ("pending_count", count_where(pending)),
-        ("missing_count", count_where(missing)),
-        ("consumed_count", count_where(consumed)),
-        ("remaining_count", count_where(remaining)),
-        ("total_quantity", f"SUM({column('quantity')})"),
-        (
-            "total_unit",
-            f"CASE WHEN COUNT(DISTINCT {column('unit')}) = 1 "
-            f"THEN MAX({column('unit')}) ELSE NULL END",
-        ),
-        (
-            "quantity_stored",
-            f"CASE WHEN {shared_stored_unit} THEN "
-            f"SUM(CASE WHEN {stored} THEN {column('quantity')} ELSE NULL END) "
-            "ELSE NULL END",
-        ),
-        (
-            "stored_unit",
-            f"CASE WHEN {shared_stored_unit} THEN MAX({stored_units}) "
-            "ELSE NULL END",
-        ),
+        ("aliquots_total", f"COUNT({column('id')})"),
+        ("aliquots_in_stock", f"SUM(CASE WHEN ({in_stock}) THEN 1 ELSE 0 END)"),
+        ("quantity_in_stock", quantity_in_stock),
+        ("unit", unit),
     ]
 
 
-def _stock_aggregates_sql() -> str:
+def _stock_aggregates_sql(schema: EffectiveSchema) -> str:
     """The per-stock aggregate block both stock views join as a derived table."""
     selected = [f"    a.{_ident('stock_id')} AS {_ident('stock_id')}"]
     selected.extend(
         f"    {expression} AS {_ident(name)}"
-        for name, expression in _stock_aggregate_items("a")
+        for name, expression in _stock_aggregate_items(schema)
     )
     return (
         "(\n"
         "  SELECT\n"
         + ",\n".join(selected)
         + "\n  FROM " + _ident("aliquot") + " a\n"
-        f"  GROUP BY a.{_ident('stock_id')}\n"
+        "  JOIN " + _ident("stock") + " st ON st." + _ident("id")
+        + " = a." + _ident("stock_id") + "\n"
+        "  GROUP BY a." + _ident("stock_id") + ", st." + _ident("kind") + "\n"
         ")"
     )
 
@@ -864,72 +897,55 @@ def _stock_total(name: str) -> str:
 
 
 def _stock_status_case() -> str:
-    """The derived stock status ``CASE`` over the aggregate block (spec §3).
+    """The derived stock status ``CASE`` over the aggregate block (spec §4).
 
-    Shared by ``v_stock_status`` and every ``v_stock_<kind>``: the derivation
-    rules (active / pending / depleted / missing / empty) exist once, so the
-    two views can never disagree.
+    Shared by ``v_stock_status``, every ``v_stock_<kind>`` and ``v_box_slots``:
+    ``empty`` when the stock has no aliquots, ``active`` when at least one
+    aliquot is in stock, ``depleted`` when every aliquot has left stock.
     """
     return (
         "CASE\n"
-        f"    WHEN {_stock_total('aliquot_count')} = 0 THEN 'empty'\n"
-        f"    WHEN {_stock_total('stored_count')} > 0 THEN 'active'\n"
-        f"    WHEN {_stock_total('pending_count')} > 0 THEN 'pending'\n"
-        f"    WHEN {_stock_total('missing_count')} > 0 "
-        f"AND {_stock_total('remaining_count')} = 0 THEN 'missing'\n"
-        f"    WHEN {_stock_total('consumed_count')} = "
-        f"{_stock_total('aliquot_count')} THEN 'depleted'\n"
-        "    ELSE 'pending'\n"
+        f"    WHEN {_stock_total('aliquots_total')} = 0 THEN 'empty'\n"
+        f"    WHEN {_stock_total('aliquots_in_stock')} > 0 THEN 'active'\n"
+        "    ELSE 'depleted'\n"
         "  END"
     )
 
 
-def _view_stock_status() -> Statement:
-    """Stock status derived from aliquot statuses (spec §3).
+def _view_stock_status(schema: EffectiveSchema) -> Statement:
+    """Stock status derived from the aliquot statuses and their stock kind.
 
-    One row per stock.  ``total_quantity`` sums the aliquot quantities and
-    ``unit`` is that unit when every aliquotted quantity shares one; a stock
-    whose aliquots mix units therefore has a sum but a NULL unit.
+    One row per stock.  ``aliquots_in_stock``/``aliquots_total`` count the
+    aliquots whose status is in stock; ``quantity_in_stock`` + ``unit`` sum the
+    in-stock quantities and are NULL when the in-stock tubes mix units.
     ``alias_list`` carries the stock's aliases (e.g. the legacy id a
     ``tm stock renumber`` replaced).
-
-    The aggregate block and the status ``CASE`` are the same SQL fragments
-    every ``v_stock_<kind>`` uses (:func:`_stock_aggregates_sql`,
-    :func:`_stock_status_case`).
     """
     stock_aliases = _alias_list_sql(f"s.{_ident('id')}", "stock")
-    rows = [f"  s.{_ident('id')} AS {_ident('stock_id')}"]
-    rows.append(f"  s.{_ident('kind')} AS {_ident('kind')}")
-    rows.append(f"  s.{_ident('entity_id')} AS {_ident('entity_id')}")
-    rows.append(f"  {_stock_status_case()} AS {_ident('status')}")
-    for name in (
-        "aliquot_count",
-        "stored_count",
-        "pending_count",
-        "missing_count",
-        "consumed_count",
-    ):
-        rows.append(f"  {_stock_total(name)} AS {_ident(name)}")
-    rows.append(
-        f"  {_STOCK_AGGREGATE}.{_ident('total_quantity')} "
-        f"AS {_ident('total_quantity')}"
-    )
-    rows.append(
-        f"  {_STOCK_AGGREGATE}.{_ident('total_unit')} AS {_ident('unit')}"
-    )
-    rows.append(f"  {stock_aliases} AS {_ident('alias_list')}")
+    rows = [
+        f"  s.{_ident('id')} AS {_ident('stock_id')}",
+        f"  s.{_ident('kind')} AS {_ident('kind')}",
+        f"  s.{_ident('entity_id')} AS {_ident('entity_id')}",
+        f"  {_stock_total('aliquots_in_stock')} AS {_ident('aliquots_in_stock')}",
+        f"  {_stock_total('aliquots_total')} AS {_ident('aliquots_total')}",
+        f"  {_STOCK_AGGREGATE}.{_ident('quantity_in_stock')} "
+        f"AS {_ident('quantity_in_stock')}",
+        f"  {_STOCK_AGGREGATE}.{_ident('unit')} AS {_ident('unit')}",
+        f"  {_stock_status_case()} AS {_ident('status')}",
+        f"  {stock_aliases} AS {_ident('alias_list')}",
+    ]
     sql = (
         f"CREATE VIEW {_ident('v_stock_status')} AS\n"
         "SELECT\n"
         + ",\n".join(rows)
         + f"\nFROM {_ident('stock')} s\n"
-        f"LEFT JOIN {_stock_aggregates_sql()} {_STOCK_AGGREGATE} "
+        f"LEFT JOIN {_stock_aggregates_sql(schema)} {_STOCK_AGGREGATE} "
         f"ON {_STOCK_AGGREGATE}.{_ident('stock_id')} = s.{_ident('id')}"
     )
     return Statement(sql=sql, object="view", name="v_stock_status")
 
 
-def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
+def _view_kind(schema: EffectiveSchema, core: str, kind_name: str, kind: Kind) -> Statement:
     """``v_<object>_<kind>``: the core row joined with its kind table.
 
     When a kind field reuses a core column name (``name`` is the common case:
@@ -938,8 +954,8 @@ def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
     domain-specific definition.
 
     A stock view additionally projects the owning design
-    (``entity_kind``/``entity_name``), what is still on the shelf
-    (``aliquots_stored``, ``aliquots_total``, ``quantity_stored``, ``unit``)
+    (``entity_kind``/``entity_name``), what is still in stock
+    (``aliquots_in_stock``, ``aliquots_total``, ``quantity_in_stock``, ``unit``)
     and the derived ``status`` — see :data:`STOCK_VIEW_COLUMNS`.  The final
     ``alias_list`` column aggregates the object's alias rows.  It is
     deliberately not called ``aliases``: a kind field may already be named
@@ -953,8 +969,8 @@ def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
     generated = ("alias_list", *STOCK_VIEW_COLUMNS) if stock else ("alias_list",)
     for name in generated:
         if name in kind_fields:
-            # Generated view columns (spec §3).  Reserved here rather than in
-            # the loader so every entry point that generates DDL rejects the
+            # Generated view columns (spec §3/§4).  Reserved here rather than
+            # in the loader so every entry point that generates DDL rejects the
             # collision the same way.
             raise SchemaError(
                 f"kind {kind_name!r} defines a field named {name!r}, which "
@@ -976,17 +992,18 @@ def _view_kind(core: str, kind_name: str, kind: Kind) -> Statement:
             [
                 f"  e.{_ident('kind')} AS {_ident('entity_kind')}",
                 f"  e.{_ident('name')} AS {_ident('entity_name')}",
-                f"  {_stock_total('stored_count')} AS {_ident('aliquots_stored')}",
-                f"  {_stock_total('aliquot_count')} AS {_ident('aliquots_total')}",
-                f"  {_STOCK_AGGREGATE}.{_ident('quantity_stored')} "
-                f"AS {_ident('quantity_stored')}",
-                f"  {_STOCK_AGGREGATE}.{_ident('stored_unit')} AS {_ident('unit')}",
+                f"  {_stock_total('aliquots_in_stock')} "
+                f"AS {_ident('aliquots_in_stock')}",
+                f"  {_stock_total('aliquots_total')} AS {_ident('aliquots_total')}",
+                f"  {_STOCK_AGGREGATE}.{_ident('quantity_in_stock')} "
+                f"AS {_ident('quantity_in_stock')}",
+                f"  {_STOCK_AGGREGATE}.{_ident('unit')} AS {_ident('unit')}",
                 f"  {_stock_status_case()} AS {_ident('status')}",
             ]
         )
         joins.append(f"JOIN {_ident('entity')} e ON e.{_ident('id')} = {entity_id}")
         joins.append(
-            f"LEFT JOIN {_stock_aggregates_sql()} {_STOCK_AGGREGATE} "
+            f"LEFT JOIN {_stock_aggregates_sql(schema)} {_STOCK_AGGREGATE} "
             f"ON {_STOCK_AGGREGATE}.{_ident('stock_id')} = c.{_ident('id')}"
         )
     core_id = f"c.{_ident('id')}"
@@ -1063,7 +1080,7 @@ def slot_rows(box_id: str, geometry: Geometry) -> list[dict[str, Any]]:
 def schema_statements(schema: EffectiveSchema) -> list[Statement]:
     """The complete DDL of one ledger in dependency order."""
     return [
-        *core_statements(schema.statuses),
+        *core_statements(),
         *kind_statements(schema),
         *view_statements(schema),
     ]

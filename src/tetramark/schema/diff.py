@@ -983,7 +983,7 @@ def build_plan(
     # -- core tables -------------------------------------------------------
     core_sql = {
         statement.name: statement.sql
-        for statement in core_statements(schema.statuses)
+        for statement in core_statements()
         if statement.object == "table"
     }
     for table in CORE_TABLES:
@@ -1077,28 +1077,10 @@ def build_plan(
             readded=readded_generated.get(name, set()),
         )
 
-    if "aliquot" in state.columns and "aliquot" not in created:
-        _diff_constraints(
-            buckets,
-            "aliquot",
-            desired_uniques=[],
-            desired_checks=[
-                _DesiredCheck(
-                    name="ck_aliquot_status",
-                    column="status",
-                    clause=(
-                        "(`status` IN ("
-                        + ", ".join(literal(value) for value in schema.statuses)
-                        + "))"
-                    ),
-                    values=tuple(schema.statuses),
-                )
-            ],
-            live=state,
-            dropped=set(),
-            readded=set(),
-            drop_extras=False,
-        )
+    # Spec 4 removed the global ``aliquot.status`` CHECK: a status belongs to
+    # the stock kind's set, which a CHECK cannot express.  No desired CHECK for
+    # ``aliquot`` means a live spec-3 CHECK is planned as a (relaxing, additive)
+    # drop by ``_diff_constraints``' extra-check pass.
 
     # -- renamed kinds keep their identities, not their discriminator ------
     for core, old_kind, new_kind, _old_table, new_table in renamed_kinds:

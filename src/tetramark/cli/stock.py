@@ -48,6 +48,14 @@ def add_stock_command(
         None, "--quantity", "-q", help="Quantity for each new aliquot."
     ),
     unit: str | None = typer.Option(None, "--unit", "-u", help="Unit of --quantity."),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Status of the new aliquots at creation: any status of the stock "
+            "kind's set (creation is not a transition)."
+        ),
+    ),
     explicit_id: str | None = typer.Option(
         None, "--id", help="Explicit stock id (back-filling/migration)."
     ),
@@ -68,6 +76,7 @@ def add_stock_command(
             quantity=quantity,
             unit=unit,
             id=explicit_id,
+            status=status,
         )
         message = (
             f"Added stock {result['kind']} {result['id']} with "

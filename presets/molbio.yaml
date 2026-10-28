@@ -154,6 +154,7 @@ kinds:
 
   bacterial_glycerol:
     object: stock
+    statuses: tube
     description: A bacterial glycerol stock of a plasmid or bacterial strain.
     entity_kinds: [plasmid, bacterial_strain]
     fields:
@@ -179,6 +180,7 @@ kinds:
 
   plasmid_prep:
     object: stock
+    statuses: tube
     description: A plasmid DNA preparation made from a bacterial culture.
     entity_kinds: [plasmid]
     fields:
@@ -198,6 +200,7 @@ kinds:
 
   protein_prep:
     object: stock
+    statuses: tube
     description: A purified protein preparation derived from a pellet or culture.
     entity_kinds: [protein_construct]
     fields:
@@ -222,6 +225,7 @@ kinds:
 
   bacterial_pellet:
     object: stock
+    statuses: tube
     description: >-
       A bacterial cell pellet harvested from a culture. Aliquot volumes live in
       the core aliquot quantity, matching the zsqlab10 pellet aliquots model.
@@ -250,6 +254,7 @@ kinds:
 
   cell_vial:
     object: stock
+    statuses: cryo
     description: A cryovial of a cell line, with its passage and freezing medium.
     entity_kinds: [cell_line]
     fields:
@@ -276,6 +281,7 @@ kinds:
 
   cell_pellet:
     object: stock
+    statuses: tube
     description: >-
       A harvested cell pellet; a plasmid instead of a cell line records a
       transient-transfection / transduction harvest.

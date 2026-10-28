@@ -6,4 +6,3 @@ author: "Fixture <fixture@example.invalid>"
 ids:
   entity: {strategy: uuid}
   stock: {strategy: datecode, prefix: "77"}
-statuses: [pending, stored, missing, consumed, quarantined]

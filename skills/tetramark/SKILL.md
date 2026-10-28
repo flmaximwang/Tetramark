@@ -38,7 +38,8 @@ one Dolt commit; every read is a normal `tm` command.
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
 | Move one tube | `tm aliquot move ALQ --box NAME --slot S` |
 | Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |
-| Mark lost / consumed without a quantity | `tm aliquot status ALQ missing\|consumed\|stored\|pending` |
+| Mark lost / consumed without a quantity | `tm aliquot status ALQ missing\|consumed\|stored` (follows the stock kind's `to:` rules) |
+| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event) |
 | Hard-delete a tube (rare) | `tm aliquot purge ALQ` |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
@@ -78,8 +79,8 @@ tm stock add bacterial_pellet --entity p035 --aliquots 3 \
 tm aliquot use 1226KO02.1 500 ml --purpose purification   # ID printed by stock add
 ```
 
-`use` decrements the quantity and flips the status to `consumed` at zero; the event records the
-purpose.
+`use` decrements the quantity and flips the status to `consumed` at zero (a stock kind whose status
+set has no `consumed`, e.g. `cryo`, keeps its status); the event records the purpose.
 
 ### Move a box, then a tube
 
@@ -107,6 +108,10 @@ tm check --group core
   `tm schema apply`. To change a rule, edit the schema (see the schema skill).
 - **`--dry-run` first for bulk work**, then run it for real:
   `tm --dry-run import all exports/`.
+- **Statuses follow the stock kind's set.** Each stock kind names a `status_set` with `in_stock` and
+  allowed `to:` transitions; creation accepts any status of the set, a later change must follow `to:`.
+  Check the set with `tm schema show KIND` and override only deliberately, with
+  `tm aliquot status … --force --note "why"` (the event then carries `forced = TRUE`).
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
   delete with no undo (only Dolt history can recover it).
 - **One writer at a time.** Do not write through the CLI while another dolt process writes the same

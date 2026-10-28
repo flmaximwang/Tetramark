@@ -41,7 +41,7 @@ def show_schema(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead of YAML."),
 ) -> None:
-    """Print the effective schema (kinds, rules, statuses, fingerprint)."""
+    """Print the effective schema (kinds, rules, status sets, fingerprint)."""
     ledger = resolve_ledger(ctx)
     try:
         # ``ledger_meta`` is unreachable once the driver is closed, so read it
@@ -173,7 +173,10 @@ def schema_payload(
     return {
         **header,
         "fingerprint": schema.fingerprint(),
-        "statuses": list(schema.statuses),
+        "status_sets": {
+            name: schema.status_sets[name].normalised()
+            for name in sorted(schema.status_sets)
+        },
         "kinds": {
             name: _kind_payload(schema.kinds[name]) for name in sorted(schema.kinds)
         },
@@ -187,6 +190,9 @@ def _kind_payload(kind: Kind) -> dict[str, Any]:
         payload["description"] = kind.description
     if kind.entity_kinds is not None:
         payload["entity_kinds"] = list(kind.entity_kinds)
+    status_set = kind.status_set()
+    if status_set is not None:
+        payload["statuses"] = status_set.normalised()
     payload["fields"] = {
         field_name: field.normalised() for field_name, field in kind.fields.items()
     }

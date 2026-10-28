@@ -66,8 +66,19 @@ BASE_KINDS: dict[str, Any] = {
     "bacterial": {
         "object": "stock",
         "entity_kinds": ["sample"],
+        "statuses": "tube",
         "fields": {"strain": {"type": "string"}},
     },
+}
+
+#: The status set every test preset refers to (spec 4).
+BASE_STATUS_SETS: dict[str, Any] = {
+    "tube": {
+        "pending": {"in_stock": False, "to": ["stored", "missing", "consumed"]},
+        "stored": {"in_stock": True, "to": ["missing", "consumed"]},
+        "missing": {"in_stock": False, "to": ["stored", "consumed"]},
+        "consumed": {"in_stock": False},
+    }
 }
 
 
@@ -88,13 +99,19 @@ class PresetWriter:
         self.directory = directory
         self.path = directory / "preset.yaml"
         self.ledger: Ledger | None = None
+        self.status_sets: dict[str, Any] = copy.deepcopy(BASE_STATUS_SETS)
         directory.mkdir(parents=True, exist_ok=True)
 
     def attach(self, ledger: Ledger) -> None:
         self.ledger = ledger
 
     def write(self, kinds: dict[str, Any]) -> None:
-        payload = {"preset": "evolving", "version": 1, "kinds": kinds}
+        payload = {
+            "preset": "evolving",
+            "version": 1,
+            "status_sets": self.status_sets,
+            "kinds": kinds,
+        }
         text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
         self.path.write_text(text, encoding="utf-8")
         if self.ledger is not None:
@@ -391,12 +408,10 @@ def test_apply_refreshes_tetramark_version_but_keeps_created_with(
     assert ledger.meta["created_with"] == "0.0.1"
 
 
-def test_plan_is_empty_with_a_custom_status_vocabulary(ledger_factory) -> None:
-    ledger = ledger_factory(
-        [PRESETS / "full"],
-        statuses=["pending", "stored", "quarantined"],
-    )
+def test_plan_is_empty_for_a_fresh_ledger(ledger) -> None:
+    """A fresh spec-4 ledger has nothing to plan (statuses live in the preset)."""
     assert plan(ledger).is_empty
+    assert not plan(ledger).meta_stale
 
 
 # ---------------------------------------------------------------------------
@@ -897,31 +912,32 @@ def test_new_sequence_field_creates_hash_and_unique(
     assert len(row["dna_sha256"]) == 64
 
 
-def test_status_vocabulary_addition_is_additive(
+def test_status_set_extension_regenerates_the_status_rules(
     ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
 ) -> None:
-    config = yaml.safe_load((ledger.path / "ledger.yaml").read_text(encoding="utf-8"))
-    config["statuses"] = ["pending", "stored", "missing", "consumed", "quarantined"]
-    (ledger.path / "ledger.yaml").write_text(
-        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
-    )
+    """Extending a status set is additive: no CHECK, only the fingerprint/tests."""
+    preset.status_sets["tube"]["quarantined"] = {"in_stock": False}
+    preset.write(kinds)
     reload_schema(ledger)
 
     current = plan(ledger)
     assert not current.destructive
-    assert action_steps(current, "drop_constraint")
-    assert action_steps(current, "add_constraint")
-
+    # The view DDL does not change (quarantined is not in stock), but the
+    # fingerprint does: apply refreshes the meta and the derived tests.
+    assert current.meta_stale
     apply_clean(ledger)
+
     insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
     insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
     ledger.driver.execute(
         "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`) "
         "VALUES ('S1.1', 'S1', 1, 'quarantined')"
     )
-    assert ledger.driver.query("SELECT status FROM aliquot") == [
-        {"status": "quarantined"}
-    ]
+    # The generated status rule knows the extended set (it would FAIL otherwise).
+    report = ledger.check(group="core")
+    assert report.passed
+    # The new status is not a create-time default, but an allowed set member.
+    assert ledger.schema.statuses_for("bacterial")[-1] == "quarantined"
 
 
 # ---------------------------------------------------------------------------
