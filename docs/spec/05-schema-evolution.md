@@ -29,7 +29,11 @@ commit (files are not Dolt content) and the runner re-reads the ledger from that
 fingerprint before reporting success. Dolt DDL is not transactional, so a failed step prints the last
 good commit and the `dolt reset --hard` command. Preset steps may express renames in `renames.yaml` and
 feed them to the diff planner as an explicit rename map instead of `renamed_from`; see
-`migration/README.md`. There is
+`migration/README.md`. A step also ships the preset content it installs: `presets/` only holds the current version, so the
+version whose counter a step bumps (and any preset it keeps at the ledger's current version) is frozen
+next to its `migrate.py` and placed with `vendor_preset_files`. A later bump therefore retrofits a
+frozen copy into the earlier steps that place the whole preset closure — ticket 28's `cell_culture` 2
+lives in `cell_culture/1-to-2/`, and `base/2-to-3` and `molbio/2-to-3` both ship its v1 copy. There is
 no `tm` command for this yet — the older `tm upgrade` proposal (`docs/issues/001-tm-upgrade.md`) may
 absorb `migration/` later.
 

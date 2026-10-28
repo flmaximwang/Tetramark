@@ -1,10 +1,13 @@
 preset: cell_culture
-version: 1
+version: 2
 description: >-
   Eukaryotic cell lines and the material frozen or harvested from them: cryo
-  vials and cell pellets (a pellet may also record a transient transfection or
-  transduction with a plasmid). Included by the molbio and cellbio bundles.
-  Adapted from BioManager (MIT).
+  vials, cell pellets (a pellet may also record a transient transfection or
+  transduction with a plasmid) and biosamples taken from a line. cell_biosample
+  lives here, not in the biosamples part, because a stock's entity_kinds may
+  only name entity kinds the same ledger loads, and the animal half of the
+  biosample model belongs to the angenet bundle (ticket 28, design §2.1).
+  Included by the molbio and cellbio bundles. Adapted from BioManager (MIT).
 
 include: [base, nucleic_acids]
 
@@ -40,7 +43,10 @@ kinds:
   cell_vial:
     object: stock
     statuses: cryo
-    description: A cryovial of a cell line, with its passage and freezing medium.
+    description: >-
+      A cryovial of a cell line, with its passage, freezing medium and the
+      selection agent and mycoplasma test it was kept under (BioManager's
+      cell-line records).
     entity_kinds: [cell_line]
     fields:
       passage:
@@ -63,6 +69,18 @@ kinds:
         scale: 2
         default: 10
         description: DMSO concentration of the freezing mix, in percent.
+      selection:
+        type: string
+        length: 128
+        description: Selection agent/marker the cells were kept under (e.g. puromycin 1 µg/mL).
+      mycoplasma:
+        type: enum
+        values: [not_tested, negative, positive]
+        default: not_tested
+        description: Result of the last mycoplasma test for this vial's culture.
+      mycoplasma_tested_on:
+        type: date
+        description: Date the mycoplasma test was done; NULL when it was never tested.
 
   cell_pellet:
     object: stock
@@ -85,6 +103,38 @@ kinds:
       harvested_on:
         type: date
         description: Date the cells were harvested (ISO yyyy-mm-dd).
+
+  cell_biosample:
+    object: stock
+    statuses: tube
+    description: >-
+      A biosample taken from a cultured cell line: a pellet, DNA/RNA, blood or
+      serum sample kept as an ordinary tube. It is the cell-side half of the
+      biosample model (the animal half is animal_biosample in the biosamples
+      part, used by angenet): a stock's entity_kinds may name only entity kinds
+      the ledger loads, and no bundle loads cell and animal lines together, so
+      the two halves live with the entities they reference (ticket 28, option
+      (a) - no core change). The origin is the core stock source_aliquot_id (the
+      cell vial or pellet it was taken from), not a schema field. Adapted from
+      BioManager (MIT).
+    entity_kinds: [cell_line]
+    fields:
+      sample_type:
+        type: enum
+        values: [tissue, blood, dna, rna, serum, other]
+        description: Kind of material the sample holds (tissue, blood, DNA, RNA, serum or other).
+      tissue:
+        type: string
+        length: 128
+        description: Tissue or anatomical source of the sample, when it is a tissue sample.
+      collected_on:
+        type: date
+        description: Date the sample was collected (ISO yyyy-mm-dd).
+      storage_temp_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Storage temperature of the sample, in degrees Celsius (e.g. -80).
 
 rules:
   - id: MB05

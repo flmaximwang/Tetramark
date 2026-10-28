@@ -21,11 +21,19 @@ The only new objects are the `nucleic_acids` additions:
 The placed `base` v3 copy also adds the slotless `incubator` box kind
 ([base 2 → 3](../../base/2-to-3/README.md) owns that counter).
 
+`cell_culture` comes from the **frozen `cell_culture-1.yaml` next to `migrate.py`**, not from the
+repository: [ticket 28](../../../../docs/tickets/28-cellbio-bundle.md) bumps `presets/cell_culture.yaml`
+to v2, but molbio v3 shipped with cell_culture 1 and this step records exactly that counter — the
+`1 → 2` step is [`migration/presets/cell_culture/1-to-2`](../../cell_culture/1-to-2/README.md). The
+other parts are still the current repository version here; when one of them is bumped by a later
+ticket, freeze its v1 copy next to this `migrate.py` the same way.
+
 The step
 
 1. places the whole current preset closure the ledger lists (`base` v3, the four parts, `molbio`
    v3) **before** the runner opens the ledger — files are not Dolt content, and the spec-4 loader
-   needs every stock kind's `statuses:`;
+   needs every stock kind's `statuses:` — then puts the frozen cell_culture v1 over its own copy
+   (files are not Dolt content, so this is the version the ledger now reads);
 2. applies the **additive** diff plan (oligo tables, the base box kind and their views); a
    destructive plan is refused before anything is written, because this step never drops a molbio
    table or column;
@@ -34,7 +42,8 @@ The step
 4. writes the target fingerprint and regenerates `dolt_tests` from the same schema (shared runner).
 
 `preset_versions.base` stays at 2 here: the base step bumps it, exactly as molbio 1 → 2 left base's
-counter to `migration/presets/base/1-to-2`.
+counter to `migration/presets/base/1-to-2`. `preset_versions.cell_culture` stays at 1:
+`migration/presets/cell_culture/1-to-2` bumps it.
 
 ## Preconditions
 
@@ -103,4 +112,5 @@ pending steps.
 - **Rollback after success:** `dolt reset --hard pre-migrate-molbio-2` and copy the v2
   `molbio.yaml`/`base.yaml` back into `<ledger>/presets/` (the frozen copies in
   [`migration/presets/molbio/1-to-2`](../1-to-2/README.md) are that version); preset copies are
-  files, not Dolt content.
+  files, not Dolt content. This step's own `cell_culture-1.yaml` is the cell_culture copy it placed,
+  if that one needs restoring too.

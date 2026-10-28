@@ -277,11 +277,15 @@ def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
     assert list_presets(REPO_PRESETS) == [
         "bacteria",
         "base",
+        "biosamples",
         "cell_culture",
+        "cellbio",
+        "immuno",
         "library",
         "molbio",
         "nucleic_acids",
         "proteins",
+        "viral_vectors",
     ]
     assert list_presets(PRESETS) == ["base", "chain", "extras", "full"]
     with pytest.raises(SchemaError, match="presets directory not found"):
