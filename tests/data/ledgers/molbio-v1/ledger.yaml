@@ -1,0 +1,14 @@
+name: molbio-v1
+presets:
+- molbio
+author: Fixture Builder <fixture@tetramark.invalid>
+ids:
+  entity:
+    strategy: uuid
+  stock:
+    strategy: uuid
+statuses:
+- pending
+- stored
+- missing
+- consumed
