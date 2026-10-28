@@ -526,28 +526,6 @@ def schema_tests(schema: EffectiveSchema) -> list[TestDefinition]:
                     )
                 )
 
-        if kind.object is ObjectType.stock and kind.aliquot_fields:
-            extension = table_name("aliquot", kind_name)
-            for field_name in sorted(kind.aliquot_fields):
-                schema_field = kind.aliquot_fields[field_name]
-                if schema_field.pattern is not None:
-                    tests.append(
-                        _pattern_test(
-                            kind_name=kind_name,
-                            table=extension,
-                            field_name=field_name,
-                            schema_field=schema_field,
-                        )
-                    )
-                if schema_field.type is FieldType.ref and schema_field.required:
-                    tests.append(
-                        _required_ref_test(
-                            kind_name=kind_name,
-                            table=extension,
-                            field_name=field_name,
-                        )
-                    )
-
         restriction = _entity_kinds_test(schema, kind_name)
         if restriction is not None:
             tests.append(restriction)

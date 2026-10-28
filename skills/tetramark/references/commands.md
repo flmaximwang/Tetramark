@@ -89,7 +89,7 @@ tm entity ls [KIND] [--where FIELD=VALUE ...] [--json]
 
 ```sh
 tm stock add KIND --entity ID|ALIAS \
-  [--set FIELD=VALUE ...] [--aliquot-set FIELD=VALUE ...] \
+  [--set FIELD=VALUE ...] \
   [--parent STOCK] [--source-aliquot ALQ] \
   [--aliquots N] [--box NAME --slot A1 [--slot B2 ...]] \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
@@ -102,8 +102,6 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
-- `--aliquot-set` sets kind-specific aliquot fields (only local presets that define
-  `aliquot_fields` have them; the bundled presets define none).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
   row in table output).
@@ -115,9 +113,8 @@ with `--auto`; blank lines and `#` comments are ignored. New ids are validated a
 must not collide with an existing stock id or a stock alias. Only one of `--id`/`--auto`/`--map`
 supplies the ids (`--map` may be combined with `--auto`), and `--id` takes exactly one REF.
 
-The stock id, all its aliquot ids (`<new>.<seq>`, seq unchanged), `aliquot_event` rows, kind and
-aliquot-extension tables, `parent_stock_id`/`source_aliquot_id` references and existing aliases are all
-rewritten in **one** transaction and **one** Dolt commit (`renumber(stock): OLD -> NEW`, or
+The stock id, all its aliquot ids (`<new>.<seq>`, seq unchanged), `aliquot_event` rows, kind
+tables, `parent_stock_id`/`source_aliquot_id` references and existing aliases are all rewritten in **one** transaction and **one** Dolt commit (`renumber(stock): OLD -> NEW`, or
 `renumber(stock): N stock(s)` for a batch). The old stock id and old aliquot ids are kept as aliases, so
 `tm find OLD` still resolves and nothing is lost. Foreign keys are `NO ACTION`, so the primary-key
 rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session before the commit;
@@ -127,7 +124,7 @@ rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session 
 
 ```sh
 tm aliquot add STOCK [--count N] [--box NAME --slot S ...] \
-  [--quantity Q --unit U] [--aliquot-set FIELD=VALUE ...] [--json]
+  [--quantity Q --unit U] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--json]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT] [--note TEXT] [--json]
 tm aliquot status ALQ STATUS [--note TEXT] [--json]
@@ -171,12 +168,19 @@ tm history ID|ALIAS|BOX [--json]
 `find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
 location. `history` merges aliquot events and the Dolt commits that touched the object.
 
-Aliases are also visible in the generated views (ledger format `spec_version` 2): every
+Aliases are also visible in the generated views (since ledger format 2): every
 `v_<object>_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated
 `alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list` for the slot's
 occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The column is not
 called `aliases` because some kinds have a domain field with that name (e.g.
 `protein_construct.aliases`).
+
+Every `v_stock_<kind>` (ledger format 3) also shows the stock's own facts, before `alias_list`:
+`entity_kind`/`entity_name` (the owning design), `aliquots_stored` (tubes still on the shelf),
+`aliquots_total`, `quantity_stored` + `unit` (sum of stored quantities; both NULL when stored tubes
+mix units), and `status` — the same derived status `v_stock_status` reports (`active`, `pending`,
+`depleted`, `missing`, `empty`). Aliquots have no kind: a property of the material belongs on the
+stock kind.
 
 ## Validation
 

@@ -176,8 +176,7 @@ def test_every_kind_and_field_has_a_description(name: str) -> None:
     schema = load_repo_preset(name)
     for kind_name, kind in schema.kinds.items():
         assert kind.description and kind.description.strip(), kind_name
-        for scope in (kind.fields, kind.aliquot_fields):
-            for field_name, field in scope.items():
+        for field_name, field in kind.fields.items():
                 assert field.description and field.description.strip(), (
                     kind_name,
                     field_name,
@@ -289,8 +288,6 @@ def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
     assert glycerol.type is FieldType.decimal
     assert (glycerol.decimal_precision, glycerol.decimal_scale) == (5, 2)
     assert glycerol.default == 15
-    assert bacterial.aliquot_fields == {}
-    assert not any(kind.aliquot_fields for kind in schema.kinds.values())
 
     assert schema.kinds["plasmid_prep"].entity_kinds == ["plasmid"]
     assert "concentration_ng_ul" in schema.kinds["plasmid_prep"].fields
@@ -305,7 +302,6 @@ def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
     assert pellet.entity_kinds == ["plasmid", "bacterial_strain"]
     assert {"culture_volume_ml", "od600", "induction"} <= set(pellet.fields)
     # Pellet volumes live in the core aliquot quantity, not in an extension table.
-    assert pellet.aliquot_fields == {}
 
     vial = schema.kinds["cell_vial"]
     assert vial.object is ObjectType.stock
@@ -380,8 +376,6 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
     for kind_name, kind in schema.kinds.items():
         expected.add(f"{kind.object.value}_{kind_name}")
         expected.add(f"v_{kind.object.value}_{kind_name}")
-        if kind.aliquot_fields:
-            expected.add(f"aliquot_{kind_name}")
     missing = expected - tables
     assert not missing, f"missing generated objects: {sorted(missing)}"
 
@@ -422,7 +416,7 @@ def test_molbio_v2_fresh_init_has_the_renamed_and_cell_objects(
         "stock_pellet",
     ):
         assert gone not in tables, gone
-    # molbio 2 has no aliquot_fields: only the core extension-related tables.
+    # An aliquot is a generic tube: no per-stock-kind extension tables.
     assert {name for name in tables if name.startswith("aliquot_")} == {
         "aliquot_event"
     }

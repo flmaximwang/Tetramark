@@ -22,7 +22,7 @@ the old zsqlab databases (migration is manual, guided by `docs/migration.md`).
 |---|---|---|
 | **entity** | The abstract thing (a plasmid design, a protein construct, a book title, a chemical). | UUID v4 |
 | **stock** | A logical batch / preparation event of exactly one entity (a glycerol stock, a culture's pellet, a protein prep, a purchase lot). Carries lineage. | Configurable; default date code |
-| **aliquot** | A physical unit of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. Carries status and quantity. | `<stock_id>.<n>`, n = 1, 2, … |
+| **aliquot** | A physical unit of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. A **generic** tube: location, quantity, unit, status, label, notes — it has no kind. | `<stock_id>.<n>`, n = 1, 2, … |
 | **box** | A container with a geometry. Boxes nest (rack in a freezer shelf). | UUID internally + unique human `name` (e.g. `WFL-08-01`) |
 
 Rules:
@@ -31,6 +31,9 @@ Rules:
 - A stock has 0..N aliquots. Commands that create a stock create one aliquot by default (`--aliquots N`
   to create more, `--aliquots 0` for none), so single-tube users never think about aliquots.
 - Stock status is **derived** from its aliquots (view), never stored.
+- **All aliquots of one stock are the same**: they differ only in location, quantity, unit, status and
+  label. Tubes that differ in a property (concentration, freeze-thaw cycles, glycerol %) are different
+  **stocks**; a property of the material belongs on the stock kind, never on a per-tube table.
 - A slot holds either aliquots (up to the box kind's `slot_capacity`, default 1) or one child box —
   never both. Box nesting must be acyclic.
 - "Removing" a tube means status → `consumed` (soft). Hard delete only via explicit `--purge`.
@@ -163,9 +166,12 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   dispatches on. It is bumped only when the generated shape changes: the core
   table set, the `ledger_meta` key set, or generated objects (views,
   `dolt_tests`). A pure bug-fix release does not change it. Version 2 adds the
-  `alias_list`/`occupant_alias_list` columns to the generated views; a v1
-  ledger upgrades (`tm schema plan` → `tm schema apply`) with an additive view
-  replacement plus the usual `ledger_meta` refresh, never a destructive step.
+  `alias_list`/`occupant_alias_list` columns to the generated views. Version 3
+  removes the `aliquot_<stockkind>` extension tables (an aliquot is a generic
+  tube; the per-stock-kind tube-field key no longer loads) and adds the
+  entity/aliquot/quantity/status columns to every `v_stock_<kind>`. A v1/v2 ledger upgrades to v3 with
+  the hand-run `migration/spec/2-to-3/` step (`migration/README.md`); within one
+  version `tm schema plan` → `tm schema apply` stays additive.
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger
@@ -211,7 +217,6 @@ Kind tables (generated from schema):
 - `entity_<kind>(id PK, kind CHAR const DEFAULT '<kind>' CHECK(kind='<kind>'), <fields…>,
   FK(id,kind)→entity(id,kind))` — the discriminator FK: an id can belong to only one kind table.
 - `stock_<kind>(…)` and `box_<kind>(…)` likewise.
-- `aliquot_<stockkind>(id PK FK→aliquot, <aliquot_fields…>)` when the stock kind has `aliquot_fields`.
 
 Views (generated):
 - `v_box_slots` — one row per slot (empties included): box name, slot, occupant type/id, stock, entity, status,
@@ -220,8 +225,21 @@ Views (generated):
 - `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`) and `alias_list`.
 - `v_stock_status` — stock + derived status (`active` if any aliquot stored; `pending` if any pending
   and none stored; `depleted` if all consumed; `missing` if all missing/consumed with ≥1 missing; `empty` if 0 aliquots) + aliquot counts + total quantity per unit + `alias_list`.
-- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench); the final
-  column is `alias_list`.
+- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench). Every
+  `v_stock_<kind>` additionally shows, in this order: `entity_kind`/`entity_name` (the owning design,
+  from core `entity`), `aliquots_stored` (status `stored`: what is still on the shelf),
+  `aliquots_total`, `quantity_stored` + `unit` (the sum of the stored quantities; `unit` is that unit
+  when every stored tube **with a quantity** shares one, otherwise both are NULL), `status` (the same
+  derived status as `v_stock_status`, generated from one shared SQL fragment). The final column is
+  always `alias_list`.
+
+**Aliquots have no kind.** An aliquot is a generic tube — location, quantity, unit, status, label,
+notes — and everything specific to a type of material lives on the stock kind (tubes that differ in a
+property are different stocks, spec §1). There is deliberately **one shared `aliquot_event` table**:
+nothing in an event depends on the kind, so per-kind tables would repeat this issue's cost on every new
+or renamed kind; one table gives one ordered timeline for `tm history` and one FK for `tm aliquot
+purge`, and filtering by kind is a join. No `v_aliquot_<kind>` views exist either: `v_aliquot_location`
+already covers every tube and the stock views show the kind-derived facts.
 
 Every view that represents an object aggregates the `alias` table into a sorted, `;`-separated
 `alias_list` (NULL when the object has no aliases; `v_box_slots` names it `occupant_alias_list`
@@ -264,7 +282,7 @@ Generated tests are fully replaced on each apply (they are derived state); never
 `additive` or `destructive`. `tm schema apply` executes it in one transaction + one Dolt commit.
 
 - Additive (applied freely): new kind, new nullable/defaulted field, new enum value, new view/rule/test,
-  new aliquot_fields table, relaxing NOT NULL.
+  new kind table, relaxing NOT NULL.
 - Destructive (refused without `--allow-destructive`): drop/rename kind or field, type change, tightening
   (new NOT NULL without default, new UNIQUE, removing enum value). Renames are expressed in YAML as
   `renamed_from: old_name` so they become `ALTER … RENAME` instead of drop+add.
@@ -359,7 +377,7 @@ wholesale batch (`--map PATH`, one `OLD<TAB>NEW` per line, `OLD` alone when comb
 New ids are validated against `ids.stock` and against the alias namespace; the old stock id and every
 old aliquot id are kept as aliases, so `tm find OLD` and `tm find OLD_ALIQUOT` keep working and no
 handle is lost. Everything — `stock.id`, `aliquot.id`/`stock_id`, `aliquot_event.aliquot_id`, kind
-tables, aliquot extension tables, `ref` fields, `parent_stock_id`, `source_aliquot_id` and existing
+tables, `ref` fields, `parent_stock_id`, `source_aliquot_id` and existing
 aliases — is rewritten in one transaction and one Dolt commit (`renumber(stock): OLD -> NEW` for one
 row, `renumber(stock): N stock(s)` for a batch). Because the foreign keys are `NO ACTION`, the primary
 key rename runs with `SET FOREIGN_KEY_CHECKS=0` and the checks are restored in the same session before
@@ -464,9 +482,10 @@ Preset catalogue:
   purification_id), `bacterial_pellet` (culture volume, OD600, induction; aliquots carry volume via
   core quantity), `cell_vial` (passage, medium, freezing_medium, cells_per_vial, dmso_pct) and
   `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
-  transfection). Molbio 2 has no `aliquot_fields`: all aliquots of one stock are the same, so a
-  property belongs on the stock kind. A ledger created with molbio 1 is upgraded by
-  `migration/presets/molbio/1-to-2/`.
+  transfection). Molbio 2 has no per-tube fields: all aliquots of one stock are the same, so a
+  property belongs on the stock kind. Spec 3 removed the per-stock-kind tube-field schema key
+  entirely, so a molbio-1 ledger is upgraded by `migration/presets/molbio/1-to-2/` and then
+  `migration/spec/2-to-3/`.
 - `library` (includes `base`) — entity `book` (title, authors, isbn pattern, year); stock `copy`
   (acquired_on, condition enum). Exists to prove generality; used in tests.
 

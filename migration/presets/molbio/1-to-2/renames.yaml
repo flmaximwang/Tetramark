@@ -1,8 +1,8 @@
 # Explicit kind renames for the molbio 1 -> 2 step (ticket 22, release 0.2.0).
 #
 # Presets never carry ``renamed_from``: a migration step ships this map and
-# ``tetramark.schema.diff`` reuses its rename machinery (kind table,
-# ``aliquot_<kind>`` extension, columns, core ``kind`` values).  Keys are the
+# ``tetramark.schema.diff`` reuses its rename machinery (kind table, columns,
+# core ``kind`` values).  Keys are the
 # OLD kind names — they exist only in the live ledger, never in the loaded
 # preset — and values are kinds of the v2 preset.
 #

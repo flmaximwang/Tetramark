@@ -55,7 +55,6 @@ kinds:
     entity_kinds: [molecule]          # which entity kinds this stock may point at
     fields:
       made_on: {type: date}
-    aliquot_fields:
       concentration: {type: decimal, precision: 12, scale: 2}
 
   grid9:

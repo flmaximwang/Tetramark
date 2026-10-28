@@ -16,6 +16,17 @@ The worked example uses **zsqlab08** because its tables are documented in
   `v_aliquot_location`, `v_stock_status`, generated `*_sha256`/computed columns, generated tests).
 - Do not keep two writable copies of the same inventory.
 
+## The spec-3 rule for per-tube columns
+
+An aliquot is a **generic tube**: location, quantity, unit, status, label, notes. Everything specific
+to a type of material belongs on the **stock kind**, because tubes that differ in a property are
+different stocks (all aliquots of one stock are the same). Older Tetramark ledgers (spec 1/2) could
+declare per-stock-kind tube fields, which generated `aliquot_<kind>` extension tables; spec 3 removed
+them. When mapping an old zsqlab database, give every per-tube column a landing place on the stock
+kind (or split the stock); never recreate a per-tube property table. A spec-2 ledger with populated
+extension tables is upgraded by moving the values to the stock first and then running
+`migration/spec/2-to-3/README.md`, which refuses to drop an extension table that still holds values.
+
 ## 0. Prepare
 
 1. Stop the old server before copying (moving an open Dolt database is unsafe):

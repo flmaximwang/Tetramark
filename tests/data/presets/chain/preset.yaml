@@ -21,8 +21,6 @@ kinds:
     fields:
       strain: {type: string, required: true}
       medium: {type: enum, values: [lb, tb, soc]}
-    aliquot_fields:
-      glycerol_pct: {type: decimal, default: 15}
 rules:
   - id: CH01
     description: plasmids should have a sequence

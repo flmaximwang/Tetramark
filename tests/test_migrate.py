@@ -39,8 +39,9 @@ from tetramark.migrate import (
     open_target,
     run,
 )
-from tetramark.schema.ddl import table_name, view_statements
+from tetramark.schema.ddl import STOCK_VIEW_COLUMNS, table_name, view_statements
 from tetramark.schema.diff import RenameMap, apply, plan
+from tetramark.schema.tests_gen import generate_tests
 from tetramark.schema.loader import load_ledger_schema
 
 import tetramark.schema.model as model
@@ -50,7 +51,6 @@ from conftest import PRESETS, REPO_PRESETS
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
 MOLBIO_STEP = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "migrate.py"
-MOLBIO_V1 = PRESETS / "molbio-v1" / "molbio-v1.yaml"
 MOLBIO_V2 = REPO_PRESETS / "molbio.yaml"
 
 
@@ -533,7 +533,6 @@ OLD_PRESET: dict[str, Any] = {
             "object": "stock",
             "entity_kinds": ["construct"],
             "fields": {"strain": {"type": "string"}},
-            "aliquot_fields": {"glycerol_pct": {"type": "decimal", "default": 15}},
         },
         "box96": {
             "object": "box",
@@ -554,7 +553,6 @@ NEW_KINDS: dict[str, Any] = {
         "object": "stock",
         "entity_kinds": ["protein_construct"],
         "fields": {"strain_name": {"type": "string"}},
-        "aliquot_fields": {"glycerol_pct": {"type": "decimal", "default": 15}},
     },
     "box96": {
         "object": "box",
@@ -629,9 +627,6 @@ def seed_rename_data(ledger: Ledger) -> None:
         "VALUES ('S1.1', 'S1', 1, 'stored')"
     )
     ledger.driver.execute(
-        "INSERT INTO `aliquot_bacterial` (`id`, `glycerol_pct`) VALUES ('S1.1', 15)"
-    )
-    ledger.driver.execute(
         "INSERT INTO `alias` (`object_type`, `object_id`, `alias`) "
         "VALUES ('entity', 'E1', 'OLD-CONSTRUCT')"
     )
@@ -675,7 +670,6 @@ def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
     for expected in (
         ("rename_table", "entity_protein_construct"),
         ("rename_table", "stock_bacterial_glycerol"),
-        ("rename_table", "aliquot_bacterial_glycerol"),
         ("rename_column", "entity_protein_construct.dna_sequence"),
         ("rename_column", "stock_bacterial_glycerol.strain_name"),
         ("update_data", "entity"),
@@ -697,11 +691,9 @@ def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
         tables = table_names(ledger)
         assert "entity_protein_construct" in tables
         assert "stock_bacterial_glycerol" in tables
-        assert "aliquot_bacterial_glycerol" in tables
         for gone in (
             "entity_construct",
             "stock_bacterial",
-            "aliquot_bacterial",
         ):
             assert gone not in tables
 
@@ -720,11 +712,6 @@ def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
         ) == [
             {"id": "S1", "kind": "bacterial_glycerol", "strain_name": "DH5a"}
         ]
-        extension_rows = ledger.driver.query(
-            "SELECT `id`, `glycerol_pct` FROM `aliquot_bacterial_glycerol`"
-        )
-        assert [row["id"] for row in extension_rows] == ["S1.1"]
-        assert float(extension_rows[0]["glycerol_pct"]) == 15.0
         # The renamed sequence column keeps its value and its generated hash.
         assert ledger.driver.query(
             "SELECT `id`, `dna_sequence`, `dna_sequence_sha256` IS NOT NULL AS `hashed` "
@@ -826,7 +813,7 @@ def test_counter_reads_spec_and_preset_counters(
     preset_step = MigrationStep(
         kind="preset", preset="base", from_version=1, plan=lambda opened: ["SELECT 1"]
     )
-    assert counter(spec_step, ledger) == 2
+    assert counter(spec_step, ledger) == model.SPEC_VERSION
     assert counter(preset_step, ledger) == 2
 
     ledger.driver.execute(
@@ -850,6 +837,124 @@ def test_counter_reads_spec_and_preset_counters(
 # ---------------------------------------------------------------------------
 # presets/molbio/1-to-2: the real step (ticket 22)
 # ---------------------------------------------------------------------------
+
+#: The frozen v1 molbio preset, kept as a **raw document**.  0.2.0+ refuses its
+#: ``aliquot_fields`` key (spec 3), which is exactly why a real v1 ledger runs
+#: this step with the last checkout that accepted the key (step README); the
+#: downgrade helper below strips the key when it writes the ledger's own copy.
+MOLBIO_V1_DOC = PRESETS / "molbio-v1" / "molbio-v1.yaml"
+MOLBIO_V1_BASE = PRESETS / "molbio-v1" / "base.yaml"
+
+#: The v2-only tables/views: the four renamed kinds and the three cell kinds.
+V2_ONLY_TABLES = (
+    "entity_protein_construct",
+    "entity_bacterial_strain",
+    "entity_cell_line",
+    "stock_bacterial_glycerol",
+    "stock_bacterial_pellet",
+    "stock_cell_vial",
+    "stock_cell_pellet",
+)
+
+#: The minimal molbio-v1 shape the seed below writes.  The v1 tables carry only
+#: the columns the seed uses; the step's planner adds the v2 columns,
+#: constraints and views itself, exactly as it would on a real v1 ledger.
+V1_DDL = (
+    "CREATE TABLE `entity_construct` ("
+    "`id` VARCHAR(64) NOT NULL, "
+    "`kind` VARCHAR(64) NOT NULL DEFAULT 'construct', "
+    "`name` VARCHAR(255) NOT NULL, "
+    "`sequence` MEDIUMTEXT, "
+    "`molecular_weight_da` DECIMAL(12,2), "
+    "CONSTRAINT `pk_entity_construct` PRIMARY KEY (`id`), "
+    "CONSTRAINT `ck_entity_construct_kind` CHECK (`kind` = 'construct'))",
+    "ALTER TABLE `entity_construct` ADD CONSTRAINT `fk_entity_construct_id_kind` "
+    "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
+    "CREATE TABLE `entity_strain` ("
+    "`id` VARCHAR(64) NOT NULL, "
+    "`kind` VARCHAR(64) NOT NULL DEFAULT 'strain', "
+    "`name` VARCHAR(255) NOT NULL, `genotype` MEDIUMTEXT, "
+    "CONSTRAINT `pk_entity_strain` PRIMARY KEY (`id`), "
+    "CONSTRAINT `ck_entity_strain_kind` CHECK (`kind` = 'strain'))",
+    "ALTER TABLE `entity_strain` ADD CONSTRAINT `fk_entity_strain_id_kind` "
+    "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
+    "CREATE TABLE `stock_bacterial` ("
+    "`id` VARCHAR(64) NOT NULL, "
+    "`kind` VARCHAR(64) NOT NULL DEFAULT 'bacterial', "
+    "`strain` VARCHAR(64) NOT NULL, `medium` VARCHAR(64), `batch` VARCHAR(8), "
+    "CONSTRAINT `pk_stock_bacterial` PRIMARY KEY (`id`), "
+    "CONSTRAINT `ck_stock_bacterial_kind` CHECK (`kind` = 'bacterial'))",
+    "ALTER TABLE `stock_bacterial` ADD CONSTRAINT `fk_stock_bacterial_id_kind` "
+    "FOREIGN KEY (`id`, `kind`) REFERENCES `stock` (`id`, `kind`)",
+    "CREATE TABLE `stock_pellet` ("
+    "`id` VARCHAR(64) NOT NULL, "
+    "`kind` VARCHAR(64) NOT NULL DEFAULT 'pellet', "
+    "`culture_volume_ml` DECIMAL(18,6), `od600` DECIMAL(18,6), "
+    "CONSTRAINT `pk_stock_pellet` PRIMARY KEY (`id`), "
+    "CONSTRAINT `ck_stock_pellet_kind` CHECK (`kind` = 'pellet'))",
+    "ALTER TABLE `stock_pellet` ADD CONSTRAINT `fk_stock_pellet_id_kind` "
+    "FOREIGN KEY (`id`, `kind`) REFERENCES `stock` (`id`, `kind`)",
+    "CREATE TABLE `aliquot_bacterial` ("
+    "`id` VARCHAR(64) NOT NULL, `glycerol_pct` DECIMAL(5,2) DEFAULT 15.00, "
+    "CONSTRAINT `pk_aliquot_bacterial` PRIMARY KEY (`id`), "
+    "CONSTRAINT `fk_aliquot_bacterial_id` FOREIGN KEY (`id`) "
+    "REFERENCES `aliquot` (`id`))",
+    "ALTER TABLE `entity_plasmid` ADD CONSTRAINT `fk_entity_plasmid_construct` "
+    "FOREIGN KEY (`construct`) REFERENCES `entity_construct` (`id`)",
+)
+
+
+def _v1_preset_document() -> str:
+    """The frozen v1 molbio preset without the key spec 3 removed."""
+    document = yaml.safe_load(MOLBIO_V1_DOC.read_text(encoding="utf-8"))
+    for kind in document["kinds"].values():
+        kind.pop("aliquot_fields", None)
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def downgrade_to_molbio_v1(ledger: Ledger) -> None:
+    """Turn a fresh molbio-v2 ledger into the molbio-1 shape, in one commit.
+
+    A real v1 ledger cannot be created by this tool any more (its preset
+    declares the removed ``aliquot_fields`` key), so the test builds it the way
+    the ticket allows: a normal v2 init, then this downgrade.  The renamed
+    kinds get their v1 tables back, the v2-only cell kinds and views are
+    dropped, ``aliquot_bacterial`` is recreated, the ledger's preset copy is
+    the same frozen v1 document minus the removed key (so ``open`` loads it),
+    and the counters say molbio 1 / spec 2.
+    """
+    copies = ledger.path / "presets"
+    (copies / "molbio.yaml").write_text(_v1_preset_document(), encoding="utf-8")
+    (copies / "base.yaml").write_bytes(MOLBIO_V1_BASE.read_bytes())
+    _config, schema = load_ledger_schema(ledger.path)
+
+    for table in V2_ONLY_TABLES:
+        ledger.driver.execute(f"DROP VIEW IF EXISTS `v_{table}`")
+    # entity_plasmid.construct pointed at the v2 protein_construct; v1 points
+    # it at entity_construct, so the FK must go before the table is dropped.
+    ledger.driver.execute(
+        "ALTER TABLE `entity_plasmid` DROP FOREIGN KEY `fk_entity_plasmid_construct`"
+    )
+    ledger.driver.execute("DROP TABLE IF EXISTS `aliquot_bacterial`")
+    for table in V2_ONLY_TABLES:
+        ledger.driver.execute(f"DROP TABLE IF EXISTS `{table}`")
+    for statement in V1_DDL:
+        ledger.driver.execute(statement)
+
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '2' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 1, "molbio": 1}),),
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
+        (schema.fingerprint(),),
+    )
+    ledger.driver.commit("test: downgrade to a molbio-1 ledger")
+    reload_schema(ledger)
+
 
 #: Every old molbio kind, a bacterial stock with two agreeing aliquots (S1), a
 #: second bacterial stock with a different value (S2), and one row of each other
@@ -917,7 +1022,12 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
     ledger_factory, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 2, both drivers: renames, data move, metadata, files, check."""
-    ledger = ledger_factory([MOLBIO_V1], name="molbio-v1", id_prefix="08")
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
+        name="molbio-v1",
+        id_prefix="08",
+    )
+    downgrade_to_molbio_v1(ledger)
     seed_molbio_v1(ledger)
     preset_copy = ledger.path / "presets" / "molbio.yaml"
     preset_before = preset_copy.read_bytes()
@@ -1091,7 +1201,11 @@ def test_molbio_1_to_2_refuses_conflicting_glycerol_and_writes_nothing(
     embedded_ledger_factory, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 3: per-stock disagreement refuses, listing the stock."""
-    ledger = embedded_ledger_factory([MOLBIO_V1], name="molbio-conflict")
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
+        name="molbio-conflict",
+    )
+    downgrade_to_molbio_v1(ledger)
     seed_molbio_v1(ledger)
     ledger.driver.execute(
         "UPDATE `aliquot_bacterial` SET `glycerol_pct` = 30 WHERE `id` = 'S1.2'"
@@ -1295,3 +1409,180 @@ def test_molbio_step_refuses_a_rename_map_that_names_a_missing_old_table(
     }
     with pytest.raises(LedgerError, match="entity_constructs"):
         module.plan(ledger)
+
+
+# ---------------------------------------------------------------------------
+# spec/2-to-3: drop the extension tables, recreate views, regenerate tests
+# ---------------------------------------------------------------------------
+
+SPEC_2_TO_3 = ROOT / "migration" / "spec" / "2-to-3" / "migrate.py"
+
+#: A stock view in its spec-2 shape: cored row + kind fields + alias_list only
+#: (no entity/aliquot/quantity/status columns).  The step must recreate it.
+SPEC2_STOCK_VIEW = (
+    "CREATE VIEW `v_stock_lot` AS\n"
+    "SELECT c.`id` AS `id`, c.`kind` AS `kind`, c.`entity_id` AS `entity_id`, "
+    "k.`supplier` AS `supplier`, "
+    "(SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') FROM `alias` "
+    "WHERE `object_type` = 'stock' AND `object_id` = c.`id`) AS `alias_list`\n"
+    "FROM `stock_lot` k JOIN `stock` c ON c.`id` = k.`id`"
+)
+
+
+def spec2_ledger(factory, *, populated: bool):
+    """A real ledger downgraded to the spec-2 shape, with one extension table.
+
+    The extension feature is gone, so no preset can create ``aliquot_lot``: the
+    fixture is a normal init followed by hand SQL, as the ticket allows.
+    ``dolt_tests`` is emptied as well, so the step's regenerated tests are
+    visibly restored.
+    """
+    ledger = factory([REPO_PRESETS / "base.yaml"], name="spec2", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=2
+    )
+    ledger.driver.execute("DROP VIEW `v_stock_lot`")
+    ledger.driver.execute(SPEC2_STOCK_VIEW)
+    ledger.driver.execute(
+        "CREATE TABLE `aliquot_lot` ("
+        "`id` VARCHAR(64) NOT NULL, `volume_ul` DECIMAL(10,1), "
+        "CONSTRAINT `pk_aliquot_lot` PRIMARY KEY (`id`), "
+        "CONSTRAINT `fk_aliquot_lot_id` FOREIGN KEY (`id`) "
+        "REFERENCES `aliquot` (`id`))"
+    )
+    if populated:
+        ledger.driver.execute(
+            "INSERT INTO `aliquot_lot` (`id`, `volume_ul`) VALUES (%s, 7.5)",
+            (stock["aliquots"][0],),
+        )
+    ledger.driver.execute("DELETE FROM `dolt_tests`")
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '2' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-2 ledger")
+    ledger.read_meta()
+    return ledger, stock
+
+
+def test_spec_2_to_3_drops_the_empty_extension_and_recreates_the_views(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Verify bullet 3: drop all-NULL extension, spec-3 views, one commit, tag."""
+    ledger, _stock = spec2_ledger(ledger_factory, populated=False)
+    assert "aliquot_lot" in table_names(ledger)
+    assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")
+    assert row_count(ledger, "dolt_tests") == 0
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    view_count = len(view_statements(ledger.schema))
+
+    applied = run_python(SPEC_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migration: spec 2 -> 3" in applied.stdout
+    assert "CALL DOLT_TAG('pre-migrate-spec-2'" in applied.stdout
+    assert "DROP TABLE IF EXISTS `aliquot_lot`" in applied.stdout
+    assert applied.stdout.count("CREATE VIEW") == view_count
+    assert "dolt tests: replace with" in applied.stdout
+    assert "migrate(ledger): spec 2 -> 3" in applied.stdout
+
+    ledger.read_meta()
+    # The extension table is gone; the stock view has the spec-3 columns.
+    assert "aliquot_lot" not in table_names(ledger)
+    columns = column_names(ledger, "v_stock_lot")
+    assert set(STOCK_VIEW_COLUMNS) <= columns
+    row = ledger.driver.query(
+        "SELECT aliquots_stored, aliquots_total, status FROM `v_stock_lot`"
+    )[0]
+    # They were created without a box, so they are pending, not stored.
+    assert row["aliquots_stored"] == 0
+    assert row["aliquots_total"] == 2
+    assert row["status"] == "pending"
+
+    # Counter, fingerprint and the regenerated derived tests, in one commit.
+    assert ledger.meta["spec_version"] == "3"
+    assert ledger.meta["tetramark_version"] == __version__
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert row_count(ledger, "dolt_tests") == len(generate_tests(ledger.schema))
+    assert row_count(ledger, "dolt_tests") > 0
+    stale = ledger.driver.query(
+        "SELECT COUNT(*) AS `n` FROM `dolt_tests` "
+        "WHERE `test_query` LIKE '%aliquot_lot%'"
+    )
+    assert stale == [{"n": 0}]
+
+    assert commit_count(ledger) == commits_before + 1
+    head_after = head(ledger)
+    assert commit_message(ledger, head_after) == "migrate(ledger): spec 2 -> 3"
+    assert tags(ledger) == {"pre-migrate-spec-2": head_before}
+
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+    assert "OK:" in checked.output
+
+    # A second run refuses: the counter is 3, not 2.
+    again = run_python(SPEC_2_TO_3, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "refusing to run migration spec 2 -> 3" in again.stdout + again.stderr
+    assert "spec_version 3, expected 2" in again.stdout + again.stderr
+    assert head(ledger) == head_after
+
+
+def test_spec_2_to_3_dry_run_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Verify bullet 3: ``--dry-run`` prints the plan and writes nothing."""
+    ledger, _stock = spec2_ledger(embedded_ledger_factory, populated=False)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    view_count = len(view_statements(ledger.schema))
+
+    result = run_python(
+        SPEC_2_TO_3, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dry run:" in result.stdout
+    assert "DROP TABLE IF EXISTS `aliquot_lot`" in result.stdout
+    assert result.stdout.count("CREATE VIEW") == view_count
+    assert result.stdout.count("DROP VIEW IF EXISTS") == view_count
+    assert "'spec_version', '3'" in result.stdout
+
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "2"
+    assert "aliquot_lot" in table_names(ledger)
+    assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")
+
+
+def test_spec_2_to_3_refuses_a_populated_extension_and_writes_nothing(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Verify bullet 3: a populated extension table is listed, nothing is written."""
+    ledger, _stock = spec2_ledger(embedded_ledger_factory, populated=True)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            SPEC_2_TO_3, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate spec 2 -> 3" in output
+        # The offending table and column are named, with the value it holds.
+        assert "aliquot_lot.volume_ul" in output
+        assert "7.5" in output
+        assert "Move those properties to the stock kind first" in output
+        # Nothing was written: no commit, no tag, no DDL, counter unchanged.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        ledger.read_meta()
+        assert ledger.meta["spec_version"] == "2"
+        assert "aliquot_lot" in table_names(ledger)
+        assert row_count(ledger, "aliquot_lot") == 1
+        assert "aliquots_stored" not in column_names(ledger, "v_stock_lot")

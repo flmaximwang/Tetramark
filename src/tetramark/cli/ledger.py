@@ -249,10 +249,6 @@ def kind_payload(kind: Kind) -> dict[str, Any]:
     payload["fields"] = {
         name: field.normalised() for name, field in kind.fields.items()
     }
-    if kind.aliquot_fields:
-        payload["aliquot_fields"] = {
-            name: field.normalised() for name, field in kind.aliquot_fields.items()
-        }
     if kind.geometry is not None:
         payload["geometry"] = kind.geometry.normalised()
     if kind.object is ObjectType.box:

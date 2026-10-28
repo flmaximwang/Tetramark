@@ -192,14 +192,6 @@ def seed_legacy_stock(
                 (aliquot,),
             )
         )
-        if kind == "bacterial":
-            statements.append(
-                (
-                    "INSERT INTO `aliquot_bacterial` (`id`, `glycerol_pct`) "
-                    "VALUES (%s, 15)",
-                    (aliquot,),
-                )
-            )
         aliquot_ids.append(aliquot)
     raw_write(ledger, f"seed legacy {stock_id}", statements)
     return aliquot_ids
@@ -810,16 +802,11 @@ def test_core_renumber_on_both_drivers(driver_factory) -> None:
     assert latest_commit(ledger)["message"] == f"renumber(stock): {old} -> {new}"
     assert dirty(ledger) == []
 
-    # Kind table and aliquot extension rows follow the primary keys.
+    # Kind table rows follow the primary keys (an aliquot has no own table).
     assert [
         row["id"]
         for row in ledger.driver.query("SELECT `id` FROM `stock_bacterial` ORDER BY `id`")
     ] == sorted([new, "CHILD-BACT"])
-    extensions = ledger.driver.query(
-        "SELECT `id`, `glycerol_pct` FROM `aliquot_bacterial` ORDER BY `id`"
-    )
-    assert [row["id"] for row in extensions] == [f"{new}.1", f"{new}.2"]
-    assert [str(row["glycerol_pct"]) for row in extensions] == ["15.000000", "15.000000"]
 
     # The self-referential alias is rewritten, not duplicated.
     self_rows = ledger.driver.query(

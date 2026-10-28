@@ -35,6 +35,8 @@ from tetramark.schema.diff import (
 )
 from tetramark.schema.loader import load_ledger_schema
 
+import tetramark.schema.model as model
+
 from conftest import PRESETS
 
 
@@ -350,7 +352,8 @@ def test_upgrade_from_spec_v1_adds_alias_columns_and_refreshes_meta(
     assert "Applied" in applied.output
 
     ledger.read_meta()
-    assert ledger.meta["spec_version"] == "2"
+    # ``tm schema apply`` refreshes the meta to the tool's current format.
+    assert ledger.meta["spec_version"] == str(model.SPEC_VERSION)
     assert ledger.meta["tetramark_version"] == __version__
     for name, column in (
         ("v_entity_sample", "alias_list"),
@@ -592,51 +595,6 @@ def test_kind_rename_is_additive_and_preserves_rows(
     ]
 
 
-def test_stock_kind_rename_moves_the_extension_table(
-    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
-) -> None:
-    kinds["bacterial"]["aliquot_fields"] = {
-        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
-    }
-    preset.write(kinds)
-    reload_schema(ledger)
-    apply_clean(ledger)
-
-    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
-    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
-    ledger.driver.execute(
-        "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`) "
-        "VALUES ('S1.1', 'S1', 1, 'stored')"
-    )
-    ledger.driver.execute(
-        "INSERT INTO `aliquot_bacterial` (`id`, `volume_ul`) VALUES ('S1.1', 7.5)"
-    )
-
-    culture = {
-        **kinds.pop("bacterial"),
-        "renamed_from": "bacterial",
-    }
-    kinds["culture"] = culture
-    preset.write(kinds)
-    reload_schema(ledger)
-
-    current = plan(ledger)
-    assert not current.destructive
-    assert ("additive", "rename_table", "stock_culture") in actions(current)
-    assert ("additive", "rename_table", "aliquot_culture") in actions(current)
-
-    apply_clean(ledger)
-    assert ledger.driver.query("SELECT id, kind FROM stock") == [
-        {"id": "S1", "kind": "culture"}
-    ]
-    assert "stock_bacterial" not in table_names(ledger)
-    assert "aliquot_bacterial" not in table_names(ledger)
-    row = ledger.driver.query(
-        "SELECT volume_ul FROM aliquot_culture WHERE id = 'S1.1'"
-    )[0]
-    assert Decimal(str(row["volume_ul"])) == Decimal("7.5")
-
-
 # ---------------------------------------------------------------------------
 # Explicit rename map (migration steps, ticket 21): strict old-name checks
 # ---------------------------------------------------------------------------
@@ -653,6 +611,34 @@ def rename_map_kinds(
     kinds["specimen"] = specimen
     kinds["bacterial"] = {**kinds["bacterial"], "entity_kinds": ["specimen"]}
     return kinds
+
+
+def test_stock_kind_rename_is_additive_and_preserves_rows(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A stock kind rename keeps its table's rows and plans nothing destructive."""
+    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
+    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
+    culture = {**kinds.pop("bacterial"), "renamed_from": "bacterial"}
+    kinds["culture"] = culture
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    current = plan(ledger)
+    assert not current.destructive
+    assert ("additive", "rename_table", "stock_culture") in actions(current)
+    assert ("additive", "update_data", "stock_culture") in actions(current)
+
+    apply_clean(ledger)
+    assert ledger.driver.query("SELECT id, kind FROM stock") == [
+        {"id": "S1", "kind": "culture"}
+    ]
+    assert "stock_bacterial" not in table_names(ledger)
+    assert "v_stock_bacterial" not in table_names(ledger)
+    assert "v_stock_culture" in table_names(ledger)
+    assert ledger.driver.query("SELECT strain FROM stock_culture") == [
+        {"strain": "MG1655"}
+    ]
 
 
 def test_rename_map_applies_and_a_rerun_skips_cleanly(
@@ -760,71 +746,6 @@ def test_rename_map_field_scope_on_a_missing_table_raises(
     assert "renames.fields['entity.new_kind']" in message
     assert "entity_new_kind" in message
     assert "does not exist in the ledger" in message
-
-
-def test_rename_map_moves_the_aliquot_extension_table(
-    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
-) -> None:
-    """A mapped stock kind rename reuses the ``aliquot_<kind>`` rename."""
-    kinds["bacterial"]["aliquot_fields"] = {
-        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
-    }
-    preset.write(kinds)
-    reload_schema(ledger)
-    apply_clean(ledger)
-
-    insert_entity(ledger, "sample", "E1", label="kept")
-    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
-    ledger.driver.execute(
-        "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`) "
-        "VALUES ('S1.1', 'S1', 1, 'stored')"
-    )
-    ledger.driver.execute(
-        "INSERT INTO `aliquot_bacterial` (`id`, `volume_ul`) VALUES ('S1.1', 7.5)"
-    )
-
-    kinds["culture"] = {**kinds.pop("bacterial")}
-    preset.write(kinds)
-    reload_schema(ledger)
-
-    current = plan(ledger, renames=RenameMap.from_dict({"stock": {"bacterial": "culture"}}))
-    assert not current.destructive
-    assert ("additive", "rename_table", "stock_culture") in actions(current)
-    assert ("additive", "rename_table", "aliquot_culture") in actions(current)
-
-    result = apply(ledger, schema_plan=current)
-    assert result.applied is True
-    assert_clean(ledger)
-    assert "stock_bacterial" not in table_names(ledger)
-    assert "aliquot_bacterial" not in table_names(ledger)
-    assert ledger.driver.query("SELECT kind FROM stock") == [{"kind": "culture"}]
-    volume = ledger.driver.query(
-        "SELECT volume_ul FROM aliquot_culture WHERE id = 'S1.1'"
-    )[0]["volume_ul"]
-    assert Decimal(str(volume)) == Decimal("7.5")
-
-
-def test_rename_map_missing_old_extension_raises(
-    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
-) -> None:
-    """The extension half of a stock kind rename obeys the same strict rule."""
-    # The live ``bacterial`` kind has no aliquot_fields, so there is no
-    # ``aliquot_bacterial`` table to rename even though the new kind adds one.
-    culture = {**kinds.pop("bacterial")}
-    culture["aliquot_fields"] = {
-        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
-    }
-    kinds["culture"] = culture
-    preset.write(kinds)
-    reload_schema(ledger)
-
-    with pytest.raises(UsageError) as excinfo:
-        plan(ledger, renames=RenameMap.from_dict({"stock": {"bacterial": "culture"}}))
-    message = str(excinfo.value)
-    assert "renames.stock" in message
-    assert "expected the old extension table 'aliquot_bacterial'" in message
-    assert "separate step" in message
-    assert "aliquot_event" in message  # the live aliquot-tables signature
 
 
 def test_rename_map_skips_a_target_that_already_exists(
@@ -976,42 +897,6 @@ def test_new_sequence_field_creates_hash_and_unique(
     assert len(row["dna_sha256"]) == 64
 
 
-def test_adding_aliquot_fields_creates_the_extension_table(
-    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
-) -> None:
-    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
-    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
-    kinds["bacterial"]["aliquot_fields"] = {
-        "volume_ul": {"type": "decimal", "precision": 10, "scale": 1}
-    }
-    preset.write(kinds)
-    reload_schema(ledger)
-
-    current = plan(ledger)
-    assert not current.destructive
-    assert ("additive", "create_table", "aliquot_bacterial") in actions(current)
-    assert any(
-        step.name == "aliquot_bacterial.fk_aliquot_bacterial_id"
-        for step in action_steps(current, "add_foreign_key")
-    )
-
-    apply_clean(ledger)
-    ledger.driver.execute(
-        "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`) "
-        "VALUES ('S1.1', 'S1', 1, 'stored')"
-    )
-    ledger.driver.execute(
-        "INSERT INTO `aliquot_bacterial` (`id`, `volume_ul`) VALUES ('S1.1', 5.5)"
-    )
-    row = ledger.driver.query(
-        "SELECT volume_ul FROM aliquot_bacterial WHERE id = 'S1.1'"
-    )[0]
-    assert Decimal(str(row["volume_ul"])) == Decimal("5.5")
-    assert ledger.driver.query("SELECT strain FROM stock_bacterial") == [
-        {"strain": "MG1655"}
-    ]
-
-
 def test_status_vocabulary_addition_is_additive(
     ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
 ) -> None:
@@ -1150,31 +1035,6 @@ def test_dropping_a_kind_is_destructive(
     assert "v_stock_bacterial" not in table_names(ledger)
     assert ledger.driver.query("SELECT label FROM entity_sample") == [
         {"label": "kept"}
-    ]
-
-
-def test_removing_aliquot_fields_drops_the_extension_table(
-    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
-) -> None:
-    kinds["bacterial"]["aliquot_fields"] = {"volume_ul": {"type": "decimal"}}
-    preset.write(kinds)
-    reload_schema(ledger)
-    apply_clean(ledger)
-    insert_entity(ledger, "sample", "E1", label="kept", seq="ACGT")
-    insert_stock(ledger, "bacterial", "S1", "E1", strain="MG1655")
-
-    kinds["bacterial"]["aliquot_fields"] = {}
-    preset.write(kinds)
-    reload_schema(ledger)
-    current = plan(ledger)
-    assert ("destructive", "drop_table", "aliquot_bacterial") in actions(current)
-    with pytest.raises(LedgerError, match="destructive"):
-        apply(ledger, schema_plan=current)
-
-    apply_clean(ledger, allow_destructive=True)
-    assert "aliquot_bacterial" not in table_names(ledger)
-    assert ledger.driver.query("SELECT strain FROM stock_bacterial") == [
-        {"strain": "MG1655"}
     ]
 
 

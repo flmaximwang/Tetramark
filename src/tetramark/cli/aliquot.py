@@ -28,11 +28,6 @@ def add_aliquots_command(
         None, "--quantity", "-q", help="Quantity for each new aliquot."
     ),
     unit: str | None = typer.Option(None, "--unit", "-u", help="Unit of --quantity."),
-    aliquot_values: list[str] = typer.Option(
-        [],
-        "--aliquot-set",
-        help="Kind aliquot field as field=value; repeat for more fields.",
-    ),
     as_json: bool = typer.Option(False, "--json", help="Print the created objects as JSON."),
 ) -> None:
     """Add aliquots to an existing stock."""
@@ -45,7 +40,6 @@ def add_aliquots_command(
             slots=slot,
             quantity=quantity,
             unit=unit,
-            values=aliquot_values,
         )
         ids = result["ids"]
         message = f"Added {len(ids)} aliquot(s) to {result['stock_id']}"

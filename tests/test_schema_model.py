@@ -307,7 +307,7 @@ def test_kind_resolves_object_specific_rules() -> None:
     kind = Kind(
         object="stock",
         entity_kinds=["thing"],
-        aliquot_fields={"glycerol_pct": Field(type="decimal", default=15)},
+        fields={"glycerol_pct": Field(type="decimal", default=15)},
     )
     assert kind.object is ObjectType.stock
     assert kind.slot_capacity == 1
@@ -318,12 +318,10 @@ def test_kind_resolves_object_specific_rules() -> None:
     [
         ({"object": "box"}, "require a 'geometry'"),
         ({"object": "box", "geometry": {"type": "slotless"}, "entity_kinds": ["x"]}, "only valid on stock"),
-        ({"object": "box", "geometry": {"type": "slotless"}, "aliquot_fields": {"a": {"type": "int"}}}, "only valid on stock"),
         ({"object": "stock", "geometry": {"type": "slotless"}}, "only valid on box"),
         ({"object": "entity", "geometry": {"type": "slotless"}}, "only valid on box"),
         ({"object": "entity", "slot_capacity": 2}, "only valid on box"),
         ({"object": "entity", "entity_kinds": ["x"]}, "only valid on stock"),
-        ({"object": "entity", "aliquot_fields": {"a": {"type": "int"}}}, "only valid on stock"),
         ({"object": "box", "geometry": {"type": "grid", "rows": "A", "cols": "1"}, "slot_capacity": 0}, "positive integer"),
         ({"object": "aliquot"}, "Input should be"),
     ],

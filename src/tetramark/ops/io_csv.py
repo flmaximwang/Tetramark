@@ -512,32 +512,6 @@ class _Planner:
                         for row in rows
                         if row.get("v") is not None
                     }
-                if object_type != "stock" or not kind.aliquot_fields:
-                    continue
-                extension = table_name("aliquot", kind_name)
-                for field_name, field_schema in kind.aliquot_fields.items():
-                    if not field_schema.unique:
-                        continue
-                    column = (
-                        f"{field_name}_sha256"
-                        if field_schema.type is FieldType.sequence
-                        else field_name
-                    )
-                    try:
-                        rows = self.driver.query(
-                            f"SELECT {_quote(column)} AS `v` FROM {_quote(extension)}"
-                        )
-                    except LedgerError:  # pragma: no cover - schema/DB mismatch
-                        continue
-                    self._unique_seen[(f"aliquot:{kind_name}", field_name)] = {
-                        (
-                            row["v"]
-                            if field_schema.type is FieldType.sequence
-                            else _unique_value(field_schema, row["v"])
-                        )
-                        for row in rows
-                        if row.get("v") is not None
-                    }
 
     # -- public planning entry points -------------------------------------
     def add_file(
@@ -1026,12 +1000,7 @@ class _Planner:
             kinds = [kind_name]
         for name in kinds:
             kind = self.schema.kind(name)
-            if object_type == "aliquot":
-                fields = kind.aliquot_fields
-            else:
-                fields = kind.fields
-                if object_type == "stock":
-                    fields = {**fields, **kind.aliquot_fields}
+            fields = kind.fields
             allowed |= {
                 field_name
                 for field_name, schema_field in fields.items()
@@ -1235,26 +1204,15 @@ class _Planner:
                 f"unknown status {status!r}; choose from: "
                 + ", ".join(self.schema.statuses)
             )
-        aliquot_values = (
-            self._aliquot_field_values(raw, kind, kind_name) if count > 0 else {}
-        )
-        if count == 0:
-            provided_aliquot_fields = [
-                name
-                for name in kind.aliquot_fields
-                if _raw(data, name) is not None
-            ]
-            if (
-                box_text is not None
-                or any(slots)
-                or quantity is not None
-                or status is not None
-                or aliquot_values
-                or provided_aliquot_fields
-            ):
-                raise UsageError(
-                    "cannot place or describe aliquots when 'aliquots' is 0"
-                )
+        if count == 0 and (
+            box_text is not None
+            or any(slots)
+            or quantity is not None
+            or status is not None
+        ):
+            raise UsageError(
+                "cannot place or describe aliquots when 'aliquots' is 0"
+            )
 
         box_id: str | None = None
         box_slot_labels: set[str] = set()
@@ -1336,10 +1294,6 @@ class _Planner:
                     },
                 )
             )
-            if kind.aliquot_fields:
-                plan.inserts.append(
-                    (table_name("aliquot", kind_name), {"id": alq_id, **aliquot_values})
-                )
             plan.events.append(
                 {
                     "aliquot_id": alq_id,
@@ -1355,9 +1309,6 @@ class _Planner:
         self._apply_slot_deltas(local_slots, local_box)
         self._add_alias_inserts(plan, "stock", raw.id, raw.aliases)
         self._remember_unique(kind_name, kind.fields, fields)
-        self._remember_unique(
-            f"aliquot:{kind_name}", kind.aliquot_fields, aliquot_values
-        )
         if deferred_source and source_id is not None:
             plan.deferred_updates.append(
                 ("stock", {"id": raw.id}, {"source_aliquot_id": source_id})
@@ -1506,8 +1457,6 @@ class _Planner:
         quantity, unit = _parse_quantity_unit(
             _text(data, "quantity"), _text(data, "unit")
         )
-        aliquot_values = self._aliquot_field_values(raw, kind, kind_name)
-
         payload: dict[str, Any] = {
             "id": raw.id,
             "stock_id": raw.stock_id,
@@ -1538,10 +1487,6 @@ class _Planner:
         if stock_dep is not None:
             plan.depends_on.add(stock_dep)
         plan.inserts.append(("aliquot", payload))
-        if kind.aliquot_fields:
-            plan.inserts.append(
-                (table_name("aliquot", kind_name), {"id": raw.id, **aliquot_values})
-            )
         plan.events.append(
             {
                 "aliquot_id": raw.id,
@@ -1555,9 +1500,6 @@ class _Planner:
             }
         )
         self._add_alias_inserts(plan, "aliquot", raw.id, raw.aliases)
-        self._remember_unique(
-            f"aliquot:{kind_name}", kind.aliquot_fields, aliquot_values
-        )
         if box_id is not None:
             self._apply_slot_deltas(
                 {(box_id, slot): 1} if slot else {}, {box_id: 1} if not slot else {}
@@ -1618,42 +1560,6 @@ class _Planner:
                     text = text.strip()
                 values[name] = text
         return values
-
-    def _aliquot_field_values(
-        self, raw: _RawRow, kind: Kind, kind_name: str
-    ) -> dict[str, Any]:
-        if not kind.aliquot_fields:
-            return {}
-        data: dict[str, Any] = {}
-        for name, field_schema in kind.aliquot_fields.items():
-            if field_schema.type is FieldType.computed:
-                continue
-            text = _raw(raw.data, name)
-            if text is None:
-                continue
-            if field_schema.type in (FieldType.enum, FieldType.ref):
-                text = text.strip()
-            data[name] = _coerce_field(
-                field_schema,
-                text,
-                ledger=self.ledger,
-                session=self.driver,
-                label=name,
-            )
-        missing = [
-            name
-            for name, field_schema in kind.aliquot_fields.items()
-            if field_schema.required
-            and not field_schema.has_default
-            and name not in data
-        ]
-        if missing:
-            raise UsageError(
-                f"missing required aliquot field(s) for kind {kind_name!r}: "
-                + ", ".join(sorted(missing))
-            )
-        self._check_unique(f"aliquot:{kind_name}", kind.aliquot_fields, data)
-        return data
 
     def _check_unique(
         self, kind_name: str, fields: Mapping[str, Field], values: Mapping[str, Any]
@@ -2161,14 +2067,6 @@ def _fields_for_export(kind: Kind) -> list[str]:
     ]
 
 
-def _aliquot_fields_for_export(kind: Kind) -> list[str]:
-    return [
-        name
-        for name, field_schema in kind.aliquot_fields.items()
-        if field_schema.type is not FieldType.computed
-    ]
-
-
 def _export_entity_kind(
     ledger: Ledger,
     kind_name: str,
@@ -2261,12 +2159,7 @@ def _export_aliquots(
     destination: Path,
     aliases: Mapping[tuple[str, str], list[str]],
 ) -> int:
-    field_names: list[str] = []
-    for kind_name in sorted(ledger.schema.stock_kinds):
-        field_names.extend(
-            _aliquot_fields_for_export(ledger.schema.kind(kind_name))
-        )
-    header = _export_header(_CORE_COLUMNS["aliquot"], _dedupe(field_names))
+    header = _export_header(_CORE_COLUMNS["aliquot"], ())
 
     stock_kinds = {
         str(row["id"]): str(row["kind"])
@@ -2276,18 +2169,6 @@ def _export_aliquots(
         str(row["id"]): str(row["name"])
         for row in ledger.driver.query("SELECT `id`, `name` FROM `box`")
     }
-    extensions: dict[str, dict[str, dict[str, Any]]] = {}
-    for kind_name, kind in ledger.schema.stock_kinds.items():
-        if not kind.aliquot_fields:
-            continue
-        try:
-            rows = ledger.driver.query(
-                f"SELECT * FROM {_quote(table_name('aliquot', kind_name))}"
-            )
-        except LedgerError:  # pragma: no cover - schema/DB mismatch
-            continue
-        extensions[kind_name] = {str(row["id"]): dict(row) for row in rows}
-
     data: list[dict[str, Any]] = []
     for row in ledger.driver.query("SELECT * FROM `aliquot` ORDER BY `id`"):
         record = dict(row)
@@ -2299,11 +2180,6 @@ def _export_aliquots(
         record["alias"] = _ALIAS_SEPARATOR.join(
             aliases.get(("aliquot", str(row["id"])), [])
         )
-        for field_name, value in extensions.get(kind_name, {}).get(
-            str(row["id"]), {}
-        ).items():
-            if field_name != "id":
-                record[field_name] = value
         data.append(record)
     return _write_csv(destination, header, data)
 

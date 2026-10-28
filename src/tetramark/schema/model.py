@@ -54,8 +54,11 @@ __all__ = [
 
 #: Ledger format version (spec §3).  Bumped only when the generated shape
 #: changes: v2 added the ``alias_list``/``occupant_alias_list`` columns to the
-#: generated views so the ``alias`` table is visible there.
-SPEC_VERSION = 2
+#: generated views so the ``alias`` table is visible there; v3 removed the
+#: ``aliquot_<stockkind>`` extension tables (an aliquot is a generic tube now)
+#: and added the entity/aliquot/quantity/status columns to every
+#: ``v_stock_<kind>``.
+SPEC_VERSION = 3
 
 DEFAULT_STATUSES: tuple[str, ...] = ("pending", "stored", "missing", "consumed")
 
@@ -677,7 +680,12 @@ class ObjectType(StrEnum):
 
 
 class Kind(BaseModel):
-    """One kind (a table extension of entity, stock or box)."""
+    """One kind (a table extension of entity, stock or box).
+
+    There is no per-kind aliquot table: an aliquot is a **generic tube**
+    (location, quantity, unit, status, label, notes) and every property of the
+    material belongs on the stock kind (spec §3).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -686,7 +694,6 @@ class Kind(BaseModel):
     fields: dict[str, Field] = PydanticField(default_factory=dict)
     mixins: list[str] = PydanticField(default_factory=list)
     entity_kinds: list[str] | None = None
-    aliquot_fields: dict[str, Field] = PydanticField(default_factory=dict)
     geometry: Geometry | None = None
     slot_capacity: int = 1
     renamed_from: str | None = None
@@ -700,8 +707,6 @@ class Kind(BaseModel):
                 raise ValueError("box kinds require a 'geometry'")
             if self.entity_kinds is not None:
                 raise ValueError("'entity_kinds' is only valid on stock kinds")
-            if self.aliquot_fields:
-                raise ValueError("'aliquot_fields' is only valid on stock kinds")
             if self.slot_capacity < 1:
                 raise ValueError("'slot_capacity' must be a positive integer")
         else:
@@ -712,8 +717,6 @@ class Kind(BaseModel):
             if self.object is ObjectType.entity:
                 if self.entity_kinds is not None:
                     raise ValueError("'entity_kinds' is only valid on stock kinds")
-                if self.aliquot_fields:
-                    raise ValueError("'aliquot_fields' is only valid on stock kinds")
         return self
 
     def normalised(self) -> dict[str, Any]:
@@ -725,11 +728,6 @@ class Kind(BaseModel):
         }
         if self.entity_kinds is not None:
             out["entity_kinds"] = sorted(self.entity_kinds)
-        if self.aliquot_fields:
-            out["aliquot_fields"] = {
-                name: self.aliquot_fields[name].normalised()
-                for name in sorted(self.aliquot_fields)
-            }
         if self.geometry is not None:
             out["geometry"] = self.geometry.normalised()
         if self.object is ObjectType.box:

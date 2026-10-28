@@ -19,6 +19,7 @@ from tetramark.driver.base import literal
 from tetramark.schema.ddl import (
     CORE_TABLES,
     CORE_VIEWS,
+    STOCK_VIEW_COLUMNS,
     Statement,
     core_statements,
     kind_statements,
@@ -43,6 +44,7 @@ DATA = Path(__file__).parent / "data"
 PRESETS = DATA / "presets"
 GOLDEN = DATA / "golden" / "ddl_full.sql"
 REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
+MOLBIO = REPO_PRESETS / "molbio.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,10 @@ def full_schema(**overrides: Any) -> EffectiveSchema:
         **overrides,
     )
     return load_schema(config)
+
+
+def molbio_schema() -> EffectiveSchema:
+    return load_schema(LedgerConfig(name="ddl-molbio", presets=[str(MOLBIO)]))
 
 
 def test_statements_are_tagged_and_ordered() -> None:
@@ -90,10 +96,10 @@ def test_statements_are_tagged_and_ordered() -> None:
             s.name for s in statements if s.object == "view"
         }
 
-    # Aliquot fields produce extension tables only for stock kinds that have them.
-    assert "aliquot_prep" in table_names
-    assert "aliquot_bacterial" in table_names
-    assert "aliquot_item" not in table_names  # `item` is an entity kind
+    # An aliquot is a generic tube: no per-stock-kind extension tables exist.
+    assert [name for name in table_names if name.startswith("aliquot_")] == [
+        "aliquot_event"
+    ]
 
 
 def test_generation_is_deterministic() -> None:
@@ -152,6 +158,44 @@ def test_kind_field_named_alias_list_is_rejected() -> None:
     schema.kinds["everything"].fields["alias_list"] = Field(type=FieldType.string)
     with pytest.raises(SchemaError, match="alias_list"):
         view_statements(schema)
+
+
+def test_stock_view_generated_columns_are_reserved() -> None:
+    """A stock kind cannot shadow ``entity_kind``/``status``/… (spec §3)."""
+    for name in STOCK_VIEW_COLUMNS:
+        schema = full_schema()
+        schema.kinds["lot"].fields[name] = Field(type=FieldType.string)
+        with pytest.raises(SchemaError, match=name):
+            view_statements(schema)
+
+
+def test_stock_views_share_the_status_fragment_and_column_order() -> None:
+    """The derived status and the aggregate block are generated once (spec §3)."""
+    statements = {s.name: s.sql for s in view_statements(full_schema())}
+    status = statements["v_stock_status"]
+    stock_view = statements["v_stock_bacterial"]
+    # The whole six-branch CASE is literally the same SQL in both views.
+    case = status.split("CASE\n", 1)[1].split("END AS `status`", 1)[0]
+    assert case.count("WHEN") == 5
+    assert case in stock_view
+    # … and so is the per-stock aggregate block.
+    aggregate = status.split("LEFT JOIN (\n", 1)[1].split(") agg ", 1)[0]
+    assert aggregate in stock_view
+    # The new stock columns sit after the kind fields and before alias_list.
+    select = stock_view.split("\nFROM ", 1)[0]
+    ordered = [
+        "`entity_kind`",
+        "`entity_name`",
+        "`aliquots_stored`",
+        "`aliquots_total`",
+        "`quantity_stored`",
+        "`unit`",
+        "`status`",
+        "`alias_list`",
+    ]
+    positions = [select.index(name) for name in ordered]
+    assert positions == sorted(positions), select
+    assert positions.index(select.index("`alias_list`")) == len(ordered) - 1
 
 
 def test_slot_rows_for_every_geometry() -> None:
@@ -281,8 +325,10 @@ def test_core_tables_views_and_kind_objects_exist(
         assert objects.get(table_name(kind.object, kind_name)) == "BASE TABLE"
         assert objects.get(f"v_{kind.object.value}_{kind_name}") == "VIEW"
 
-    assert objects.get("aliquot_prep") == "BASE TABLE"
-    assert objects.get("aliquot_bacterial") == "BASE TABLE"
+    # An aliquot is a generic tube: no per-stock-kind extension tables exist.
+    assert [
+        name for name in objects if name.startswith("aliquot_")
+    ] == ["aliquot_event"]
 
     # Core DDL exposes the columns the spec names.
     columns = {
@@ -313,20 +359,10 @@ def test_core_tables_views_and_kind_objects_exist(
     } <= columns
 
 
-def test_aliquot_extension_requires_the_core_aliquot(
-    full_ledger: Path, dolt_run: Any
-) -> None:
-    reject(
-        dolt_run,
-        full_ledger,
-        "INSERT INTO aliquot_prep (id, volume_ul) VALUES ('missing.1', 10)",
-        "foreign key",
-    )
-
-
-def test_aliquot_field_ref_gets_a_foreign_key(
+def test_kind_ref_field_gets_a_foreign_key(
     dolt_repo: Path, dolt_run: Any
 ) -> None:
+    """A ``ref`` field (now only on a kind table) gets a real FK."""
     schema = EffectiveSchema(
         kinds={
             "item": Kind(
@@ -336,14 +372,16 @@ def test_aliquot_field_ref_gets_a_foreign_key(
             "prep": Kind(
                 object=ObjectType.stock,
                 entity_kinds=["item"],
-                fields={"batch": Field(type=FieldType.string)},
-                aliquot_fields={"source": Field(type=FieldType.ref, to="item")},
+                fields={
+                    "batch": Field(type=FieldType.string),
+                    "source": Field(type=FieldType.ref, to="item"),
+                },
             ),
         }
     )
     statements = schema_statements(schema)
     assert any(
-        s.object == "fk" and s.name == "fk_aliquot_prep_source" for s in statements
+        s.object == "fk" and s.name == "fk_stock_prep_source" for s in statements
     )
     install(dolt_run, dolt_repo, statements)
 
@@ -353,21 +391,13 @@ def test_aliquot_field_ref_gets_a_foreign_key(
         "INSERT INTO entity (id, kind, name) VALUES ('ENT', 'item', 'Item');"
         "INSERT INTO entity_item (id, name) VALUES ('ENT', 'Item');"
         "INSERT INTO stock (id, kind, entity_id) VALUES ('STK', 'prep', 'ENT');"
-        "INSERT INTO stock_prep (id, batch) VALUES ('STK', 'B1');"
-        "INSERT INTO aliquot (id, stock_id, seq, status) "
-        "VALUES ('STK.1', 'STK', 1, 'pending');",
-    )
-    execute(
-        dolt_run,
-        dolt_repo,
-        "INSERT INTO aliquot_prep (id, source) VALUES ('STK.1', 'ENT')",
+        "INSERT INTO stock_prep (id, batch, source) VALUES ('STK', 'B1', 'ENT');",
     )
     reject(
         dolt_run,
         dolt_repo,
-        "INSERT INTO aliquot (id, stock_id, seq, status) "
-        "VALUES ('STK.2', 'STK', 2, 'pending');"
-        "INSERT INTO aliquot_prep (id, source) VALUES ('STK.2', 'MISSING')",
+        "INSERT INTO stock (id, kind, entity_id) VALUES ('STK2', 'prep', 'ENT');"
+        "INSERT INTO stock_prep (id, source) VALUES ('STK2', 'MISSING')",
         "foreign key",
     )
 
@@ -660,6 +690,104 @@ def test_views_report_location_status_and_slots(
         "SELECT id, kind, name FROM v_entity_item WHERE id = 'ENT-1'",
     )[0]
     assert item == {"id": "ENT-1", "kind": "item", "name": "Item"}
+
+
+@pytest.fixture
+def molbio_ledger(dolt_repo: Path, dolt_run: Any) -> Path:
+    """A real Dolt repo with the bundled molbio DDL installed."""
+    install(dolt_run, dolt_repo, schema_statements(molbio_schema()))
+    return dolt_repo
+
+
+def test_stock_view_column_list_matches_spec_3(
+    molbio_ledger: Path, dolt_run: Any
+) -> None:
+    """Verify bullet 4: the stock view ends with [kind fields…] + the new columns."""
+    columns = [
+        str(row["name"])
+        for row in query(
+            dolt_run,
+            molbio_ledger,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() "
+            "AND table_name = 'v_stock_bacterial_glycerol' "
+            "ORDER BY ordinal_position",
+        )
+    ]
+    assert columns[-8:] == [*STOCK_VIEW_COLUMNS, "alias_list"]
+
+
+def test_stock_view_shows_entity_aliquots_quantity_and_status(
+    molbio_ledger: Path, dolt_run: Any
+) -> None:
+    """Verify bullet 1: counts, stored quantity/unit, derived status, entity."""
+    execute(
+        dolt_run,
+        molbio_ledger,
+        "INSERT INTO entity (id, kind, name) VALUES ('E-1', 'bacterial_strain', 'DH5a');"
+        "INSERT INTO entity_bacterial_strain (id, name) VALUES ('E-1', 'DH5a');"
+        "INSERT INTO stock (id, kind, entity_id) VALUES "
+        "('S1', 'bacterial_glycerol', 'E-1'),"
+        "('S2', 'bacterial_glycerol', 'E-1'),"
+        "('S3', 'bacterial_glycerol', 'E-1');"
+        "INSERT INTO stock_bacterial_glycerol (id, strain) VALUES "
+        "('S1', 'DH5a'), ('S2', 'BL21'), ('S3', 'TOP10');"
+        "INSERT INTO aliquot (id, stock_id, seq, status, quantity, unit) VALUES "
+        "('S1.1', 'S1', 1, 'stored', 1, 'ml'),"
+        "('S1.2', 'S1', 2, 'stored', 0.5, 'ml'),"
+        "('S1.3', 'S1', 3, 'consumed', NULL, NULL),"
+        "('S2.1', 'S2', 1, 'stored', 1, 'ml'),"
+        "('S2.2', 'S2', 2, 'stored', 2, 'ul');",
+    )
+
+    row = query(
+        dolt_run,
+        molbio_ledger,
+        "SELECT id, entity_kind, entity_name, aliquots_stored, aliquots_total, "
+        "quantity_stored, unit, status FROM v_stock_bacterial_glycerol "
+        "WHERE id = 'S1'",
+    )[0]
+    assert row["entity_kind"] == "bacterial_strain"
+    assert row["entity_name"] == "DH5a"
+    assert row["aliquots_stored"] == 2
+    assert row["aliquots_total"] == 3
+    assert float(row["quantity_stored"]) == 1.5
+    assert row["unit"] == "ml"
+    assert row["status"] == "active"
+
+    # Mixed units: both the sum and the unit are NULL, never a wrong total.
+    mixed = query(
+        dolt_run,
+        molbio_ledger,
+        "SELECT quantity_stored IS NULL AS q_null, unit IS NULL AS unit_null "
+        "FROM v_stock_bacterial_glycerol WHERE id = 'S2'",
+    )[0]
+    assert mixed["q_null"] in (1, True)
+    assert mixed["unit_null"] in (1, True)
+
+    # A stock with no aliquots: counts 0, no quantity, derived status 'empty'.
+    empty = query(
+        dolt_run,
+        molbio_ledger,
+        "SELECT aliquots_stored, aliquots_total, quantity_stored, unit, status "
+        "FROM v_stock_bacterial_glycerol WHERE id = 'S3'",
+    )[0]
+    assert empty["aliquots_stored"] == 0
+    assert empty["aliquots_total"] == 0
+    assert "quantity_stored" not in empty  # NULL keys are omitted by Dolt JSON
+    assert "unit" not in empty
+    assert empty["status"] == "empty"
+
+    # v_stock_status keeps its own (all-aliquot) semantics.
+    status = query(
+        dolt_run,
+        molbio_ledger,
+        "SELECT stock_id, status, total_quantity, unit FROM v_stock_status "
+        "ORDER BY stock_id",
+    )
+    assert status[0]["status"] == "active"
+    assert float(status[0]["total_quantity"]) == 1.5
+    assert status[0]["unit"] == "ml"
 
 
 def test_views_expose_aggregated_alias_lists(

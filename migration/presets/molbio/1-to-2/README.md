@@ -54,6 +54,15 @@ that its fingerprint equals the migrated one. Without that file swap the next
 `base.yaml` is unchanged at version 1 and is only re-copied if the ledger's copy
 differs from the repository one.
 
+## A 0.2.0+ caveat: run this step with the last tool that accepts the v1 preset
+
+Spec 3 (ticket 23) removed the per-stock-kind tube-field schema key, and 0.2.0+ refuses to load any
+preset that still declares it — including this v1 molbio preset. The step therefore cannot be run
+from the 0.2.0 tree on a real v1 ledger: run it with the last checkout that accepted the key (the
+wave-9 tree with ticket 22 merged, `3ec57d5`), then run
+[`migration/spec/2-to-3/`](../../../spec/2-to-3/README.md) from the 0.2.0 tree. This is how ticket 24
+migrates zsqlab10.
+
 ## Preconditions
 
 - `preset_versions.molbio = 1` (the script refuses any other value, so a second
