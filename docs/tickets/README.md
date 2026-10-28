@@ -34,10 +34,14 @@ settled decisions; do not re-open them.
 
 20 and 21 can run in parallel; 22–24 are sequential.
 
+Wave 9 result: tickets 20–24 merged, release **0.2.0** (spec 3, molbio 2, presets out of the package,
+`migration/` steps). zsqlab10 was migrated on branch `tetramark-upgrade` and fast-forwarded into its
+`main`; the audit record is `docs/tickets/24-report.md`. Full suite green.
+
 Tickets 25–29 are the **preset-parts wave** (from git-bug issue `0a9acec`, "BioManager Presets"). It
 covers status sets per stock kind with transition rules, `tm lineage`, presets split into shared parts,
-and the new `cellbio` and `angenet` bundles. The design is in `docs/preset-parts.md`. It starts after
-wave 9.
+and the new `cellbio` and `angenet` bundles. The design is in `docs/preset-parts.md`. It follows wave 9
+(merged).
 
 | # | Ticket | Depends on | Wave |
 |---|---|---|---|

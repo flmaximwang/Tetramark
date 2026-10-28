@@ -2,8 +2,8 @@
 
 **Date**: 2026-10-28 · **Status**: design settled with the user, spec and tickets written, **nothing
 implemented** · **Source issue**: git-bug `0a9acec` "BioManager Presets" (the comment links the tickets) ·
-**Design**: `docs/preset-parts.md` (source of truth) · **Prerequisite**: wave 9 (tickets 20–24, see
-`HANDOVER-wave9.md`), which is already delegated.
+**Design**: `docs/preset-parts.md` (source of truth) · **Prerequisite**: wave 9 (tickets 20–24) is
+merged — see `docs/tickets/README.md` and `24-report.md`.
 
 ---
 
