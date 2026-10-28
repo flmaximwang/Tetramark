@@ -86,7 +86,7 @@ kinds:
       name: {type: string, required: true, unique: true}
       backbone: {type: string}
       resistance: {type: enum, values: [amp, kan, cm, spec, tet]}
-      construct: {type: ref, to: protein_construct}  # FK → entity_protein_construct
+      construct: {type: ref, to: protein_construct, lineage: true}  # FK → entity_protein_construct; a lineage edge
   bacterial_glycerol:
     object: stock
     entity_kinds: [plasmid, bacterial_strain]
@@ -122,6 +122,13 @@ rules:
 
 Modifiers: `required` (NOT NULL), `unique`, `default`, `pattern` (regex, enforced by app and by a
 generated Dolt test — Dolt CHECK has no REGEXP guarantee), `description`, `length`.
+
+`lineage: true` marks a **`ref`** field as a descent edge for `tm lineage` (§6): `plasmid.construct` and
+`cell_line.parental` are the bundled examples. It is valid only on `type: ref`, on entity and stock
+kinds, and the target must be an entity kind, a stock kind or the core `entity`/`stock`/`aliquot` — a
+ref to a box is a load error. The flag changes no DDL and is read-only, but it **is** part of the schema
+fingerprint and appears in `tm schema show`; a preset that adds or removes it, like any other
+read-only change, needs no `version:` bump and no migration step (§5).
 
 ### 2.2 Box geometry
 
@@ -313,6 +320,11 @@ feed them to the diff planner as an explicit rename map instead of `renamed_from
 no `tm` command for this yet — the older `tm upgrade` proposal (`docs/issues/001-tm-upgrade.md`) may
 absorb `migration/` later.
 
+A schema change that affects **reads only** — `lineage: true` on a `ref` field is the current example —
+changes no stored shape, so it needs no counter bump and no migration step: replace the ledger's preset
+copy as usual, and the now-stale `ledger_meta.fingerprint` is refreshed by `tm schema apply` (which has
+no DDL steps to run). `migration/README.md` states the same rule.
+
 ---
 
 ## 6. CLI (`tm`)
@@ -363,6 +375,7 @@ tm box ls ; tm box move NAME --in PARENT --slot S
 tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
 tm find QUERY               # id → alias → name/text match across all objects and kinds
 tm history ID               # aliquot_event + dolt_log entries touching the object
+tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 tm check [-v] [--group G]
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
 tm export KIND|all [--out DIR]
@@ -374,6 +387,23 @@ tm branch ls | create NAME [--from REF] | delete NAME
 `aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays
 narrow and unchanged. The generated views expose the same data as `alias_list` /
 `occupant_alias_list` (§3).
+
+`tm lineage ID` is the read-only **descent** graph of entities and stocks (lineage/pedigree, not
+phylogeny). `ID` resolves like `tm find` (id, then alias) to an entity, a stock or an aliquot; an aliquot
+starts the walk at that tube. Edges point **child → parent** and come from the core links — every stock
+to its entity, `stock.parent_stock_id`, and `stock.source_aliquot_id` (child stock → that aliquot → the
+stock the aliquot belongs to) — plus every `type: ref` field declared `lineage: true` (§2.1), whose
+`via` in the output is `<kind>.<field>`. Nodes are entities and stocks; a stock node shows its kind, id,
+entity name and the in-stock/total aliquot counts of `v_stock_<kind>` (§3). An aliquot is a
+node only where a relation names one (`source_aliquot_id` or a lineage ref): it then has an upstream
+edge to the stock that owns it, carrying the same `via`, so a `source_aliquot` path reads child stock →
+source aliquot → that aliquot's stock. The default is both directions and unlimited depth; `--up` walks
+ancestors, `--down` descendants, `--depth N` stops after N edges (0 = the root alone). A node reached a
+second time prints `<id> (see above)` with no subtree, and is listed once in the JSON. `--format dot`
+prints a Graphviz digraph whose edge labels are the `via`; `--json` prints
+`{"root": <id>, "nodes": [{id, object, kind, label, counts?}], "edges": [{from, to, via}]}` with
+`via` ∈ `entity | parent_stock | source_aliquot | <kind>.<field>`. `tm lineage` respects `--branch`,
+writes nothing and never commits.
 
 `tm stock renumber` is the audited way to repair ids that do not follow the ledger's stock id strategy
 (legacy imports, hand-made ids). It renumbers one stock (`REF --id NEW`), many (`REF ... --auto`), or a

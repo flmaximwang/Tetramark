@@ -253,6 +253,10 @@ class Field(BaseModel):
     scale: int = 6
     values: list[str] | None = None
     to: str | None = None
+    #: ``ref`` only: this field is a lineage edge (spec §2.1, ``tm lineage``).
+    #: Read-only metadata: it changes no DDL, but it is part of the schema
+    #: fingerprint and of ``tm schema show``.
+    lineage: bool = False
     expr: str | None = None
     sql_type: SqlType | None = None
     renamed_from: str | None = None
@@ -330,6 +334,13 @@ class Field(BaseModel):
                 raise ValueError("'to' is only valid for type 'ref'")
         elif t is FieldType.ref:
             raise ValueError("type 'ref' requires 'to'")
+
+        if "lineage" in explicit:
+            # ``lineage`` is a marker on a reference field, so it cannot exist
+            # without one (the loader additionally rejects it on box kinds and
+            # on refs that point at a box).
+            if t is not FieldType.ref:
+                raise ValueError("'lineage' is only valid for type 'ref'")
 
         if self.expr is not None or self.sql_type is not None:
             if t is not FieldType.computed:
@@ -435,6 +446,12 @@ class Field(BaseModel):
             out["values"] = sorted(self.values or [])
         elif self.type is FieldType.ref:
             out["to"] = self.to
+            if self.lineage:
+                # Part of the fingerprint: ``tm lineage`` reads it, so two
+                # ledgers with the same DDL but different edges are different
+                # schemas.  Only emitted when set, so the fingerprints of
+                # schemas without the flag do not change.
+                out["lineage"] = True
         elif self.type is FieldType.computed:
             out["expr"] = self.expr
             out["sql_type"] = self.sql_type.value if self.sql_type else None

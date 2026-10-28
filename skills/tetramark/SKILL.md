@@ -45,6 +45,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
 | Find anything | `tm find ID\|ALIAS\|TEXT` |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
+| Where material came from / what derives from it | `tm lineage ID [--up \| --down] [--depth N]` |
 | Validate the ledger | `tm check [-v] [--group G]` |
 | Bulk load / dump | `tm import …`, `tm export …` |
 | Mirror / back up | `tm remote add … && tm remote push`, `tm backup` |
@@ -89,6 +90,20 @@ tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3
 ```
 
 Moving a box moves its whole subtree; moving a tube changes only that aliquot.
+
+### Trace where material came from
+
+```sh
+tm lineage p035                 # the plasmid: construct above, stocks below
+tm lineage p035 --up            # ancestors only (e.g. the construct it expresses)
+tm lineage 1226KT02 --down --depth 2
+tm lineage 1226KT02.1 --json    # children of one tube
+tm lineage p035 --format dot > graph.dot && dot -Tsvg graph.dot > graph.svg
+```
+
+Edges come from the stock's entity, `--parent`/`--source-aliquot`, and schema fields marked
+`lineage: true` (`plasmid.construct`, `cell_line.parental`). A node seen twice prints
+`<id> (see above)`; `--depth` counts edges from the ID you gave. Read-only, like `history`.
 
 ### Audit
 
