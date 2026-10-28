@@ -17,8 +17,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-001#B-002\nreview and merge ticket 25\n\n`running` · @lead · 在做 @lead\n\nLead: review the worktree diff against the ticket and the design doc, run the full suite in the worktree, check no real ledger was touched, then commit on wave1"
+   "color": "4",
+   "text": "### T-001#B-002\nreview and merge ticket 25\n\n`done` · @lead\n\nLead: review the worktree diff against the ticket and the design doc, run the full suite in the worktree, check no real ledger was touched, then commit on wave1"
   },
   {
    "id": "T-002#B-001",
@@ -47,8 +47,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-003#B-001\nimplement ticket 27 in worktree w27\n\n`waiting` · @w27\n\nRead docs/tickets/27-molbio-into-parts.md and docs/preset-parts.md section 2. Work only in the worktree .dsh/gitworktree/w27 (branch wave10/t27, own .venv). Dec"
+   "color": "5",
+   "text": "### T-003#B-001\nimplement ticket 27 in worktree w27\n\n`running` · @w27 · 在做 @w27\n\nRead docs/tickets/27-molbio-into-parts.md and docs/preset-parts.md section 2. Work only in the worktree .dsh/gitworktree/w27 (branch wave10/t27, own .venv). Dec"
   },
   {
    "id": "T-003#B-002",
