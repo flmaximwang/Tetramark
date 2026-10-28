@@ -113,5 +113,8 @@ an unforced event that breaks a rule fails `tm check` (§4).
 
 The bundled sets live in `base`: `tube` (general tubes: pending/stored/missing
 and a final consumed), `cryo` (frozen vials: stored/missing/thawed) and `animal`
-(living organisms: planned/alive/…). Every existing stock kind uses `tube`;
-`cell_culture`'s `cell_vial` uses `cryo`.
+(living organisms: planned/alive/…), because zebrafish and mouse both use it.
+The organism parts add `fly` (`alive`/`crossed`/`discarded`/`lost`, in
+`drosophila`) and `worm` (`growing`/`starved`/`contaminated`/`discarded`, in
+`c_elegans`); see §8 for their transitions. Every other existing stock kind uses
+`tube`; `cell_culture`'s `cell_vial` and the cryo stocks use `cryo`.

@@ -43,7 +43,7 @@ from tetramark.schema.model import (
 
 from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
-BUNDLED = ("base", "molbio", "library", "cellbio")
+BUNDLED = ("base", "molbio", "library", "cellbio", "angenet")
 
 #: The parts; each includes the ones it references and no bundle.  ``biosamples``
 #: names the organism line kinds of ticket 29's parts, so it cannot be loaded on
@@ -57,6 +57,12 @@ PARTS = (
     "immuno",
     "viral_vectors",
     "biosamples",
+    # Ticket 29's organism parts: each includes base and owns one organism's
+    # line, stock and box kinds.
+    "drosophila",
+    "c_elegans",
+    "zebrafish",
+    "mouse",
 )
 
 #: The parts whose ``include:`` closure loads without any organism part.
@@ -78,6 +84,11 @@ EXPECTED_VERSIONS = {
     "immuno": 1,
     "viral_vectors": 1,
     "biosamples": 1,
+    "drosophila": 1,
+    "c_elegans": 1,
+    "zebrafish": 1,
+    "mouse": 1,
+    "angenet": 1,
 }
 
 #: The kinds ``base`` owns (v3 adds the slotless ``incubator``).
@@ -106,6 +117,27 @@ IMMUNO_KINDS = {"antibody", "antibody_lot"}
 VIRAL_KINDS = {"virus", "virus_prep"}
 ANIMAL_BIOSAMPLE_KINDS = {"animal_biosample"}
 
+#: Ticket 29's organism parts: the line entity, its living/frozen stocks and
+#: (mouse) the cage box kind.  ``cage`` lives in ``mouse``, not in base.
+DROSOPHILA_KINDS = {"fly_line", "fly_culture"}
+C_ELEGANS_KINDS = {"worm_strain", "worm_culture", "worm_cryo"}
+ZEBRAFISH_KINDS = {
+    "fish_line",
+    "fish_group",
+    "fish_clutch",
+    "fish_sperm_cryo",
+}
+MOUSE_KINDS = {
+    "mouse_strain",
+    "mouse_cohort",
+    "mouse_sperm_cryo",
+    "mouse_embryo_cryo",
+    "cage",
+}
+ORGANISM_KINDS = (
+    DROSOPHILA_KINDS | C_ELEGANS_KINDS | ZEBRAFISH_KINDS | MOUSE_KINDS
+)
+
 EXPECTED_KINDS = {
     "base": BASE_KINDS,
     "molbio": BASE_KINDS
@@ -120,6 +152,13 @@ EXPECTED_KINDS = {
     | IMMUNO_KINDS
     | VIRAL_KINDS,
     "library": BASE_KINDS | {"book", "copy"},
+    # Ticket 29: a bundle over base, nucleic_acids (+ proteins), biosamples and
+    # the four organism parts; no cell kinds.
+    "angenet": BASE_KINDS
+    | PROTEIN_KINDS
+    | NUCLEIC_KINDS
+    | ANIMAL_BIOSAMPLE_KINDS
+    | ORGANISM_KINDS,
 }
 
 #: What every part loads (its own kinds plus the includes it reaches).
@@ -135,6 +174,10 @@ PART_KINDS = {
     "viral_vectors": BASE_KINDS | PROTEIN_KINDS | NUCLEIC_KINDS | VIRAL_KINDS,
     # Loaded together with the organism parts that own its entity kinds.
     "biosamples": BASE_KINDS | ANIMAL_BIOSAMPLE_KINDS,
+    "drosophila": BASE_KINDS | DROSOPHILA_KINDS,
+    "c_elegans": BASE_KINDS | C_ELEGANS_KINDS,
+    "zebrafish": BASE_KINDS | ZEBRAFISH_KINDS,
+    "mouse": BASE_KINDS | MOUSE_KINDS,
 }
 
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
@@ -252,6 +295,12 @@ def test_parts_include_only_parts_never_a_bundle() -> None:
         # ``biosamples`` reaches only base: it is loaded with the organism
         # parts angenet lists (they own the entity kinds it names), never alone.
         "biosamples": ["base"],
+        # Ticket 29: each organism part references only base (named_fields and
+        # the status sets); the dam/sire refs name the core aliquot table.
+        "drosophila": ["base"],
+        "c_elegans": ["base"],
+        "zebrafish": ["base"],
+        "mouse": ["base"],
     }
     for part, include in expected.items():
         document = yaml.safe_load(repo_preset(part).read_text(encoding="utf-8"))
@@ -273,7 +322,7 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     # A bundle owns no kinds, rules or status sets of its own; its parts do.
     if name != "base":
         assert schema.preset_versions["base"] == 3
-    if name in ("molbio", "cellbio"):
+    if name in ("molbio", "cellbio", "angenet"):
         document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
         for key in ("kinds", "mixins", "rules", "status_sets"):
             assert key not in document, (name, key)
@@ -296,6 +345,13 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
             "IMM01",
             "VIR01",
         }
+    elif name == "angenet":
+        # Ticket 29: a bundle again, so every rule comes from base or
+        # nucleic_acids; the organism parts add no validation rules of their own.
+        assert {rule.id for rule in schema.rules} >= {"BASE01", "MB01"}
+        for part in ("drosophila", "c_elegans", "zebrafish", "mouse"):
+            document = yaml.safe_load(repo_preset(part).read_text(encoding="utf-8"))
+            assert "rules" not in document, part
     else:
         own_prefix = {"base": "BASE", "library": "LIB"}[name]
         own_rules = [rule for rule in schema.rules if rule.id.startswith(own_prefix)]

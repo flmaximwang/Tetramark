@@ -1,0 +1,138 @@
+preset: mouse
+version: 1
+description: >-
+  Mouse genetics: a mouse strain as the genetic design (background, supplier,
+  MGI id), individually tracked mice in cages, and frozen sperm and embryos.
+  One mouse is one aliquot of one mouse cohort stock, quantity 1, its ear tag in
+  the core aliquot label and its cage holding it; a litter is a cohort stock
+  with genotype NULL and one group aliquot (quantity = pups). Crosses are
+  recorded as the progeny stock's dam and sire refs. The parent_stock_id
+  column links a split litter back to the litter stock, so no cross object and
+  no core change are needed. The box kind cage is here because only the mouse
+  part uses it. Included by the angenet bundle. Adapted from BioManager (MIT).
+
+# A cage is a housing unit: base supplies named_fields, the animal/cryo status
+# sets and the box kinds; the dam/sire refs point at the core aliquot table.
+include: [base]
+
+kinds:
+  mouse_strain:
+    object: entity
+    description: >-
+      A mouse strain: the genetic design behind a breeding colony, with its
+      background, supplier and MGI identifier. A derived strain points at the
+      strain it came from through parental. Adapted from BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      background:
+        type: string
+        length: 64
+        description: Genetic background of the strain (e.g. C57BL/6J, BALB/c, mixed).
+      supplier:
+        type: string
+        length: 128
+        description: Where the strain came from (e.g. Jackson Laboratory, Charles River, a collaborator).
+      mgi_id:
+        type: string
+        length: 64
+        description: Mouse Genome Informatics identifier of the strain or allele (e.g. MGI:3029029).
+      parental:
+        type: ref
+        to: mouse_strain
+        lineage: true
+        description: Parent strain this strain derives from (a lineage edge, like cell_line.parental).
+
+  mouse_cohort:
+    object: stock
+    statuses: animal
+    description: >-
+      A mouse cohort: mice of one strain that are identical in every recorded
+      property (cohort/cross, birth date, sex, genotype), so one mouse is one
+      aliquot - quantity 1, its ear tag in the core aliquot label, its cage the
+      box. A breeding pair is two cohorts (one female, one male); a litter is a
+      cohort whose genotype is NULL with one group aliquot (quantity = pups)
+      until genotyping splits it. dam and sire name the parent aliquots.
+      Adapted from BioManager (MIT).
+    entity_kinds: [mouse_strain]
+    fields:
+      birth_on:
+        type: date
+        description: Birth date of the mice in the cohort (ISO yyyy-mm-dd).
+      sex:
+        type: enum
+        values: [f, m, u]
+        description: Sex of the mice in the cohort (female, male or unknown/untyped).
+      genotype:
+        type: text
+        description: Genotype / modifications of the cohort; NULL means untyped (e.g. a litter before genotyping).
+      dam:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Female parent aliquot of this cohort (the breeding female); a lineage edge.
+      sire:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Male parent aliquot of this cohort (the breeding male); a lineage edge.
+
+  mouse_sperm_cryo:
+    object: stock
+    statuses: cryo
+    description: >-
+      Frozen mouse sperm - a strain kept as a cryo vial - with its freezing
+      date, method and thaw-recovery check. Adapted from BioManager (MIT).
+    entity_kinds: [mouse_strain]
+    fields:
+      frozen_on:
+        type: date
+        description: Date the sperm was frozen (ISO yyyy-mm-dd).
+      method:
+        type: string
+        length: 128
+        description: Freezing method used (e.g. slow-rate freezing, vitrification).
+      recovery_tested_on:
+        type: date
+        description: Date the last thaw-recovery test was done; NULL when it was never tested.
+      recovery_ok:
+        type: bool
+        description: Whether the last thaw-recovery test succeeded (true) or failed (false).
+
+  mouse_embryo_cryo:
+    object: stock
+    statuses: cryo
+    description: >-
+      Frozen mouse embryos - a strain kept as cryo vials of a given
+      developmental stage - with its freezing date, method and thaw-recovery
+      check. Adapted from BioManager (MIT).
+    entity_kinds: [mouse_strain]
+    fields:
+      embryo_stage:
+        type: string
+        length: 64
+        description: Developmental stage of the frozen embryos (e.g. 2-cell, morula, blastocyst).
+      frozen_on:
+        type: date
+        description: Date the embryos were frozen (ISO yyyy-mm-dd).
+      method:
+        type: string
+        length: 128
+        description: Freezing method used (e.g. slow-rate freezing, vitrification).
+      recovery_tested_on:
+        type: date
+        description: Date the last thaw-recovery test was done; NULL when it was never tested.
+      recovery_ok:
+        type: bool
+        description: Whether the last thaw-recovery test succeeded (true) or failed (false).
+
+  # The mouse part owns the cage because no other organism part uses it.
+  # Slotless like a shelf or incubator, but bounded: five mice (or their
+  # housing units) fit in one cage. Aliquots sit in the cage without a slot.
+  cage:
+    object: box
+    description: >-
+      A mouse cage; holds up to five mice directly and has no slots of its own.
+      Adapted from BioManager (MIT).
+    geometry:
+      type: slotless
+      capacity: 5

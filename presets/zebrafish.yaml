@@ -1,0 +1,135 @@
+preset: zebrafish
+version: 1
+description: >-
+  Zebrafish genetics: a fish line as the genetic design (ZFIN name, allele,
+  background), tanks or tagged fish as living groups, a clutch for the embryo /
+  larvae nursery stage, and frozen sperm. A tank is counted as a group - one
+  housing unit is one aliquot, its quantity is the headcount and its unit is
+  individuals - while a tagged fish is one individually counted aliquot. A
+  clutch and the parents of a group are recorded through dam and sire. Frozen
+  embryos are not modelled (zebrafish embryos are not routinely
+  cryopreserved). Cultures are kept in a rack or incubator, box kinds from
+  base. Included by the angenet bundle. Adapted from BioManager (MIT).
+
+# Living groups reference only base (named_fields and the animal status set) and
+# the core aliquot table the dam/sire refs point at.
+include: [base]
+
+kinds:
+  fish_line:
+    object: entity
+    description: >-
+      A zebrafish line: the genetic design kept as tanks and clutches, with its
+      ZFIN name, allele and background. A derived line points at the line it
+      came from through parental. Adapted from BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      zfin_name:
+        type: string
+        length: 128
+        description: ZFIN name of the line or allele (e.g. Tg(flk1:GFP)).
+      allele:
+        type: string
+        length: 128
+        description: Allele carried by the line (e.g. sa16, uw1).
+      background:
+        type: string
+        length: 64
+        description: Background strain of the line (e.g. AB, TL, TU, WIK, casper, mixed).
+      parental:
+        type: ref
+        to: fish_line
+        lineage: true
+        description: Parent line this line derives from (a lineage edge, like cell_line.parental).
+
+  fish_group:
+    object: stock
+    statuses: animal
+    description: >-
+      A fish group: a tank population that is treated as identical fish of one
+      line (birth date, sex, genotype), or one tagged fish when individuals are
+      tracked. A tank is one aliquot whose quantity is the headcount and unit
+      is individuals; a tagged fish is one aliquot of quantity 1 with its tag
+      in the core aliquot label. dam and sire name the parent aliquots.
+      Adapted from BioManager (MIT).
+    entity_kinds: [fish_line]
+    fields:
+      birth_on:
+        type: date
+        description: Birth / fertilisation date of the fish in this group (ISO yyyy-mm-dd).
+      sex:
+        type: enum
+        values: [f, m, u]
+        description: Sex of the fish in the group (female, male or unknown/untyped).
+      genotype:
+        type: text
+        description: Genotype / modifications of the group; NULL means untyped (e.g. a litter before genotyping).
+      density_per_l:
+        type: decimal
+        precision: 10
+        scale: 2
+        description: Stocking density of the tank, in fish per litre.
+      dam:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Female parent aliquot of this group (a breeding tank or a tagged fish); a lineage edge.
+      sire:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Male parent aliquot of this group; a lineage edge.
+
+  fish_clutch:
+    object: stock
+    statuses: animal
+    description: >-
+      A zebrafish clutch: the embryos and larvae from one cross, kept as the
+      nursery stage between the parents' tank and the grown fish. The aliquot
+      is the clutch's housing unit; its quantity is the headcount and its unit
+      is individuals. Adapted from BioManager (MIT).
+    entity_kinds: [fish_line]
+    fields:
+      set_up_on:
+        type: date
+        description: Date the cross was set up (ISO yyyy-mm-dd).
+      embryo_count:
+        type: int
+        description: Number of embryos in the clutch.
+      larvae_count:
+        type: int
+        description: Number of larvae that hatched from the clutch, when counted.
+      dam:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Female parent aliquot of the cross; a lineage edge.
+      sire:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Male parent aliquot of the cross; a lineage edge.
+
+  fish_sperm_cryo:
+    object: stock
+    statuses: cryo
+    description: >-
+      Frozen zebrafish sperm - a line kept in the cryo tank - with its freezing
+      date, method and thaw-recovery check. There is no fish embryo cryo kind:
+      zebrafish embryos are not routinely cryopreserved. Adapted from BioManager
+      (MIT).
+    entity_kinds: [fish_line]
+    fields:
+      frozen_on:
+        type: date
+        description: Date the sperm was frozen (ISO yyyy-mm-dd).
+      method:
+        type: string
+        length: 128
+        description: Freezing method used (e.g. slow-rate freezing with DMSO, vitrification).
+      recovery_tested_on:
+        type: date
+        description: Date the last thaw-recovery test was done; NULL when it was never tested.
+      recovery_ok:
+        type: bool
+        description: Whether the last thaw-recovery test succeeded (true) or failed (false).

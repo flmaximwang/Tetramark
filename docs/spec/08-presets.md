@@ -116,7 +116,37 @@ Preset catalogue:
   `nucleic_acids`; `biosamples` is deliberately absent (it names the organism line kinds of the
   `angenet` parts). One ledger can list `presets: [molbio, cellbio]`: the shared parts load once, and
   the kind set is the union (molbio brings `bacteria`, cellbio brings `immuno`/`viral_vectors`).
-
-Ticket 29 adds the organism parts (`drosophila`, `c_elegans`, `zebrafish`, `mouse`) and the
-`angenet` bundle; `presets/README.md` lists the catalogue, the include graph and the biosample
-split.
+- `drosophila` (**version 1**, includes `base`) — entity `fly_line` (`named_fields`; balancers,
+  stock_centre, stock_number, flybase_id, `parental` ref → fly_line with `lineage: true`); stock
+  `fly_culture` (`statuses: fly`; a vial or cross vial with temperature_c, generation, food_type,
+  virgins_collected_on, selection_marker and `dam`/`sire` ref → aliquot with `lineage: true`). It owns
+  the status set `fly` (alive → crossed/discarded/lost; crossed → discarded/lost; discarded/lost
+  final; alive and crossed are in stock). Included by `angenet`.
+- `c_elegans` (**version 1**, includes `base`) — entity `worm_strain` (`named_fields`; allele,
+  lab_prefix, wormbase_id, source, `parental` → worm_strain with `lineage: true`); stocks
+  `worm_culture` (`statuses: worm`; a plate with temperature_c, plate_type, generation, stage) and
+  `worm_cryo` (`statuses: cryo`; frozen_on, method, recovery_tested_on, recovery_ok). It owns the
+  status set `worm` (growing ↔ starved; both → contaminated/discarded; contaminated → discarded;
+  discarded final; growing and starved are in stock). Worm selfers keep a single-parent strain
+  lineage, so a culture has no `dam`/`sire`. Included by `angenet`.
+- `zebrafish` (**version 1**, includes `base`) — entity `fish_line` (`named_fields`; zfin_name,
+  allele, background, `parental` → fish_line with `lineage: true`); stocks `fish_group`
+  (`statuses: animal`; a tank or a tagged fish with birth_on, sex enum f/m/u, genotype,
+  density_per_l and `dam`/`sire` → aliquot), `fish_clutch` (`statuses: animal`; set_up_on,
+  embryo_count, larvae_count, `dam`/`sire`) and `fish_sperm_cryo` (`statuses: cryo`; frozen_on,
+  method, recovery_tested_on, recovery_ok). There is no fish embryo cryo kind. Included by
+  `angenet`.
+- `mouse` (**version 1**, includes `base`) — entity `mouse_strain` (`named_fields`; background,
+  supplier, mgi_id, `parental` → mouse_strain with `lineage: true`); stocks `mouse_cohort`
+  (`statuses: animal`; one mouse per aliquot: birth_on, sex enum f/m/u, genotype and `dam`/`sire` →
+  aliquot), `mouse_sperm_cryo` and `mouse_embryo_cryo` (`statuses: cryo`; frozen_on, method,
+  recovery_tested_on, recovery_ok; the embryo kind also has `embryo_stage`); box kind `cage`
+  (slotless, capacity 5). Included by `angenet`.
+- `angenet` (a **bundle**, **version 1**) — `include: [base, nucleic_acids, biosamples, drosophila,
+  c_elegans, zebrafish, mouse]`, no kinds/mixins/rules/status sets of its own. `proteins` arrives
+  through `nucleic_acids`; `biosamples` is listed because `animal_biosample.entity_kinds` name the
+  four organism line kinds, and only this union loads them (see the biosample split above). Every
+  organism line is an entity, its colony a stock, and an aliquot is one animal or one housing unit's
+  population; a cross is its progeny stock's `dam`/`sire` refs, and a litter is a `mouse_cohort` with
+  `genotype` NULL whose split stocks point back through `parent_stock_id`. `presets/README.md` has
+  the catalogue, the include graph and the litter recipe; `docs/preset-parts.md` §3 is the model.

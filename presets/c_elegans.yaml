@@ -1,0 +1,109 @@
+preset: c_elegans
+version: 1
+description: >-
+  C. elegans genetics: a worm strain as the genetic design (allele, lab prefix,
+  WormBase id, source) and a culture plate as the living colony. A plate is
+  counted as a group - one housing unit is one aliquot, its quantity is the
+  headcount and its unit is individuals - and the frozen stock is the real
+  colony: a cryo vial is thawed, chunked onto a plate and can be re-frozen. The
+  status set worm lives here because only worm cultures use it; cultures are
+  kept in an incubator, a box kind from base. Included by the angenet bundle.
+  Adapted from BioManager (MIT).
+
+# A plate/cryo vial is a housing unit: only base (named_fields and the status
+# sets) is referenced. Worm strains are self-fertilising hermaphrodites, so a
+# culture has no dam/sire fields (design §3); `parental` on the strain is the
+# single-parent descent edge.
+include: [base]
+
+status_sets:
+  # A plate is in stock while the population grows or has starved (starved
+  # worms can be chunked back to growing); a contaminated or discarded plate is
+  # not. Declared here, not in base: only c_elegans uses it (design §4).
+  worm:
+    growing: {in_stock: true, to: [starved, contaminated, discarded]}
+    starved: {in_stock: true, to: [growing, contaminated, discarded]}
+    contaminated: {in_stock: false, to: [discarded]}
+    discarded: {in_stock: false}
+
+kinds:
+  worm_strain:
+    object: entity
+    description: >-
+      A C. elegans strain: the genetic design kept on plates and in the
+      freezer, with its allele, lab prefix, WormBase identifier and source. A
+      derived strain points at the strain it came from through parental.
+      Adapted from BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      allele:
+        type: string
+        length: 128
+        description: CGC-assigned allele designation carried by the strain (e.g. unc-119(ed3)).
+      lab_prefix:
+        type: string
+        length: 32
+        description: Registered lab prefix of the strain name (e.g. CB, N2).
+      wormbase_id:
+        type: string
+        length: 64
+        description: WormBase identifier of the strain or allele (e.g. WBStrain00000001).
+      source:
+        type: string
+        length: 128
+        description: Where the strain came from (CGC, NBRP, own stock, a gift).
+      parental:
+        type: ref
+        to: worm_strain
+        lineage: true
+        description: Parent strain this strain derives from (a lineage edge, single-parent for selfers).
+
+  worm_culture:
+    object: stock
+    statuses: worm
+    description: >-
+      A worm culture plate: one housing unit's population of one strain. The
+      aliquot is the plate itself; its quantity is the headcount and its unit
+      is individuals. Adapted from BioManager (MIT).
+    entity_kinds: [worm_strain]
+    fields:
+      temperature_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Incubation temperature of the plate, in degrees Celsius (15, 20 or 25).
+      plate_type:
+        type: string
+        length: 64
+        description: Plate/medium the strain is kept on (e.g. NGM, NGM + OP50, RNAi, enriched peptone).
+      generation:
+        type: string
+        length: 32
+        description: Generation label of the plate (e.g. P0, F1, F2).
+      stage:
+        type: string
+        length: 32
+        description: Developmental stage on the plate (e.g. egg, L1, L2, L3, L4, adult, dauer, mixed).
+
+  worm_cryo:
+    object: stock
+    statuses: cryo
+    description: >-
+      A frozen C. elegans stock - the strain kept at -80 C or in liquid nitrogen
+      - with its freezing date, method and thaw-recovery check. Adapted from
+      BioManager (MIT).
+    entity_kinds: [worm_strain]
+    fields:
+      frozen_on:
+        type: date
+        description: Date the stock was frozen (ISO yyyy-mm-dd).
+      method:
+        type: string
+        length: 128
+        description: Freezing method used (e.g. -80 C soft agar, liquid nitrogen).
+      recovery_tested_on:
+        type: date
+        description: Date the last thaw-recovery test was done; NULL when it was never tested.
+      recovery_ok:
+        type: bool
+        description: Whether the last thaw-recovery test succeeded (true) or failed (false).

@@ -1,0 +1,97 @@
+preset: drosophila
+version: 1
+description: >-
+  Drosophila genetics: a fly line as the genetic design (balancers, stock
+  centre/number, FlyBase id) and a culture vial as the living colony. A vial is
+  counted as a group - one housing unit is one aliquot, its quantity is the
+  headcount and its unit is individuals - and a cross vial names the two parent
+  aliquots through dam and sire. The status set fly lives here because only fly
+  cultures use it; cultures are kept in an incubator, a box kind from base.
+  Included by the angenet bundle. Adapted from BioManager (MIT).
+
+# The fly vial is a housing unit, so it references only base (named_fields and
+# the status sets) and the core aliquot table the dam/sire refs point at.
+include: [base]
+
+status_sets:
+  # A culture stays in stock while it is alive or has been crossed to produce
+  # progeny; a discarded or lost vial is gone. Declared here, not in base: only
+  # drosophila uses it (design §4, ticket 29).
+  fly:
+    alive: {in_stock: true, to: [crossed, discarded, lost]}
+    crossed: {in_stock: true, to: [discarded, lost]}
+    discarded: {in_stock: false}
+    lost: {in_stock: false}
+
+kinds:
+  fly_line:
+    object: entity
+    description: >-
+      A Drosophila stock/line: the genetic design kept as vials, with its
+      balancer chromosomes, source stock centre and stock number, and its
+      FlyBase identifier. A derived line points at the line it came from
+      through parental. Adapted from BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      balancers:
+        type: text
+        description: Balancer chromosomes carried by the line (e.g. CyO, TM3, TM6B).
+      stock_centre:
+        type: string
+        length: 64
+        description: Stock centre the line came from (e.g. BDSC, VDRC, Kyoto, NIG-FLY, own, gift).
+      stock_number:
+        type: string
+        length: 64
+        description: Stock number the source centre assigns to this line.
+      flybase_id:
+        type: string
+        length: 64
+        description: FlyBase identifier of the line or allele (e.g. FBst0001234).
+      parental:
+        type: ref
+        to: fly_line
+        lineage: true
+        description: Parent line this line derives from (a lineage edge, like cell_line.parental).
+
+  fly_culture:
+    object: stock
+    statuses: fly
+    description: >-
+      A fly culture vial: one housing unit's population, with the flies treated
+      as identical members of one line. The aliquot is the vial itself; its
+      quantity is the headcount and its unit is individuals. A cross vial
+      records its parents through dam and sire, each a parent aliquot (the dam
+      is normally a virgins vial). Adapted from BioManager (MIT).
+    entity_kinds: [fly_line]
+    fields:
+      temperature_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Incubation temperature of the culture, in degrees Celsius (18, 22, 25 or 29).
+      generation:
+        type: string
+        length: 32
+        description: Generation or cross label of the culture (e.g. P0, F1, F2).
+      food_type:
+        type: string
+        length: 64
+        description: Food medium the vial was set up on (e.g. standard, molasses, grape, apple juice).
+      virgins_collected_on:
+        type: date
+        description: Date virgin females were collected for this cross (ISO yyyy-mm-dd).
+      selection_marker:
+        type: string
+        length: 128
+        description: Visible marker used to pick the progeny of this cross (e.g. white eye, curly wing).
+      dam:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Female parent aliquot of this cross (a vial of virgin females); a lineage edge.
+      sire:
+        type: ref
+        to: aliquot
+        lineage: true
+        description: Male parent aliquot of this cross; a lineage edge.
