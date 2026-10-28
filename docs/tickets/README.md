@@ -3,6 +3,11 @@
 Tickets 01–14 are the original implementation wave; ticket texts predate the Tetramark rename
 (package `tetramark`, CLI `tm`).
 
+Ticket texts are **historical design records**: each describes the code as of the wave that introduced
+it, so older tickets still name things that were later removed or renamed (`aliquot_fields` and bundled
+presets, both gone in 0.2.0 / spec 3; `construct`/`strain`/`bacterial`/`pellet`, renamed in molbio 2).
+For the current model read `docs/spec.md`; for wave status read the result lines below.
+
 Read `docs/spec.md` first; section numbers below refer to it.
 
 Tickets 15–19 are the **test-harness v2 wave** (server-backed pytest fixtures, **done**); their design is in
