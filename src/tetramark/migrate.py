@@ -277,7 +277,11 @@ class MigrationResult:
 
 
 def open_target(
-    path: str | Path, *, branch: str | None = None, dry_run: bool = False
+    path: str | Path,
+    *,
+    branch: str | None = None,
+    dry_run: bool = False,
+    allow_legacy_statuses: bool = True,
 ) -> Ledger:
     """Open the ledger at ``path`` through its workspace, if it has one.
 
@@ -287,6 +291,10 @@ def open_target(
     running ``dolt sql-server`` is used, otherwise the embedded driver — so the
     same step works for a lab workspace and a bare checkout.  A bare Dolt
     directory (no ``workspace.yaml``) is always opened embedded.
+
+    ``allow_legacy_statuses`` defaults to true: a migration step must read the
+    old shape it is about to change (a spec-3 ``ledger.yaml`` still carries the
+    removed ``statuses:`` key). Normal reads keep the spec-4 refusal.
     """
     target = Path(path).expanduser()
     if not target.is_dir():
@@ -304,7 +312,58 @@ def open_target(
         workspace = Workspace(target.parent)
     if target.name not in workspace.list_ledgers():
         raise UsageError(f"{target} is not a ledger of {workspace.data_dir}")
-    return open_ledger(workspace, target.name, branch=branch, dry_run=dry_run)
+    return open_ledger(
+        workspace,
+        target.name,
+        branch=branch,
+        dry_run=dry_run,
+        allow_legacy_statuses=allow_legacy_statuses,
+    )
+
+
+#: First spec whose core tables carry ``aliquot_event.forced``.
+_SPEC4 = 4
+
+#: Generated tests that read the spec-4 core shape and therefore cannot run on a
+#: ledger that has not reached spec 4 yet.  A preset step may run earlier (e.g.
+#: molbio 1 -> 2 on a spec-2 ledger); installing this rule there would query the
+#: ``aliquot_event.forced`` column that migration/spec/3-to-4 adds.
+SPEC4_ONLY_TESTS: frozenset[str] = frozenset({"core_status_event_allowed"})
+
+
+def _ledger_spec_version(ledger: Ledger) -> int:
+    """The ledger's stored ``spec_version`` (0 when it cannot be read)."""
+    try:
+        return int(str(ledger.meta.get("spec_version") or 0))
+    except (TypeError, ValueError):  # pragma: no cover - corrupt meta
+        return 0
+
+
+def _step_target_spec(step: "MigrationStep", ledger: Ledger) -> int:
+    """The ledger's spec version after this step runs.
+
+    A ``spec`` step bumps the format counter to ``to_version``; a preset step
+    leaves the format alone, so the ledger keeps its current spec.
+    """
+    if step.kind == "spec":
+        return step.to_version
+    return _ledger_spec_version(ledger)
+
+
+def _generated_tests_for(
+    ledger: Ledger, target_schema: Any, *, spec_version: int
+) -> list[Any]:
+    """The generated tests a step installs on this ledger.
+
+    A step that declares ``schema=`` regenerates ``dolt_tests`` from the target
+    schema in its own commit.  When the ledger stays older than spec 4, the
+    spec-4-only tests are omitted: they would reference the
+    ``aliquot_event.forced`` column that migration/spec/3-to-4 adds.
+    """
+    tests = generate_tests(target_schema)
+    if spec_version < _SPEC4:
+        tests = [test for test in tests if test.name not in SPEC4_ONLY_TESTS]
+    return tests
 
 
 def _driver_kind(ledger: Ledger) -> str:
@@ -589,7 +648,11 @@ def _prepare(
         after_commit_note=step.after_commit_note,
     )
     if target_schema is not None:
-        state.tests_regenerated = len(generate_tests(target_schema))
+        state.tests_regenerated = len(
+            _generated_tests_for(
+                ledger, target_schema, spec_version=_step_target_spec(step, ledger)
+            )
+        )
     return state
 
 
@@ -647,7 +710,15 @@ def _apply(
             # the pre-migration tables.  ``WriteSession`` is driver-shaped.
             if state.target_schema is not None:
                 state.tests_regenerated = len(
-                    install_tests(session, state.target_schema)  # type: ignore[arg-type]
+                    install_tests(  # type: ignore[arg-type]
+                        session,
+                        state.target_schema,
+                        tests=_generated_tests_for(
+                            ledger,
+                            state.target_schema,
+                            spec_version=_step_target_spec(step, ledger),
+                        ),
+                    )
                 )
     except BaseException as error:
         _report_failure(step, ledger, state.head_before, error, stderr=stderr)

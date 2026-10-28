@@ -70,8 +70,10 @@ def test_server_init_matches_embedded_init(
     embedded_ledger_factory,
     server_ledger_factory,
 ) -> None:
-    embedded = embedded_ledger_factory([preset], name=name)
-    server = server_ledger_factory([preset], name=name)
+    # This test exists to compare what the real init writes on both drivers, so
+    # it deliberately opts out of the session templates.
+    embedded = embedded_ledger_factory([preset], name=name, real_init=True)
+    server = server_ledger_factory([preset], name=name, real_init=True)
 
     assert server.schema.fingerprint() == embedded.schema.fingerprint()
     assert table_names(server) == table_names(embedded)
@@ -267,7 +269,9 @@ def test_server_ledger_init_spawns_no_dolt_process(
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr("tetramark.core.ledger.subprocess.run", counting_run)
-    ledger = server_ledger_factory()
+    # The point is that a real server-backed init never shells out, so this
+    # test opts out of the session templates.
+    ledger = server_ledger_factory(real_init=True)
 
     dolt_calls = [args for args in calls if str(args[0][0]).endswith("/dolt")]
     assert dolt_calls == []

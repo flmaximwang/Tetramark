@@ -85,6 +85,7 @@ kinds:
       construct:
         type: ref
         to: protein_construct
+        lineage: true
         description: Protein construct expressed by this plasmid (lineage to the design).
       backbone:
         type: string
@@ -150,6 +151,7 @@ kinds:
       parental:
         type: ref
         to: cell_line
+        lineage: true
         description: Parental line this line derives from (stable or derivative lines).
 
   bacterial_glycerol:

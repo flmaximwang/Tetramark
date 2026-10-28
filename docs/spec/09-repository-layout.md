@@ -1,0 +1,26 @@
+# 9. Repository layout
+
+```
+pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
+presets/                  # base.yaml, molbio.yaml, library.yaml (repo files; tm init copies them)
+src/tetramark/
+  driver/                 # base.py, server.py, embedded.py, workspace.py (server start/stop)
+  schema/                 # model.py (pydantic), loader.py (presets/include/mixins), ddl.py, diff.py, tests_gen.py
+  core/                   # ids.py, ledger.py (open/init), objects.py (entity/stock/aliquot/box ops), events.py
+  ops/                    # find.py, render.py (grid), io_csv.py, remote.py
+  cli/                    # app.py (Typer root) + one module per command group
+skills/tetramark/SKILL.md (+ references/)
+skills/tetramark-schema/SKILL.md (+ references/)
+docs/spec/                # this specification, one file per chapter
+docs/guides/              # how-to guides (migration, test harness)
+docs/records/             # dated records of real migrations
+docs/issues/              # open design issues
+docs/tickets/             # open work only
+migration/                # hand-run upgrade steps (scripts + their READMEs)
+tests/                    # pytest; fixtures create real dolt repos in tmp_path
+```
+
+Testing: pytest against real `dolt` (no mocks of Dolt). Fixture `ledger_factory(presets=[...])` makes a
+temp workspace + ledger via EmbeddedDriver; a session-scoped optional fixture runs a sql-server on a
+random free port for ServerDriver tests. `uv run pytest` must pass on every merge and before a release;
+see [the test-harness guide](../guides/test-harness.md).

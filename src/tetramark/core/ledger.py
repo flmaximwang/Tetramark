@@ -1198,6 +1198,7 @@ def open(
     branch: str | None = None,
     dry_run: bool = False,
     no_commit: bool = False,
+    allow_legacy_statuses: bool = False,
 ) -> Ledger:
     """Open an existing ledger, choosing a server or embedded driver (spec §6).
 
@@ -1231,7 +1232,9 @@ def open(
 
     # The configuration is needed to resolve the default branch, so read it
     # before opening a connection.
-    config, schema = load_ledger_schema(path)
+    config, schema = load_ledger_schema(
+        path, allow_legacy_statuses=allow_legacy_statuses
+    )
     selected = branch if branch is not None else (config.branch or None)
     driver = ws.driver_for(name, branch=selected)
     try:

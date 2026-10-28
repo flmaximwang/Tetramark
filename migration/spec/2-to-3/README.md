@@ -5,7 +5,7 @@ One commit: `migrate(ledger): spec 2 -> 3`.
 
 ## What changes
 
-Released as **0.2.0** together with molbio 2 and the migration groundwork (tickets 20–23). Spec 3
+Released as **0.2.0** together with molbio 2 and the migration groundwork. Spec 3
 settles git-bug `2f6a0d5` by making the model explicit: **an aliquot is a generic tube** (location,
 quantity, unit, status, label, notes) and every property of the material belongs on the **stock kind**
 — tubes that differ in a property are different stocks. Two generated-shape changes follow:
@@ -46,7 +46,7 @@ preset must not silently keep per-tube fields). Therefore:
 - a ledger whose `<ledger>/presets/` or local `kinds/` still declares the key **cannot be opened by
   0.2.0+**, and this step cannot run on it;
 - run the spec-1/spec-2 era steps with **the last checkout that accepted it** — the wave-9 tree with
-  ticket 22 merged (`3ec57d5`, the last 0.2.0-preview tree) — including
+  molbio 2 merged (`3ec57d5`, the last 0.2.0-preview tree) — including
   `migration/presets/molbio/1-to-2/` and any local step that moves the tube fields to the stock kind;
   then switch to the 0.2.0 tree and run this step. Ticket 24 (zsqlab10) runs exactly that way.
 
@@ -62,7 +62,7 @@ preset must not silently keep per-tube fields). Therefore:
 - No rule or hand-written query depends on an `aliquot_<kind>` table or on the old stock-view column
   order. Additive `SELECT … FROM v_…` queries keep working; a rule that names the extension table must
   be edited by hand **before** the step (it would fail at query time, not here).
-- A backup/branch rule for real lab ledgers (ticket 24): work on a branch
+- A backup/branch rule for real lab ledgers: work on a branch
   (`--branch tetramark-upgrade`), never on `main`, never push.
 - The tag `pre-migrate-spec-2` must not exist at a different commit; the script refuses if it points
   anywhere other than HEAD.

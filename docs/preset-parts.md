@@ -3,7 +3,8 @@
 Status: design settled 2026-10-28 with the user · Issue: git-bug `0a9acec` "BioManager Presets" ·
 Tickets: `docs/tickets/25-…` to `29-…` · Builds on wave 9 (tickets 20–24), which must land first.
 
-This document is the source of truth for wave 10. Tickets fold the relevant parts into `docs/spec.md`.
+This document is the source of truth for wave 10. Tickets fold the relevant parts into
+`docs/spec/` (one file per chapter).
 
 ---
 

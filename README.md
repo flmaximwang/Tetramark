@@ -29,8 +29,8 @@ clone a ledger, copy its `presets/` directory too.
 A *mark* is also what you put on a tube or a shelf so you can find the thing again, and every mark
 here is versioned by Dolt. The CLI is `tm`.
 
-- `docs/spec.md` — the design.
-- `docs/migration.md` — moving an old zsqlab ledger onto Tetramark.
+- [`docs/spec/`](docs/spec/README.md) — the specification (one file per chapter).
+- [`docs/guides/migrating-a-legacy-ledger.md`](docs/guides/migrating-a-legacy-ledger.md) — moving an old zsqlab ledger onto Tetramark.
 - `skills/tetramark/SKILL.md` — day-to-day operating manual for agents and humans.
 - `skills/tetramark-schema/SKILL.md` — writing presets, kinds, fields, geometry and rules.
 
@@ -68,8 +68,7 @@ uv run pytest -m "not server"      # skip tests that start their own server
 uv run pytest tests/test_objects.py -n0   # focused loop
 ```
 
-The design and migration notes are in `docs/test-server-harness.md` and
-`docs/test-runtime-optimization.md`.
+How the test suite works is in [`docs/guides/test-harness.md`](docs/guides/test-harness.md).
 
 ## Quickstart
 
@@ -163,7 +162,7 @@ workspace — same schema, the entire history kept, plus one `adopt(ledger): NAM
 an empty schema on the selected branch (no user tables, no views, no `dolt_tests` rows), a clean
 working set, and no `ledger.yaml` (pass `--force-config` to overwrite one). You drop the legacy schema
 yourself, as its own commit, before adopting; adopt never deletes anything, and a failed adopt rolls
-back without removing the database directory. See `docs/spec.md` §3.1.
+back without removing the database directory. See [`docs/spec/03-physical-model.md`](docs/spec/03-physical-model.md) §3.1.
 
 ## Concepts in one table
 

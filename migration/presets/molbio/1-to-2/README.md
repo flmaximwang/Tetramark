@@ -5,7 +5,7 @@ Counter: `ledger_meta.preset_versions.molbio` 1 → 2. Tag before writing:
 
 ## What changes
 
-Ships with **0.2.0** (ticket 22). The molbio preset moves to one rule — *all
+Ships with **0.2.0**. The molbio preset moves to one rule — *all
 aliquots of one stock are the same* — so tube-specific properties become stock
 fields and the kind names say what the thing is:
 
@@ -56,11 +56,11 @@ differs from the repository one.
 
 ## A 0.2.0+ caveat: run this step with the last tool that accepts the v1 preset
 
-Spec 3 (ticket 23) removed the per-stock-kind tube-field schema key, and 0.2.0+ refuses to load any
+Spec 3 (0.2.0) removed the per-stock-kind tube-field schema key, and 0.2.0+ refuses to load any
 preset that still declares it — including this v1 molbio preset. The step therefore cannot be run
 from the 0.2.0 tree on a real v1 ledger: run it with the last checkout that accepted the key (the
-wave-9 tree with ticket 22 merged, `3ec57d5`), then run
-[`migration/spec/2-to-3/`](../../../spec/2-to-3/README.md) from the 0.2.0 tree. This is how ticket 24
+wave-9 tree with molbio 2 merged, `3ec57d5`), then run
+[`migration/spec/2-to-3/`](../../../spec/2-to-3/README.md) from the 0.2.0 tree. This is how the zsqlab10
 migrates zsqlab10.
 
 ## Preconditions
@@ -75,7 +75,7 @@ migrates zsqlab10.
   migration commit must contain only the migration.
 - **Back up the ledger directory first** — in particular `<ledger>/presets/`,
   which is not stored in Dolt.  `cp -a <ledger> <ledger>.pre-v2` is enough.
-- A backup/branch rule for real lab ledgers (ticket 24): work on a branch
+- A backup/branch rule for real lab ledgers: work on a branch
   (`--branch tetramark-upgrade`), never on `main`, never push.
 - The tag `pre-migrate-molbio-1` must not exist at a different commit; the
   script refuses if it points anywhere other than HEAD.

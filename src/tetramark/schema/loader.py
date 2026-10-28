@@ -59,6 +59,7 @@ from tetramark.schema.model import (
     FieldType,
     Kind,
     LedgerConfig,
+    ObjectType,
     Preset,
     Rule,
     SchemaError,
@@ -283,10 +284,57 @@ def _validate(
         raise _validation_error(exc, display, prefix) from exc
 
 
+#: True only while a migration step loads a pre-spec-4 ledger: its preset copies
+#: predate ``statuses:`` on stock kinds.  Set by
+#: :func:`load_ledger_schema` (``allow_legacy_statuses``) and read by
+#: :func:`_validate_preset`; never set by a normal ``tm`` read.
+_LEGACY_PRESET_STATUSES = False
+
+#: The spec-3 vocabulary, as the permissive set a legacy stock kind is given:
+#: every status may have changed into any other (spec 3 had no transition rules),
+#: and only ``stored`` counted as on the shelf.
+_LEGACY_STATUS_SET: dict[str, dict[str, Any]] = {
+    name: {
+        "in_stock": name == "stored",
+        "to": ["pending", "stored", "missing", "consumed"],
+    }
+    for name in ("pending", "stored", "missing", "consumed")
+}
+
+
+def _inject_legacy_statuses(data: dict[str, Any]) -> dict[str, Any]:
+    """Give spec-3 stock kinds the implied default status set.
+
+    A preset copy written before spec 4 has no ``statuses:`` on its stock kinds.
+    A migration step still has to load it (that is the shape it is about to
+    upgrade), so in legacy mode the spec-3 default set is filled in rather than
+    failing with a load error meant for the user.
+    """
+    kinds = data.get("kinds")
+    if not isinstance(kinds, dict):
+        return data
+    patched = dict(data)
+    new_kinds = dict(kinds)
+    changed = False
+    for name, kind in kinds.items():
+        if (
+            isinstance(kind, dict)
+            and kind.get("object") == "stock"
+            and "statuses" not in kind
+        ):
+            new_kinds[name] = {**kind, "statuses": _LEGACY_STATUS_SET}
+            changed = True
+    if changed:
+        patched["kinds"] = new_kinds
+    return patched
+
+
 def _validate_preset(data: Any, display: str, prefix: str = "") -> Preset:
     if not isinstance(data, dict):
         raise SchemaError("preset document must be a YAML mapping", file=display)
     _reject_removed_kind_key(data, display, prefix)
+    if _LEGACY_PRESET_STATUSES:
+        data = _inject_legacy_statuses(data)
     return _validate(Preset, data, display, prefix)
 
 
@@ -368,7 +416,7 @@ def _load_kinds_document(data: Any, display: str, prefix: str = "") -> Preset:
     ):
         return _validate_preset(data, display, prefix)
     # Bare mapping: the document *is* the kinds mapping.
-    return _validate(Preset, {"kinds": data}, display, prefix)
+    return _validate_preset({"kinds": data}, display, prefix)
 
 
 def _load_unit(source: _Source) -> _PresetUnit:
@@ -673,6 +721,34 @@ def _resolve_status_sets(
             assert isinstance(statuses, StatusSet)  # model guarantees it
             resolved[kind_name] = kind
     return resolved
+def _validate_lineage_ref(
+    kind_name: str,
+    object_type: ObjectType,
+    field_name: str,
+    target: str,
+    kinds: dict[str, Kind],
+    display: str,
+) -> None:
+    """A ``lineage: true`` ref must be an edge of the lineage graph (spec §6).
+    ``tm lineage`` nodes are entities and stocks, with aliquots as edge
+    endpoints, so the flag only makes sense on entity and stock kinds and only
+    when it points at one of those: a ref to a box is not a descent edge.
+    """
+    path = f"kinds.{kind_name}.fields.{field_name}.lineage"
+    if object_type is ObjectType.box:
+        raise SchemaError(
+            "'lineage' is only valid on entity and stock kinds",
+            file=display,
+            path=path,
+        )
+    target_object = kinds[target].object.value if target in kinds else target
+    if target_object == "box":
+        raise SchemaError(
+            f"lineage ref target {target!r} is a box; a lineage edge connects "
+            "entities, stocks and aliquots",
+            file=display,
+            path=path,
+        )
 
 
 def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry]) -> None:
@@ -707,6 +783,15 @@ def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry])
                     f"({', '.join(sorted(_CORE_OBJECTS))})",
                     file=display,
                     path=f"kinds.{kind_name}.fields.{field_name}.to",
+                )
+            if schema_field.lineage:
+                _validate_lineage_ref(
+                    kind_name,
+                    kind.object,
+                    field_name,
+                    target,
+                    kinds,
+                    display,
                 )
 
         for field_name, schema_field in kind.fields.items():
@@ -1157,7 +1242,7 @@ def resolve_ledger_presets(
             f"{expected}. A ledger resolves presets only from <ledger>/presets/, "
             "never from a search path; copy the preset and its includes into "
             "that directory (a manual copy works), or run the matching "
-            "migration/ script (see docs/migration.md)",
+            "migration/ script (see docs/guides/migrating-a-legacy-ledger.md)",
             file=str(root / "ledger.yaml"),
             path="presets",
         )
@@ -1244,35 +1329,49 @@ def load_ledger_schema(
     ledger_dir: str | Path,
     *,
     search_paths: Sequence[str | Path] = (),
+    allow_legacy_statuses: bool = False,
 ) -> tuple[LedgerConfig, EffectiveSchema]:
     """Load ``<ledger_dir>/ledger.yaml`` and its effective schema.
 
     Presets resolve only from ``<ledger_dir>/presets/`` (spec §8); when the
     ledger's copy is incomplete the error names the expected file.
+    ``allow_legacy_statuses`` is the migration path (a spec-3 ledger still has
+    the removed ``statuses:`` key); normal reads keep the spec-4 refusal.
     """
+    global _LEGACY_PRESET_STATUSES
+    without_statuses = _LEGACY_PRESET_STATUSES
     path = Path(ledger_dir)
     if path.is_file():
         path = path.parent
-    config = load_ledger_config(path / "ledger.yaml")
-    presets = resolve_ledger_presets(path, config)
-    effective = config.model_copy(update={"presets": [str(preset.path) for preset in presets]})
+    if allow_legacy_statuses:
+        _LEGACY_PRESET_STATUSES = True
     try:
-        return config, load_schema(
-            effective, base_dir=path, search_paths=search_paths
+        config = load_ledger_config(
+            path / "ledger.yaml", allow_legacy_statuses=allow_legacy_statuses
         )
-    except SchemaError as error:
-        # A missing *include* copy (e.g. <ledger>/presets/base.yaml deleted) is
-        # still "the ledger's own copy is incomplete": append the same hint the
-        # top-level preset error carries, naming the expected file candidates.
-        # Other include errors (a cycle, an invalid included document) keep
-        # their own message.
-        if error.path != "include" or "not found" not in error.message:
-            raise
-        raise SchemaError(
-            f"{error.message}. A ledger resolves presets only from "
-            f"{path / 'presets'}: copy the missing included preset file there (a "
-            "manual copy works), or run the matching migration/ script (see "
-            "docs/migration.md)",
-            file=error.file,
-            path=error.path,
-        ) from error
+        presets = resolve_ledger_presets(path, config)
+        effective = config.model_copy(
+            update={"presets": [str(preset.path) for preset in presets]}
+        )
+        try:
+            return config, load_schema(
+                effective, base_dir=path, search_paths=search_paths
+            )
+        except SchemaError as error:
+            # A missing *include* copy (e.g. <ledger>/presets/base.yaml deleted)
+            # is still "the ledger's own copy is incomplete": append the same
+            # hint the top-level preset error carries, naming the expected file
+            # candidates.  Other include errors (a cycle, an invalid included
+            # document) keep their own message.
+            if error.path != "include" or "not found" not in error.message:
+                raise
+            raise SchemaError(
+                f"{error.message}. A ledger resolves presets only from "
+                f"{path / 'presets'}: copy the missing included preset file there "
+                "(a manual copy works), or run the matching migration/ script "
+                "(see docs/guides/migrating-a-legacy-ledger.md)",
+                file=error.file,
+                path=error.path,
+            ) from error
+    finally:
+        _LEGACY_PRESET_STATUSES = without_statuses

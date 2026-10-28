@@ -30,7 +30,7 @@ apply`` (ticket 09) calls it after changing the physical schema.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from tetramark.driver.base import Driver, literal
 from tetramark.schema.ddl import _in_stock_sql, table_name
@@ -728,14 +728,22 @@ def generate_tests(schema: EffectiveSchema) -> list[TestDefinition]:
     return definitions
 
 
-def install_tests(driver: Driver, schema: EffectiveSchema) -> list[TestDefinition]:
+def install_tests(
+    driver: Driver,
+    schema: EffectiveSchema,
+    *,
+    tests: Sequence[TestDefinition] | None = None,
+) -> list[TestDefinition]:
     """Replace ``dolt_tests`` wholesale with ``schema``'s generated rows.
 
     Generated tests are derived state (spec §4), so replacement is the only
     supported operation.  Call inside a :meth:`Driver.transaction` together
     with the rest of a write to make the change part of one Dolt commit.
+
+    ``tests`` overrides the generated list (the migration runner omits tests
+    that depend on core tables a not-yet-upgraded ledger does not have).
     """
-    definitions = generate_tests(schema)
+    definitions = list(tests) if tests is not None else generate_tests(schema)
     driver.execute("DELETE FROM `dolt_tests`")
     columns = ", ".join(_q(column) for column in TEST_COLUMNS)
     placeholders = ", ".join("%s" for _ in TEST_COLUMNS)

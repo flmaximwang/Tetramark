@@ -23,6 +23,7 @@ from tetramark.cli.entity import entity_app
 from tetramark.cli.find import find_command
 from tetramark.cli.history import history_command
 from tetramark.cli.ledger import init_command, presets_app
+from tetramark.cli.lineage import lineage_command
 from tetramark.cli.options import GlobalOptions
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
@@ -139,6 +140,7 @@ app.add_typer(branch_app, name="branch")
 app.command("backup")(backup_command)
 app.command("find")(find_command)
 app.command("history")(history_command)
+app.command("lineage")(lineage_command)
 
 
 def main() -> None:

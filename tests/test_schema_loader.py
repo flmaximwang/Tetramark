@@ -28,6 +28,10 @@ LEDGERS = DATA / "ledgers"
 INVALID = PRESETS / "invalid"
 REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
+#: Presets are read from disk; no database and no ``dolt`` binary, so these
+#: loaders run in the fast lane (``-m fast``).
+pytestmark = pytest.mark.fast
+
 
 # ---------------------------------------------------------------------------
 # Positive paths

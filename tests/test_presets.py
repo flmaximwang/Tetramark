@@ -364,7 +364,9 @@ def test_combining_base_with_molbio_is_deduplicated() -> None:
 def test_preset_inits_a_ledger_and_its_rules_hold(
     ledger_factory, name: str
 ) -> None:
-    ledger = ledger_factory([name], name=f"preset_{name}")
+    # This test asserts what init itself produces for each bundled preset, so
+    # it deliberately opts out of the session templates.
+    ledger = ledger_factory([name], name=f"preset_{name}", real_init=True)
     schema = ledger.schema
 
     assert set(schema.kinds) == EXPECTED_KINDS[name]
@@ -397,7 +399,7 @@ def test_molbio_v2_fresh_init_has_the_renamed_and_cell_objects(
     ledger_factory,
 ) -> None:
     """Verify bullet 1: ``tm init --preset molbio`` produces the v2 shape."""
-    ledger = ledger_factory(["molbio"], name="molbio_tables")
+    ledger = ledger_factory(["molbio"], name="molbio_tables", real_init=True)
     tables = table_names(ledger)
     for table in (
         "entity_protein_construct",

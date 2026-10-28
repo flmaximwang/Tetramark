@@ -35,4 +35,5 @@ addopts = "-ra -n auto --dist loadfile"
 markers = [
     "server: starts a real dolt sql-server on a random free port (slow; skip with -m 'not server')",
     "embedded: test deliberately runs against the embedded driver (no dolt sql-server)",
+    "fast: Dolt-free unit test (no database, no dolt binary). Fast lane: `uv run pytest -q -m fast` (seconds); never put it on an integration test.",
 ]

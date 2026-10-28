@@ -6,6 +6,14 @@
 preset's `version:` adds exactly one folder for that step, in the same change.**
 No release may ship a bumped counter without its step folder here.
 
+A change that affects **only reads** is the one case that bumps no counter, so
+it gets no step. The current example is `lineage: true` on a `ref` field
+(`tm lineage`): it changes no stored shape, but it *is* part of the schema
+fingerprint. Replacing a ledger's preset copy makes `ledger_meta.fingerprint`
+stale, and `tm schema apply` refreshes it — that is a meta refresh, not a
+migration step. If you cannot describe a change with "no DDL and no stored
+values move", it needs a counter and a folder.
+
 ## What this directory is
 
 Hand-run upgrade steps for ledgers whose **format** changed. One folder per
@@ -75,7 +83,7 @@ A second run on an already-migrated ledger refuses: the counter is `N+1`, not
 `N`.
 
 A preset step also updates files, which are **not** Dolt content: `<ledger>/presets/`
-is the ledger's own preset copy (ticket 20) and the repository copy must replace
+is the ledger's own preset copy (0.2.0) and the repository copy must replace
 it, or the next `open` loads the old preset while `preset_versions` says `N+1`.
 The step passes `after_commit=` for that; the runner runs it **only on a real
 apply**, after the commit, describes it in `--dry-run` via `after_commit_note=`,
