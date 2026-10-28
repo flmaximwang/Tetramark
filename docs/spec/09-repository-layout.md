@@ -1,4 +1,5 @@
 # 9. Repository layout
+
 ```
 pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
 presets/                  # base.yaml, molbio.yaml, library.yaml (repo files; tm init copies them)

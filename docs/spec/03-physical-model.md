@@ -1,4 +1,5 @@
 # 3. Physical model (generated DDL)
+
 Core tables (always present, created by `tm init`):
 
 ```
@@ -117,5 +118,3 @@ What the DB enforces vs the app:
   (`stored` in a slotted box ⇒ slot NOT NULL), slotless box capacity.
 
 No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in the app).
-
----

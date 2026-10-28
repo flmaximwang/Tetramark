@@ -1,4 +1,5 @@
 # 5. Schema evolution
+
 `tm schema plan` diffs the effective YAML schema against the live DB (introspection via
 `information_schema` + `ledger_meta`) and prints an ordered SQL plan, each step tagged
 `additive` or `destructive`. `tm schema apply` executes it in one transaction + one Dolt commit.
@@ -35,5 +36,3 @@ A schema change that affects **reads only** — `lineage: true` on a `ref` field
 changes no stored shape, so it needs no counter bump and no migration step: replace the ledger's preset
 copy as usual, and the now-stale `ledger_meta.fingerprint` is refreshed by `tm schema apply` (which has
 no DDL steps to run). `migration/README.md` states the same rule.
-
----

@@ -1,4 +1,4 @@
-# Tetramark — Specification (v1)
+# Tetramark specification
 
 A general-purpose, version-controlled inventory ledger on [Dolt](https://www.dolthub.com/).
 Four core objects — **entity**, **stock**, **aliquot**, **box** — are extended per domain by

@@ -1,4 +1,5 @@
 # 6. CLI (`tm`)
+
 Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$TETRAMARK_WORKSPACE`),
 `--ledger NAME` (default from workspace), `-b/--branch BRANCH` (session branch, see below),
 `--format table|json|csv` on reads, `--json` shorthand,
@@ -99,5 +100,3 @@ Python API mirrors the CLI (`tetramark.open(workspace, ledger, branch=None)` →
 - `sequence` — `<prefix><NNNNN>` monotonic.
 - Explicit IDs are always accepted (back-filling / migration) if unique and well-formed (pattern from the strategy).
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
-
----

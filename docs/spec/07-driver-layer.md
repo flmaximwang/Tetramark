@@ -1,4 +1,5 @@
 # 7. Driver layer
+
 `Driver` interface: `query(sql, params) -> list[dict]`, `execute(sql, params)`, `transaction()` context,
 `commit(message, author)`, `database` property. Two implementations:
 - `ServerDriver` — PyMySQL to `dolt sql-server` (`127.0.0.1`, no TLS). Default when the workspace server is up.
@@ -25,5 +26,3 @@ checked-out branch of the repository is never changed by either driver.
 probe, port-busy detection, lists ledgers (subdirs with `.dolt`).
 
 Target Dolt ≥ 2.3.5. All SQL must work on 2.3.5 (no multi-statement trigger bodies, no REGEXP in CHECK).
-
----

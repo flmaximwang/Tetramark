@@ -1,4 +1,5 @@
 # 1. Concepts
+
 | Object | Meaning | ID |
 |---|---|---|
 | **entity** | The abstract thing (a plasmid design, a protein construct, a book title, a chemical). | UUID v4 |
@@ -40,5 +41,3 @@ ids:
 statuses: [pending, stored, missing, consumed]  # aliquot status vocabulary (override allowed)
 rules_dir: rules/                # optional custom validation rules (YAML)
 ```
-
----

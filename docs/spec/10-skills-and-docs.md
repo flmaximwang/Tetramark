@@ -1,4 +1,5 @@
 # 10. Skills & docs
+
 - `skills/tetramark` — operating manual: concepts, find/query recipes, add/move/use/status flows, check,
   history, what not to do (raw SQL writes, hand-editing dolt_tests). Chinese trigger words in description
   (台账, 样品, 盒, 冻存, 库存, 管).

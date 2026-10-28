@@ -1,4 +1,5 @@
 # 8. Presets
+
 Presets are YAML schema documents, not package data. They live in the repository's `presets/`
 directory (`base.yaml`, `library.yaml`, `molbio.yaml`); the wheel ships no `*.yaml` files. A
 **preset** is a single YAML file containing kinds, mixins and rules; a preset given by path may also
@@ -56,5 +57,3 @@ Preset catalogue:
   `migration/spec/2-to-3/`.
 - `library` (includes `base`) — entity `book` (title, authors, isbn pattern, year); stock `copy`
   (acquired_on, condition enum). Exists to prove generality; used in tests.
-
----

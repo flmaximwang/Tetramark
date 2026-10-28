@@ -1,4 +1,5 @@
 # 2. Schema language (YAML)
+
 A **preset** is a single YAML file (`presets/<name>.yaml`) containing kinds, mixins, and rules; a
 local preset may instead be a directory, optionally with `kinds/` and `rules/` files. Presets can
 `include` other presets. A ledger's effective schema = union of its presets + local kinds; name
@@ -79,5 +80,3 @@ Optional on box kind: `slot_capacity` (default 1).
 
 Custom rule = `id`, `description`, `severity: fail|info`, `sql` (read-only SELECT), `expect`:
 `{single_value: X}` | `{rows: 0}` | `{rows_at_most: N}`. Compiled into `dolt_tests` (§4).
-
----
