@@ -2,6 +2,6 @@
 
 from tetramark.core.ledger import Ledger, init_ledger, open
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 __all__ = ["Ledger", "__version__", "init_ledger", "open"]
