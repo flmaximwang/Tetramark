@@ -1,11 +1,13 @@
-# Bundled presets, annotated
+# Presets, annotated
 
-Three presets ship with the package. `base` is the common floor; `molbio` and `library` both
-`include: [base]`. `tm init --preset NAME` may be repeated (e.g. `-p base -p library`) and also
-accepts a path to a local preset directory or a preset YAML file.
+Three presets live in the repository's `presets/`. `base` is the common floor; `molbio` and
+`library` both `include: [base]`. `tm init --preset NAME` may be repeated (e.g. `-p base -p
+library`) and also accepts a path to a local preset directory or a preset YAML file. Names resolve
+through the workspace's `presets_dir`; `tm init` copies the chosen preset and its include closure
+into `<ledger>/presets/`, which is what the ledger opens from then on.
 
 ```
-src/tetramark/presets/
+presets/
   base.yaml
   molbio.yaml       include: [base]
   library.yaml      include: [base]
@@ -109,7 +111,7 @@ Rules:
 - A different domain → write a local preset that `include: [base]` and add your own kinds; keep the
   four core objects and reuse the box geometries. `library` is the smallest complete example.
 
-## Extending a bundled preset locally
+## Extending a preset locally
 
 Do not edit the installed package. Put the additions in the ledger:
 

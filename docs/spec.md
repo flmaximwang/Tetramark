@@ -2,7 +2,7 @@
 
 A general-purpose, version-controlled inventory ledger on [Dolt](https://www.dolthub.com/).
 Four core objects — **entity**, **stock**, **aliquot**, **box** — are extended per domain by
-declarative YAML **schemas** bundled into **presets**. Pick presets, run `tm init`, and you have a
+declarative YAML **schemas** organised as **presets**. Pick presets, run `tm init`, and you have a
 validated, versioned ledger. Biology is one preset (`molbio`), not the scope.
 
 Origin: generalises the hand-written zsqlab ledgers in `<legacy-zsqlab-checkout>`
@@ -47,7 +47,7 @@ Rules:
 ```yaml
 # <data_dir>/<ledger>/ledger.yaml
 name: lab101
-presets: [base, molbio]          # bundled or path to a local preset dir
+presets: [base, molbio]          # bare names; tm init copies them into <ledger>/presets/
 kinds_dir: kinds/                # optional local kinds (YAML), same format as presets
 author: "Your Name <you@example.com>"   # fallback: git config user.name/email
 ids:
@@ -227,7 +227,7 @@ Views (generated):
 Every view that represents an object aggregates the `alias` table into a sorted, `;`-separated
 `alias_list` (NULL when the object has no aliases; `v_box_slots` names it `occupant_alias_list`
 because the row describes a slot and its occupant, not only the box). The column is deliberately
-**not** called `aliases`: a kind may already have a domain field named `aliases` — the bundled
+**not** called `aliases`: a kind may already have a domain field named `aliases` — molbio's
 `construct` kind does, holding semicolon-separated alternative construct names — and a view cannot
 expose two columns with the same name. After a `tm stock renumber` the old stock and aliquot ids are
 aliases (§6), so these columns are how a view reader still sees the pre-renumber handles.
@@ -251,7 +251,8 @@ Tests are generated into `dolt_tests` on `init` / `init --adopt` / `schema apply
 - `core` — the app-enforced invariants in §3.
 - `schema:<kind>` — patterns, required refs, entity_kinds restriction.
 - `rules:<preset|local>` — custom rules. `severity: info` tests are reported but never fail the exit code
-  (stored with a group suffix `:info`).
+  (stored with a group suffix `:info`). Preset rules are read from the ledger's own
+  `<ledger>/presets/` copy (§8), never from the workspace `presets_dir`.
 
 Generated tests are fully replaced on each apply (they are derived state); never hand-edit them.
 
@@ -392,7 +393,38 @@ Target Dolt ≥ 2.3.5. All SQL must work on 2.3.5 (no multi-statement trigger bo
 
 ---
 
-## 8. Presets shipped in v1
+## 8. Presets
+
+Presets are YAML schema documents, not package data. They live in the repository's `presets/`
+directory (`base.yaml`, `library.yaml`, `molbio.yaml`); the wheel ships no `*.yaml` files. A
+**preset** is a single YAML file containing kinds, mixins and rules; a preset given by path may also
+be a directory containing `preset.yaml` plus optional `kinds/*.yaml` and `rules/*.yaml`. `preset:`
+is the name, `version:` an integer, `include:` a list of preset names (or paths).
+
+- **Selecting.** `tm init NAME --preset ...` is repeatable. A value containing `/` (or `\`) or
+  ending in `.yaml`/`.yml` is a **path**, used as-is from the caller's cwd. Anything else is a bare
+  **name**, resolved as `<presets_dir>/<name>.yaml`; `presets_dir` is a `workspace.yaml` key,
+  resolved relative to that file. Without a configured `presets_dir`, a bare name is a usage error
+  that names the key. A path works with no `presets_dir`.
+- **Copying.** `tm init` copies the selected preset **and its `include:` closure** into the ledger:
+  `<ledger>/presets/<name>.yaml` for a YAML preset, `<ledger>/presets/<name>/` (with `preset.yaml`,
+  `kinds/` and `rules/`) for a directory preset. The copies are byte-identical to the sources.
+  `include:` entries inside a copy resolve against the copy directory, so the closure is copied too
+  and the ledger is self-contained.
+- **Resolution.** A ledger opens presets **only** from `<ledger>/presets/`. `ledger.yaml` lists bare
+  names (`presets: [molbio]`) and `ledger_meta.preset_versions` is written exactly as before. If a
+  copy is missing, opening fails with the expected file path and says that `migration/` or a manual
+  copy fixes it; there is no fallback to `presets_dir`, because a silent fallback would let the
+  ledger drift from its recorded `preset_versions`. Changing a source preset after init therefore
+  does **not** change an existing ledger — replacing its `<ledger>/presets/` files is an explicit
+  schema change. The copies live on disk next to `ledger.yaml` and are **not** stored in Dolt, so
+  cloning a ledger elsewhere (or restoring a database without its directory) must copy
+  `<ledger>/presets/` along with `ledger.yaml`.
+- **Inspecting.** `tm presets list` lists the workspace's `presets_dir`; `tm presets show NAME|PATH`
+  prints one include-resolved preset; `tm config get|set presets_dir` reads or writes the workspace
+  setting.
+
+Preset catalogue:
 
 - `base` — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named), `shelf`/`freezer`/`drawer`
   (slotless); entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
@@ -412,13 +444,13 @@ Target Dolt ≥ 2.3.5. All SQL must work on 2.3.5 (no multi-statement trigger bo
 
 ```
 pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
+presets/                  # base.yaml, molbio.yaml, library.yaml (repo files; tm init copies them)
 src/tetramark/
   driver/                 # base.py, server.py, embedded.py, workspace.py (server start/stop)
   schema/                 # model.py (pydantic), loader.py (presets/include/mixins), ddl.py, diff.py, tests_gen.py
   core/                   # ids.py, ledger.py (open/init), objects.py (entity/stock/aliquot/box ops), events.py
   ops/                    # find.py, render.py (grid), io_csv.py, remote.py
   cli/                    # app.py (Typer root) + one module per command group
-  presets/                # base.yaml, molbio.yaml, library.yaml (package data)
 skills/tetramark/SKILL.md (+ references/)
 skills/tetramark-schema/SKILL.md (+ references/)
 docs/spec.md, docs/migration.md, docs/tickets/

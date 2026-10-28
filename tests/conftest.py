@@ -30,8 +30,12 @@ from tetramark.driver.workspace import Workspace
 
 DOLT_BINARY = shutil.which("dolt")
 
-#: The presets from ticket 03's test data.
+#: The presets from ticket 03's test data (directory presets, path-style).
 PRESETS = Path(__file__).parent / "data" / "presets"
+
+#: The repository's own presets; workspaces point `presets_dir` at it so
+#: ``tm init --preset NAME`` works (ticket 20: presets are not package data).
+REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 #: Author used by :func:`ledger_factory` so tests never read a global identity.
 FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
@@ -272,7 +276,9 @@ def embedded_ledger_factory(
         if (workspace_dir / "workspace.yaml").is_file():
             workspace = Workspace.load(workspace_dir, env=dolt_env)
         else:
-            workspace = Workspace.create(workspace_dir, env=dolt_env)
+            workspace = Workspace.create(
+                workspace_dir, presets_dir=str(REPO_PRESETS), env=dolt_env
+            )
         ledger_name = name or f"ledger{next(counter)}"
         sources = list(presets) if presets else [PRESETS / "base"]
         ledger = init_ledger(
@@ -332,7 +338,9 @@ def server_workspace(
         check=True,
     )
 
-    workspace = Workspace.create(data_dir, port=free_port(), env=env)
+    workspace = Workspace.create(
+        data_dir, port=free_port(), presets_dir=str(REPO_PRESETS), env=env
+    )
     try:
         workspace.start(daemon=True)
     except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
@@ -404,7 +412,9 @@ def template_workspaces(tmp_path_factory) -> dict[str, Path]:
     templates: dict[str, Path] = {}
     for key, preset in (("base", PRESETS / "base"), ("full", PRESETS / "full")):
         workspace_dir = root / key
-        workspace = Workspace.create(workspace_dir, env=env)
+        workspace = Workspace.create(
+            workspace_dir, presets_dir=str(REPO_PRESETS), env=env
+        )
         ledger = init_ledger(
             workspace,
             "template",

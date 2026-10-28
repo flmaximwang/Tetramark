@@ -1,26 +1,43 @@
-"""Bundled presets (ticket 07): loading, init, rules and the library walkthrough.
+"""The repository presets (tickets 07, 20): loading, copying, rules and a walkthrough.
 
-Like the rest of the suite these tests run against a real ``dolt`` binary and a
-workspace whose Dolt/Git configuration lives under ``tmp_path``.
+Presets live in the repository's ``presets/`` directory and ``tm init`` copies
+them (and their include closure) into each ledger.  Like the rest of the suite
+these tests run against a real ``dolt`` binary and a workspace whose Dolt/Git
+configuration lives under ``tmp_path``.
 """
 
 from __future__ import annotations
 
-import importlib.resources
+import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
-import tetramark.presets
+from tetramark.core.ledger import init_ledger, open as open_ledger
+from tetramark.driver.workspace import Workspace
+from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows
-from tetramark.schema.loader import list_bundled_presets, load_preset, load_schema
+from tetramark.schema.loader import (
+    PresetFile,
+    expand_presets,
+    list_presets,
+    load_preset,
+    load_schema,
+    preset_copy_files,
+    resolve_preset_spec,
+)
 from tetramark.schema.model import (
     FieldType,
     GeometryType,
     LedgerConfig,
     ObjectType,
+    SchemaError,
 )
+
+from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 BUNDLED = ("base", "molbio", "library")
 
@@ -67,8 +84,20 @@ EXPECTED_KINDS = {
 }
 
 
-def load_bundled(name: str):
-    return load_schema(LedgerConfig(name="preset_test", presets=[name]))
+def repo_preset(name: str) -> Path:
+    return REPO_PRESETS / f"{name}.yaml"
+
+
+def load_repo_preset(name: str):
+    return load_schema(LedgerConfig(name="preset_test", presets=[str(repo_preset(name))]))
+
+
+def read_tree(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def commit_count(ledger) -> int:
@@ -88,30 +117,27 @@ def table_names(ledger) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_all_three_bundled_presets_are_discoverable() -> None:
-    assert list_bundled_presets() == ["base", "library", "molbio"]
+def test_all_three_presets_are_discoverable_in_the_repo() -> None:
+    assert list_presets(REPO_PRESETS) == ["base", "library", "molbio"]
 
 
-def test_bundled_presets_are_single_yaml_files() -> None:
-    root = importlib.resources.files("tetramark.presets")
-    package_root = Path(tetramark.presets.__file__).parent
-
+def test_presets_are_repo_files_not_package_data() -> None:
     for name in BUNDLED:
-        assert root.joinpath(f"{name}.yaml").is_file(), name
-        # The directory form was only for the bundled presets; a same-named
-        # directory here would mean the package is still (partly) nested.
-        assert not root.joinpath(name).is_dir(), name
+        assert repo_preset(name).is_file(), name
+        document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
+        assert document["version"] == 1, name
+        assert document["preset"] == name
 
-    leftovers = [
-        path
-        for path in package_root.rglob("preset.yaml")
-        if "__pycache__" not in path.parts
-    ]
-    assert leftovers == []
+    assert not (REPO_PRESETS / "base").exists()
+    package_root = (
+        Path(__file__).resolve().parents[1] / "src" / "tetramark"
+    )
+    assert not (package_root / "presets").exists()
+    assert importlib.util.find_spec("tetramark.presets") is None
 
 
-def test_bundled_molbio_resolves_its_include_chain() -> None:
-    preset = load_preset("molbio")
+def test_repo_molbio_resolves_its_include_chain() -> None:
+    preset = load_preset(str(repo_preset("molbio")))
     assert preset.preset == "molbio"
     # "item" comes from base via ``include:``, "plasmid" is molbio's own.
     assert {"item", "plasmid"} <= set(preset.kinds)
@@ -120,7 +146,7 @@ def test_bundled_molbio_resolves_its_include_chain() -> None:
 
 @pytest.mark.parametrize("name", BUNDLED)
 def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
-    schema = load_bundled(name)
+    schema = load_repo_preset(name)
 
     assert set(schema.kinds) == EXPECTED_KINDS[name]
     assert schema.preset_versions[name] == 1
@@ -137,7 +163,7 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
 
 @pytest.mark.parametrize("name", BUNDLED)
 def test_every_kind_and_field_has_a_description(name: str) -> None:
-    schema = load_bundled(name)
+    schema = load_repo_preset(name)
     for kind_name, kind in schema.kinds.items():
         assert kind.description and kind.description.strip(), kind_name
         for scope in (kind.fields, kind.aliquot_fields):
@@ -149,7 +175,7 @@ def test_every_kind_and_field_has_a_description(name: str) -> None:
 
 
 def test_base_geometry_and_fields() -> None:
-    schema = load_bundled("base")
+    schema = load_repo_preset("base")
 
     item = schema.kinds["item"]
     assert item.object is ObjectType.entity
@@ -191,7 +217,7 @@ def test_base_geometry_and_fields() -> None:
 
 
 def test_molbio_derives_construct_fields_from_zsqlab08() -> None:
-    schema = load_bundled("molbio")
+    schema = load_repo_preset("molbio")
 
     construct = schema.kinds["construct"]
     assert construct.object is ObjectType.entity
@@ -222,7 +248,7 @@ def test_molbio_derives_construct_fields_from_zsqlab08() -> None:
 
 
 def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
-    schema = load_bundled("molbio")
+    schema = load_repo_preset("molbio")
 
     bacterial = schema.kinds["bacterial"]
     assert bacterial.object is ObjectType.stock
@@ -248,7 +274,7 @@ def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
 
 
 def test_library_book_and_copy() -> None:
-    schema = load_bundled("library")
+    schema = load_repo_preset("library")
 
     book = schema.kinds["book"]
     assert book.object is ObjectType.entity
@@ -266,9 +292,12 @@ def test_library_book_and_copy() -> None:
 
 def test_combining_base_with_molbio_is_deduplicated() -> None:
     combined = load_schema(
-        LedgerConfig(name="demo", presets=["base", "molbio"])
+        LedgerConfig(
+            name="demo",
+            presets=[str(repo_preset("base")), str(repo_preset("molbio"))],
+        )
     )
-    alone = load_bundled("molbio")
+    alone = load_repo_preset("molbio")
     assert combined.fingerprint() == alone.fingerprint()
     assert combined.preset_versions == {"base": 1, "molbio": 1}
 
@@ -304,7 +333,7 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
     assert commit_count(ledger) == 2
     assert ledger.driver.query("SELECT * FROM dolt_status") == []
 
-    # Every bundled rule is valid SQL and holds on the empty ledger.
+    # Every repo-preset rule is valid SQL and holds on the empty ledger.
     for rule in schema.rules:
         rows = ledger.driver.query(rule.sql)
         assert rows, rule.id
@@ -434,6 +463,202 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
     )[0]
     assert book["title"] == "The C Programming Language"
     assert book["isbn"] == "978-0-13-110362-7"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 20: presets are copied into the ledger, which resolves only its copy
+# ---------------------------------------------------------------------------
+
+
+def make_workspace(tmp_path: Path, dolt_env: dict[str, str], **overrides: object):
+    return Workspace.create(tmp_path / "data", env=dolt_env, **overrides)
+
+
+def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    """``tm init --preset molbio`` copies molbio + base, byte for byte."""
+    source = tmp_path / "presets-src"
+    shutil.copytree(REPO_PRESETS, source)
+    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
+
+    ledger = init_ledger(workspace, "copied", ["molbio"], author=FACTORY_AUTHOR)
+    copies = ledger.path / "presets"
+    assert (copies / "molbio.yaml").read_bytes() == (source / "molbio.yaml").read_bytes()
+    assert (copies / "base.yaml").read_bytes() == (source / "base.yaml").read_bytes()
+    fingerprint = ledger.fingerprint
+    assert ledger.schema.preset_versions == {"base": 1, "molbio": 1}
+    assert yaml.safe_load((ledger.path / "ledger.yaml").read_text())["presets"] == [
+        "molbio"
+    ]
+    ledger.close()
+
+    # The ledger is self-contained: deleting the source directory changes nothing.
+    shutil.rmtree(source)
+    reopened = open_ledger(workspace, "copied")
+    try:
+        assert reopened.fingerprint == fingerprint
+        assert {"plasmid", "item"} <= set(reopened.schema.kinds)
+        assert reopened.schema.preset_versions == {"base": 1, "molbio": 1}
+    finally:
+        reopened.close()
+
+
+def test_init_path_needs_no_presets_dir_and_copies_its_includes(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    """A custom preset path works without ``presets_dir``; its includes are copied."""
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    shutil.copyfile(REPO_PRESETS / "base.yaml", custom_dir / "base.yaml")
+    (custom_dir / "custom.yaml").write_text(
+        """preset: custom
+version: 1
+description: A custom test preset.
+include: [base]
+kinds:
+  widget:
+    object: entity
+    fields:
+      size: {type: int}
+""",
+        encoding="utf-8",
+    )
+    workspace = make_workspace(tmp_path, dolt_env)
+
+    ledger = init_ledger(
+        workspace, "customled", [custom_dir / "custom.yaml"], author=FACTORY_AUTHOR
+    )
+    try:
+        copies = ledger.path / "presets"
+        assert (copies / "custom.yaml").read_bytes() == (
+            custom_dir / "custom.yaml"
+        ).read_bytes()
+        assert (copies / "base.yaml").read_bytes() == (
+            custom_dir / "base.yaml"
+        ).read_bytes()
+        assert yaml.safe_load((ledger.path / "ledger.yaml").read_text())["presets"] == [
+            "custom"
+        ]
+        assert "widget" in ledger.schema.kinds and "item" in ledger.schema.kinds
+        fingerprint = ledger.fingerprint
+    finally:
+        ledger.close()
+
+    shutil.rmtree(custom_dir)
+    reopened = open_ledger(workspace, "customled")
+    try:
+        assert reopened.fingerprint == fingerprint
+        assert reopened.schema.preset_versions == {"base": 1, "custom": 1}
+    finally:
+        reopened.close()
+
+
+def test_init_copies_a_directory_preset_with_its_kinds_and_rules(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    ledger = init_ledger(workspace, "dirled", [PRESETS / "extras"], author=FACTORY_AUTHOR)
+    try:
+        copies = ledger.path / "presets"
+        assert (copies / "extras" / "preset.yaml").read_bytes() == (
+            PRESETS / "extras" / "preset.yaml"
+        ).read_bytes()
+        assert (copies / "extras" / "kinds" / "more.yaml").is_file()
+        assert (copies / "extras" / "rules" / "more.yaml").is_file()
+        # The included directory preset is copied too.
+        assert (copies / "base" / "preset.yaml").is_file()
+        assert {"local_entity", "extra_box", "item"} <= set(ledger.schema.kinds)
+        fingerprint = ledger.fingerprint
+        assert ledger.schema.preset_versions == {"base": 2, "extras": 1}
+    finally:
+        ledger.close()
+
+    reopened = open_ledger(workspace, "dirled")
+    try:
+        assert reopened.fingerprint == fingerprint
+        assert {"local_entity", "extra_box"} <= set(reopened.schema.kinds)
+    finally:
+        reopened.close()
+
+
+def test_open_names_the_expected_file_when_the_ledger_copy_is_missing(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
+    ledger = init_ledger(workspace, "deleted", ["molbio"], author=FACTORY_AUTHOR)
+    ledger.close()
+
+    (ledger.path / "presets" / "molbio.yaml").unlink()
+    with pytest.raises(SchemaError) as caught:
+        open_ledger(workspace, "deleted")
+    message = str(caught.value)
+    assert "presets/molbio.yaml" in message
+    assert "migration/" in message
+    assert "manual copy" in message
+    # The workspace's presets_dir is not a fallback.
+    assert "never from a search path" in message
+
+
+def test_changing_the_source_preset_after_init_does_not_change_the_ledger(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    source = tmp_path / "presets-src"
+    shutil.copytree(REPO_PRESETS, source)
+    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
+    ledger = init_ledger(workspace, "frozen", ["molbio"], author=FACTORY_AUTHOR)
+    fingerprint = ledger.fingerprint
+    ledger.close()
+
+    document = yaml.safe_load((source / "molbio.yaml").read_text(encoding="utf-8"))
+    document["kinds"]["late_entity"] = {"object": "entity"}
+    (source / "molbio.yaml").write_text(
+        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+    )
+
+    reopened = open_ledger(workspace, "frozen")
+    try:
+        assert "late_entity" not in reopened.schema.kinds
+        assert reopened.fingerprint == fingerprint
+        assert reopened.check_fingerprint(warn=False)
+    finally:
+        reopened.close()
+
+
+def test_init_name_without_presets_dir_is_a_usage_error_naming_the_key(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    with pytest.raises(UsageError, match="presets_dir"):
+        init_ledger(workspace, "nokey", ["molbio"], author=FACTORY_AUTHOR)
+    assert not workspace.ledger_path("nokey").exists()
+
+
+def test_init_path_must_exist(tmp_path: Path, dolt_env: dict[str, str]) -> None:
+    workspace = make_workspace(tmp_path, dolt_env)
+    with pytest.raises((SchemaError, LedgerError), match="not found"):
+        init_ledger(
+            workspace, "nofile", [tmp_path / "missing.yaml"], author=FACTORY_AUTHOR
+        )
+    assert not workspace.ledger_path("nofile").exists()
+
+
+def test_preset_helpers_resolve_names_and_paths(tmp_path: Path) -> None:
+    spec = resolve_preset_spec("molbio", presets_dir=REPO_PRESETS)
+    assert spec == PresetFile(
+        name="molbio", path=(REPO_PRESETS / "molbio.yaml").resolve(), is_file=True
+    )
+    closure = expand_presets([spec.path])
+    assert [preset.name for preset in closure] == ["base", "molbio"]
+    assert [copy.destination for preset in closure for copy in preset_copy_files(preset)] == [
+        Path("base.yaml"),
+        Path("molbio.yaml"),
+    ]
+
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("preset: custom\nversion: 1\n", encoding="utf-8")
+    path_spec = resolve_preset_spec(str(custom), presets_dir=None)
+    assert path_spec.name == "custom" and path_spec.path == custom.resolve()
 
 
 # This module intentionally keeps the embedded-driver path covered.

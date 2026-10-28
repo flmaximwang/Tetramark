@@ -3,9 +3,17 @@
 A general-purpose, version-controlled inventory ledger on [Dolt](https://www.dolthub.com/).
 
 Four core objects — **entity**, **stock**, **aliquot**, **box** — are extended per domain by
-declarative YAML **schemas** bundled into **presets**. Pick presets, run `tm init`, and you have a
+declarative YAML **schemas** called **presets**. Pick presets, run `tm init`, and you have a
 validated, versioned ledger. Biology is one preset (`molbio`), not the scope: `library` keeps books,
 `base` keeps generic lab items.
+
+The presets live in this repository's `presets/` directory (`base.yaml`, `molbio.yaml`,
+`library.yaml`); they are not package data. A workspace points `presets_dir` at the directory that
+holds them, and `tm init` copies the chosen preset **and its `include:` closure** into
+`<ledger>/presets/`. From then on the ledger resolves presets only from that copy, so a ledger is
+self-contained and keeps the schema it was created with even if the source preset changes later.
+The copy is a plain directory next to `ledger.yaml`, not part of the Dolt database: when you copy or
+clone a ledger, copy its `presets/` directory too.
 
 ## Why "Tetramark"
 
@@ -73,8 +81,11 @@ every command below goes through it.
 mkdir -p ~/ledger-workspace
 cd ~/ledger-workspace
 
+# presets_dir: the directory holding <name>.yaml presets — point it at a
+# Tetramark checkout's presets/ (shown below) or at your own preset files.
 tm workspace init . --port 13308 \
-  --default-ledger lab101 --author "Your Name <you@example.com>"
+  --default-ledger lab101 --author "Your Name <you@example.com>" \
+  --presets-dir "$HOME/tetramark/presets"
 tm init lab101 --preset molbio --id-prefix 12
 
 tm server start -d
@@ -98,6 +109,13 @@ tm server stop
 `box show` prints the grid, `find` resolves the alias and its box location, and `check` runs the
 generated Dolt tests (exit 0 when no non-info test fails). Without a running server the same commands
 still work through the embedded driver — just don't run two writers against one ledger at once.
+
+`tm init --preset NAME` resolves `NAME` as `<presets_dir>/<NAME>.yaml`; a value containing `/` or
+ending in `.yaml` is used as a path instead (no `presets_dir` needed). The resulting
+`<ledger>/presets/` copy is what every later `tm` command opens; if it is missing, `tm` fails and
+names the expected file rather than silently reading a different preset. `tm presets list|show`
+inspect the configured `presets_dir`. Change it later with `tm config set presets_dir PATH` or by
+editing `workspace.yaml`.
 
 More flows: register a design and its glycerol stock, aliquot a pellet and use part of it, move boxes,
 audit, import/export, back up. See `skills/tetramark/references/recipes.md`. Legacy stock ids can be

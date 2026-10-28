@@ -28,12 +28,20 @@ The worked example uses **zsqlab08** because its tables are documented in
 ```sh
 mkdir -p ~/migration/zsqlab08
 cd ~/migration/zsqlab08
-tm workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>"
+tm workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>" \
+  --presets-dir "$HOME/tetramark/presets"
 tm init zsqlab08 --preset molbio --id-prefix 08
 tm schema show                 # confirm construct/plasmid/bacterial/plasmid_prep/pellet exist
 tm box add grid9x9 WFL-08-01
 tm box add grid9x9 WFL-08-02
 ```
+
+`presets_dir` is the directory holding the preset YAML files (this repository's `presets/`,
+or your own copy); `tm init --preset molbio` copies `molbio.yaml` and everything it includes
+into `<ledger>/presets/`, and the ledger is then opened from that copy only — later edits to
+the source preset do not change it. To change a ledger's presets on purpose, replace the files
+under `<ledger>/presets/` in the same commit as the schema change (ticket 24's migration
+script does this).
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.

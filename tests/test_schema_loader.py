@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
+import shutil
 from pathlib import Path
 
 import pytest
 
 from tetramark.schema.loader import (
-    list_bundled_presets,
+    list_presets,
     load_ledger_config,
     load_ledger_schema,
     load_preset,
@@ -26,7 +26,7 @@ DATA = Path(__file__).parent / "data"
 PRESETS = DATA / "presets"
 LEDGERS = DATA / "ledgers"
 INVALID = PRESETS / "invalid"
-BUNDLED_PRESETS_DIR = Path(str(files("tetramark.presets")))
+REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +54,8 @@ def test_load_preset_single_yaml_file_with_search_paths() -> None:
     assert "item" in preset.kinds and "everything" in preset.kinds
 
 
-def test_load_preset_self_contained_bundled_yaml_file() -> None:
-    preset = load_preset(BUNDLED_PRESETS_DIR / "base.yaml")
+def test_load_preset_repo_yaml_file() -> None:
+    preset = load_preset(REPO_PRESETS / "base.yaml")
     assert preset.preset == "base"
     assert "item" in preset.kinds
 
@@ -131,7 +131,7 @@ def test_preset_directory_kinds_and_rules_subdirectories() -> None:
     assert schema.kinds["extra_box"].geometry.labels == ["a", "b"]
 
 
-def test_local_kinds_dir_rules_dir_and_statuses() -> None:
+def test_local_kinds_dir_rules_dir_and_statuses(tmp_path: Path) -> None:
     path = LEDGERS / "local" / "ledger.yaml"
     config = load_ledger_config(path)
     assert config.name == "local"
@@ -147,21 +147,37 @@ def test_local_kinds_dir_rules_dir_and_statuses() -> None:
     ]
     assert config.id_config(ObjectType.stock).prefix == "77"
 
-    _, schema = load_ledger_schema(LEDGERS / "local")
+    ledger = tmp_path / "local"
+    shutil.copytree(LEDGERS / "local", ledger)
+    (ledger / "presets").mkdir()
+    shutil.copytree(PRESETS / "chain", ledger / "presets" / "chain")
+    shutil.copytree(PRESETS / "base", ledger / "presets" / "base")
+    _, schema = load_ledger_schema(ledger)
     assert "custom_entity" in schema.kinds
     assert schema.kinds["custom_entity"].fields["label"].required
     assert [rule.id for rule in schema.rules] == ["CH01", "CH02", "LOCAL01"]
     assert schema.statuses[-1] == "quarantined"
 
 
-def test_presets_can_be_found_through_search_paths(tmp_path: Path) -> None:
+def test_presets_resolve_only_from_the_ledger_copy(tmp_path: Path) -> None:
+    """A ledger never falls back to a search path for its presets (spec §8)."""
     ledger = tmp_path / "ledger"
     ledger.mkdir()
     (ledger / "ledger.yaml").write_text(
         "name: searched\npresets: [chain]\n", encoding="utf-8"
     )
+    with pytest.raises(SchemaError) as caught:
+        load_ledger_schema(ledger, search_paths=[PRESETS])
+    assert "presets/chain" in str(caught.value)
+    assert caught.value.path == "presets"
+
+    # With the ledger's own copy it loads, and the search path is not needed.
+    (ledger / "presets").mkdir()
+    shutil.copytree(PRESETS / "chain", ledger / "presets" / "chain")
+    shutil.copytree(PRESETS / "base", ledger / "presets" / "base")
     config, schema = load_ledger_schema(ledger, search_paths=[PRESETS])
     assert config.name == "searched"
+    assert config.presets == ["chain"]
     assert {"plasmid", "item"} <= set(schema.kinds)
     assert schema.preset_versions["chain"] == 3
 
@@ -235,7 +251,9 @@ def test_local_kind_can_use_a_preset_mixin(tmp_path: Path) -> None:
     (ledger / "kinds" / "extra.yaml").write_text(
         "myitem:\n  object: entity\n  mixins: [named_fields]\n", encoding="utf-8"
     )
-    _, schema = load_ledger_schema(ledger, search_paths=[PRESETS])
+    (ledger / "presets").mkdir()
+    shutil.copytree(PRESETS / "base", ledger / "presets" / "base")
+    _, schema = load_ledger_schema(ledger)
     assert set(schema.kinds["myitem"].fields) == {"name", "description"}
 
 
@@ -245,10 +263,11 @@ def test_load_ledger_config_directly() -> None:
     assert config.ids["stock"].strategy == "datecode"
 
 
-def test_list_bundled_presets_returns_a_list() -> None:
-    presets = list_bundled_presets()
-    assert isinstance(presets, list)
-    assert presets == ["base", "library", "molbio"]
+def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
+    assert list_presets(REPO_PRESETS) == ["base", "library", "molbio"]
+    assert list_presets(PRESETS) == ["base", "chain", "extras", "full"]
+    with pytest.raises(SchemaError, match="presets directory not found"):
+        list_presets(tmp_path / "absent")
 
 
 # ---------------------------------------------------------------------------

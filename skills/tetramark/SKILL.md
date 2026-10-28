@@ -20,6 +20,12 @@ one Dolt commit; every read is a normal `tm` command.
    before the command: `tm --ledger lab101 --json entity ls plasmid`.
 5. On a server-backed workspace every command uses the server; with no server it falls back to the
    embedded driver. Never run two writers against one ledger at the same time.
+6. Presets are files, not part of the tool. `tm init --preset NAME` looks `NAME` up in the
+   workspace's `presets_dir` (set with `tm workspace init --presets-dir ...`; see
+   `tm config get presets_dir`) and copies it, plus its `include:` closure, into
+   `<ledger>/presets/`. Every later command opens only that copy, so to change a ledger's schema you
+   edit `<ledger>/presets/*.yaml` (or a local `kinds_dir`/`rules_dir`) — editing a checkout's
+   `presets/` does not affect existing ledgers.
 
 ## Decision table
 

@@ -67,7 +67,15 @@ from tetramark.driver.server import ServerDriver
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 from tetramark.schema.ddl import Statement, schema_statements
-from tetramark.schema.loader import load_ledger_schema, load_schema
+from tetramark.schema.loader import (
+    PresetCopy,
+    PresetFile,
+    expand_presets,
+    load_ledger_schema,
+    load_schema,
+    preset_copy_files,
+    resolve_preset_spec,
+)
 from tetramark.schema.model import (
     DEFAULT_STATUSES,
     SPEC_VERSION,
@@ -243,26 +251,92 @@ def build_id_strategies(config: LedgerConfig) -> dict[str, IdStrategy]:
     return strategies
 
 
-def _promote_presets(presets: Sequence[str | Path], *, base_dir: Path) -> list[str]:
-    """Turn existing preset paths into absolute ones so ``ledger.yaml`` reopens.
+def _preset_sources(
+    presets: Sequence[str | Path], workspace: Workspace
+) -> tuple[list[PresetFile], list[PresetCopy]]:
+    """Resolve ``--preset`` values and the files that copy them into the ledger.
 
-    Bare names (``base``, ``molbio``) stay bare: the loader resolves them as
-    bundled presets.  A relative path is stored absolute because ``ledger.yaml``
-    lives inside the ledger directory, not in the caller's cwd.
+    Bare names resolve through the workspace's ``presets_dir``; a path (one
+    containing ``/`` or ending in ``.yaml``/``.yml``) works without it.  The
+    second element is the full include closure, so a ledger's ``presets/`` copy
+    is self-contained.
     """
-    promoted: list[str] = []
+    sources: list[str] = []
     for raw in presets:
         text = str(raw).strip()
         if not text:
             raise UsageError("preset names must not be empty")
-        candidate = Path(text).expanduser()
-        if not candidate.is_absolute():
-            candidate = base_dir / candidate
-        if candidate.exists():
-            promoted.append(str(candidate.resolve()))
+        sources.append(text)
+    top = [
+        resolve_preset_spec(
+            source, presets_dir=workspace.presets_dir_path, base_dir=Path.cwd()
+        )
+        for source in sources
+    ]
+    names: list[str] = []
+    for preset in top:
+        if preset.name not in names:
+            names.append(preset.name)
+    if len(names) != len(top):
+        # e.g. ``-p base -p ./other/base.yaml``: both would be "base".
+        raise UsageError(
+            "the same preset name was given more than once: " + ", ".join(names)
+        )
+
+    closure = expand_presets(
+        [preset.path for preset in top], base_dir=Path.cwd()
+    )
+    by_name: dict[str, PresetFile] = {}
+    for preset in closure:
+        existing = by_name.get(preset.name)
+        if existing is not None and existing.path != preset.path:
+            raise UsageError(
+                f"two different presets would be copied as {preset.name!r} "
+                f"({existing.path} and {preset.path}); preset names must be "
+                "unique within one ledger"
+            )
+        if existing is None:
+            by_name[preset.name] = preset
+    copies: list[PresetCopy] = []
+    for preset in closure:
+        if by_name.get(preset.name) is preset:
+            copies.extend(preset_copy_files(preset))
+            by_name.pop(preset.name)
+    return top, copies
+
+
+def _write_presets(
+    target: Path, copies: Sequence[PresetCopy]
+) -> list[tuple[Path, bytes | None]]:
+    """Copy the preset closure into ``<ledger>/presets/``.
+
+    Returns ``(path, previous bytes)`` for every written file (``None`` when it
+    did not exist) so an adopt rollback can undo exactly this write.
+    """
+    root = target / "presets"
+    root.mkdir(parents=True, exist_ok=True)
+    written: list[tuple[Path, bytes | None]] = []
+    for copy in copies:
+        destination = root / copy.destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        previous = destination.read_bytes() if destination.is_file() else None
+        written.append((destination, previous))
+        shutil.copyfile(copy.source, destination)
+    return written
+
+
+def _restore_presets(written: Sequence[tuple[Path, bytes | None]]) -> None:
+    """Undo :func:`_write_presets` after a failed adopt (best effort)."""
+    roots: set[Path] = set()
+    for destination, previous in reversed(written):
+        if previous is None:
+            destination.unlink(missing_ok=True)
         else:
-            promoted.append(text)
-    return promoted
+            destination.write_bytes(previous)
+        roots.add(destination.parent)
+    for directory in sorted(roots, key=lambda item: len(item.parts), reverse=True):
+        with suppress(OSError):
+            directory.rmdir()
 
 
 def _ledger_yaml(
@@ -396,6 +470,7 @@ class InitPlan:
     ledger_yaml: str
     statements: list[Statement]
     author: str
+    preset_copies: tuple[PresetCopy, ...]
 
     @property
     def sql(self) -> str:
@@ -434,16 +509,17 @@ def _ledger_plan(
     target = ws.ledger_path(name)
 
     if presets is None:
-        sources: list[str] = []
+        requested: list[str | Path] = []
     elif isinstance(presets, (str, Path)):
-        sources = [str(presets)]
+        requested = [presets]
     else:
-        sources = [str(preset) for preset in presets]
-    sources = _promote_presets(sources, base_dir=Path.cwd())
-    if not sources:
+        requested = list(presets)
+    if not requested:
         raise UsageError(
             "a ledger needs at least one preset: pass --preset NAME (or a preset path)"
         )
+    preset_files, preset_copies = _preset_sources(requested, ws)
+    preset_names = [preset.name for preset in preset_files]
 
     resolved_author = resolve_author(
         author, ws.config.author, cwd=ws.data_dir, env=ws.env
@@ -455,7 +531,7 @@ def _ledger_plan(
 
     payload, text = _ledger_yaml(
         name=name,
-        presets=sources,
+        presets=preset_names,
         id_prefix=id_prefix,
         author=canonical_author,
         statuses=statuses,
@@ -467,7 +543,12 @@ def _ledger_plan(
 
     # Fail before creating directories: a bad preset must not leave junk behind.
     build_id_strategies(config)
-    schema = load_schema(config, base_dir=target)
+    # The schema is loaded from the sources before anything is copied; the
+    # ledger records the bare names and reopens from its own presets/ copy.
+    schema_config = config.model_copy(
+        update={"presets": [str(preset.path) for preset in preset_files]}
+    )
+    schema = load_schema(schema_config, base_dir=target)
 
     return InitPlan(
         workspace=ws,
@@ -478,6 +559,7 @@ def _ledger_plan(
         ledger_yaml=text,
         statements=schema_statements(schema),
         author=canonical_author,
+        preset_copies=tuple(preset_copies),
     )
 
 
@@ -625,6 +707,8 @@ def init_ledger(
         assert identity_name and identity_email  # _dolt_identity checked this
         _run_dolt_init(target, identity_name, identity_email, plan.workspace.env)
 
+        # The ledger is self-contained: its presets live in <ledger>/presets/.
+        _write_presets(target, plan.preset_copies)
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
 
         driver = EmbeddedDriver(target, env=plan.workspace.env)
@@ -769,14 +853,16 @@ def _rollback_adopt(
     statements: Sequence[Statement],
     config_path: Path,
     previous_config: str | None,
+    preset_writes: Sequence[tuple[Path, bytes | None]] = (),
 ) -> None:
     """Best-effort undo of a failed adopt.  Never deletes the database.
 
     The directory and its history are untouched: only the objects this attempt
     created are dropped (Dolt's ``reset --hard`` leaves untracked tables
     behind), then the branch is reset to ``pre_head``.  A pre-existing
-    ``ledger.yaml`` is restored.  Failures here must not mask the original
-    error, hence the warnings instead of nested exceptions.
+    ``ledger.yaml`` and any overwritten ``presets/`` files are restored.
+    Failures here must not mask the original error, hence the warnings instead
+    of nested exceptions.
     """
     failed: list[str] = []
     driver: Driver | None = None
@@ -804,6 +890,10 @@ def _rollback_adopt(
             config_path.write_text(previous_config, encoding="utf-8")
     except OSError as error:  # pragma: no cover - defensive
         failed.append(f"could not restore {config_path}: {error}")
+    try:
+        _restore_presets(preset_writes)
+    except OSError as error:  # pragma: no cover - defensive
+        failed.append(f"could not restore presets/: {error}")
     if failed:
         warnings.warn(
             f"adopt rollback of {name!r} is incomplete: {'; '.join(failed)}",
@@ -880,6 +970,7 @@ def adopt_ledger(
             ledger_yaml=plan.ledger_yaml,
             statements=plan.statements,
             author=plan.author,
+            preset_copies=plan.preset_copies,
             branch=selected,
             adopted_from_commit=pre_head,
         )
@@ -888,7 +979,10 @@ def adopt_ledger(
     previous_config = (
         config_path.read_text(encoding="utf-8") if config_path.is_file() else None
     )
+    preset_writes: list[tuple[Path, bytes | None]] = []
     try:
+        # The ledger is self-contained: its presets live in <ledger>/presets/.
+        preset_writes = _write_presets(target, plan.preset_copies)
         config_path.write_text(plan.ledger_yaml, encoding="utf-8")
         with driver.transaction():
             for statement in plan.statements:
@@ -914,6 +1008,7 @@ def adopt_ledger(
             statements=plan.statements,
             config_path=config_path,
             previous_config=previous_config,
+            preset_writes=preset_writes,
         )
         raise
 
@@ -970,6 +1065,8 @@ def init_ledger_on_server(
         _create_database(ws, name)
         created = True
         target.mkdir(parents=True, exist_ok=True)
+        # The ledger is self-contained: its presets live in <ledger>/presets/.
+        _write_presets(target, plan.preset_copies)
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
 
         driver = ServerDriver(ws.config.host, ws.config.port, name)

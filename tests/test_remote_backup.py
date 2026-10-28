@@ -74,8 +74,11 @@ def clone_ledger(ledger: Ledger, dolt_run, name: str = "clone") -> Ledger:
     url = remote.list_remotes(ledger)[0].url
     target = ledger.workspace.ledger_path(name)
     dolt_run("clone", url, str(target))
-    # Dolt clones the database, not plain files: a ledger needs its config.
+    # Dolt clones the database, not plain files: a ledger needs its config and
+    # its own preset copies (ticket 20; they are not package data and not in
+    # the database). A real clone copies them next to ledger.yaml as well.
     shutil.copy(ledger.path / LEDGER_FILE, target / LEDGER_FILE)
+    shutil.copytree(ledger.path / "presets", target / "presets")
     return open_ledger(ledger.workspace, name)
 
 

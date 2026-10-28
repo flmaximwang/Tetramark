@@ -45,8 +45,11 @@ tm presets show NAME
 ```
 
 `init` creates the Dolt database, writes `ledger.yaml` and the meta row, generates DDL/views/tests and
-commits once. `--preset` is repeatable; a value can also be a path to a local preset directory or a
-preset YAML file.
+commits once. `--preset` is repeatable; a bare name resolves as `<presets_dir>/<name>.yaml`
+(`presets_dir` in `workspace.yaml`, set with `tm workspace init --presets-dir` or `tm config set
+presets_dir`), while a value containing `/` or ending in `.yaml` is used as a path and needs no
+`presets_dir`. The preset and its include closure are copied into `<ledger>/presets/`; the ledger
+then resolves presets only from that copy.
 `--id-prefix` feeds the default date-code stock strategy (`1226FP01` for prefix `12`, 2026-06-16).
 `--status` replaces the default vocabulary `pending, stored, missing, consumed`.
 

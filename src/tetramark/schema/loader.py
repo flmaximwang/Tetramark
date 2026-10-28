@@ -1,8 +1,8 @@
 """Loading and resolving the declarative schema.
 
-Responsibilities (spec §1.1, §2):
+Responsibilities (spec §1.1, §2, §8):
 
-* read bundled presets (``tetramark/presets/<name>.yaml``) or presets from a path;
+* read presets from a path or from the ledger's own ``<ledger>/presets/`` copy;
 * resolve ``include`` chains (missing preset or cycle → error; a preset included
   twice through a diamond is merged once);
 * merge local ``kinds_dir`` / ``rules_dir`` files and the ledger's ``ledger.yaml``;
@@ -11,11 +11,16 @@ Responsibilities (spec §1.1, §2):
 * build an :class:`~tetramark.schema.model.EffectiveSchema` with a stable
   :meth:`~tetramark.schema.model.EffectiveSchema.fingerprint`.
 
+Presets live in the repository's ``presets/`` directory (they are not package
+data).  ``tm init`` copies each selected preset and its include closure into
+``<ledger>/presets/``; a ledger then resolves presets from that copy only, so its
+schema cannot drift from the recorded ``preset_versions``.
+
 Every error is a :class:`~tetramark.schema.model.SchemaError` carrying the YAML
 file and dotted path, e.g. ``molbio.yaml: kinds.plasmid.fields.construct.to``.
 
 Public entry points
--------------------
+------------------
 ``load_preset(source)``
     One (include-expanded, not mixin-applied) preset document.
 ``load_ledger_config(path)``
@@ -23,21 +28,27 @@ Public entry points
 ``load_schema(config, base_dir=...)``
     Resolve a config into an :class:`EffectiveSchema`.
 ``load_ledger_schema(ledger_dir)``
-    Both of the above for a ledger directory.
-``list_bundled_presets()``
-    Names of the presets shipped in the package.
+    Both of the above for a ledger directory, presets from its own copy.
+``resolve_preset_spec(spec, presets_dir=...)``
+    One ``--preset`` argument (a name or a path) to a concrete preset.
+``expand_presets(sources)``
+    The presets a ledger needs: every source plus its include closure.
+``preset_copy_files(preset)``
+    The files that copy one preset into ``<ledger>/presets/``.
+``list_presets(directory)``
+    Preset names in a presets directory.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from tetramark.errors import UsageError
 from tetramark.schema.model import (
     IDENTIFIER_RE,
     RESERVED_SQL_WORDS,
@@ -52,23 +63,46 @@ from tetramark.schema.model import (
 )
 
 __all__ = [
-    "list_bundled_presets",
+    "PresetCopy",
+    "PresetFile",
+    "expand_presets",
+    "list_presets",
     "load_ledger_config",
     "load_ledger_schema",
     "load_preset",
     "load_schema",
+    "preset_copy_files",
+    "resolve_ledger_presets",
+    "resolve_preset_spec",
 ]
 
 YAML_SUFFIXES = (".yaml", ".yml")
-_PRESETS_PACKAGE = "tetramark.presets"
 _CORE_OBJECTS = frozenset({"entity", "stock", "aliquot", "box"})
 _KIND_RESERVED = frozenset({"id", "kind"})
 _ALIQUOT_RESERVED = frozenset({"id"})
 
 
 # ---------------------------------------------------------------------------
-# Filesystem / package-data helpers
+# Filesystem helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PresetFile:
+    """A concrete preset source: a YAML file or a directory with ``preset.yaml``."""
+
+    name: str
+    path: Path
+    is_file: bool
+
+
+@dataclass(frozen=True)
+class PresetCopy:
+    """One file to write into ``<ledger>/presets/`` (``destination`` is relative)."""
+
+    name: str
+    source: Path
+    destination: Path
 
 
 @dataclass(frozen=True)
@@ -76,11 +110,10 @@ class _Source:
     """A resolved preset location (directory or single YAML file)."""
 
     key: str
-    root: Any  # Path or importlib.resources Traversable
+    root: Path
     is_file: bool
     display_root: str
-    include_base: Any
-    bundled: bool = False
+    include_base: Path
 
     @property
     def primary_display(self) -> str:
@@ -96,36 +129,32 @@ class _PresetUnit:
     extras: list[tuple[str, Preset]] = field(default_factory=list)
 
 
-def _bundled_root() -> Any:
-    return resources.files(_PRESETS_PACKAGE)
-
-
-def _is_dir(item: Any) -> bool:
+def _is_dir(item: Path) -> bool:
     try:
         return item.is_dir()
-    except OSError:  # pragma: no cover - unlikely for package data
+    except OSError:  # pragma: no cover - unlikely for a broken path
         return False
 
 
-def _is_file(item: Any) -> bool:
+def _is_file(item: Path) -> bool:
     try:
         return item.is_file()
     except OSError:  # pragma: no cover
         return False
 
 
-def _join(base: Any, *parts: str) -> Any:
+def _join(base: Path, *parts: str) -> Path:
     item = base
     for part in parts:
-        item = item.joinpath(part)
+        item = item / part
     return item
 
 
-def _read_text(item: Any) -> str:
+def _read_text(item: Path) -> str:
     return item.read_text(encoding="utf-8")
 
 
-def _iter_yaml(directory: Any) -> list[Any]:
+def _iter_yaml(directory: Path) -> list[Path]:
     """Sorted ``*.yaml``/``*.yml`` files directly inside ``directory``."""
     files = []
     for child in directory.iterdir():
@@ -140,24 +169,24 @@ def _candidate_names(raw: str) -> list[str]:
     return [raw, f"{raw}.yaml", f"{raw}.yml"]
 
 
-def _bundled_source(raw: str) -> _Source | None:
-    if "/" in raw or "\\" in raw:
-        return None
-    root = _bundled_root()
-    for name in _candidate_names(raw):
-        item = _join(root, name)
-        if _is_dir(item) or _is_file(item):
-            is_file = _is_file(item)
-            display = name
-            return _Source(
-                key=f"bundled:{name}",
-                root=item,
-                is_file=is_file,
-                display_root=display,
-                include_base=root,
-                bundled=True,
-            )
+def _source_for(path: Path, display: str) -> _Source:
+    """A :class:`_Source` for an already existing absolute path."""
+    return _Source(
+        key=str(path),
+        root=path,
+        is_file=path.is_file(),
+        display_root=display,
+        include_base=path.parent,
+    )
+
+
+def _find_preset_in_dir(directory: Path, name: str) -> Path | None:
+    for candidate_name in _candidate_names(name):
+        candidate = directory / candidate_name
+        if candidate.exists():
+            return candidate
     return None
+
 
 
 def _resolve_source(
@@ -193,10 +222,6 @@ def _resolve_source(
                 display_root=raw,
                 include_base=resolved.parent,
             )
-
-    bundled = _bundled_source(raw)
-    if bundled is not None:
-        return bundled
 
     tried = ", ".join(str(candidate) for candidate in candidates) or "(none)"
     raise SchemaError(
@@ -373,7 +398,7 @@ def _expand(
             return
 
         unit = _load_unit(src)
-        include_base = None if unit.source.bundled else unit.source.include_base
+        include_base = unit.source.include_base
         for included in unit.primary.include:
             visit(
                 included,
@@ -646,7 +671,7 @@ def load_preset(
     base_dir: str | Path | None = None,
     search_paths: Sequence[str | Path] = (),
 ) -> Preset:
-    """Load one preset by bundled name or path, resolving its includes.
+    """Load one preset by path, resolving its includes.
 
     Mixins are *not* inlined here; use :func:`load_schema` for a resolved
     schema.  Included presets are merged in include-first order.
@@ -699,6 +724,225 @@ def _load_local_dir(
     return docs
 
 
+def _expand_many(
+    sources: Iterable[str | Path],
+    *,
+    base_dir: Path | None,
+    search_paths: Sequence[Path] = (),
+) -> list[_PresetUnit]:
+    """Expand several preset sources, deduplicated by resolved source path."""
+    units: list[_PresetUnit] = []
+    seen: set[str] = set()
+    for source in sources:
+        for unit in _expand(source, base_dir=base_dir, search_paths=search_paths):
+            if unit.source.key in seen:
+                continue
+            seen.add(unit.source.key)
+            units.append(unit)
+    return units
+
+
+def _unit_name(unit: _PresetUnit) -> str:
+    """The preset's own ``preset:`` name, else its file stem / directory name."""
+    if unit.primary.preset:
+        return unit.primary.preset
+    if unit.source.is_file:
+        return unit.source.root.stem
+    return unit.source.root.name
+
+
+# ---------------------------------------------------------------------------
+# Presets of a ledger: --preset resolution, the include closure, and copies
+# ---------------------------------------------------------------------------
+
+
+def _reference_name(raw: str | Path) -> str:
+    """The name a ``ledger.yaml`` ``presets:`` entry stands for.
+
+    New ledgers record bare names; ``tm init`` accepts paths too, and old
+    ``ledger.yaml`` files may still hold a path.  Either way the ledger's own
+    copy is ``<ledger>/presets/<name>.yaml`` (or ``<name>/``), so the entry is
+    reduced to its file stem / last path component.
+    """
+    text = str(raw).strip()
+    path = Path(text)
+    if path.suffix in YAML_SUFFIXES:
+        return path.stem
+    return path.name
+
+
+def resolve_preset_spec(
+    spec: str | Path,
+    *,
+    presets_dir: str | Path | None,
+    base_dir: str | Path | None = None,
+) -> PresetFile:
+    """Resolve one ``tm init --preset`` value to a concrete preset.
+
+    A value containing ``/`` (or ``\\``) or ending in ``.yaml``/``.yml`` is a
+    path, resolved against ``base_dir`` (the caller's cwd).  Anything else is a
+    bare name resolved as ``<presets_dir>/<name>.yaml``; without a configured
+    ``presets_dir`` the error names that workspace-config key.
+    """
+    text = str(spec).strip()
+    if not text:
+        raise UsageError("preset names must not be empty")
+
+    if "/" in text or "\\" in text or text.endswith(YAML_SUFFIXES):
+        root = Path(base_dir).expanduser() if base_dir is not None else Path.cwd()
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        if not candidate.exists():
+            raise SchemaError(
+                f"preset path {text!r} not found (tried: {candidate})",
+                path="presets",
+            )
+        resolved = candidate.resolve()
+        unit = _load_unit(_source_for(resolved, text))
+        return PresetFile(name=_unit_name(unit), path=resolved, is_file=resolved.is_file())
+
+    if presets_dir is None:
+        raise UsageError(
+            f"preset name {text!r} needs 'presets_dir' in workspace.yaml: set it "
+            "to the directory that holds <name>.yaml (for example the Tetramark "
+            "checkout's presets/), or pass --preset as a path instead"
+        )
+    directory = Path(presets_dir).expanduser()
+    if not directory.is_absolute():
+        directory = (Path(base_dir) if base_dir is not None else Path.cwd()) / directory
+    found = _find_preset_in_dir(directory, text)
+    if found is None:
+        tried = ", ".join(str(directory / name) for name in _candidate_names(text))
+        raise SchemaError(
+            f"preset {text!r} not found in presets_dir {directory} (tried: {tried})",
+            file=str(directory),
+            path="presets",
+        )
+    resolved = found.resolve()
+    unit = _load_unit(_source_for(resolved, text))
+    return PresetFile(name=_unit_name(unit), path=resolved, is_file=resolved.is_file())
+
+
+def expand_presets(
+    sources: Sequence[str | Path],
+    *,
+    base_dir: str | Path | None = None,
+    search_paths: Sequence[str | Path] = (),
+) -> list[PresetFile]:
+    """Every preset a ledger needs: each source plus its include closure.
+
+    Ordered include-first, each resolved source once.  Used by ``tm init`` to
+    decide what to copy into ``<ledger>/presets/``.
+    """
+    units = _expand_many(
+        sources,
+        base_dir=Path(base_dir) if base_dir is not None else None,
+        search_paths=[Path(path) for path in search_paths],
+    )
+    return [
+        PresetFile(
+            name=_unit_name(unit),
+            path=unit.source.root,
+            is_file=unit.source.is_file,
+        )
+        for unit in units
+    ]
+
+
+def preset_copy_files(preset: PresetFile) -> list[PresetCopy]:
+    """The files that place ``preset`` inside ``<ledger>/presets/``.
+
+    A YAML preset is copied as ``<name><suffix>``; a directory preset becomes
+    ``<name>/preset.yaml`` plus its ``kinds/*.yaml`` and ``rules/*.yaml``.
+    Includes are plain preset names, so they resolve inside the copy directory.
+    """
+    if preset.is_file:
+        destination = Path(f"{preset.name}{preset.path.suffix}")
+        return [PresetCopy(name=preset.name, source=preset.path, destination=destination)]
+
+    files = [
+        PresetCopy(
+            name=preset.name,
+            source=preset.path / "preset.yaml",
+            destination=Path(preset.name) / "preset.yaml",
+        )
+    ]
+    for sub in ("kinds", "rules"):
+        directory = preset.path / sub
+        if not directory.is_dir():
+            continue
+        for item in _iter_yaml(directory):
+            files.append(
+                PresetCopy(
+                    name=preset.name,
+                    source=item,
+                    destination=Path(preset.name) / sub / item.name,
+                )
+            )
+    return files
+
+
+def resolve_ledger_presets(
+    ledger_dir: str | Path, config: LedgerConfig
+) -> list[PresetFile]:
+    """Resolve ``config.presets`` to the ledger's own copies.
+
+    A ledger uses **only** the presets under ``<ledger>/presets/``: the
+    recorded ``preset_versions`` must describe exactly the schema the ledger is
+    opened with, so there is no fallback to a workspace ``presets_dir`` or to a
+    path recorded in ``ledger.yaml``.  A missing copy is a hard error naming the
+    expected file.
+    """
+    root = Path(ledger_dir).expanduser()
+    presets_dir = root / "presets"
+    resolved: list[PresetFile] = []
+    missing: list[tuple[str, Path]] = []
+    for raw in config.presets:
+        name = _reference_name(raw)
+        found = _find_preset_in_dir(presets_dir, name)
+        if found is None:
+            suffix = Path(str(raw)).suffix
+            expected_suffix = suffix if suffix in YAML_SUFFIXES else ".yaml"
+            missing.append((name, presets_dir / f"{name}{expected_suffix}"))
+            continue
+        resolved.append(
+            PresetFile(name=name, path=found.resolve(), is_file=found.is_file())
+        )
+
+    if missing:
+        expected = "; ".join(str(path) for _name, path in missing)
+        names = ", ".join(repr(name) for name, _path in missing)
+        raise SchemaError(
+            f"preset {names} is missing from this ledger's own copy: expected "
+            f"{expected}. A ledger resolves presets only from <ledger>/presets/, "
+            "never from a search path; copy the preset and its includes into "
+            "that directory (a manual copy works), or run the matching "
+            "migration/ script (see docs/migration.md)",
+            file=str(root / "ledger.yaml"),
+            path="presets",
+        )
+    return resolved
+
+
+def list_presets(directory: str | Path) -> list[str]:
+    """Names of the presets in ``directory`` (YAML files and preset dirs)."""
+    root = Path(directory).expanduser()
+    if not root.is_dir():
+        raise SchemaError(
+            "presets directory not found", file=str(root), path="presets_dir"
+        )
+    names: set[str] = set()
+    for item in root.iterdir():
+        if item.name.startswith("."):
+            continue
+        if _is_file(item) and item.name.endswith(YAML_SUFFIXES):
+            names.add(item.stem)
+        elif _is_dir(item) and _is_file(item / "preset.yaml"):
+            names.add(item.name)
+    return sorted(names)
+
+
 def load_schema(
     config: LedgerConfig,
     *,
@@ -709,29 +953,19 @@ def load_schema(
 
     ``base_dir`` is the directory containing ``ledger.yaml``; relative
     ``presets``, ``kinds_dir`` and ``rules_dir`` entries are resolved against
-    it.
+    it.  Callers that open an existing ledger should use
+    :func:`load_ledger_schema`, which resolves presets from the ledger's own
+    ``presets/`` copy only.
     """
     root = Path(base_dir).expanduser().resolve() if base_dir is not None else Path.cwd()
     search = [Path(path).expanduser() for path in search_paths]
 
-    units: list[_PresetUnit] = []
-    seen_sources: set[str] = set()
-    for preset_source in config.presets:
-        for unit in _expand(preset_source, base_dir=root, search_paths=search):
-            if unit.source.key in seen_sources:
-                continue
-            seen_sources.add(unit.source.key)
-            units.append(unit)
+    units = _expand_many(config.presets, base_dir=root, search_paths=search)
 
     collector = _Collector()
     versions: dict[str, int] = {}
     for unit in units:
-        name = unit.primary.preset or (
-            unit.source.root.name
-            if not unit.source.is_file
-            else Path(unit.source.root.name).stem
-        )
-        versions.setdefault(name, unit.primary.version)
+        versions.setdefault(_unit_name(unit), unit.primary.version)
         collector.add(unit.primary, unit.source.primary_display)
         for display, doc in unit.extras:
             collector.add(doc, display)
@@ -769,20 +1003,17 @@ def load_ledger_schema(
     *,
     search_paths: Sequence[str | Path] = (),
 ) -> tuple[LedgerConfig, EffectiveSchema]:
-    """Load ``<ledger_dir>/ledger.yaml`` and its effective schema."""
+    """Load ``<ledger_dir>/ledger.yaml`` and its effective schema.
+
+    Presets resolve only from ``<ledger_dir>/presets/`` (spec §8); when the
+    ledger's copy is incomplete the error names the expected file.
+    """
     path = Path(ledger_dir)
     if path.is_file():
         path = path.parent
     config = load_ledger_config(path / "ledger.yaml")
-    return config, load_schema(config, base_dir=path, search_paths=search_paths)
-
-
-def list_bundled_presets() -> list[str]:
-    """Names of bundled presets (top-level ``*.yaml``/``*.yml`` files)."""
-    root = _bundled_root()
-    names = [
-        Path(item.name).stem
-        for item in root.iterdir()
-        if _is_file(item) and item.name.endswith(YAML_SUFFIXES)
-    ]
-    return sorted(names)
+    presets = resolve_ledger_presets(path, config)
+    effective = config.model_copy(update={"presets": [str(preset.path) for preset in presets]})
+    return config, load_schema(
+        effective, base_dir=path, search_paths=search_paths
+    )

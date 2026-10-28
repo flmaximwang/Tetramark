@@ -51,6 +51,15 @@ def workspace_init(
         None, "--default-ledger", help="Ledger used when --ledger is omitted."
     ),
     author: str | None = typer.Option(None, "--author", help="Commit author for this workspace."),
+    presets_dir: str | None = typer.Option(
+        None,
+        "--presets-dir",
+        help=(
+            "Directory holding <name>.yaml presets for 'tm init --preset NAME' "
+            "(relative paths resolve against workspace.yaml), e.g. the "
+            "Tetramark checkout's presets/."
+        ),
+    ),
 ) -> None:
     """Create ``workspace.yaml`` in PATH."""
     workspace = Workspace.create(
@@ -59,10 +68,13 @@ def workspace_init(
         port=port,
         default_ledger=default_ledger,
         author=author,
+        presets_dir=presets_dir,
     )
     typer.echo(f"Created workspace {workspace.data_dir}")
     typer.echo(f"  config : {workspace.config_path}")
     typer.echo(f"  server : {workspace.config.host}:{workspace.config.port}")
+    if workspace.presets_dir_path is not None:
+        typer.echo(f"  presets: {workspace.presets_dir_path}")
 
 
 @server_app.command("start")

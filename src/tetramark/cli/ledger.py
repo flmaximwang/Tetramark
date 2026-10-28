@@ -18,11 +18,16 @@ from tetramark.core.ledger import (
     init_ledger,
 )
 from tetramark.errors import UsageError
-from tetramark.schema.loader import list_bundled_presets, load_preset
+from tetramark.schema.loader import (
+    YAML_SUFFIXES,
+    list_presets,
+    load_preset,
+    resolve_preset_spec,
+)
 from tetramark.schema.model import EffectiveSchema, Kind, ObjectType, Preset, Rule
 
 presets_app = typer.Typer(
-    help="List and inspect the presets shipped with Tetramark.",
+    help="List and inspect the presets available to this workspace.",
     no_args_is_help=True,
 )
 
@@ -40,7 +45,12 @@ def init_command(
         [],
         "--preset",
         "-p",
-        help="Preset name or path; repeat to combine presets (e.g. -p base -p molbio).",
+        help=(
+            "Preset name (from the workspace's 'presets_dir') or a path to a "
+            "preset YAML file or directory; repeat to combine presets "
+            "(e.g. -p base -p molbio). The preset and its includes are copied "
+            "into the ledger, so it reopens without access to the source."
+        ),
     ),
     id_prefix: str | None = typer.Option(
         None, "--id-prefix", help="Prefix for date-code stock ids (e.g. 12)."
@@ -159,23 +169,47 @@ def _describe_schema(schema: EffectiveSchema) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _presets_dir(workspace: Any) -> Any:
+    """The workspace's ``presets_dir``, or a usage error naming the key."""
+    directory = workspace.presets_dir_path
+    if directory is None:
+        raise UsageError(
+            "workspace.yaml has no 'presets_dir': set it to the directory holding "
+            "<name>.yaml presets (for example the Tetramark checkout's presets/), "
+            "or pass a preset path instead"
+        )
+    return directory
+
+
 @presets_app.command("list")
-def list_presets() -> None:
-    """List the presets bundled with this installation."""
-    names = list_bundled_presets()
+def presets_list(ctx: typer.Context) -> None:
+    """List the presets in the workspace's ``presets_dir``."""
+    workspace = resolve_workspace(ctx)
+    directory = _presets_dir(workspace)
+    names = list_presets(directory)
     if not names:
-        typer.echo("no bundled presets")
+        typer.echo(f"no presets in {directory}")
         return
     for name in names:
         typer.echo(name)
 
 
 @presets_app.command("show")
-def show_preset(
-    name: str = typer.Argument(..., help="Bundled preset name or a path to a preset."),
+def presets_show(
+    ctx: typer.Context,
+    name: str = typer.Argument(
+        ...,
+        help="Preset name (from the workspace's presets_dir) or a path to a preset.",
+    ),
 ) -> None:
     """Print one preset (include-resolved) as YAML."""
-    preset = load_preset(name)
+    text = str(name)
+    path_like = "/" in text or "\\" in text or text.endswith(YAML_SUFFIXES)
+    presets_dir = None
+    if not path_like:
+        presets_dir = _presets_dir(resolve_workspace(ctx))
+    preset_file = resolve_preset_spec(name, presets_dir=presets_dir)
+    preset = load_preset(str(preset_file.path))
     typer.echo(
         yaml.safe_dump(
             preset_payload(preset), sort_keys=False, allow_unicode=True
