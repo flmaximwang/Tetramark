@@ -273,6 +273,20 @@ Generated tests are fully replaced on each apply (they are derived state); never
   (lesson from zsqlab10's slot-column relaxation).
 - After apply, the plan must be empty (idempotency is a test).
 
+`tm schema plan/apply` evolves a ledger within one spec version. When the **format** itself changes —
+`SPEC_VERSION` or a preset's `version:` is bumped — the step is a hand-run script under `migration/`,
+one folder per counter that changed (`migration/spec/<N>-to-<N+1>/`,
+`migration/presets/<name>/<N>-to-<N+1>/`). The rule: whoever bumps a counter adds exactly one folder in
+the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH [--branch B] [--dry-run]`
+and, through `src/tetramark/migrate.py`, refuses unless the ledger's counter equals `N`, creates the tag
+`pre-migrate-<spec|preset>-<N>` before writing, prints every statement with `--dry-run`, and applies in
+exactly one commit (`migrate(ledger): spec N -> N+1`) that bumps the counter, `tetramark_version` and
+the fingerprint together. Dolt DDL is not transactional, so a failed step prints the last good commit
+and the `dolt reset --hard` command. Preset steps may express renames in `renames.yaml` and feed them to
+the diff planner as an explicit rename map instead of `renamed_from`; see `migration/README.md`. There is
+no `tm` command for this yet — the older `tm upgrade` proposal (`docs/issues/001-tm-upgrade.md`) may
+absorb `migration/` later.
+
 ---
 
 ## 6. CLI (`tm`)
