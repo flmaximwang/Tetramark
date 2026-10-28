@@ -253,6 +253,14 @@ uv run pytest -q -m fast     # ~340 tests, seconds — while iterating
 uv run pytest -q -n 4        # the full suite — on merges and before a release
 ```
 
+Historical shapes that the current tool can no longer create are checked in as real databases
+instead of being faked: `tests/data/ledgers/molbio-v1/` is a genuine 0.1.2-era molbio-1 database
+(456 KiB, empty; tests seed their rows), reproduced by `tests/data/ledgers/build_fixtures.py` from the
+wave-9-era commit in a temporary worktree. The migration tests copy it, and the module-scoped
+`test_molbio_v1_fixture_matches_its_builder` rebuilds it and compares schema fingerprint, tables, views,
+`dolt_tests` count and the preset files, so a tool change cannot silently leave a stale fixture behind.
+`-k molbio_1_to_2`: 169.1 s → 105.0 s.
+
 Measured on a shared box (0.2.0): per ledger 11.17 s → 0.84 s (13.3×); full suite 763.5 s → 597.9 s
 (−21.7 %, with a load spike in the final run); the 50th-slowest test 19.0 s → 11.0 s. The remaining
 wall is concentrated in `tests/test_migrate.py` (multi-preset builds and the molbio-1 migration
