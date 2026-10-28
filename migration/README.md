@@ -104,6 +104,12 @@ again:
   YAML next to its `migrate.py` and places it with `vendor_preset_files` (see
   `migration/presets/base/1-to-2/base-2.yaml`). Otherwise the step would try to
   install the current, newer file and refuse its own counter.
+- **A later bump retrofits the older steps.** When a preset gets a new version,
+  every earlier step that places the whole current closure keeps the *content it
+  knows* by shipping a frozen copy too, or it would install the newer file
+  behind that preset's own counter and the newer step could then not run. Ticket
+  28's `cell_culture` 2 is the worked example: `base/2-to-3` and `molbio/2-to-3`
+  both ship and place `cell_culture-1.yaml`.
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.
@@ -173,4 +179,5 @@ constraints/views — no hand-written SQL, no data loss.
 | [`presets/base/2-to-3`](presets/base/2-to-3/README.md) | `preset_versions.base` 2 → 3 | Places base v3 and applies its additive diff: the slotless `incubator` box kind (`box_incubator` + its view); refuses a destructive plan. |
 | [`presets/library/1-to-2`](presets/library/1-to-2/README.md) | `preset_versions.library` 1 → 2 | Places the v2 library copy (`copy` uses the base `tube` set), recreates the generated views; no table changes. |
 | [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the frozen v2 preset copy. |
-| [`presets/molbio/2-to-3`](presets/molbio/2-to-3/README.md) | `preset_versions.molbio` 2 → 3 | Turns molbio into a bundle of parts, adds `entity_oligo`/`stock_oligo_stock` (and base v3's `box_incubator`), places every part copy and records a `preset_versions` key per part at 1. |
+| [`presets/molbio/2-to-3`](presets/molbio/2-to-3/README.md) | `preset_versions.molbio` 2 → 3 | Turns molbio into a bundle of parts, adds `entity_oligo`/`stock_oligo_stock` (and base v3's `box_incubator`), places every part copy (cell_culture frozen at v1 by ticket 28) and records a `preset_versions` key per part at 1. |
+| [`presets/cell_culture/1-to-2`](presets/cell_culture/1-to-2/README.md) | `preset_versions.cell_culture` 1 → 2 | Places the frozen v2 cell_culture copy and applies its additive diff: three `stock_cell_vial` columns (`selection`, `mycoplasma`, `mycoplasma_tested_on`) and the `cell_biosample` kind/table; one commit, additive only. |

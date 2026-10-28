@@ -1,0 +1,44 @@
+preset: biosamples
+version: 1
+description: >-
+  Biosamples taken from animal lines (the angenet bundle): one stock per sample
+  with its sample type, tissue, collection date and storage temperature. The
+  sample's origin is the core stock source aliquot (source_aliquot_id), so a
+  biosample taken from a vial, plate or animal appears under it in tm lineage.
+  Included by the angenet bundle only. The cell-culture half of the same model
+  is cell_biosample in the cell_culture part, because entity_kinds may only
+  name entity kinds that the same ledger loads and no bundle loads the cell and
+  animal line kinds together (ticket 28, design §2.1). Its entity_kinds
+  therefore name the organism line kinds of the drosophila, c_elegans, zebrafish
+  and mouse parts, so it loads together with them - exactly what the angenet
+  bundle lists. Adapted from BioManager (MIT).
+
+include: [base]
+
+kinds:
+  animal_biosample:
+    object: stock
+    statuses: tube
+    description: >-
+      A physical sample taken from an animal line - tissue, blood, DNA, RNA,
+      serum or other material - kept as an ordinary tube. Its origin is the core
+      source_aliquot_id (the tube or animal it was taken from), not a schema
+      field. Adapted from BioManager (MIT).
+    entity_kinds: [fly_line, worm_strain, fish_line, mouse_strain]
+    fields:
+      sample_type:
+        type: enum
+        values: [tissue, blood, dna, rna, serum, other]
+        description: Kind of material the sample holds (tissue, blood, DNA, RNA, serum or other).
+      tissue:
+        type: string
+        length: 128
+        description: Tissue or anatomical source of the sample, when it is a tissue sample.
+      collected_on:
+        type: date
+        description: Date the sample was collected (ISO yyyy-mm-dd).
+      storage_temp_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Storage temperature of the sample, in degrees Celsius (e.g. -80).

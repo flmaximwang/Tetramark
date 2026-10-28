@@ -12,26 +12,25 @@ stay one global namespace.
 
 ## The catalogue
 
-The table is the target catalogue from `docs/preset-parts.md` §2. The directory holds `base`,
-`proteins`, `nucleic_acids`, `bacteria`, `cell_culture`, `library` and the `molbio` bundle today;
-the `immuno`/`viral_vectors`/`biosamples`/organism rows arrive with tickets 28 and 29.
-
 | part | kinds | molbio | cellbio | angenet |
 |---|---|:-:|:-:|:-:|
 | `base` | item, lot; boxes grid9x9, grid96, rack, shelf, freezer, drawer, incubator; status sets `tube`, `cryo`, `animal` | ✓ | ✓ | ✓ |
 | `nucleic_acids` | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
 | `bacteria` | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
-| `proteins` | protein_construct, protein_prep | ✓ | | |
-| `cell_culture` | cell_line, cell_vial, cell_pellet | ✓ | ✓ | |
+| `proteins` | protein_construct, protein_prep | ✓ | ✓ | ✓ |
+| `cell_culture` | cell_line, cell_vial, cell_pellet, cell_biosample | ✓ | ✓ | |
 | `immuno` | antibody, antibody_lot | | ✓ | |
 | `viral_vectors` | virus, virus_prep | | ✓ | |
-| `biosamples` | biosample (tissue / blood / DNA / RNA) | | ✓ | ✓ |
+| `biosamples` | animal_biosample (the angenet side; cell samples are `cell_biosample` in `cell_culture`) | | | ✓ |
 | `drosophila`, `c_elegans`, `zebrafish`, `mouse` | organism kinds (see `docs/preset-parts.md` §3) | | | ✓ |
 
 The bundles:
 
 - `molbio` — `include: [base, nucleic_acids, bacteria, proteins, cell_culture]`, version 3.
-- `cellbio`, `angenet` — later tickets (28/29); each lists the parts it needs.
+- `cellbio` — `include: [base, nucleic_acids, cell_culture, immuno, viral_vectors]`, version 1.
+  `proteins` arrives through `nucleic_acids` (a plasmid points at its protein design).
+- `angenet` — ticket 29; `include: [base, nucleic_acids, biosamples, drosophila, c_elegans,
+  zebrafish, mouse]`.
 
 Each part's `description:` says what it covers and which bundles include it. New parts start at
 `version: 1` and grow through `migration/presets/<name>/N-to-N+1/`, never by editing a shipped
@@ -42,36 +41,68 @@ version in place. Every part that adds kinds adapted from [BioManager](https://g
 
 ```
 base
-├── proteins          (sequence_fields mixin; protein_construct, protein_prep)
-│   └── nucleic_acids (plasmid, plasmid_prep, oligo, oligo_stock)
-│       ├── bacteria  (bacterial_strain, bacterial_glycerol, bacterial_pellet)
-│       └── cell_culture (cell_line, cell_vial, cell_pellet)
+├── immuno                 (antibody, antibody_lot)
+├── biosamples             (animal_biosample; loaded with the organism parts, not by include)
+└── proteins               (sequence_fields mixin; protein_construct, protein_prep)
+    └── nucleic_acids      (plasmid, plasmid_prep, oligo, oligo_stock)
+        ├── bacteria       (bacterial_strain, bacterial_glycerol, bacterial_pellet)
+        ├── cell_culture   (cell_line, cell_vial, cell_pellet, cell_biosample)
+        └── viral_vectors  (virus, virus_prep)
 ```
 
 - **`nucleic_acids` includes `proteins`** because `plasmid.construct` is a `ref` to
-  `protein_construct`: the design a plasmid expresses is a protein design, so the plasmid's part
-  must load the protein part. The other direction would be a cycle.
+  `protein_construct`; **`viral_vectors` includes `nucleic_acids`** because `virus.payload` is a
+  `ref` to `plasmid`. A part includes only what its refs/entity_kinds name.
 - **`sequence_fields` lives in `proteins`** — the deepest part that both `plasmid` (via
   `nucleic_acids`) and `protein_construct` load. `base` is lower in the graph, but it is the
-  domain-neutral inventory part; biology-specific mixins do not belong there. A
-  `bacteria`/`cell_culture` part that needs sequence fields therefore reaches them through
-  `nucleic_acids → proteins`.
+  domain-neutral inventory part; biology-specific mixins do not belong there.
 - **A part never includes a bundle.** Includes point down the graph only, so a bundle is always
-  the outermost file a ledger lists. The loader would accept the reverse only by accident; do not
-  rely on it.
+  the outermost file a ledger lists.
+- **`biosamples` is the one part that is not self-contained.** It names the organism line kinds
+  (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`) in `animal_biosample.entity_kinds`, and a
+  stock's `entity_kinds` may only name entity kinds the same ledger loads — the loader raises
+  `'fly_line' is not an entity kind` otherwise. Those kinds arrive in ticket 29's organism parts, so
+  `biosamples` is loaded **with** them: the `angenet` bundle lists `biosamples` and all four
+  organism parts, and that union is what makes the file valid. Do not add `biosamples` to
+  `cellbio`, `molbio` or any other bundle, and do not `tm presets show biosamples` on its own until
+  ticket 29 has landed.
+
+## The biosamples split (ticket 28)
+
+`biosample` must accept **cell lines** (cellbio) and **animal lines** (angenet), but `entity_kinds`
+is static and kind names are global, while no bundle loads both families together. The loader
+accepts only entity kinds defined in the same effective schema; an `entity_kinds` entry that is not
+loaded is a load error (`kinds.<kind>.entity_kinds: '<name>' is not an entity kind`), and there is no
+`entity_kinds_optional` switch. Ticket 28 therefore chose the option that needs **no core change**
+(design §2.1, option (a)) and split the model by the entities it references:
+
+- **`cell_biosample`** lives in `cell_culture` (`entity_kinds: [cell_line]`, `statuses: tube`), so
+  `molbio` and `cellbio` get a cell-side biosample through the part that already defines the cell
+  kinds. Fields: `sample_type` (tissue/blood/dna/rna/serum/other), `tissue`, `collected_on`,
+  `storage_temp_c`.
+- **`animal_biosample`** lives in `biosamples` (`entity_kinds` = the four organism line kinds,
+  `statuses: tube`) and is used by `angenet` only. Same four fields.
+
+A sample's **origin is the core stock column** `source_aliquot_id`, exposed as
+`tm stock add KIND --entity E --source-aliquot ALQ` — not a schema field. `tm lineage` follows it
+from the sample to the tube it was taken from and on to that tube's stock/line, so a cell biosample
+taken from a cryovial appears under that vial.
 
 ## Naming rule: entity = what it is, stock = what you can hold
 
 - An **entity kind** is the design or the organism: `plasmid` (the construct map), `protein_construct`
   (the amino-acid design), `oligo` (the sequence you ordered), `cell_line` (the line), `bacterial_strain`
-  (the genotype). An entity has no location, quantity or status.
+  (the genotype), `antibody` (the reagent's design), `virus` (the vector design). An entity has no
+  location, quantity or status.
 - A **stock kind** is one physical form of it: `plasmid_prep` (DNA in a tube), `oligo_stock` (a
   resuspended primer), `bacterial_glycerol` (frozen cells), `cell_vial` (frozen cells of a line),
-  `cell_pellet` (harvested cells). Every stock kind sets `statuses:` (spec §2.4) and names the
-  `entity_kinds:` it can hold; the aliquots are the tubes.
+  `cell_pellet` (harvested cells), `antibody_lot` (a vial of one lot), `virus_prep` (one production
+  batch), `cell_biosample`/`animal_biosample` (material taken from a line). Every stock kind sets
+  `statuses:` (spec §2.4) and names the `entity_kinds:` it can hold; the aliquots are the tubes.
 
 The sugars in the names are deliberate: `bacterial_glycerol`, not `bacterial`; `plasmid_prep`, not
-`plasmid`. A short kind name must never be mistaken for the old zsqlab table or the entity.
+`plasmid`; `antibody_lot`, not `antibody`. A short kind name must never be mistaken for the old
+zsqlab table or the entity.
 
 ## Adding a part
 
@@ -79,16 +110,27 @@ The sugars in the names are deliberate: `bacterial_glycerol`, not `bacterial`; `
    bundles that will include it, and the `include:` list of parts it references (never a bundle).
 2. Put each kind in exactly one part. If two parts need it, it belongs in their lowest common
    include, not in both. A shared `mixins:` entry follows the same rule (see `sequence_fields`).
+   If two bundles need the same *model* over entity kinds that are not loaded together, split the
+   kind by the part that owns its entity kind — that is why `cell_biosample` and `animal_biosample`
+   are two kinds (see above).
 3. Give every kind and field a `description:`; end new BioManager-adapted kinds with
    "Adapted from BioManager (MIT).".
 4. Give every **stock** kind `statuses:` (a name from `base`'s sets or an inline set) and
    `entity_kinds:`; entity and box kinds get neither.
-5. Move the rules that query the part's tables into the same part, keeping their ids (`MB01` …).
+5. Move the rules that query the part's tables into the same part, keeping their ids
+   (`MB01`, `IMM01`, `VIR01`, …).
 6. Add the part to every bundle that should load it (`include:`), and add a line to the table above.
-7. Add `migration/presets/<name>/1-to-2/` only when you later change a **shipped** version; a new
-   file needs no step. Then run the tests: `uv run pytest -q -n 2 tests/test_presets.py`.
+7. **Bumping a shipped version.** Add `migration/presets/<name>/N-to-N+1/` in the same change. The
+   repository's `presets/` only ever holds the **current** version, so the step ships two frozen
+   copies next to its `migrate.py`: the old version `N` (the fixture and the rollback copy) and the
+   version `N+1` it installs (placed with `vendor_preset_files`, so the step keeps working after a
+   later bump). `migration/presets/cell_culture/1-to-2/` is the worked example. Any **other** step
+   that records this part's counter must freeze the same old copy — `migration/presets/molbio/2-to-3/`
+   ships `cell_culture-1.yaml` for exactly that reason.
 8. Record the decision in the part's `description:`/comments if the include direction or the home
    of a shared mixin was arguable.
+
+Then run the tests: `uv run pytest -q -n 2 tests/test_presets.py tests/test_cellbio.py`.
 
 ## What is not modelled
 

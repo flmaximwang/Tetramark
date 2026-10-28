@@ -2310,6 +2310,17 @@ def test_spec_3_to_4_refuses_an_aliquot_status_outside_its_stock_kind_set(
 
 MOLBIO_2_TO_3 = ROOT / "migration" / "presets" / "molbio" / "2-to-3" / "migrate.py"
 BASE_2_TO_3 = ROOT / "migration" / "presets" / "base" / "2-to-3" / "migrate.py"
+CELL_CULTURE_1_TO_2 = (
+    ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "migrate.py"
+)
+#: Ticket 28 froze the cell_culture v1 content in both step folders: molbio 2 -> 3
+#: installs it (its counter stops at 1), cell_culture 1 -> 2 does not.
+CELL_CULTURE_V1 = (
+    ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "cell_culture-1.yaml"
+)
+CELL_CULTURE_V2 = (
+    ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "cell_culture-2.yaml"
+)
 
 #: What a molbio-v2 ledger records before ticket 27's step.
 MOLBIO_V2_VERSIONS = {"base": 2, "molbio": 2}
@@ -2325,8 +2336,14 @@ MOLBIO_V3_VERSIONS = {
     "proteins": 1,
 }
 
-#: Every preset copy a molbio ledger needs after the step.
-MOLBIO_V3_FILES = ("molbio.yaml", "base.yaml", *[f"{part}.yaml" for part in PARTS_V3])
+#: Every preset copy a molbio ledger needs after the step.  cell_culture is the
+#: frozen v1 (ticket 28 bumped the repository copy to v2), so it is compared
+#: separately from the repository content.
+MOLBIO_V3_FILES = (
+    "molbio.yaml",
+    "base.yaml",
+    *[f"{part}.yaml" for part in PARTS_V3 if part != "cell_culture"],
+)
 
 
 def write_molbio_v2_presets(directory: Path) -> Path:
@@ -2560,11 +2577,20 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
             (seeded["glycerol"]["id"],),
         ) == [{"alias": "OLD-GLY"}]
 
-        # The ledger's copy is this checkout's v3 content, byte for byte.
+        # The ledger's copy is this checkout's v3 content, byte for byte -
+        # except cell_culture, which the step froze at v1 (ticket 28's bump is
+        # migration/presets/cell_culture/1-to-2).
         for name in MOLBIO_V3_FILES:
             assert (reopened.path / "presets" / name).read_bytes() == (
                 REPO_PRESETS / name
             ).read_bytes(), name
+        assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
+            ROOT / "migration" / "presets" / "molbio" / "2-to-3"
+            / "cell_culture-1.yaml"
+        ).read_bytes()
+        assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
+            CELL_CULTURE_V1.read_bytes()
+        )
 
         # One commit with the contract message, tagged at the pre-step commit.
         assert commit_count(reopened) == commits_before + 1
@@ -2734,3 +2760,282 @@ def test_molbio_2_to_3_refuses_a_spec3_ledger_and_writes_nothing(
         assert "entity_oligo" not in table_names(ledger)
         for name, data in copies_before.items():
             assert (ledger.path / "presets" / name).read_bytes() == data, name
+
+
+# ---------------------------------------------------------------------------
+# Ticket 28: cell_culture 1 -> 2 (cell_vial extras and the cell_biosample kind)
+# ---------------------------------------------------------------------------
+
+
+def write_cell_culture_v1_presets(directory: Path) -> Path:
+    """Materialise a cell_culture-v1 closure from the frozen step copy.
+
+    The repository's ``presets/`` holds cell_culture v2, so the step copy
+    shipped next to ``migration/presets/cell_culture/1-to-2/migrate.py`` is the
+    only copy of what a pre-ticket-28 ledger carries.  Its includes are still
+    the current repository version (base 3, nucleic_acids 1, proteins 1), which
+    is exactly what a molbio-v3 ledger has.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for part in ("base", "nucleic_acids", "proteins"):
+        shutil.copyfile(REPO_PRESETS / f"{part}.yaml", directory / f"{part}.yaml")
+    shutil.copyfile(CELL_CULTURE_V1, directory / "cell_culture.yaml")
+    return directory / "cell_culture.yaml"
+
+
+def cell_culture_v1_ledger(
+    factory, directory: Path, *, name: str = "cell-culture-v1"
+) -> Ledger:
+    """A real cell_culture-v1 ledger built from the frozen step copy."""
+    ledger = factory(
+        [write_cell_culture_v1_presets(directory)], name=name, real_init=True
+    )
+    assert ledger.schema.preset_versions == {
+        "base": 3,
+        "cell_culture": 1,
+        "nucleic_acids": 1,
+        "proteins": 1,
+    }
+    return ledger
+
+
+def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Ticket 28: content-only, one commit, tagged, dry-run safe, additive."""
+    ledger = cell_culture_v1_ledger(
+        embedded_ledger_factory, tmp_path / "cell-culture-v1-presets"
+    )
+    line = ledger.entities.add(
+        "cell_line", name="HEK293T", values={"species": "Homo sapiens"}
+    )
+    vial = ledger.stocks.add(
+        "cell_vial",
+        entity=line["id"],
+        values={"passage": 7, "medium": "DMEM + 10% FBS", "dmso_pct": 10},
+        aliquots=1,
+        quantity=1,
+        unit="vial",
+    )
+    ledger.stocks.add(
+        "cell_pellet",
+        entity=line["id"],
+        values={"cell_count": 2_000_000, "passage": 7},
+        aliquots=1,
+        quantity=1,
+        unit="pellet",
+    )
+    assert column_names(ledger, "stock_cell_vial") == {
+        "id",
+        "kind",
+        "passage",
+        "medium",
+        "freezing_medium",
+        "cells_per_vial",
+        "dmso_pct",
+    }
+    assert "stock_cell_biosample" not in table_names(ledger)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    copy_before = (ledger.path / "presets" / "cell_culture.yaml").read_bytes()
+    assert copy_before == CELL_CULTURE_V1.read_bytes()
+
+    # -- dry run: the additive DDL, the tag and the counter; no writes ------
+    dry = run_python(
+        CELL_CULTURE_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    out = dry.stdout
+    assert "migration: cell_culture 1 -> 2" in out
+    assert "CALL DOLT_TAG('pre-migrate-cell_culture-1'" in out
+    assert "ALTER TABLE `stock_cell_vial` ADD COLUMN `selection`" in out
+    assert "ALTER TABLE `stock_cell_vial` ADD COLUMN `mycoplasma`" in out
+    assert "ADD COLUMN `mycoplasma_tested_on`" in out
+    assert "CREATE TABLE `stock_cell_biosample`" in out
+    assert '"cell_culture": 2' in out
+    assert "dolt tests: replace with" in out
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    assert "stock_cell_biosample" not in table_names(ledger)
+    assert (ledger.path / "presets" / "cell_culture.yaml").read_bytes() == copy_before
+
+    # -- apply: one commit, every row kept, the new objects usable ---------
+    applied = run_python(CELL_CULTURE_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "committed" in applied.stdout
+    assert "migrate(ledger): cell_culture 1 -> 2" in applied.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    try:
+        assert reopened.warnings == []
+        assert reopened.check_fingerprint(warn=False) is True
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            "base": 3,
+            "cell_culture": 2,
+            "nucleic_acids": 1,
+            "proteins": 1,
+        }
+        head_after_migration = head(reopened)
+        # The frozen v2 content is what the ledger now carries, byte for byte.
+        assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
+            CELL_CULTURE_V2.read_bytes()
+        )
+
+        # Three additive columns plus the new stock kind and its view.
+        assert column_names(reopened, "stock_cell_vial") == {
+            "id",
+            "kind",
+            "passage",
+            "medium",
+            "freezing_medium",
+            "cells_per_vial",
+            "dmso_pct",
+            "selection",
+            "mycoplasma",
+            "mycoplasma_tested_on",
+        }
+        assert {
+            "stock_cell_biosample",
+            "v_stock_cell_biosample",
+        } <= table_names(reopened)
+        # Every pre-step row survived the content swap.
+        assert row_count(reopened, "stock_cell_vial") == 1
+        assert row_count(reopened, "stock_cell_pellet") == 1
+        row = reopened.driver.query(
+            "SELECT `passage`, `dmso_pct`, `mycoplasma` FROM `stock_cell_vial` "
+            "WHERE `id` = %s",
+            (vial["id"],),
+        )[0]
+        assert (row["passage"], float(row["dmso_pct"])) == (7, 10.0)
+        # Nothing sets the new fields: the enum default is the v2 default.
+        assert row["mycoplasma"] == "not_tested"
+        assert row_count(reopened, "stock_cell_biosample") == 0
+
+        # One commit with the contract message, tagged at the pre-step commit.
+        assert commit_count(reopened) == commits_before + 1
+        head_after = head(reopened)
+        assert head_after != head_before
+        assert commit_message(reopened, head_after) == (
+            "migrate(ledger): cell_culture 1 -> 2"
+        )
+        assert tags(reopened) == {"pre-migrate-cell_culture-1": head_before}
+
+        # The new kind is usable and its status set is the base ``tube`` set.
+        biosample = reopened.stocks.add(
+            "cell_biosample",
+            entity=line["id"],
+            values={"sample_type": "dna", "collected_on": "2026-10-02"},
+            aliquots=1,
+            quantity=1,
+            unit="tube",
+        )
+        assert reopened.schema.statuses_for("cell_biosample") == [
+            "pending",
+            "stored",
+            "missing",
+            "consumed",
+        ]
+        assert reopened.driver.query(
+            "SELECT `sample_type` FROM `stock_cell_biosample` WHERE `id` = %s",
+            (biosample["id"],),
+        ) == [{"sample_type": "dna"}]
+
+        # tm check runs the regenerated v2 tests; the schema plan is empty.
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        assert "OK:" in checked.output
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        reopened.close()
+
+    # -- a second run refuses (cell_culture is already 2) ------------------
+    again = run_python(CELL_CULTURE_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[cell_culture] 2, expected 1" in (
+        again.stdout + again.stderr
+    )
+    assert head(ledger) != head_after_migration  # the test's own biosample write
+    assert commit_message(ledger, head_after_migration) == (
+        "migrate(ledger): cell_culture 1 -> 2"
+    )
+
+
+def test_cell_culture_1_to_2_refuses_a_ledger_without_cell_culture(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """A molbio-v2 ledger has no cell_culture counter: molbio 2 -> 3 comes first."""
+    ledger = molbio_v2_ledger(
+        embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="no-cell-culture"
+    )
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    copies_before = {
+        name: (ledger.path / "presets" / name).read_bytes()
+        for name in ("molbio.yaml", "base.yaml")
+    }
+
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            CELL_CULTURE_1_TO_2, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        # The shared runner refuses before the step's own plan runs: the ledger
+        # has no cell_culture counter at all (the cell kinds are still inside
+        # molbio v2).  The step README names molbio/2-to-3 as the way in.
+        assert "no preset_versions[cell_culture]" in output
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        assert "stock_cell_biosample" not in table_names(ledger)
+        for name, data in copies_before.items():
+            assert (ledger.path / "presets" / name).read_bytes() == data, name
+
+
+def test_molbio_v3_ledger_upgrades_to_cellbio_era(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """The documented order: molbio 2 -> 3, base 2 -> 3, then cell_culture 1 -> 2."""
+    ledger = molbio_v2_ledger(
+        embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="chain28"
+    )
+    seed_molbio_v2(ledger)
+    counts_before = molbio_row_counts(ledger)
+
+    for script, message in (
+        (MOLBIO_2_TO_3, "migrate(ledger): molbio 2 -> 3"),
+        (BASE_2_TO_3, "migrate(ledger): base 2 -> 3"),
+        (CELL_CULTURE_1_TO_2, "migrate(ledger): cell_culture 1 -> 2"),
+    ):
+        result = run_python(script, "--ledger", str(ledger.path), env=script_env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert message in result.stdout
+
+    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    try:
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            "bacteria": 1,
+            "base": 3,
+            "cell_culture": 2,
+            "molbio": 3,
+            "nucleic_acids": 1,
+            "proteins": 1,
+        }
+        assert reopened.check_fingerprint(warn=False) is True
+        assert molbio_row_counts(reopened) == counts_before
+        assert {"stock_cell_biosample", "v_stock_cell_biosample", "box_incubator"} <= (
+            table_names(reopened)
+        )
+        assert "mycoplasma" in column_names(reopened, "stock_cell_vial")
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        reopened.close()

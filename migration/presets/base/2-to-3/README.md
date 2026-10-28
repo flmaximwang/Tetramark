@@ -27,6 +27,12 @@ runner regenerates the derived `dolt_tests` from the same schema in that commit.
   counter is bumped by [`migration/presets/molbio/2-to-3`](../../molbio/2-to-3/README.md). The order
   of the two steps does not matter: whichever runs first may already create the other's new tables
   (`box_incubator`, the oligo tables), and the second then finds only its counter to bump.
+- `cell_culture` is held at the **frozen `cell_culture-1.yaml` next to `migrate.py`**: ticket 28
+  bumps the repository copy to v2, and this step must not install a later preset version behind its
+  own counter's back (the ledger would then load v2 content while `preset_versions.cell_culture`
+  says 1, and [`migration/presets/cell_culture/1-to-2`](../../cell_culture/1-to-2/README.md) could
+  not run afterwards). Run the cell_culture step **after** this one on a ledger that still carries
+  cell_culture 1.
 - A directory copy `<ledger>/presets/base/` would shadow the flat `base.yaml` this step places;
   convert it to a file first (as for every wave-10 preset step).
 
@@ -74,3 +80,4 @@ pending steps.
   `dolt reset --hard <last-good-commit>`. The pre-migration tag stays as the restore point.
 - **Rollback after success:** `dolt reset --hard pre-migrate-base-2` and copy the previous
   `base.yaml` (version 2) back into `<ledger>/presets/`; preset copies are files, not Dolt content.
+  This step's own `cell_culture-1.yaml` is the cell_culture copy it kept, if that needs restoring too.

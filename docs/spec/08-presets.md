@@ -66,15 +66,40 @@ Preset catalogue:
   species, source); stocks `bacterial_glycerol` (entity_kinds plasmid|bacterial_strain; strain,
   medium, batch, glycerol_pct **on the stock**) and `bacterial_pellet` (culture volume, OD600,
   induction; aliquots carry volume via core quantity), both `statuses: tube`. Included by `molbio`.
-- `cell_culture` (**version 1**, includes `base`, `nucleic_acids`) — entity `cell_line` (species,
+- `cell_culture` (**version 2**, includes `base`, `nucleic_acids`) — entity `cell_line` (species,
   cell_type, source, genotype, `parental` ref → cell_line with `lineage: true`); stocks `cell_vial`
-  (passage, medium, freezing_medium, cells_per_vial, dmso_pct, `statuses: cryo`) and `cell_pellet`
-  (cell_count, passage, transfection, harvested_on; a plasmid records a transient transfection,
-  `statuses: tube`). Included by `molbio` and `cellbio`.
+  (passage, medium, freezing_medium, cells_per_vial, dmso_pct, and since v2 `selection`, `mycoplasma`
+  enum not_tested/negative/positive default not_tested, `mycoplasma_tested_on`; `statuses: cryo`),
+  `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
+  transfection, `statuses: tube`) and `cell_biosample` (a biosample taken from a cell line;
+  `entity_kinds: [cell_line]`, `statuses: tube`; `sample_type` enum tissue/blood/dna/rna/serum/other,
+  tissue, collected_on, storage_temp_c; the origin is the core `source_aliquot_id`). Included by
+  `molbio` and `cellbio`. The v1 → v2 step is `migration/presets/cell_culture/1-to-2/`.
+- `immuno` (**version 1**, includes `base`) — entity `antibody` (`named_fields`; host, clonality enum
+  monoclonal/polyclonal/recombinant, clone, isotype, reactivity, conjugate, applications, rrid) and
+  stock `antibody_lot` (supplier, catalog_no, lot_no, concentration_mg_ml, recommended_dilution,
+  received_on, expires_on; `statuses: tube`). Rule `IMM01`: a lot cannot expire before it was
+  received. Included by `cellbio`.
+- `viral_vectors` (**version 1**, includes `base`, `nucleic_acids`) — entity `virus` (`named_fields`;
+  virus_type enum aav/lentivirus/retrovirus/adenovirus/other, serotype, `payload` ref → plasmid
+  **without** `lineage: true` — a plain field, not a descent edge, promoter, biosafety_level) and stock
+  `virus_prep` (titer, titer_unit enum vg_ml/tu_ml/pfu_ml, made_on, made_by; `statuses: tube`). Rule
+  `VIR01`: a recorded titer is positive. Included by `cellbio`.
+- `biosamples` (**version 1**, includes `base`) — stock `animal_biosample` (`statuses: tube`;
+  `sample_type` enum tissue/blood/dna/rna/serum/other, tissue, collected_on, storage_temp_c; the
+  origin is the core `source_aliquot_id`), `entity_kinds` = the organism line kinds
+  (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`). It is the **animal side** of the biosample
+  model and is included by `angenet` only, loaded together with the organism parts that own those
+  entity kinds: a stock's `entity_kinds` may name only entity kinds the same ledger loads, and the
+  loader refuses any other (`'<name>' is not an entity kind`) — there is no optional switch. The
+  **cell side** is `cell_biosample` in `cell_culture`, which is why `cellbio` needs no biosamples
+  part (design §2.1, ticket 28 option (a), no core change).
 - `molbio` (a **bundle**, **version 3**) — `include: [base, nucleic_acids, bacteria, proteins,
   cell_culture]`, no kinds or rules of its own. It keeps the name existing ledgers already list,
-  and every kind/table name of a molbio ledger is unchanged by the parts split; the only new tables
-  are the `nucleic_acids` `entity_oligo`/`stock_oligo_stock` pair (and base v3's `box_incubator`).
+  and every kind/table name of a molbio ledger is unchanged by the parts split; the new tables of
+  that step are the `nucleic_acids` `entity_oligo`/`stock_oligo_stock` pair (and base v3's
+  `box_incubator`). Ticket 28's `cell_culture` 2 adds `stock_cell_biosample` to a molbio ledger that
+  runs that step.
   Molbio has no per-tube fields: all aliquots of one stock are the same, so a property belongs on
   the stock kind. The bundled rules moved with their tables and kept their ids: `MB01` (plasmid
   sequence) → `nucleic_acids`, `MB02` (glycerol percentage) → `bacteria`, `MB03`/`MB04` (protein
@@ -86,5 +111,12 @@ Preset catalogue:
   stock `copy` (acquired_on, condition enum, `statuses: tube`). Exists to prove generality; used in
   tests.
 
-Tickets 28/29 add the `immuno`, `viral_vectors`, `biosamples` and organism parts and the `cellbio`
-and `angenet` bundles; `presets/README.md` lists the target catalogue.
+- `cellbio` (a **bundle**, **version 1**) — `include: [base, nucleic_acids, cell_culture, immuno,
+  viral_vectors]`, no kinds/mixins/rules/status sets of its own. `proteins` arrives through
+  `nucleic_acids`; `biosamples` is deliberately absent (it names the organism line kinds of the
+  `angenet` parts). One ledger can list `presets: [molbio, cellbio]`: the shared parts load once, and
+  the kind set is the union (molbio brings `bacteria`, cellbio brings `immuno`/`viral_vectors`).
+
+Ticket 29 adds the organism parts (`drosophila`, `c_elegans`, `zebrafish`, `mouse`) and the
+`angenet` bundle; `presets/README.md` lists the catalogue, the include graph and the biosample
+split.

@@ -742,11 +742,15 @@ def test_cli_presets_list_and_show(
     assert listed.output.split() == [
         "bacteria",
         "base",
+        "biosamples",
         "cell_culture",
+        "cellbio",
+        "immuno",
         "library",
         "molbio",
         "nucleic_acids",
         "proteins",
+        "viral_vectors",
     ]
 
     shown = runner.invoke(

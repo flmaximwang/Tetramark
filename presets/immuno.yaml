@@ -1,0 +1,99 @@
+preset: immuno
+version: 1
+description: >-
+  Antibody reagents and the lots in the freezer: one entity per antibody design
+  (host, clonality, clone, isotype, reactivity, conjugate, applications, RRID)
+  and one stock per purchased or purified lot with its supplier, catalogue/lot
+  numbers, working concentration and shelf life. Included by the cellbio
+  bundle. Adapted from BioManager (MIT).
+
+include: [base]
+
+kinds:
+  antibody:
+    object: entity
+    description: >-
+      An antibody reagent design: what it binds, in which host it was raised and
+      whether it is monoclonal, polyclonal or recombinant. Adapted from
+      BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      host:
+        type: string
+        length: 64
+        description: Host species the antibody was raised in, e.g. rabbit, mouse, goat.
+      clonality:
+        type: enum
+        values: [monoclonal, polyclonal, recombinant]
+        description: How the antibody was produced (monoclonal, polyclonal or recombinant).
+      clone:
+        type: string
+        length: 64
+        description: Clone name for a monoclonal or recombinant antibody, e.g. 4G10.
+      isotype:
+        type: string
+        length: 64
+        description: Immunoglobulin isotype or subclass, e.g. IgG1, IgG2a, IgM.
+      reactivity:
+        type: string
+        length: 128
+        description: Species the antibody is validated against, e.g. human, mouse.
+      conjugate:
+        type: string
+        length: 64
+        description: Fluorophore or enzyme label when the antibody is conjugated (e.g. FITC, HRP).
+      applications:
+        type: string
+        length: 128
+        description: Applications the antibody is used in, e.g. WB, IF, FACS, IHC.
+      rrid:
+        type: string
+        length: 64
+        description: Research Resource Identifier, when a vendor or repository assigns one.
+
+  antibody_lot:
+    object: stock
+    statuses: tube
+    description: >-
+      One physical lot of an antibody in the freezer, with the supplier,
+      catalogue and lot numbers, its concentration, the recommended working
+      dilution and its shelf life. Adapted from BioManager (MIT).
+    entity_kinds: [antibody]
+    fields:
+      supplier:
+        type: string
+        length: 128
+        description: Vendor or lab that supplied or raised the lot.
+      catalog_no:
+        type: string
+        length: 64
+        description: Vendor catalogue number of the product the lot belongs to.
+      lot_no:
+        type: string
+        length: 64
+        description: Vendor lot/batch number printed on the vial.
+      concentration_mg_ml:
+        type: decimal
+        precision: 10
+        scale: 3
+        description: Concentration of the lot in mg/mL, as supplied or measured.
+      recommended_dilution:
+        type: string
+        length: 64
+        description: Working dilution recommended by the vendor or protocol, e.g. 1:1000.
+      received_on:
+        type: date
+        description: Date the lot arrived in the lab (ISO yyyy-mm-dd).
+      expires_on:
+        type: date
+        description: Expiry date of the lot; NULL when it does not expire.
+
+rules:
+  - id: IMM01
+    description: an antibody lot cannot expire before it was received
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_antibody_lot
+      WHERE received_on IS NOT NULL AND expires_on IS NOT NULL
+        AND expires_on < received_on
+    expect: {single_value: 0}

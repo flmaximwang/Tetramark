@@ -8,9 +8,10 @@ validated, versioned ledger. Biology is one preset (`molbio`), not the scope: `l
 `base` keeps generic lab items.
 
 The presets live in this repository's `presets/` directory (`base.yaml`, the `nucleic_acids`,
-`bacteria`, `proteins` and `cell_culture` parts, the `molbio` bundle, `library.yaml`); they are not
+`bacteria`, `proteins`, `cell_culture`, `immuno`, `viral_vectors` and `biosamples` parts, the
+`molbio` and `cellbio` bundles, `library.yaml`); they are not
 package data. A preset is a **part** (an includable slice of the model) or a **bundle** (only an
-`include:` list, such as `molbio`); `presets/README.md` maps them and explains how to add one. A workspace points `presets_dir` at the directory that
+`include:` list, such as `molbio` or `cellbio`); `presets/README.md` maps them and explains how to add one. A workspace points `presets_dir` at the directory that
 holds them, and `tm init` copies the chosen preset **and its `include:` closure** into
 `<ledger>/presets/`. From then on the ledger resolves presets only from that copy, so a ledger is
 self-contained and keeps the schema it was created with even if the source preset changes later.

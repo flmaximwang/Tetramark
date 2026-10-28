@@ -61,11 +61,15 @@ carries, oldest first, and only then import. A molbio-2 ledger (0.2.x) runs
 `migration/spec/3-to-4` while it is still spec 3 (place the current preset copies first, as that
 step's README says), then `migration/presets/base/2-to-3` and
 `migration/presets/molbio/2-to-3` — one commit each, in either order, because each step places the
-whole current preset closure and refuses a counter that is not the one it upgrades. An older
+whole current preset closure and refuses a counter that is not the one it upgrades. A molbio-3
+ledger created before ticket 28 already carries `cell_culture` 1, so it then runs
+`migration/presets/cell_culture/1-to-2` (the cell_vial extras and the `cell_biosample` kind); on a
+molbio-2 ledger the two bundle/base steps keep the repository's cell_culture v2 out of the ledger
+(they place the frozen v1), so run the cell_culture step **after** them, never before. An older
 molbio-1/base-1 ledger runs the matching `1-to-2` steps first (their READMEs have the kind-mapping
 tables and the greps for hand-written rules); those historical steps ship the preset content they
 install next to their `migrate.py`, so they keep working after a later version is released.
-`tm init` always gives a ledger the current preset version (molbio 3).
+`tm init` always gives a ledger the current preset version (molbio 3, cellbio 1, cell_culture 2).
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.

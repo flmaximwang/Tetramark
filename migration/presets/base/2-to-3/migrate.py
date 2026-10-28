@@ -10,7 +10,11 @@ planner derives from the ledger's own (now v3) schema.  The step therefore
 
 * places the repository preset copies the ledger lists (files are not Dolt
   content, and the spec-4 loader needs a current copy for every stock kind's
-  ``statuses:``),
+  ``statuses:``), then puts the **frozen cell_culture v1** shipped next to this
+  file over its own copy: ticket 28 bumps the repository's
+  ``presets/cell_culture.yaml`` to v2, and this step must not install a later
+  preset's content (it would make the cell_culture counter and the file the
+  ledger loads disagree, and the cell_culture step could then not restore it),
 * applies the **additive** diff plan for the new kind (a destructive step is
   refused before anything is written),
 * bumps ``preset_versions.base`` to 3 and the fingerprint; the shared runner
@@ -43,6 +47,7 @@ from tetramark.migrate import (
     preset_args,
     restore_files,
     run,
+    vendor_preset_files,
     vendor_repo_presets,
 )
 from tetramark.schema.ddl import view_statements
@@ -56,6 +61,12 @@ REPO_PRESETS = REPO_ROOT / "presets"
 
 PRESET = "base"
 TO_VERSION = 3
+
+#: The frozen cell_culture v1 this step keeps over the repository copy: ticket
+#: 28 bumped ``presets/cell_culture.yaml`` to v2, whose counter is bumped by
+#: ``migration/presets/cell_culture/1-to-2``.  Placing the v2 content here would
+#: install a later preset version behind its own step's back.
+FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-1.yaml")
 
 
 def _require_ready(ledger: Ledger) -> None:
@@ -145,9 +156,17 @@ step = MigrationStep(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Place the preset copies, then run the shared one-commit step."""
+    """Place the preset copies, then run the shared one-commit step.
+
+    Presets the ledger lists are placed from the repository; cell_culture is
+    held at the frozen v1, because the repository's copy is v2 since ticket 28
+    and its own step bumps that counter.
+    """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
+    saved += vendor_preset_files(
+        arguments.ledger, {"cell_culture": FROZEN_CELL_CULTURE}
+    )
     try:
         run(
             step,

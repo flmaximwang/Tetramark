@@ -27,7 +27,9 @@ one Dolt commit; every read is a normal `tm` command.
    edit `<ledger>/presets/*.yaml` (or a local `kinds_dir`/`rules_dir`) — editing a checkout's
    `presets/` does not affect existing ledgers. A bundled preset such as `molbio` is a **bundle**:
    its kinds come from the parts it includes (`base`, `nucleic_acids`, `bacteria`, `proteins`,
-   `cell_culture`), so a kind the ledger shows may live in any of those files.
+   `cell_culture`), so a kind the ledger shows may live in any of those files. `cellbio` is the
+   cell-biology bundle over `base`, `nucleic_acids`, `cell_culture`, `immuno` and `viral_vectors`;
+   one ledger can list both (`presets: [molbio, cellbio]`) and the shared parts load once.
 
 ## Decision table
 
@@ -37,6 +39,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Register an abstract thing (design, item, strain) | `tm entity add KIND --name N [--set f=v] [--alias A]` |
 | Register a preparation/batch | `tm stock add KIND --entity ID\|ALIAS [--set f=v]` |
 | Put its tube in a box | `tm stock add … --box NAME --slot A1` |
+| Take a sample from a tube (lineage edge) | `tm stock add cell_biosample --entity LINE --source-aliquot ALQ` (cellbio; `animal_biosample` in angenet) |
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
 | Move one tube | `tm aliquot move ALQ --box NAME --slot S` |
 | Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |

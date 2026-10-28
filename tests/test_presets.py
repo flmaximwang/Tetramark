@@ -43,22 +43,41 @@ from tetramark.schema.model import (
 
 from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
-BUNDLED = ("base", "molbio", "library")
+BUNDLED = ("base", "molbio", "library", "cellbio")
 
-#: Ticket 27's parts; each includes the ones it references and no bundle.
-PARTS = ("nucleic_acids", "bacteria", "proteins", "cell_culture")
+#: The parts; each includes the ones it references and no bundle.  ``biosamples``
+#: names the organism line kinds of ticket 29's parts, so it cannot be loaded on
+#: its own yet (``cell_biosample`` in ``cell_culture`` is the cell-side half);
+#: ticket 28 records that choice in ``presets/README.md``.
+PARTS = (
+    "nucleic_acids",
+    "bacteria",
+    "proteins",
+    "cell_culture",
+    "immuno",
+    "viral_vectors",
+    "biosamples",
+)
+
+#: The parts whose ``include:`` closure loads without any organism part.
+LOADABLE_PARTS = tuple(part for part in PARTS if part != "biosamples")
 
 #: Current preset versions: base 3 (the incubator box kind, ticket 27),
-#: molbio 3 (a bundle of parts, ticket 27), the parts at 1 and library 2
-#: (spec 4 status sets, ticket 25).
+#: molbio 3 (a bundle of parts, ticket 27), cellbio 1 (ticket 28),
+#: cell_culture 2 (cell_vial extras and cell_biosample, ticket 28), the other
+#: parts at 1 and library 2 (spec 4 status sets, ticket 25).
 EXPECTED_VERSIONS = {
     "base": 3,
     "molbio": 3,
     "library": 2,
+    "cellbio": 1,
     "nucleic_acids": 1,
     "bacteria": 1,
     "proteins": 1,
-    "cell_culture": 1,
+    "cell_culture": 2,
+    "immuno": 1,
+    "viral_vectors": 1,
+    "biosamples": 1,
 }
 
 #: The kinds ``base`` owns (v3 adds the slotless ``incubator``).
@@ -82,7 +101,10 @@ NUCLEIC_KINDS = {
     "oligo_stock",
 }
 BACTERIA_KINDS = {"bacterial_strain", "bacterial_glycerol", "bacterial_pellet"}
-CELL_KINDS = {"cell_line", "cell_vial", "cell_pellet"}
+CELL_KINDS = {"cell_line", "cell_vial", "cell_pellet", "cell_biosample"}
+IMMUNO_KINDS = {"antibody", "antibody_lot"}
+VIRAL_KINDS = {"virus", "virus_prep"}
+ANIMAL_BIOSAMPLE_KINDS = {"animal_biosample"}
 
 EXPECTED_KINDS = {
     "base": BASE_KINDS,
@@ -91,6 +113,12 @@ EXPECTED_KINDS = {
     | NUCLEIC_KINDS
     | BACTERIA_KINDS
     | CELL_KINDS,
+    "cellbio": BASE_KINDS
+    | PROTEIN_KINDS
+    | NUCLEIC_KINDS
+    | CELL_KINDS
+    | IMMUNO_KINDS
+    | VIRAL_KINDS,
     "library": BASE_KINDS | {"book", "copy"},
 }
 
@@ -103,6 +131,10 @@ PART_KINDS = {
     | NUCLEIC_KINDS
     | BACTERIA_KINDS,
     "cell_culture": BASE_KINDS | PROTEIN_KINDS | NUCLEIC_KINDS | CELL_KINDS,
+    "immuno": BASE_KINDS | IMMUNO_KINDS,
+    "viral_vectors": BASE_KINDS | PROTEIN_KINDS | NUCLEIC_KINDS | VIRAL_KINDS,
+    # Loaded together with the organism parts that own its entity kinds.
+    "biosamples": BASE_KINDS | ANIMAL_BIOSAMPLE_KINDS,
 }
 
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
@@ -111,8 +143,19 @@ MOLBIO_VERSIONS = {
     "proteins": 1,
     "nucleic_acids": 1,
     "bacteria": 1,
-    "cell_culture": 1,
+    "cell_culture": 2,
     "molbio": 3,
+}
+
+#: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
+CELLBIO_VERSIONS = {
+    "base": 3,
+    "proteins": 1,
+    "nucleic_acids": 1,
+    "cell_culture": 2,
+    "immuno": 1,
+    "viral_vectors": 1,
+    "cellbio": 1,
 }
 
 
@@ -204,12 +247,17 @@ def test_parts_include_only_parts_never_a_bundle() -> None:
         "nucleic_acids": ["base", "proteins"],
         "bacteria": ["base", "nucleic_acids"],
         "cell_culture": ["base", "nucleic_acids"],
+        "immuno": ["base"],
+        "viral_vectors": ["base", "nucleic_acids"],
+        # ``biosamples`` reaches only base: it is loaded with the organism
+        # parts angenet lists (they own the entity kinds it names), never alone.
+        "biosamples": ["base"],
     }
     for part, include in expected.items():
         document = yaml.safe_load(repo_preset(part).read_text(encoding="utf-8"))
         assert document["include"] == include, part
         for name in document["include"]:
-            assert name not in ("molbio", "library"), (part, name)
+            assert name not in ("molbio", "library", "cellbio", "angenet"), (part, name)
     # The part that owns ``protein_construct`` supplies the shared mixin,
     # because it is the deepest part plasmid (via nucleic_acids) also loads.
     proteins = yaml.safe_load(repo_preset("proteins").read_text(encoding="utf-8"))
@@ -222,19 +270,31 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
 
     assert set(schema.kinds) == EXPECTED_KINDS[name]
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
-    # molbio and library both include base.
+    # A bundle owns no kinds, rules or status sets of its own; its parts do.
     if name != "base":
         assert schema.preset_versions["base"] == 3
-
+    if name in ("molbio", "cellbio"):
+        document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
+        for key in ("kinds", "mixins", "rules", "status_sets"):
+            assert key not in document, (name, key)
     if name == "molbio":
-        # The bundle owns no rule; its parts do.  No rule may be lost in the
-        # split: the five molbio rules keep their ids, wherever they now live.
+        # No rule may be lost in the split: the five molbio rules keep their
+        # ids, wherever they now live.
         assert {rule.id for rule in schema.rules} >= {
             "MB01",
             "MB02",
             "MB03",
             "MB04",
             "MB05",
+        }
+    elif name == "cellbio":
+        # Ticket 28: the cellbio rules keep their ids in the part that owns
+        # their table, and the shared molbio rules come along.
+        assert {rule.id for rule in schema.rules} >= {
+            "MB01",
+            "MB05",
+            "IMM01",
+            "VIR01",
         }
     else:
         own_prefix = {"base": "BASE", "library": "LIB"}[name]
@@ -244,12 +304,12 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
 
 
-@pytest.mark.parametrize("name", PARTS)
+@pytest.mark.parametrize("name", LOADABLE_PARTS)
 def test_part_loads_with_its_kinds_version_and_owner_rules(name: str) -> None:
     schema = load_repo_preset(name)
 
     assert set(schema.kinds) == PART_KINDS[name]
-    assert schema.preset_versions[name] == 1
+    assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
     assert schema.preset_versions["base"] == 3
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
     # Each part's description says what it covers and which bundles include it.
@@ -470,8 +530,13 @@ def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
         "freezing_medium",
         "cells_per_vial",
         "dmso_pct",
+        # Ticket 28 (cell_culture 2): BioManager's cell-line extras.
+        "selection",
+        "mycoplasma",
+        "mycoplasma_tested_on",
     }
     assert vial.fields["dmso_pct"].default == 10
+    assert vial.fields["mycoplasma"].default == "not_tested"
 
     cell_pellet = schema.kinds["cell_pellet"]
     assert cell_pellet.entity_kinds == ["cell_line", "plasmid"]
@@ -612,10 +677,11 @@ def test_molbio_v3_fresh_init_has_every_kind_table_and_part_version(
         "sequence_sha256",
     } <= construct_columns
 
-    # ``preset_versions`` records the bundle and every part at 1.
+    # ``preset_versions`` records the bundle and every part's version.
     assert json.loads(ledger.meta["preset_versions"]) == MOLBIO_VERSIONS
     assert set(ledger.schema.kinds) == EXPECTED_KINDS["molbio"]
-    # The same 18 kind tables as molbio v2, plus oligo/oligo_stock/incubator.
+    # The molbio v2 kind tables plus oligo/oligo_stock/incubator, and ticket
+    # 28's cell_biosample (cell_culture 2).
     kind_tables = {
         f"{kind.object.value}_{name}" for name, kind in ledger.schema.kinds.items()
     }
@@ -839,45 +905,44 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
         reopened.close()
 
 
-def test_molbio_and_a_second_bundle_share_parts_once(
+def test_molbio_and_cellbio_share_parts_once(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    """Ticket 27 bullet 2, with a test-only stand-in for ticket 28's cellbio.
+    """Ticket 28 verify bullet: ``presets: [molbio, cellbio]`` loads.
 
     Two bundles listing the same part must load it once: no duplicate kind and
-    no duplicate status-set error, and one flat copy per part in the ledger.
+    no duplicate status-set error, one flat copy per part in the ledger, and
+    the union of both bundles' kinds (cellbio adds immuno and viral_vectors;
+    molbio adds bacteria).
     """
     source = tmp_path / "presets-src"
     shutil.copytree(REPO_PRESETS, source)
-    (source / "cellbio_like.yaml").write_text(
-        """preset: cellbio_like
-version: 1
-description: Test-only second bundle that shares cell_culture with molbio.
-include: [cell_culture]
-""",
-        encoding="utf-8",
-    )
     workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
 
     ledger = init_ledger(
-        workspace, "shared", ["molbio", "cellbio_like"], author=FACTORY_AUTHOR
+        workspace, "shared", ["molbio", "cellbio"], author=FACTORY_AUTHOR
     )
     try:
-        # The shared parts appear once: the kind set is exactly molbio's.
-        assert set(ledger.schema.kinds) == EXPECTED_KINDS["molbio"]
+        # The shared parts appear once: the kind set is the union, not a
+        # duplicate-kind error.
+        assert set(ledger.schema.kinds) == (
+            EXPECTED_KINDS["molbio"] | EXPECTED_KINDS["cellbio"]
+        )
         assert ledger.schema.preset_versions == {
             **MOLBIO_VERSIONS,
-            "cellbio_like": 1,
+            **CELLBIO_VERSIONS,
         }
         copies = ledger.path / "presets"
         assert sorted(item.name for item in copies.iterdir()) == [
             "bacteria.yaml",
             "base.yaml",
             "cell_culture.yaml",
-            "cellbio_like.yaml",
+            "cellbio.yaml",
+            "immuno.yaml",
             "molbio.yaml",
             "nucleic_acids.yaml",
             "proteins.yaml",
+            "viral_vectors.yaml",
         ]
         assert ledger.check().passed
         fingerprint = ledger.fingerprint
@@ -887,7 +952,9 @@ include: [cell_culture]
     reopened = open_ledger(workspace, "shared")
     try:
         assert reopened.fingerprint == fingerprint
-        assert set(reopened.schema.kinds) == EXPECTED_KINDS["molbio"]
+        assert set(reopened.schema.kinds) == (
+            EXPECTED_KINDS["molbio"] | EXPECTED_KINDS["cellbio"]
+        )
     finally:
         reopened.close()
 

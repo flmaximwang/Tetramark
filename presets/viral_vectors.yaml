@@ -1,0 +1,78 @@
+preset: viral_vectors
+version: 1
+description: >-
+  Viral vector designs and the preparations made from them: one entity per virus
+  (AAV/lentivirus/retrovirus/adenovirus, serotype, the plasmid it packages, its
+  promoter and biosafety level) and one stock per production prep with its
+  titer. Included by the cellbio bundle. Adapted from BioManager (MIT).
+
+# ``nucleic_acids`` is included because ``virus.payload`` points at a
+# ``plasmid``; the include runs nucleic_acids -> proteins -> base, so this part
+# also reaches the base kinds and status sets it uses.
+include: [base, nucleic_acids]
+
+kinds:
+  virus:
+    object: entity
+    description: >-
+      A viral vector design: the virus type and serotype, the transgene plasmid
+      it packages and the biosafety level it is handled at. Adapted from
+      BioManager (MIT).
+    mixins: [named_fields]
+    fields:
+      virus_type:
+        type: enum
+        values: [aav, lentivirus, retrovirus, adenovirus, other]
+        description: Viral vector system (AAV, lentivirus, retrovirus, adenovirus or other).
+      serotype:
+        type: string
+        length: 64
+        description: Serotype or envelope/pseudotype, e.g. AAV2, AAV9, VSV-G.
+      payload:
+        type: ref
+        to: plasmid
+        description: >-
+          Plasmid whose transgene/cassette the virus packages. A plain field,
+          not a lineage edge: it records what the prep carries, not descent.
+      promoter:
+        type: string
+        length: 64
+        description: Promoter driving the packaged cassette, e.g. CMV, EF1a, CAG.
+      biosafety_level:
+        type: string
+        length: 16
+        description: Biosafety level the vector is handled at, e.g. BSL-2.
+
+  virus_prep:
+    object: stock
+    statuses: tube
+    description: >-
+      A produced viral vector preparation: one batch of virus with its measured
+      titer and production details. Adapted from BioManager (MIT).
+    entity_kinds: [virus]
+    fields:
+      titer:
+        type: decimal
+        precision: 18
+        scale: 3
+        description: Measured functional/physical titer of the preparation.
+      titer_unit:
+        type: enum
+        values: [vg_ml, tu_ml, pfu_ml]
+        description: Unit of the titer (viral genomes, transducing units or plaque-forming units per mL).
+      made_on:
+        type: date
+        description: Date the preparation was produced (ISO yyyy-mm-dd).
+      made_by:
+        type: string
+        length: 128
+        description: Person or service that produced the preparation.
+
+rules:
+  - id: VIR01
+    description: a recorded virus prep titer is positive
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_virus_prep
+      WHERE titer IS NOT NULL AND titer <= 0
+    expect: {single_value: 0}

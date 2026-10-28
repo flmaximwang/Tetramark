@@ -18,7 +18,11 @@ The step therefore
 * places the whole current preset closure the ledger lists — ``base`` v3
   (slotless ``incubator`` box kind) and the four parts — **before** the runner
   opens the ledger (files are not Dolt content; the spec-4 loader needs the
-  parts and every stock kind's ``statuses:``),
+  parts and every stock kind's ``statuses:``), then puts the **frozen
+  cell_culture v1** shipped next to this file over its own copy: ticket 28
+  bumps the repository's ``presets/cell_culture.yaml`` to v2, which this
+  historical step must not install (its counter stops at 1 and
+  ``migration/presets/cell_culture/1-to-2`` owns the bump),
 * applies the **additive** diff plan (oligo tables, the base box kind and their
   views); a destructive step is refused before anything is written,
 * bumps ``preset_versions.molbio`` to 3 and records every part at version 1 in
@@ -51,6 +55,7 @@ from tetramark.migrate import (
     preset_args,
     restore_files,
     run,
+    vendor_preset_files,
     vendor_repo_presets,
 )
 from tetramark.schema.ddl import view_statements
@@ -70,6 +75,16 @@ PARTS = ("nucleic_acids", "bacteria", "proteins", "cell_culture")
 
 #: ``ledger_meta.preset_versions`` entries this step adds next to molbio's bump.
 PRESET_VERSIONS_EXTRA = {part: 1 for part in PARTS}
+
+#: The frozen cell_culture v1 this step installs over the repository copy.
+#: Ticket 28 bumps ``presets/cell_culture.yaml`` to v2; molbio v3 was released
+#: with cell_culture 1 and its counter is bumped by
+#: ``migration/presets/cell_culture/1-to-2``, not here.  The other parts are
+#: still the current repository version, which is why they are placed from
+#: ``presets/`` above.
+FROZEN_PART_FILES = {
+    "cell_culture": Path(__file__).with_name("cell_culture-1.yaml"),
+}
 
 #: The tooling facts the v3 bundle needs in the ledger's own copy.
 REQUIRED_KINDS = ("oligo", "oligo_stock")
@@ -175,9 +190,15 @@ step = MigrationStep(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Place the preset copies, then run the shared one-commit step."""
+    """Place the preset copies, then run the shared one-commit step.
+
+    Every preset the ledger lists is placed from the repository (the spec-4
+    loader needs current copies), except the parts this step froze at the
+    version whose counter it records.
+    """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
+    saved += vendor_preset_files(arguments.ledger, FROZEN_PART_FILES)
     try:
         run(
             step,

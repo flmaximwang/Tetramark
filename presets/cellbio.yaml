@@ -1,0 +1,20 @@
+preset: cellbio
+version: 1
+description: >-
+  Cell-biology inventory assembled from reusable parts: nucleic acids, cell
+  culture, antibodies and viral vectors, with the shared cell/plasmid/batch
+  model behind them. A bundle: it has no kinds, mixins, rules or status sets of
+  its own and shares base, nucleic_acids and cell_culture with the molbio
+  bundle, so one ledger may list both without duplicate-kind errors. Biosamples
+  taken from cell lines are the cell_biosample kind that cell_culture owns; the
+  animal side (biosamples, animal_biosample) belongs to the angenet bundle,
+  because a stock's entity_kinds may name only entity kinds the same ledger
+  loads. Adapted from BioManager (MIT).
+
+# A bundle only includes parts.  cell_culture brings cell_biosample (the
+# cell-side biosample kind) and reaches nucleic_acids -> proteins -> base; the
+# parts this bundle names itself are listed here so the file is
+# self-describing, and the loader loads each file once.  biosamples is
+# deliberately absent: it names the animal line kinds of ticket 29's parts (see
+# presets/README.md).
+include: [base, nucleic_acids, cell_culture, immuno, viral_vectors]
