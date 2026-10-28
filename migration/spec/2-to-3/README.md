@@ -133,7 +133,9 @@ dolt sql -q "SHOW COLUMNS FROM \`v_stock_bacterial_glycerol\`"
 dolt sql -r csv -q "SELECT \`id\`, \`entity_kind\`, \`aliquots_stored\`, \`quantity_stored\`, \`unit\`, \`status\` FROM \`v_stock_bacterial_glycerol\`"
 # 6. validation: no FAIL, and the dolt_tests no longer name a dropped table
 uv run tm -w /path/to/workspace -l <ledger> check
-dolt sql -q "SELECT COUNT(*) FROM \`dolt_tests\` WHERE \`test_query\` LIKE '%aliquot\\_%' AND \`test_query\` NOT LIKE '%aliquot\\_event%'"  # 0
+# Dolt 2.3.5's LIKE does not honour the backslash escape (it reads `\_` as a
+# single-character wildcard, matching every `aliquot` reference), so use REGEXP.
+dolt sql -q "SELECT COUNT(*) FROM \`dolt_tests\` WHERE \`test_query\` REGEXP 'aliquot_[a-z]' AND NOT \`test_query\` REGEXP 'aliquot_event'"  # 0
 ```
 
 ## Failure, rollback, caveats
