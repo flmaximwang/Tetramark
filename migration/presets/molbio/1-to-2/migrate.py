@@ -24,6 +24,14 @@ same commit.  ``after_commit`` replaces the ledger's preset files (they are not
 Dolt content) and ``reopened_schema`` makes the runner re-read the ledger from
 that copy and verify its fingerprint before the success report.
 
+The target schema is the ledger's own preset list with molbio (and the base it
+includes) substituted by the repository v2/v1 files: another preset a ledger
+loads (``library``, a local preset, ...) stays part of the desired schema, so
+its kind tables are not planned as drops.  ``plan`` refuses any **destructive**
+planner step — the same plan ``tm schema apply`` would refuse without
+``--allow-destructive`` — before anything is written, instead of silently
+dropping columns or rows.
+
 Ordering note: the planner drops extra tables *before* it adds columns, and it
 cannot see ``aliquot_bacterial`` once ``stock_bacterial`` was renamed (its name
 is derived from the renamed kind).  The step therefore splices the
@@ -34,14 +42,24 @@ after the target column exists and the source table is dropped last.
 
 from __future__ import annotations
 
+import json
+import shutil
+import tempfile
 from pathlib import Path
 
-from tetramark.core.ledger import Ledger
+from tetramark.core.ledger import META_PRESET_VERSIONS, Ledger
 from tetramark.errors import LedgerError
 from tetramark.migrate import MigrationStep, load_renames, main
 from tetramark.schema.ddl import table_name
 from tetramark.schema.diff import build_plan
-from tetramark.schema.loader import load_ledger_schema, load_schema
+from tetramark.schema.loader import (
+    PresetFile,
+    expand_presets,
+    load_ledger_schema,
+    load_schema,
+    preset_copy_files,
+    resolve_ledger_presets,
+)
 from tetramark.schema.model import EffectiveSchema
 
 #: The repository root: this file is ``migration/presets/molbio/1-to-2/``.
@@ -76,31 +94,126 @@ DROP_EXTENSION_SQL = "DROP TABLE IF EXISTS `aliquot_bacterial`"
 #: is unchanged at version 1 but is re-copied if the ledger's copy differs).
 PRESET_FILES = ("molbio.yaml", "base.yaml")
 
+#: Preset names this step replaces in the target preset list: molbio and the
+#: base it includes.  Every other preset the ledger lists is kept.
+REPLACED_PRESETS = ("base", "molbio")
+
+
+def _recording_versions(ledger: Ledger) -> dict[str, int]:
+    """``ledger_meta.preset_versions`` as integers (what the ledger records)."""
+    raw = ledger.meta.get(META_PRESET_VERSIONS)
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as error:
+        raise LedgerError(
+            f"ledger {ledger.name!r}: {META_PRESET_VERSIONS} is not valid JSON "
+            f"({error})"
+        ) from error
+    if not isinstance(payload, dict):  # pragma: no cover - the runner checks it
+        raise LedgerError(
+            f"ledger {ledger.name!r}: {META_PRESET_VERSIONS} must be a JSON object"
+        )
+    return {str(name): int(version) for name, version in payload.items()}
+
+
+def _copy_preset(preset: PresetFile, root: Path) -> Path:
+    """Materialise one preset (and its kinds/rules files) under ``root``."""
+    for item in preset_copy_files(preset):
+        target = root / item.destination
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(item.source, target)
+    destination = (
+        Path(f"{preset.name}{preset.path.suffix}")
+        if preset.is_file
+        else Path(preset.name)
+    )
+    return root / destination
+
+
+def _target_preset_sources(ledger: Ledger, root: Path) -> list[str]:
+    """The ``presets:`` list of the target schema, rooted in a private copy.
+
+    The ledger's own list wins: molbio (and the base it includes) is the
+    repository v2/v1 copy — exactly what ``vendor_presets`` writes after the
+    commit — and every other preset stays the ledger's own ``<ledger>/presets/``
+    copy, so its kinds are not planned as drops.  Everything is materialised
+    into ``root`` so that the includes of the other presets also resolve to the
+    repository base (a ledger listing e.g. ``library`` would otherwise load two
+    different ``base.yaml`` files).
+    """
+    resolved = resolve_ledger_presets(ledger.path, ledger.config)
+    for preset in resolved:
+        if preset.name in REPLACED_PRESETS and not preset.is_file:
+            raise LedgerError(
+                "refusing to migrate molbio 1 -> 2: the ledger's own preset "
+                f"copy for {preset.name!r} is a directory ({preset.path}); this "
+                "step vendors the flat <ledger>/presets/*.yaml copies and a "
+                "directory copy would still win on reopen"
+            )
+    others = [preset for preset in resolved if preset.name not in REPLACED_PRESETS]
+    closure = expand_presets([str(preset.path) for preset in others]) if others else []
+
+    materialised: dict[str, Path] = {}
+    for name in REPLACED_PRESETS:
+        materialised[name] = _copy_preset(
+            PresetFile(name=name, path=REPO_PRESETS / f"{name}.yaml", is_file=True),
+            root,
+        )
+    for preset in closure:
+        if preset.name in materialised:  # the repository copies win over the ledger's
+            continue
+        materialised[preset.name] = _copy_preset(preset, root)
+    return [str(materialised[preset.name]) for preset in resolved]
+
+
+def _check_other_presets_unchanged(
+    ledger: Ledger, schema: EffectiveSchema
+) -> None:
+    """A molbio step must not change any other preset the ledger loads."""
+    resolved = resolve_ledger_presets(ledger.path, ledger.config)
+    recorded = _recording_versions(ledger)
+    for preset in resolved:
+        if preset.name in REPLACED_PRESETS:
+            continue
+        loaded = schema.preset_versions.get(preset.name)
+        expected = recorded.get(preset.name)
+        if expected is None:
+            raise LedgerError(
+                f"refusing to migrate molbio 1 -> 2: the ledger does not record "
+                f"{META_PRESET_VERSIONS}[{preset.name!r}], so the step cannot "
+                f"prove it keeps the non-molbio preset {preset.name!r} unchanged"
+            )
+        if loaded != expected:
+            raise LedgerError(
+                f"refusing to migrate molbio 1 -> 2: preset {preset.name!r} would "
+                f"change from version {expected} to {loaded}; this step upgrades "
+                "molbio only"
+            )
+
 
 def target_schema(ledger: Ledger) -> EffectiveSchema:
-    """The molbio-2 schema of this repository, plus the ledger's local kinds/rules.
+    """The schema after the step: the ledger's presets with molbio 2 substituted.
 
     ``open_target`` still opens the ledger with its old preset copy, so the
-    migration must load the repository preset itself.  ``base_dir`` is the
-    ledger directory, so a ``kinds_dir``/``rules_dir`` in ``ledger.yaml`` is
-    included exactly as a later ``open`` will include it.  The loaded copy
-    must really be version 2: the runner refuses to commit otherwise.
+    migration loads the repository v2 molbio itself; every *other* preset the
+    ledger lists is kept from the ledger's own ``<ledger>/presets/`` copy, so
+    unrelated kinds stay in the desired schema instead of being planned away.
+    ``base_dir`` is the ledger directory, so a ``kinds_dir``/``rules_dir`` in
+    ``ledger.yaml`` is included exactly as a later ``open`` will include it.
+    The loaded copy must really be version 2 (the runner refuses to commit
+    otherwise) and no other preset may change.
     """
-    config = ledger.config.model_copy(
-        update={
-            "presets": [
-                str(REPO_PRESETS / "base.yaml"),
-                str(REPO_PRESETS / "molbio.yaml"),
-            ]
-        }
-    )
-    schema = load_schema(config, base_dir=ledger.path)
+    with tempfile.TemporaryDirectory(prefix="tetramark-molbio2-") as temporary:
+        sources = _target_preset_sources(ledger, Path(temporary))
+        config = ledger.config.model_copy(update={"presets": sources})
+        schema = load_schema(config, base_dir=ledger.path)
     version = schema.preset_versions.get("molbio")
     if version != TO_VERSION:
         raise LedgerError(
             f"refusing to migrate molbio 1 -> 2: the repository preset is "
             f"version {version}, expected {TO_VERSION}"
         )
+    _check_other_presets_unchanged(ledger, schema)
     return schema
 
 
@@ -182,6 +295,25 @@ def plan(ledger: Ledger):
     schema_plan = build_plan(
         ledger.driver, schema, ledger_name=ledger.name, renames=RENAMES
     )
+    if schema_plan.destructive:
+        # ``tm schema apply`` refuses these without --allow-destructive for a
+        # reason: Dolt DDL cannot be rolled back and a drop loses data.  A
+        # migration step must never execute one silently.
+        lines = [
+            f"  {index}. [{step.tag}] {step.action} {step.name}: {step.sql}"
+            for index, step in enumerate(schema_plan.steps)
+            if step.destructive
+        ]
+        raise LedgerError(
+            "refusing to migrate molbio 1 -> 2: the diff plan has destructive "
+            "step(s) that would drop or change existing schema or data:\n"
+            + "\n".join(lines)
+            + "\nNothing was written. Apply those changes deliberately "
+            "first with 'tm schema apply --allow-destructive' (or fix the "
+            "ledger's local kinds/rules and restore what is missing), then "
+            "re-run this step: it only accepts an additive molbio-1 -> 2 "
+            "plan."
+        )
     steps = schema_plan.steps
 
     add_index = next(
