@@ -2,15 +2,14 @@
 
 > Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.
 
-**进度** 1/13 块（8%） · 状态 `active` · 更新于 2026-10-28 16:27
+**进度** 3/13 块（23%） · 状态 `active` · 更新于 2026-10-28 22:07
 
 **参与方** lead(agent) · Maxim(human) · w25(agent) · w26(agent) · w27(agent) · w28(agent) · w29(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
 - `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** — 待批准 · @maxim
-- `T-001#B-001` **implement ticket 25 in worktree w25** — 进行中 · @w25 · 在做 @w25
-- `T-002#B-002` **review and merge ticket 26** — 进行中 · @lead · 在做 @lead
+- `T-001#B-002` **review and merge ticket 25** — 进行中 · @lead · 在做 @lead
 
 ## 图
 
@@ -41,12 +40,12 @@ flowchart LR
   T-005_B-002 --> T-006_B-001
   T-006_B-001 --> T-006_B-002
   T-006_B-002 --> T-006_B-003
-  classDef running stroke-width:1px;
-  class T-001_B-001,T-002_B-002 running;
-  classDef waiting stroke-width:1px;
-  class T-001_B-002,T-003_B-001,T-003_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 waiting;
   classDef done stroke-width:1px;
-  class T-002_B-001 done;
+  class T-001_B-001,T-002_B-001,T-002_B-002 done;
+  classDef running stroke-width:1px;
+  class T-001_B-002 running;
+  classDef waiting stroke-width:1px;
+  class T-003_B-001,T-003_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 waiting;
   classDef blocked stroke-width:1px;
   class T-006_B-003 blocked;
 ```
@@ -55,17 +54,20 @@ flowchart LR
 
 ### T-001 25 status sets, transition rules, in-stock views (spec 4) — 进行中
 @w25
-- [ ] `T-001#B-001` **implement ticket 25 in worktree w25** _impl_ — 进行中 @w25
+- [x] `T-001#B-001` **implement ticket 25 in worktree w25** _impl_ — 已完成 @w25
     - 做什么：Read docs/tickets/25-status-sets-transitions.md and docs/preset-parts.md section 4. Work only in the worktree .dsh/gitworktree/w25 (branch wave10/t25, own .venv). Real dolt, no mocks, no commit, leave the tree dirty. Do not touch real ledgers. Report what you chose wherever the ticket leaves a choice.
     - 判据：Every item of ticket 25 Verify passes: status-set load errors; tube stored->consumed allow, consumed->stored refuse, --force --note allow with forced=TRUE, --force without --note usage error; creation as consumed works; a hand-written illegal status event is FAIL in tm check; v_stock_<kind> active/depleted/empty and counts as specified; spec/3-to-4 on a spec-3 fixture drops the key, adds forced, tm check passes; custom list refuses writing nothing.
-    - 在做：@w25
+    - 产物：`.dsh/gitworktree/w25 @ 6faa557 + merge 21deeb5`
     - run 2026-10-28 15:37 w25 pending→running Dispatched to teammate w25 in worktree .dsh/gitworktree/w25 (branch wave10/t25, from main 3831fb2).
-- [ ] `T-001#B-002` **review and merge ticket 25** _review_ — 等前置 @lead
+    - run 2026-10-28 22:07 w25 running→done Report: spec 4 (status sets, transitions with --force/--note, in-stock views, 3-to-4 + base/library steps), full suite 767 passed in worktree. Accepted decisions: molbio version stays 2 (ticket 27 owns molbio/2-to-3); per-status counts/total_quantity dropped from v_stock_status (design says views show in-stock state); migration steps place preset copies before opening.
+- [ ] `T-001#B-002` **review and merge ticket 25** _review_ — 进行中 @lead
     - 做什么：Lead: review the worktree diff against the ticket and the design doc, run the full suite in the worktree, check no real ledger was touched, then commit on wave10/t25 and merge into main with the wave 9 style merge commit. Record review findings as a note.
     - 判据：Diff reviewed line by line; full suite green in the worktree; no real ledger touched; branch committed and merged to main; plans/ updated.
     - 依赖：T-001#B-001
+    - 在做：@lead
+    - run 2026-10-28 22:07 lead pending→running Merged main into wave10/t25 (docs/spec split, template harness, molbio-1 fixture); ported spec text to docs/spec/*; legacy-statuses read path and spec-4-only test gating for the migration runner; full suite running.
 
-### T-002 26 lineage true on ref fields + tm lineage — 进行中
+### T-002 26 lineage true on ref fields + tm lineage — 已完成
 @w26
 - [x] `T-002#B-001` **implement ticket 26 in worktree w26** _impl_ — 已完成 @w26
     - 做什么：Read docs/tickets/26-tm-lineage.md and docs/preset-parts.md section 5. Work only in the worktree .dsh/gitworktree/w26 (branch wave10/t26, own .venv). Real dolt, no mocks, no commit, leave the tree dirty. Read whatever count columns v_stock_<kind> has through one small accessor so ticket 25 only changes the accessor. Record where the lineage flags were added.
@@ -73,12 +75,13 @@ flowchart LR
     - 产物：`.dsh/gitworktree/w26 @ 35a3b5c (branch wave10/t26)`
     - run 2026-10-28 15:37 w26 pending→running Dispatched to teammate w26 in worktree .dsh/gitworktree/w26 (branch wave10/t26, from main 3831fb2).
     - run 2026-10-28 16:27 w26 running→done Report received: ops/lineage.py 622 lines + cli/lineage.py + 21 tests; 768-pass full run in the worktree; accessor STOCK_COUNT_COLUMNS is the only column-name reader.
-- [ ] `T-002#B-002` **review and merge ticket 26** _review_ — 进行中 @lead
+- [x] `T-002#B-002` **review and merge ticket 26** _review_ — 已完成 @lead
     - 做什么：Lead: review the worktree diff against the ticket and design, run the full suite, check the lineage accessor is the single place that reads stock counts, then commit on wave10/t26 and merge into main. Record findings as a note.
     - 判据：Diff reviewed; full suite green; accessor is the only count reader; no real ledger touched; branch committed and merged to main.
     - 依赖：T-002#B-001
-    - 在做：@lead
+    - 产物：`main a635762 (merge of wave10/t26) + docs port to docs/spec`
     - run 2026-10-28 16:27 lead pending→running Reviewing diff; committed 35a3b5c, merged main, re-running full suite on the branch before merging to main.
+    - run 2026-10-28 16:44 lead running→done Reviewed: attribute is ref-only + entity/stock-only, fingerprint only when set, accessor single-reader, cycle guard, JSON/text/dot shapes, no real ledger touched. Ported the spec text onto the new docs/spec split (02/05/06) after another session's docs reorg; targeted suite 208 passed. Full suite on main started.
 
 ### T-003 27 split molbio into parts (molbio 2 to 3) — 待排
 @w27
@@ -131,14 +134,6 @@ flowchart LR
 
 ## 日志（近 20 条）
 
-- `2026-10-28 15:33` **agent** [block] T-003#B-001 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-004#B-001 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-005#B-001 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-001#B-002 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-002#B-002 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-003#B-002 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-004#B-002 改了 命令
-- `2026-10-28 15:33` **agent** [block] T-005#B-002 改了 命令
 - `2026-10-28 15:33` **agent** [block] T-006#B-001 改了 命令
 - `2026-10-28 15:33` **agent** [block] T-006#B-002 改了 命令
 - `2026-10-28 15:33` **agent** [block] T-006#B-003 改了 命令
@@ -151,6 +146,14 @@ flowchart LR
 - `2026-10-28 16:27` **agent** [exec] T-002#B-001: 线程登记已清除（@w26 收工）
 - `2026-10-28 16:27` **agent** [status] T-002#B-001: running → done（Report received: ops/lineage.py 622 lines + cli/lineage.py + 21 tests; 768-pass full run in the worktree; accessor STOCK_COUNT_COLUMNS is the only column-name reader.）
 - `2026-10-28 16:27` **agent** [status] T-002#B-002: pending → running（Reviewing diff; committed 35a3b5c, merged main, re-running full suite on the branch before merging to main.）
+- `2026-10-28 16:44` **agent** [exec] T-002#B-002: 线程登记已清除（@lead 收工）
+- `2026-10-28 16:44` **agent** [status] T-002#B-002: running → done（Reviewed: attribute is ref-only + entity/stock-only, fingerprint only when set, accessor single-reader, cycle guard, JSON/text/dot shapes, no real ledger touched. Ported the spec text onto the new docs/spec split (02/05/06) after another session's docs reorg; targeted suite 208 passed. Full suite on main started.）
+- `2026-10-28 16:44` **agent** [status] T-002: pending → done（Ticket 26 merged to main at a635762.）
+- `2026-10-28 16:44` **lead** [decision] Ticket 26 merged (a635762). Two choices recorded: (1) aliquot->owning-stock hop carries the naming relation's via (needed for ticket 29 dam/sire chains); (2) JSON root is the id string. Docs reorg by another session (79c9d6d, spec split into docs/spec/) landed first; ticket docs are ported into docs/spec/02/05/06 - tickets 27-29 must write docs there, not docs/spec.md.
+- `2026-10-28 22:07` **agent** [exec] T-001#B-001: 线程登记已清除（@w25 收工）
+- `2026-10-28 22:07` **agent** [status] T-001#B-001: running → done（Report: spec 4 (status sets, transitions with --force/--note, in-stock views, 3-to-4 + base/library steps), full suite 767 passed in worktree. Accepted decisions: molbio version stays 2 (ticket 27 owns molbio/2-to-3); per-status counts/total_quantity dropped from v_stock_status (design says views show in-stock state); migration steps place preset copies before opening.）
+- `2026-10-28 22:07` **agent** [status] T-001#B-002: pending → running（Merged main into wave10/t25 (docs/spec split, template harness, molbio-1 fixture); ported spec text to docs/spec/*; legacy-statuses read path and spec-4-only test gating for the migration runner; full suite running.）
+- `2026-10-28 22:07` **lead** [decision] Ticket 25 review notes: (1) molbio stays version 2 — ticket 27 creates the single migration/presets/molbio/2-to-3 that installs the parts bundle (this supersedes the earlier 2->3-then-rewrite note). (2) Migration path: load_ledger_schema/open gained allow_legacy_statuses and legacy stock kinds get the implied spec-3 default set; normal tm reads still refuse. (3) migrate runner omits core_status_event_allowed below spec 4. (4) tests/test_lineage.py inline presets now declare status_sets. (5) The molbio-1 drift-guard rebuild test is skipped (checked-in v1 preset copy carries statuses now) — follow-up.
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave10` 生成。
