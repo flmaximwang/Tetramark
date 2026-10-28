@@ -1,0 +1,244 @@
+{
+ "nodes": [
+  {
+   "id": "T-001#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "5",
+   "text": "### T-001#B-001\nimplement ticket 25 in worktree w25\n\n`running` · @w25 · 在做 @w25\n\nRead docs/tickets/25-status-sets-transitions.md and docs/preset-parts.md section 4. Work only in the worktree .dsh/gitworktree/w25 (branch wave10/t25, own .venv"
+  },
+  {
+   "id": "T-001#B-002",
+   "type": "text",
+   "x": 380,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-001#B-002\nreview and merge ticket 25\n\n`waiting` · @lead\n\nLead: review the worktree diff against the ticket and the design doc, run the full suite in the worktree, check no real ledger was touched, then commit on wave1"
+  },
+  {
+   "id": "T-002#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 170,
+   "width": 300,
+   "height": 110,
+   "color": "5",
+   "text": "### T-002#B-001\nimplement ticket 26 in worktree w26\n\n`running` · @w26 · 在做 @w26\n\nRead docs/tickets/26-tm-lineage.md and docs/preset-parts.md section 5. Work only in the worktree .dsh/gitworktree/w26 (branch wave10/t26, own .venv). Real dolt,"
+  },
+  {
+   "id": "T-002#B-002",
+   "type": "text",
+   "x": 380,
+   "y": 170,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-002#B-002\nreview and merge ticket 26\n\n`waiting` · @lead\n\nLead: review the worktree diff against the ticket and design, run the full suite, check the lineage accessor is the single place that reads stock counts, then c"
+  },
+  {
+   "id": "T-003#B-001",
+   "type": "text",
+   "x": 720,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-003#B-001\nimplement ticket 27 in worktree w27\n\n`waiting` · @w27\n\nRead docs/tickets/27-molbio-into-parts.md and docs/preset-parts.md section 2. Work only in the worktree .dsh/gitworktree/w27 (branch wave10/t27, own .venv). Dec"
+  },
+  {
+   "id": "T-003#B-002",
+   "type": "text",
+   "x": 1060,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-003#B-002\nreview and merge ticket 27\n\n`waiting` · @lead\n\nLead: review diff against ticket and design, verify no table or kind rename slipped in, run the full suite, then commit on wave10/t27 and merge into main. Recor"
+  },
+  {
+   "id": "T-004#B-001",
+   "type": "text",
+   "x": 1400,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-004#B-001\nimplement ticket 28 in worktree w28\n\n`waiting` · @w28\n\nRead docs/tickets/28-cellbio-bundle.md and docs/preset-parts.md sections 2 and 2.1. Work only in the worktree .dsh/gitworktree/w28 (branch wave10/t28, own .venv"
+  },
+  {
+   "id": "T-004#B-002",
+   "type": "text",
+   "x": 1740,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-004#B-002\nreview and merge ticket 28\n\n`waiting` · @lead\n\nLead: review the diff, confirm the entity_kinds choice is the smallest one and is documented, run the full suite, then commit on wave10/t28 and merge into main."
+  },
+  {
+   "id": "T-005#B-001",
+   "type": "text",
+   "x": 2080,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-005#B-001\nimplement ticket 29 in worktree w29\n\n`waiting` · @w29\n\nRead docs/tickets/29-angenet-bundle.md and docs/preset-parts.md section 3. Work only in the worktree .dsh/gitworktree/w29 (branch wave10/t29, own .venv). Adapt "
+  },
+  {
+   "id": "T-005#B-002",
+   "type": "text",
+   "x": 2420,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-005#B-002\nreview and merge ticket 29\n\n`waiting` · @lead\n\nLead: review the diff, check no core change was needed, run the full suite, then commit on wave10/t29 and merge into main."
+  },
+  {
+   "id": "T-006#B-001",
+   "type": "text",
+   "x": 2760,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-006#B-001\nwave 10 acceptance on main\n\n`waiting` · @lead\n\nLead: on main after all five merges, run the full suite, tm init for molbio, cellbio, angenet and [molbio, cellbio] and tm check each; confirm docs/spec.md, REA"
+  },
+  {
+   "id": "T-006#B-002",
+   "type": "text",
+   "x": 3100,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-006#B-002\nrelease 0.3.0 and wave 10 handover\n\n`waiting` · @lead\n\nLead: bump the version, write docs/tickets/HANDOVER-wave11.md (or a wave 10 closing note), commit plans/ and the wave, push nothing unless asked."
+  },
+  {
+   "id": "T-006#B-003",
+   "type": "text",
+   "x": 3440,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "1",
+   "text": "### T-006#B-003\nclose git-bug 0a9acec and ask about zsqlab10\n\n`blocked` · @maxim\n\nNeeds the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (propo"
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "fromNode": "T-001#B-001",
+   "toNode": "T-001#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e1",
+   "fromNode": "T-002#B-001",
+   "toNode": "T-002#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e2",
+   "fromNode": "T-001#B-002",
+   "toNode": "T-003#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e3",
+   "fromNode": "T-002#B-002",
+   "toNode": "T-003#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e4",
+   "fromNode": "T-003#B-001",
+   "toNode": "T-003#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e5",
+   "fromNode": "T-003#B-002",
+   "toNode": "T-004#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e6",
+   "fromNode": "T-004#B-001",
+   "toNode": "T-004#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e7",
+   "fromNode": "T-004#B-002",
+   "toNode": "T-005#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e8",
+   "fromNode": "T-005#B-001",
+   "toNode": "T-005#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e9",
+   "fromNode": "T-005#B-002",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e10",
+   "fromNode": "T-006#B-001",
+   "toNode": "T-006#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e11",
+   "fromNode": "T-006#B-002",
+   "toNode": "T-006#B-003",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  }
+ ]
+}
