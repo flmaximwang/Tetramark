@@ -1,0 +1,5 @@
+# Checked-in Dolt databases (tests/data/ledgers/*) are binary fixture data.
+# Keep review diffs readable and never let Git try to text-diff, merge or
+# EOL-normalise the noms chunks: rebuild a fixture with its builder instead
+# (see tests/data/ledgers/build_fixtures.py).
+tests/data/ledgers/**/.dolt/** -diff -merge -text

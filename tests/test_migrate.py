@@ -9,7 +9,11 @@ migration will use).
 The spec-1 fixture is built from the current tool (init, then downgrade the
 generated views to their pre-``861faae`` shape and stamp ``spec_version=1``
 with the fingerprint a spec-1 tool would have written), which the ticket allows
-as an alternative to checking in a historical DDL dump.
+as an alternative to checking in a historical DDL dump.  The molbio-1 fixture
+is a **real checked-in Dolt database** (``tests/data/ledgers/molbio-v1``) built
+by ``tests/data/ledgers/build_fixtures.py`` from the wave-9-era tool; the tests
+copy it into ``tmp_path`` and seed their rows, so no hand-written v1 DDL is
+needed any more.
 """
 
 from __future__ import annotations
@@ -18,11 +22,12 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 import yaml
@@ -31,6 +36,7 @@ from typer.testing import CliRunner
 from tetramark import __version__
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies, open as open_ledger
+from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.migrate import (
     MigrationStep,
@@ -39,14 +45,19 @@ from tetramark.migrate import (
     open_target,
     run,
 )
-from tetramark.schema.ddl import STOCK_VIEW_COLUMNS, table_name, view_statements
+from tetramark.schema.ddl import (
+    STOCK_VIEW_COLUMNS,
+    kind_statements,
+    table_name,
+    view_statements,
+)
 from tetramark.schema.diff import RenameMap, apply, plan
 from tetramark.schema.tests_gen import generate_tests
 from tetramark.schema.loader import load_ledger_schema
 
 import tetramark.schema.model as model
 
-from conftest import PRESETS, REPO_PRESETS
+from conftest import PRESETS, REPO_PRESETS, free_port, isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
@@ -838,126 +849,105 @@ def test_counter_reads_spec_and_preset_counters(
 # presets/molbio/1-to-2: the real step (ticket 22)
 # ---------------------------------------------------------------------------
 
-#: The frozen v1 molbio preset, kept as a **raw document**.  0.2.0+ refuses its
-#: ``aliquot_fields`` key (spec 3), which is exactly why a real v1 ledger runs
-#: this step with the last checkout that accepted the key (step README); the
-#: downgrade helper below strips the key when it writes the ledger's own copy.
-MOLBIO_V1_DOC = PRESETS / "molbio-v1" / "molbio-v1.yaml"
-MOLBIO_V1_BASE = PRESETS / "molbio-v1" / "base.yaml"
-
-#: The v2-only tables/views: the four renamed kinds and the three cell kinds.
-V2_ONLY_TABLES = (
-    "entity_protein_construct",
-    "entity_bacterial_strain",
-    "entity_cell_line",
-    "stock_bacterial_glycerol",
-    "stock_bacterial_pellet",
-    "stock_cell_vial",
-    "stock_cell_pellet",
-)
-
-#: The minimal molbio-v1 shape the seed below writes.  The v1 tables carry only
-#: the columns the seed uses; the step's planner adds the v2 columns,
-#: constraints and views itself, exactly as it would on a real v1 ledger.
-V1_DDL = (
-    "CREATE TABLE `entity_construct` ("
-    "`id` VARCHAR(64) NOT NULL, "
-    "`kind` VARCHAR(64) NOT NULL DEFAULT 'construct', "
-    "`name` VARCHAR(255) NOT NULL, "
-    "`sequence` MEDIUMTEXT, "
-    "`sequence_sha256` CHAR(64) GENERATED ALWAYS AS (SHA2(`sequence`, 256)) STORED, "
-    "`molecular_weight_da` DECIMAL(12,2), "
-    "CONSTRAINT `pk_entity_construct` PRIMARY KEY (`id`), "
-    "CONSTRAINT `uq_entity_construct_name` UNIQUE (`name`), "
-    "CONSTRAINT `uq_entity_construct_sequence` UNIQUE (`sequence_sha256`), "
-    "CONSTRAINT `ck_entity_construct_kind` CHECK (`kind` = 'construct'))",
-    "ALTER TABLE `entity_construct` ADD CONSTRAINT `fk_entity_construct_id_kind` "
-    "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
-    "CREATE TABLE `entity_strain` ("
-    "`id` VARCHAR(64) NOT NULL, "
-    "`kind` VARCHAR(64) NOT NULL DEFAULT 'strain', "
-    "`name` VARCHAR(255) NOT NULL, `genotype` MEDIUMTEXT, "
-    "CONSTRAINT `pk_entity_strain` PRIMARY KEY (`id`), "
-    "CONSTRAINT `uq_entity_strain_name` UNIQUE (`name`), "
-    "CONSTRAINT `ck_entity_strain_kind` CHECK (`kind` = 'strain'))",
-    "ALTER TABLE `entity_strain` ADD CONSTRAINT `fk_entity_strain_id_kind` "
-    "FOREIGN KEY (`id`, `kind`) REFERENCES `entity` (`id`, `kind`)",
-    "CREATE TABLE `stock_bacterial` ("
-    "`id` VARCHAR(64) NOT NULL, "
-    "`kind` VARCHAR(64) NOT NULL DEFAULT 'bacterial', "
-    "`strain` VARCHAR(64) NOT NULL, `medium` VARCHAR(64), `batch` VARCHAR(8), "
-    "CONSTRAINT `pk_stock_bacterial` PRIMARY KEY (`id`), "
-    "CONSTRAINT `ck_stock_bacterial_kind` CHECK (`kind` = 'bacterial'))",
-    "ALTER TABLE `stock_bacterial` ADD CONSTRAINT `fk_stock_bacterial_id_kind` "
-    "FOREIGN KEY (`id`, `kind`) REFERENCES `stock` (`id`, `kind`)",
-    "CREATE TABLE `stock_pellet` ("
-    "`id` VARCHAR(64) NOT NULL, "
-    "`kind` VARCHAR(64) NOT NULL DEFAULT 'pellet', "
-    "`culture_volume_ml` DECIMAL(10,2), `od600` DECIMAL(6,2), "
-    "CONSTRAINT `pk_stock_pellet` PRIMARY KEY (`id`), "
-    "CONSTRAINT `ck_stock_pellet_kind` CHECK (`kind` = 'pellet'))",
-    "ALTER TABLE `stock_pellet` ADD CONSTRAINT `fk_stock_pellet_id_kind` "
-    "FOREIGN KEY (`id`, `kind`) REFERENCES `stock` (`id`, `kind`)",
-    "CREATE TABLE `aliquot_bacterial` ("
-    "`id` VARCHAR(64) NOT NULL, `glycerol_pct` DECIMAL(5,2) DEFAULT 15.00, "
-    "CONSTRAINT `pk_aliquot_bacterial` PRIMARY KEY (`id`), "
-    "CONSTRAINT `fk_aliquot_bacterial_id` FOREIGN KEY (`id`) "
-    "REFERENCES `aliquot` (`id`))",
-    "ALTER TABLE `entity_plasmid` ADD CONSTRAINT `fk_entity_plasmid_construct` "
-    "FOREIGN KEY (`construct`) REFERENCES `entity_construct` (`id`)",
-)
+#: The checked-in molbio-1 fixture, built by
+#: ``tests/data/ledgers/build_fixtures.py`` from the wave-9 checkout
+#: (``3ec57d5``, tetramark 0.1.2, the last tool that accepts the v1 preset):
+#: a real Dolt database with the four v1 kind tables, the ``aliquot_bacterial``
+#: extension table, ``spec_version=2`` and
+#: ``preset_versions={"base": 1, "molbio": 1}``.  Its own v1 preset copy had the
+#: removed ``aliquot_fields`` key stripped after the build, so the current
+#: (spec 3) loader can open the ledger; the **database shape** is untouched.
+MOLBIO_V1_FIXTURE = ROOT / "tests" / "data" / "ledgers" / "molbio-v1"
+BUILD_FIXTURES = ROOT / "tests" / "data" / "ledgers" / "build_fixtures.py"
 
 
-def _v1_preset_document() -> str:
-    """The frozen v1 molbio preset without the key spec 3 removed."""
-    document = yaml.safe_load(MOLBIO_V1_DOC.read_text(encoding="utf-8"))
-    for kind in document["kinds"].values():
-        kind.pop("aliquot_fields", None)
-    return yaml.safe_dump(document, sort_keys=False)
+def copy_molbio_v1(destination: Path) -> Path:
+    """Copy the checked-in molbio-1 ledger directory to ``destination``."""
+    assert (MOLBIO_V1_FIXTURE / ".dolt").is_dir(), (
+        f"the checked-in molbio-1 fixture is missing at {MOLBIO_V1_FIXTURE}; "
+        f"rebuild it with: uv run python {BUILD_FIXTURES.relative_to(ROOT)}"
+    )
+    shutil.copytree(MOLBIO_V1_FIXTURE, destination)
+    return destination
 
 
-def downgrade_to_molbio_v1(ledger: Ledger) -> None:
-    """Turn a fresh molbio-v2 ledger into the molbio-1 shape, in one commit.
+def open_copied_molbio_v1(workspace, name: str = "molbio-v1") -> Ledger:
+    """Open a copied fixture, tolerating its documented legacy fingerprint.
 
-    A real v1 ledger cannot be created by this tool any more (its preset
-    declares the removed ``aliquot_fields`` key), so the test builds it the way
-    the ticket allows: a normal v2 init, then this downgrade.  The renamed
-    kinds get their v1 tables back, the v2-only cell kinds and views are
-    dropped, ``aliquot_bacterial`` is recreated, the ledger's preset copy is
-    the same frozen v1 document minus the removed key (so ``open`` loads it),
-    and the counters say molbio 1 / spec 2.
+    A genuine v1 ledger records the fingerprint the spec-2 tool computed; the
+    current (spec 3) loader necessarily computes a different one and warns.
+    That is the real-world state the step fixes — not a fixture defect — so the
+    warning is captured here instead of polluting the suite's warning summary.
     """
-    copies = ledger.path / "presets"
-    (copies / "molbio.yaml").write_text(_v1_preset_document(), encoding="utf-8")
-    (copies / "base.yaml").write_bytes(MOLBIO_V1_BASE.read_bytes())
-    _config, schema = load_ledger_schema(ledger.path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        ledger = open_ledger(workspace, name)
+    assert ledger.warnings, "a genuine v1 ledger must warn about its stale fingerprint"
+    assert any("fingerprint does not match" in text for text in ledger.warnings)
+    return ledger
 
-    for table in V2_ONLY_TABLES:
-        ledger.driver.execute(f"DROP VIEW IF EXISTS `v_{table}`")
-    # entity_plasmid.construct pointed at the v2 protein_construct; v1 points
-    # it at entity_construct, so the FK must go before the table is dropped.
-    ledger.driver.execute(
-        "ALTER TABLE `entity_plasmid` DROP FOREIGN KEY `fk_entity_plasmid_construct`"
-    )
-    ledger.driver.execute("DROP TABLE IF EXISTS `aliquot_bacterial`")
-    for table in V2_ONLY_TABLES:
-        ledger.driver.execute(f"DROP TABLE IF EXISTS `{table}`")
-    for statement in V1_DDL:
-        ledger.driver.execute(statement)
 
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = '2' WHERE `key` = 'spec_version'"
+@pytest.fixture
+def molbio_v1_ledger(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> Iterator[Ledger]:
+    """A fresh copy of the checked-in molbio-1 fixture (embedded driver)."""
+    workspace = Workspace.create(
+        tmp_path / "workspace", presets_dir=str(REPO_PRESETS), env=dolt_env
     )
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
-        (json.dumps({"base": 1, "molbio": 1}),),
+    copy_molbio_v1(workspace.data_dir / "molbio-v1")
+    ledger = open_copied_molbio_v1(workspace)
+    try:
+        yield ledger
+    finally:
+        ledger.close()
+
+
+@pytest.fixture
+def _molbio_v1_on_server(
+    tmp_path: Path, dolt_binary: str
+) -> Iterator[Ledger]:
+    """The same fixture served by its own fresh ``dolt sql-server``.
+
+    A running server does not notice a database directory copied into its data
+    dir afterwards, so the fixture is copied in **before** the server starts.
+    The worker's session-scoped server cannot be reused for that without
+    stopping and restarting it mid-suite.
+    """
+    base = tmp_path / "server-workspace"
+    data_dir = base / "data"
+    copy_molbio_v1(data_dir / "molbio-v1")
+    workspace = Workspace.create(
+        data_dir,
+        port=free_port(),
+        presets_dir=str(REPO_PRESETS),
+        env=isolated_env(base / "dolt-root", base / "home"),
     )
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
-        (schema.fingerprint(),),
-    )
-    ledger.driver.commit("test: downgrade to a molbio-1 ledger")
-    reload_schema(ledger)
+    try:
+        workspace.start(daemon=True)
+    except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
+        pytest.skip(f"dolt sql-server unavailable ({workspace.data_dir}): {error}")
+    try:
+        ledger = open_copied_molbio_v1(workspace)
+        try:
+            yield ledger
+        finally:
+            ledger.close()
+    finally:
+        workspace.stop()
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("embedded", id="embedded"),
+        pytest.param("server", id="server", marks=pytest.mark.server),
+    ]
+)
+def molbio_v1_ledger_any_driver(request) -> Ledger:
+    """Both driver backends: the step must be driver-agnostic."""
+    if request.param == "server":
+        return request.getfixturevalue("_molbio_v1_on_server")
+    return request.getfixturevalue("molbio_v1_ledger")
 
 
 #: Every old molbio kind, a bacterial stock with two agreeing aliquots (S1), a
@@ -1023,20 +1013,17 @@ def seed_molbio_v1(ledger: Ledger) -> None:
 
 
 def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
-    ledger_factory, script_env: dict[str, str]
+    molbio_v1_ledger_any_driver, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 2, both drivers: renames, data move, metadata, files, check."""
-    ledger = ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
-        name="molbio-v1",
-        id_prefix="08",
-    )
-    downgrade_to_molbio_v1(ledger)
+    ledger = molbio_v1_ledger_any_driver
     seed_molbio_v1(ledger)
     preset_copy = ledger.path / "presets" / "molbio.yaml"
     preset_before = preset_copy.read_bytes()
     assert yaml.safe_load(preset_before)["version"] == 1
     assert ledger.schema.preset_versions == {"base": 1, "molbio": 1}
+    assert ledger.meta["tetramark_version"] == "0.1.2"  # built by the legacy tool
+    assert ledger.meta["spec_version"] == "2"
     assert "aliquot_bacterial" in table_names(ledger)
 
     head_before = head(ledger)
@@ -1202,14 +1189,10 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
 
 
 def test_molbio_1_to_2_refuses_conflicting_glycerol_and_writes_nothing(
-    embedded_ledger_factory, script_env: dict[str, str]
+    molbio_v1_ledger, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 3: per-stock disagreement refuses, listing the stock."""
-    ledger = embedded_ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
-        name="molbio-conflict",
-    )
-    downgrade_to_molbio_v1(ledger)
+    ledger = molbio_v1_ledger
     seed_molbio_v1(ledger)
     ledger.driver.execute(
         "UPDATE `aliquot_bacterial` SET `glycerol_pct` = 30 WHERE `id` = 'S1.2'"
@@ -1244,7 +1227,7 @@ def test_molbio_1_to_2_refuses_conflicting_glycerol_and_writes_nothing(
 
 
 def test_molbio_1_to_2_refuses_a_destructive_plan_and_writes_nothing(
-    embedded_ledger_factory, script_env: dict[str, str]
+    molbio_v1_ledger, script_env: dict[str, str]
 ) -> None:
     """F1a: a plan with a destructive step is refused, never executed.
 
@@ -1252,11 +1235,7 @@ def test_molbio_1_to_2_refuses_a_destructive_plan_and_writes_nothing(
     the step must not execute it silently.  A hand-added column that the v2
     schema does not know is planned as ``[destructive] drop_column``.
     """
-    ledger = embedded_ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
-        name="molbio-destructive",
-    )
-    downgrade_to_molbio_v1(ledger)
+    ledger = molbio_v1_ledger
     seed_molbio_v1(ledger)
     ledger.driver.execute(
         "ALTER TABLE `entity_construct` ADD COLUMN `legacy_note` VARCHAR(64)"
@@ -1297,21 +1276,17 @@ def test_molbio_1_to_2_refuses_a_destructive_plan_and_writes_nothing(
 
 
 def test_molbio_1_to_2_refuses_a_directory_preset_copy(
-    embedded_ledger_factory, script_env: dict[str, str]
+    molbio_v1_ledger, script_env: dict[str, str]
 ) -> None:
     """Vendoring writes ``presets/<name>.yaml``; a directory copy would win on
     reopen (``<name>/`` is the first candidate), so the step refuses first."""
-    ledger = embedded_ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"],
-        name="molbio-dir-preset",
-    )
-    downgrade_to_molbio_v1(ledger)
+    ledger = molbio_v1_ledger
     copies = ledger.path / "presets"
     document = (copies / "molbio.yaml").read_bytes()
     (copies / "molbio.yaml").unlink()
     (copies / "molbio").mkdir()
     (copies / "molbio" / "preset.yaml").write_bytes(document)
-    reopenable = open_ledger(ledger.workspace, ledger.name)
+    reopenable = open_copied_molbio_v1(ledger.workspace, ledger.name)
     reopenable.close()
 
     head_before = head(ledger)
@@ -1345,6 +1320,32 @@ def _write_widgets_preset(directory: Path) -> Path:
     return path
 
 
+def _create_widgets_kind(ledger: Ledger) -> None:
+    """Create the extra preset's table/view in the copied v1 ledger.
+
+    The checked-in fixture predates the ``widgets`` preset, so after adding that
+    preset to the ledger's config the live database needs its kind's DDL, which
+    a fresh ``tm init`` would have created.  Only this kind's generated
+    statements run; the v1 molbio tables stay exactly as the legacy tool built
+    them.
+    """
+    statements = [
+        statement
+        for statement in kind_statements(ledger.schema)
+        if "entity_widget" in {statement.name, statement.table}
+    ]
+    statements += [
+        statement
+        for statement in view_statements(ledger.schema)
+        if statement.name == "v_entity_widget"
+    ]
+    assert statements, "the widgets preset produced no entity_widget DDL"
+    with ledger.driver.transaction():
+        for statement in statements:
+            ledger.driver.execute(statement.sql)
+    ledger.driver.commit("test: create the widgets kind")
+
+
 def _load_molbio_step():
     spec = importlib.util.spec_from_file_location("molbio_1_to_2_f1", MOLBIO_STEP)
     assert spec is not None and spec.loader is not None
@@ -1354,7 +1355,7 @@ def _load_molbio_step():
 
 
 def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
-    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+    molbio_v1_ledger, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     """F1b: a ledger loading another preset keeps its kind table and version.
 
@@ -1365,13 +1366,19 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
     still records ``widgets``.
     """
     extra = _write_widgets_preset(tmp_path / "presets-src")
-    ledger = embedded_ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml", extra],
-        name="molbio-other-preset",
-    )
-    downgrade_to_molbio_v1(ledger)
-    # The downgrade writes the v1 molbio counters; restore the extra preset's
-    # recorded version so the ledger describes the presets it actually loads.
+    ledger = molbio_v1_ledger
+    # Give the copied fixture a second preset the way `tm init -p molbio -p
+    # widgets` would have: its own copy under presets/ plus a ledger.yaml entry.
+    widgets_copy = ledger.path / "presets" / "widgets.yaml"
+    widgets_copy.write_bytes(extra.read_bytes())
+    config_path = ledger.path / "ledger.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["presets"] = [*config["presets"], "widgets"]
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    reload_schema(ledger)
+    _create_widgets_kind(ledger)
+    # The legacy build recorded only its original presets; record the extra
+    # preset's version so the ledger describes the presets it actually loads.
     ledger.driver.execute(
         "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
         (json.dumps({"base": 1, "molbio": 1, "widgets": 1}),),
@@ -1380,7 +1387,6 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
     ledger.read_meta()
     seed_molbio_v1(ledger)
     widget = ledger.entities.add("widget", name="W1", values={"size": 3})
-    widgets_copy = ledger.path / "presets" / "widgets.yaml"
     widgets_before = widgets_copy.read_bytes()
     assert widgets_before == extra.read_bytes()
 
@@ -1436,6 +1442,144 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
         assert "FAIL" not in checked.output
     finally:
         reopened.close()
+
+
+# ---------------------------------------------------------------------------
+# The checked-in fixture: drift guard
+# ---------------------------------------------------------------------------
+
+
+def fixture_shape(dolt: str, ledger: Path) -> dict[str, Any]:
+    """The logical shape of a ledger: fingerprint, table/view list, test count."""
+
+    def rows(sql: str) -> list[dict[str, Any]]:
+        result = subprocess.run(
+            [dolt, "sql", "--result-format", "json", "-q", sql],
+            cwd=str(ledger),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout).get("rows", [])
+
+    meta = {
+        str(row["key"]): str(row["value"])
+        for row in rows("SELECT `key`, `value` FROM `ledger_meta`")
+    }
+    objects = rows(
+        "SELECT `table_name` AS `name`, `table_type` AS `kind` "
+        "FROM `information_schema`.`tables` WHERE `table_schema` = DATABASE()"
+    )
+    (generated,) = rows("SELECT COUNT(*) AS `n` FROM `dolt_tests`")
+    return {
+        "fingerprint": meta.get("fingerprint"),
+        "tables": sorted(
+            str(row["name"])
+            for row in objects
+            if str(row["kind"]).upper() == "BASE TABLE"
+        ),
+        "views": sorted(
+            str(row["name"]) for row in objects if str(row["kind"]).upper() == "VIEW"
+        ),
+        "dolt_tests": int(generated["n"]),
+    }
+
+
+def _load_build_fixtures():
+    spec = importlib.util.spec_from_file_location(
+        "tetramark_build_fixtures", BUILD_FIXTURES
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def rebuilt_molbio_v1(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Rebuild the molbio-1 fixture once per module; skip when impossible.
+
+    The build needs ``git``, ``uv`` and ``dolt``, the legacy commit in this
+    clone, and either network or a warm uv cache.  A machine that cannot
+    materialise the legacy checkout skips the drift guard instead of failing.
+    """
+    builder = _load_build_fixtures()
+    missing = [name for name in ("git", "uv", "dolt") if shutil.which(name) is None]
+    if missing:
+        pytest.skip(f"cannot rebuild the molbio-1 fixture without: {', '.join(missing)}")
+    probe = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "cat-file",
+            "-e",
+            f"{builder.LEGACY_COMMIT}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        pytest.skip(
+            f"the legacy commit {builder.LEGACY_COMMIT[:12]} is not in this clone"
+        )
+    target = tmp_path_factory.mktemp("molbio-v1-rebuilt") / "molbio-v1"
+    result = subprocess.run(
+        [sys.executable, str(BUILD_FIXTURES), "--out", str(target)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        output = (result.stdout + result.stderr).strip()
+        pytest.skip(f"cannot rebuild the molbio-1 fixture here:\n{output[-1200:]}")
+    return target
+
+
+def test_molbio_v1_fixture_matches_its_builder(
+    rebuilt_molbio_v1: Path, dolt_binary: str, tmp_path: Path
+) -> None:
+    """The checked-in ledger still has the shape the builder produces.
+
+    Compares the **logical** shape — schema fingerprint, table/view list and
+    ``dolt_tests`` count — plus the checked-in preset files, never the ``.dolt``
+    bytes (Dolt timestamps commit hashes).  The checked-in copy is queried from
+    a temporary copy so the repository's fixture directory is never written to.
+    """
+    checked_in = copy_molbio_v1(tmp_path / "checked-in")
+    checked = fixture_shape(dolt_binary, checked_in)
+    fresh = fixture_shape(dolt_binary, rebuilt_molbio_v1)
+
+    differences = [
+        f"{key}: checked-in={checked[key]!r}, builder={fresh[key]!r}"
+        for key in ("fingerprint", "tables", "views", "dolt_tests")
+        if checked[key] != fresh[key]
+    ]
+    for name in ("ledger.yaml", "presets/base.yaml", "presets/molbio.yaml"):
+        checked_file = MOLBIO_V1_FIXTURE / name
+        if not checked_file.is_file():
+            differences.append(f"{name}: missing from the checked-in fixture")
+        elif checked_file.read_bytes() != (rebuilt_molbio_v1 / name).read_bytes():
+            differences.append(f"{name}: differs from the builder's file byte for byte")
+
+    assert not differences, (
+        "the checked-in molbio-1 fixture no longer matches what "
+        f"{BUILD_FIXTURES.relative_to(ROOT)} produces from the legacy checkout:\n"
+        "  - "
+        + "\n  - ".join(differences)
+        + f"\nRebuild it with: uv run python "
+        f"{BUILD_FIXTURES.relative_to(ROOT)} --force"
+    )
+    # ... and it is still the v1 shape the step needs, not an empty shell.
+    assert checked["fingerprint"]
+    assert {
+        "entity_construct",
+        "entity_strain",
+        "stock_bacterial",
+        "stock_pellet",
+        "aliquot_bacterial",
+    } <= set(checked["tables"])
+    assert checked["dolt_tests"] > 0
 
 
 # ---------------------------------------------------------------------------
