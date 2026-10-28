@@ -69,7 +69,7 @@ collisions are an error.
 ```yaml
 # presets/molbio.yaml
 preset: molbio
-version: 1
+version: 2
 include: [base]
 mixins:
   sequence_fields:
@@ -83,15 +83,14 @@ kinds:
       name: {type: string, required: true, unique: true}
       backbone: {type: string}
       resistance: {type: enum, values: [amp, kan, cm, spec, tet]}
-      construct: {type: ref, to: construct}          # FK → entity_construct
-  bacterial:
+      construct: {type: ref, to: protein_construct}  # FK → entity_protein_construct
+  bacterial_glycerol:
     object: stock
-    entity_kinds: [plasmid, strain]
+    entity_kinds: [plasmid, bacterial_strain]
     fields:
       strain: {type: string, required: true}
       medium: {type: string}
-    aliquot_fields:
-      glycerol_pct: {type: decimal, default: 15}
+      glycerol_pct: {type: decimal, precision: 5, scale: 2, default: 15}
   grid81:
     object: box
     geometry: {type: grid, rows: "A-J!I", cols: "1-9"}   # A..J skipping I
@@ -228,7 +227,7 @@ Every view that represents an object aggregates the `alias` table into a sorted,
 `alias_list` (NULL when the object has no aliases; `v_box_slots` names it `occupant_alias_list`
 because the row describes a slot and its occupant, not only the box). The column is deliberately
 **not** called `aliases`: a kind may already have a domain field named `aliases` — molbio's
-`construct` kind does, holding semicolon-separated alternative construct names — and a view cannot
+`protein_construct` kind does, holding semicolon-separated alternative construct names — and a view cannot
 expose two columns with the same name. After a `tm stock renumber` the old stock and aliquot ids are
 aliases (§6), so these columns are how a view reader still sees the pre-renumber handles.
 
@@ -281,9 +280,14 @@ the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH
 and, through `src/tetramark/migrate.py`, refuses unless the ledger's counter equals `N`, creates the tag
 `pre-migrate-<spec|preset>-<N>` before writing, prints every statement with `--dry-run`, and applies in
 exactly one commit (`migrate(ledger): spec N -> N+1`) that bumps the counter, `tetramark_version` and
-the fingerprint together. Dolt DDL is not transactional, so a failed step prints the last good commit
-and the `dolt reset --hard` command. Preset steps may express renames in `renames.yaml` and feed them to
-the diff planner as an explicit rename map instead of `renamed_from`; see `migration/README.md`. There is
+the fingerprint together. A step whose target schema differs from the ledger's declares it (`schema=`),
+so the commit writes the **new** fingerprint and regenerates the derived `dolt_tests` from that schema in
+the same commit; a preset step then replaces `<ledger>/presets/` with the repository copy after the
+commit (files are not Dolt content) and the runner re-reads the ledger from that copy and verifies the
+fingerprint before reporting success. Dolt DDL is not transactional, so a failed step prints the last
+good commit and the `dolt reset --hard` command. Preset steps may express renames in `renames.yaml` and
+feed them to the diff planner as an explicit rename map instead of `renamed_from`; see
+`migration/README.md`. There is
 no `tm` command for this yet — the older `tm upgrade` proposal (`docs/issues/001-tm-upgrade.md`) may
 absorb `migration/` later.
 
@@ -443,12 +447,18 @@ Preset catalogue:
 - `base` — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named), `shelf`/`freezer`/`drawer`
   (slotless); entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
   received_on, expires_on).
-- `molbio` (includes `base`) — derived from zsqlab08/10: entities `construct` (protein: sequence,
-  molecular_weight_da, extinction coefficients as computed), `plasmid` (sequence, backbone, resistance,
-  ref construct), `strain` (genotype, species); stocks `bacterial` (entity_kinds plasmid|strain;
-  strain, medium; aliquot glycerol_pct), `plasmid_prep` (concentration_ng_ul, prep_method), `protein_prep`
-  (concentration_mg_ml, buffer, purification_id), `pellet` (culture volume, OD600, induction; aliquots carry
-  volume via core quantity).
+- `molbio` (includes `base`, **version 2**) — derived from zsqlab08/10: entities `protein_construct`
+  (protein: sequence, molecular_weight_da, extinction coefficients as computed), `plasmid` (sequence,
+  backbone, resistance, ref protein_construct), `bacterial_strain` (genotype, species), `cell_line`
+  (species, cell_type, source, genotype, `parental` ref → cell_line); stocks `bacterial_glycerol`
+  (entity_kinds plasmid|bacterial_strain; strain, medium, glycerol_pct **on the stock**),
+  `plasmid_prep` (concentration_ng_ul, prep_method), `protein_prep` (concentration_mg_ml, buffer,
+  purification_id), `bacterial_pellet` (culture volume, OD600, induction; aliquots carry volume via
+  core quantity), `cell_vial` (passage, medium, freezing_medium, cells_per_vial, dmso_pct) and
+  `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
+  transfection). Molbio 2 has no `aliquot_fields`: all aliquots of one stock are the same, so a
+  property belongs on the stock kind. A ledger created with molbio 1 is upgraded by
+  `migration/presets/molbio/1-to-2/`.
 - `library` (includes `base`) — entity `book` (title, authors, isbn pattern, year); stock `copy`
   (acquired_on, condition enum). Exists to prove generality; used in tests.
 

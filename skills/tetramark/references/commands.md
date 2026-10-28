@@ -102,7 +102,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
-- `--aliquot-set` sets kind-specific aliquot fields (e.g. `glycerol_pct=15`).
+- `--aliquot-set` sets kind-specific aliquot fields (only local presets that define
+  `aliquot_fields` have them; the bundled presets define none).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
   row in table output).
@@ -174,7 +175,8 @@ Aliases are also visible in the generated views (ledger format `spec_version` 2)
 `v_<object>_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated
 `alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list` for the slot's
 occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The column is not
-called `aliases` because some kinds have a domain field with that name (e.g. `construct.aliases`).
+called `aliases` because some kinds have a domain field with that name (e.g.
+`protein_construct.aliases`).
 
 ## Validation
 
@@ -184,7 +186,8 @@ tm check [-v|--verbose] [--group|-g GROUP] [--format|-f table|json|csv] [--json]
 
 Runs the generated `dolt_tests` and exits `1` when a test with severity `fail` fails. Tests whose
 severity is `info` are reported but never change the exit code. `-v` prints offending rows for each
-failure. `--group` accepts a group (`core`, `rules`, `schema:bacterial`) or a prefix (`rules:local`).
+failure. `--group` accepts a group (`core`, `rules`, `schema:bacterial_glycerol`) or a prefix
+(`rules:local`).
 
 ## CSV import / export
 

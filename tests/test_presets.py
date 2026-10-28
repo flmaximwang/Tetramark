@@ -15,6 +15,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
+
+from tetramark.cli.app import app
 
 from tetramark.core.ledger import init_ledger, open as open_ledger
 from tetramark.driver.workspace import Workspace
@@ -41,6 +44,9 @@ from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 BUNDLED = ("base", "molbio", "library")
 
+#: Current preset versions: molbio is at 2 (ticket 22).
+EXPECTED_VERSIONS = {"base": 1, "molbio": 2, "library": 1}
+
 EXPECTED_KINDS = {
     "base": {
         "item",
@@ -61,13 +67,16 @@ EXPECTED_KINDS = {
         "shelf",
         "freezer",
         "drawer",
-        "construct",
+        "protein_construct",
         "plasmid",
-        "strain",
-        "bacterial",
+        "bacterial_strain",
+        "cell_line",
+        "bacterial_glycerol",
         "plasmid_prep",
         "protein_prep",
-        "pellet",
+        "bacterial_pellet",
+        "cell_vial",
+        "cell_pellet",
     },
     "library": {
         "item",
@@ -125,7 +134,7 @@ def test_presets_are_repo_files_not_package_data() -> None:
     for name in BUNDLED:
         assert repo_preset(name).is_file(), name
         document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
-        assert document["version"] == 1, name
+        assert document["version"] == EXPECTED_VERSIONS[name], name
         assert document["preset"] == name
 
     assert not (REPO_PRESETS / "base").exists()
@@ -149,14 +158,14 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     schema = load_repo_preset(name)
 
     assert set(schema.kinds) == EXPECTED_KINDS[name]
-    assert schema.preset_versions[name] == 1
+    assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
     # molbio and library both include base.
     if name != "base":
         assert schema.preset_versions["base"] == 1
 
     own_prefix = {"base": "BASE", "molbio": "MB", "library": "LIB"}[name]
     own_rules = [rule for rule in schema.rules if rule.id.startswith(own_prefix)]
-    assert 2 <= len(own_rules) <= 4
+    assert 2 <= len(own_rules) <= 5
     assert {rule.severity.value for rule in own_rules} == {"fail", "info"}
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
 
@@ -219,7 +228,7 @@ def test_base_geometry_and_fields() -> None:
 def test_molbio_derives_construct_fields_from_zsqlab08() -> None:
     schema = load_repo_preset("molbio")
 
-    construct = schema.kinds["construct"]
+    construct = schema.kinds["protein_construct"]
     assert construct.object is ObjectType.entity
     assert construct.fields["sequence"].type is FieldType.sequence
     assert construct.fields["sequence"].unique
@@ -238,39 +247,85 @@ def test_molbio_derives_construct_fields_from_zsqlab08() -> None:
 
     plasmid = schema.kinds["plasmid"]
     assert plasmid.fields["construct"].type is FieldType.ref
-    assert plasmid.fields["construct"].to == "construct"
+    assert plasmid.fields["construct"].to == "protein_construct"
     assert plasmid.fields["sequence"].type is FieldType.sequence
     assert plasmid.fields["backbone"].type is FieldType.string
     assert plasmid.fields["resistance"].values == ["amp", "kan", "cm", "spec", "tet"]
 
-    strain = schema.kinds["strain"]
+    strain = schema.kinds["bacterial_strain"]
+    assert strain.object is ObjectType.entity
     assert set(strain.fields) >= {"name", "description", "genotype", "species"}
+
+    # The eukaryotic kind: a stable/derived line is its own entity that
+    # points at its parent line, and the loader accepts the self-reference.
+    cell_line = schema.kinds["cell_line"]
+    assert cell_line.object is ObjectType.entity
+    assert cell_line.mixins == ["named_fields"]
+    assert set(cell_line.fields) == {
+        "name",
+        "description",
+        "species",
+        "cell_type",
+        "source",
+        "genotype",
+        "parental",
+    }
+    assert cell_line.fields["parental"].type is FieldType.ref
+    assert cell_line.fields["parental"].to == "cell_line"
 
 
 def test_molbio_stock_kinds_match_the_old_ledgers() -> None:
     schema = load_repo_preset("molbio")
 
-    bacterial = schema.kinds["bacterial"]
+    # Sugar in the name: neither "bacterial" nor "pellet" is a suffix of the
+    # renamed kind, so a short name cannot be mistaken for the old table.
+    bacterial = schema.kinds["bacterial_glycerol"]
     assert bacterial.object is ObjectType.stock
-    assert bacterial.entity_kinds == ["plasmid", "strain"]
+    assert bacterial.entity_kinds == ["plasmid", "bacterial_strain"]
     assert bacterial.fields["strain"].required
-    assert set(bacterial.aliquot_fields) == {"glycerol_pct"}
-    assert bacterial.aliquot_fields["glycerol_pct"].default == 15
+    # The tube property is a stock field now; molbio has no aliquot fields.
+    glycerol = bacterial.fields["glycerol_pct"]
+    assert glycerol.type is FieldType.decimal
+    assert (glycerol.decimal_precision, glycerol.decimal_scale) == (5, 2)
+    assert glycerol.default == 15
+    assert bacterial.aliquot_fields == {}
+    assert not any(kind.aliquot_fields for kind in schema.kinds.values())
 
     assert schema.kinds["plasmid_prep"].entity_kinds == ["plasmid"]
     assert "concentration_ng_ul" in schema.kinds["plasmid_prep"].fields
     assert "prep_method" in schema.kinds["plasmid_prep"].fields
 
-    assert schema.kinds["protein_prep"].entity_kinds == ["construct"]
+    assert schema.kinds["protein_prep"].entity_kinds == ["protein_construct"]
     assert "concentration_mg_ml" in schema.kinds["protein_prep"].fields
     assert "buffer" in schema.kinds["protein_prep"].fields
     assert "purification_id" in schema.kinds["protein_prep"].fields
 
-    pellet = schema.kinds["pellet"]
-    assert pellet.entity_kinds == ["plasmid", "strain"]
+    pellet = schema.kinds["bacterial_pellet"]
+    assert pellet.entity_kinds == ["plasmid", "bacterial_strain"]
     assert {"culture_volume_ml", "od600", "induction"} <= set(pellet.fields)
     # Pellet volumes live in the core aliquot quantity, not in an extension table.
     assert pellet.aliquot_fields == {}
+
+    vial = schema.kinds["cell_vial"]
+    assert vial.object is ObjectType.stock
+    assert vial.entity_kinds == ["cell_line"]
+    assert set(vial.fields) == {
+        "passage",
+        "medium",
+        "freezing_medium",
+        "cells_per_vial",
+        "dmso_pct",
+    }
+    assert vial.fields["dmso_pct"].default == 10
+
+    cell_pellet = schema.kinds["cell_pellet"]
+    assert cell_pellet.entity_kinds == ["cell_line", "plasmid"]
+    assert set(cell_pellet.fields) == {
+        "cell_count",
+        "passage",
+        "transfection",
+        "harvested_on",
+    }
 
 
 def test_library_book_and_copy() -> None:
@@ -299,7 +354,7 @@ def test_combining_base_with_molbio_is_deduplicated() -> None:
     )
     alone = load_repo_preset("molbio")
     assert combined.fingerprint() == alone.fingerprint()
-    assert combined.preset_versions == {"base": 1, "molbio": 1}
+    assert combined.preset_versions == {"base": 1, "molbio": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +372,7 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
     assert set(schema.kinds) == EXPECTED_KINDS[name]
     assert ledger.meta["fingerprint"] == schema.fingerprint()
     versions = json.loads(ledger.meta["preset_versions"])
-    assert versions[name] == 1
+    assert versions[name] == EXPECTED_VERSIONS[name]
 
     tables = table_names(ledger)
     expected: set[str] = set()
@@ -342,25 +397,129 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
         assert int(value) == rule.expect.value, rule.id
 
 
-def test_molbio_bacterial_extension_table_is_generated(ledger_factory) -> None:
+def test_molbio_v2_fresh_init_has_the_renamed_and_cell_objects(
+    ledger_factory,
+) -> None:
+    """Verify bullet 1: ``tm init --preset molbio`` produces the v2 shape."""
     ledger = ledger_factory(["molbio"], name="molbio_tables")
     tables = table_names(ledger)
-    assert "aliquot_bacterial" in tables
-    assert "stock_pellet" in tables
-    assert "stock_plasmid_prep" in tables
-    assert "stock_protein_prep" in tables
+    for table in (
+        "entity_protein_construct",
+        "entity_bacterial_strain",
+        "entity_cell_line",
+        "stock_bacterial_glycerol",
+        "stock_bacterial_pellet",
+        "stock_cell_vial",
+        "stock_cell_pellet",
+    ):
+        assert table in tables, table
+    for gone in (
+        "aliquot_bacterial",
+        "entity_construct",
+        "entity_strain",
+        "stock_bacterial",
+        "stock_pellet",
+    ):
+        assert gone not in tables, gone
+    # molbio 2 has no aliquot_fields: only the core extension-related tables.
+    assert {name for name in tables if name.startswith("aliquot_")} == {
+        "aliquot_event"
+    }
 
-    columns = ledger.driver.query(
-        "SELECT column_name AS name FROM information_schema.columns "
-        "WHERE table_schema = DATABASE() AND table_name = 'entity_construct'"
-    )
-    names = {str(row["name"]) for row in columns}
+    columns = {
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() "
+            "AND table_name = 'stock_bacterial_glycerol'"
+        )
+    }
+    assert {"strain", "medium", "batch", "glycerol_pct"} <= columns
+    construct_columns = {
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() "
+            "AND table_name = 'entity_protein_construct'"
+        )
+    }
     assert {
         "length_bp",
         "extinction_coefficient_reduced_0p1pct",
         "extinction_coefficient_oxidized_0p1pct",
         "sequence_sha256",
-    } <= names
+    } <= construct_columns
+
+    # The generated tests come from v2 and hold on the fresh ledger.
+    report = ledger.check()
+    assert report.passed, [result.name for result in report.failures]
+    assert {"rule_MB01", "rule_MB02", "rule_MB05"} <= {
+        result.name for result in report.results
+    }
+    checked = CliRunner().invoke(
+        app,
+        [
+            "--workspace",
+            str(ledger.workspace.data_dir),
+            "--ledger",
+            ledger.name,
+            "check",
+        ],
+    )
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+    assert "OK:" in checked.output
+
+
+def test_molbio_cell_line_parental_self_reference_is_usable(
+    ledger_factory,
+) -> None:
+    """``cell_line.parental`` is a self-ref: the loader and the FK accept it."""
+    ledger = ledger_factory(["molbio"], name="molbio_cell_line")
+    parent = ledger.entities.add(
+        "cell_line",
+        name="HEK293T",
+        values={"species": "Homo sapiens", "cell_type": "epithelial"},
+    )
+    child = ledger.entities.add(
+        "cell_line",
+        name="HEK293T-EGFR",
+        values={"parental": parent["id"], "genotype": "EGFR overexpression"},
+    )
+    links = {
+        row["id"]: row["parental"]
+        for row in ledger.driver.query(
+            "SELECT `id`, `parental` FROM `entity_cell_line`"
+        )
+    }
+    assert links == {parent["id"]: None, child["id"]: parent["id"]}
+
+    voucher = ledger.stocks.add(
+        "cell_vial",
+        entity=child["id"],
+        values={
+            "passage": 7,
+            "medium": "DMEM + 10% FBS",
+            "freezing_medium": "90% FBS + 10% DMSO",
+            "cells_per_vial": 1_000_000,
+            "dmso_pct": 10,
+        },
+        aliquots=1,
+        quantity=1,
+        unit="vial",
+    )
+    row = ledger.driver.query(
+        "SELECT `passage`, `dmso_pct`, `cells_per_vial` "
+        "FROM `stock_cell_vial` WHERE `id` = %s",
+        (voucher["id"],),
+    )[0]
+    assert (row["passage"], float(row["dmso_pct"]), row["cells_per_vial"]) == (
+        7,
+        10.0,
+        1_000_000,
+    )
+    report = ledger.check()
+    assert report.passed, [result.name for result in report.failures]
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +646,7 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
     assert (copies / "molbio.yaml").read_bytes() == (source / "molbio.yaml").read_bytes()
     assert (copies / "base.yaml").read_bytes() == (source / "base.yaml").read_bytes()
     fingerprint = ledger.fingerprint
-    assert ledger.schema.preset_versions == {"base": 1, "molbio": 1}
+    assert ledger.schema.preset_versions == {"base": 1, "molbio": 2}
     assert yaml.safe_load((ledger.path / "ledger.yaml").read_text())["presets"] == [
         "molbio"
     ]
@@ -499,7 +658,7 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
     try:
         assert reopened.fingerprint == fingerprint
         assert {"plasmid", "item"} <= set(reopened.schema.kinds)
-        assert reopened.schema.preset_versions == {"base": 1, "molbio": 1}
+        assert reopened.schema.preset_versions == {"base": 1, "molbio": 2}
     finally:
         reopened.close()
 

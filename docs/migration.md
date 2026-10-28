@@ -31,7 +31,7 @@ cd ~/migration/zsqlab08
 tm workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>" \
   --presets-dir "$HOME/tetramark/presets"
 tm init zsqlab08 --preset molbio --id-prefix 08
-tm schema show                 # confirm construct/plasmid/bacterial/plasmid_prep/pellet exist
+tm schema show   # confirm protein_construct/plasmid/bacterial_glycerol/... exist
 tm box add grid9x9 WFL-08-01
 tm box add grid9x9 WFL-08-02
 ```
@@ -40,8 +40,14 @@ tm box add grid9x9 WFL-08-02
 or your own copy); `tm init --preset molbio` copies `molbio.yaml` and everything it includes
 into `<ledger>/presets/`, and the ledger is then opened from that copy only — later edits to
 the source preset do not change it. To change a ledger's presets on purpose, replace the files
-under `<ledger>/presets/` in the same commit as the schema change (ticket 24's migration
-script does this).
+under `<ledger>/presets/` together with the schema change: they are not Dolt content, so a
+migration script copies them from the repository right after its one commit (and verifies that
+the ledger reopens with the migrated fingerprint).
+
+An existing Tetramark ledger created with molbio version 1 (0.1.x) is upgraded in
+place first: run `migration/presets/molbio/1-to-2/migrate.py` (its README has the
+kind-mapping table and the grep for hand-written rules) and only then import.
+`tm init` always gives a ledger the current preset version (molbio 2).
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.
@@ -61,7 +67,7 @@ dolt sql -r csv -q "SELECT COUNT(*) FROM entity_registry"          # 42
 dolt sql -r csv -q "SELECT * FROM box_map_all" > old_box_map.csv
 ```
 
-Row-count expectations for zsqlab08: **42 entities (27 construct + 15 plasmid), 42 tubes (27
+Row-count expectations for zsqlab08: **42 entities (27 protein constructs + 15 plasmids), 42 tubes (27
 bacteria + 15 plasmid, 0 protein), 2 boxes × 81 slots.** Any mismatch after migration is a mapping
 bug, not a rounding error.
 
@@ -78,12 +84,12 @@ done
 | Old table (zsqlab08) | Rows | New object | New kind | Notes |
 |---|---:|---|---|---|
 | `entity_registry` | 42 | — | — | Discriminator half of the old FK; Tetramark `entity` + kind tables replace it. |
-| `entity_constructs` | 27 | entity | `construct` | `entity_uuid` → `id`; `sequence`, `mature_sequence`, `aliases`, MW, pI, ε columns, `tag`, `notes`. |
+| `entity_constructs` | 27 | entity | `protein_construct` | `entity_uuid` → `id`; `sequence`, `mature_sequence`, `aliases`, MW, pI, ε columns, `tag`, `notes`. |
 | `entity_plasmids` | 15 | entity | `plasmid` | `entity_uuid` → `id`; `sequence`, `plasmid_backbone` → `backbone`, `construct_uuid` → `construct`, `description`, `notes`. |
 | `stock_registry` | 42 | — | — | Same tube as the kind table below; the registry disappears (stock + aliquot carry the position). |
-| `stock_bacteria` | 27 | stock | `bacterial` | `stock_uid` → `id`; `entity_uuid` → `entity_id`; `strain`, `batch`, `notes`; `box`+`row`+`col` → box/slot. |
+| `stock_bacteria` | 27 | stock | `bacterial_glycerol` | `stock_uid` → `id`; `entity_uuid` → `entity_id`; `strain`, `batch`, `notes`; `box`+`row`+`col` → box/slot. |
 | `stock_plasmids` | 15 | stock | `plasmid_prep` | It is a DNA preparation, not a bacterial stock. `stock_uid` → `id`; `entity_uuid` → `entity_id`; `sample_type`/`stock_type`/`batch` → `notes` or local fields. |
-| `stock_proteins` | 0 | stock | `protein_prep` | Empty in zsqlab08; maps directly if data exists (`entity_uuid` → a `construct`). |
+| `stock_proteins` | 0 | stock | `protein_prep` | Empty in zsqlab08; maps directly if data exists (`entity_uuid` → a `protein_construct`). |
 | `box_01`, `box_02` | 81 each | box | `grid9x9` | Names `WFL-08-01`, `WFL-08-02`; slots are the old `row`+`col`. |
 
 Columns that do **not** migrate:
@@ -145,12 +151,12 @@ A tube missing from the old table is **not** evidence of consumption; it may hav
 that decision in the migration record. `consumed`/`missing` tubes still keep their row and history;
 `purge` is only for rows created by mistake.
 
-## 6. Map pellet aliquots (zsqlab10)
+## 6. Map bacterial pellet aliquots (zsqlab10)
 
 Old `stock_pellets` + `stock_pellets_aliquots`: one pellet (culture) with N tube rows, each holding a
 `volume_ml`. New model:
 
-- one `pellet` stock per culture, quantity carried per aliquot;
+- one `bacterial_pellet` stock per culture, quantity carried per aliquot;
 - one aliquot per old pellet aliquot (`<stock_id>.1`, `.2`, …);
 - `volume_ml` → aliquot `quantity`, unit `ml`;
 - the old pellet short code (`4a334ac2`) → alias on the stock;
@@ -168,12 +174,13 @@ layout, then `tm import all`.
 
 ```
 exports/
-  construct.csv     # id,kind,name,sequence,mature_sequence,aliases,molecular_weight_da,pi,... ,alias
-  plasmid.csv       # id,kind,name,sequence,construct,backbone,resistance,... ,alias
-  bacterial.csv     # id,kind,entity_id,strain,medium,batch,box,slot,quantity,unit,alias
-  plasmid_prep.csv  # id,kind,entity_id,prep_method,... ,box,slot,quantity,unit,alias
+  protein_construct.csv  # id,kind,name,sequence,mature_sequence,aliases,... ,alias
+  plasmid.csv            # id,kind,name,sequence,construct,backbone,resistance,... ,alias
+  bacterial_glycerol.csv # id,kind,entity_id,strain,medium,batch,glycerol_pct,...,alias
+  bacterial_pellet.csv   # id,kind,entity_id,culture_volume_ml,od600,...,alias
+  plasmid_prep.csv       # id,kind,entity_id,prep_method,... ,box,slot,quantity,unit,alias
   protein_prep.csv
-  boxes.csv         # name,kind,parent,slot,... (one row per box)
+  boxes.csv              # name,kind,parent,slot,... (one row per box)
 ```
 
 The easiest way to get the exact headers is to create one object of each kind in a scratch ledger and
@@ -194,13 +201,15 @@ empty ledger.
 For a handful of rows, explicit single commands are fine:
 
 ```sh
-tm entity add construct --id cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 \
+tm entity add protein_construct --id cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 \
   --name '0801_4_Ori_6H.1@pZET043' --set sequence=ATGC --set tag=6H
 tm entity add plasmid --id 5fe23f35-21fe-4274-bae8-168a3225ac3c \
   --name '0801_5_Ori_6H.1@pZET043' --set sequence=ATGC --set backbone=pZET043 \
   --set construct=cd0ae0ea-363f-4409-a432-bd50d5a2b7f3 --alias 0801_5
-tm stock add bacterial --id 0826FP02 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
-  --set strain=Top10 --set batch=01 --box WFL-08-01 --slot A2
+tm stock add bacterial_glycerol --id 0826FP02 \
+  --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
+  --set strain=Top10 --set batch=01 --set glycerol_pct=15 \
+  --box WFL-08-01 --slot A2
 tm stock add plasmid_prep --id 0826FP21 --entity 5fe23f35-21fe-4274-bae8-168a3225ac3c \
   --set prep_method=miniprep --box WFL-08-02 --slot A1
 ```
@@ -212,10 +221,10 @@ Run all of these; keep the output with the migration record.
 1. **Row counts per kind** match the old table counts:
 
 ```sh
-tm --format csv entity ls construct | wc -l      # header + 27
-tm --format csv entity ls plasmid | wc -l        # header + 15
-tm --format csv stock ls bacterial | wc -l       # header + 27
-tm --format csv stock ls plasmid_prep | wc -l    # header + 15
+tm --format csv entity ls protein_construct | wc -l  # header + 27
+tm --format csv entity ls plasmid | wc -l            # header + 15
+tm --format csv stock ls bacterial_glycerol | wc -l  # header + 27
+tm --format csv stock ls plasmid_prep | wc -l        # header + 15
 ```
 
 2. **Every old UID resolves** to the same entity/stock:
@@ -225,7 +234,7 @@ tm find 0826FP02
 tm find cd0ae0ea-363f-4409-a432-bd50d5a2b7f3
 ```
 
-3. **`tm check` has no FAIL** (`info` lines such as "constructs without molecular weight" are
+3. **`tm check` has no FAIL** (`info` lines such as "protein constructs without molecular weight" are
    allowed; the exit code is 0):
 
 ```sh
@@ -236,7 +245,7 @@ tm check --group core
 4. **Spot-check box grids** against the old `box_01`/`box_02` and `box_map_all`:
    `tm box show WFL-08-01` must show the same UIDs in the same slots; empty slots stay empty.
 5. **Counts per slot**: empty + occupied = box slots (81 for `grid9x9`), no duplicate slot.
-6. **Lineage**: for a few plasmids, `tm stock show` and `tm find` show the same construct
+6. **Lineage**: for a few plasmids, `tm stock show` and `tm find` show the same protein construct
    link and box locations as the old `v_stock_all`.
 7. **History**: `tm history 0826FP02` shows one `create` event and one commit per migrated tube
    (imports are one commit for the batch, so use `tm history` for events; the commit is the batch).
@@ -254,10 +263,10 @@ CSVs next to the migration record.
 - [ ] Old server stopped, old ledger copied, original untouched.
 - [ ] New ledger: `--preset molbio`, stock prefix = old project prefix, author set.
 - [ ] Boxes created with old names and matching geometry.
-- [ ] Entity counts: construct 27, plasmid 15 (zsqlab08).
-- [ ] Stock counts: bacterial 27, plasmid_prep 15, protein_prep 0.
+- [ ] Entity counts: protein_construct 27, plasmid 15 (zsqlab08).
+- [ ] Stock counts: bacterial_glycerol 27, plasmid_prep 15, protein_prep 0.
 - [ ] Every old UID resolves (`find`) with the expected kind and box location.
 - [ ] `tm check` exit 0, no FAIL (info acknowledged).
 - [ ] `tm box show` matches the old grid for every box, including empty slots.
-- [ ] Pellet volumes (zsqlab10) are per aliquot, no stock-level scalar left behind.
+- [ ] Bacterial pellet volumes (zsqlab10) are per aliquot, no stock-level scalar left behind.
 - [ ] Backup/push done; old database archived read-only.

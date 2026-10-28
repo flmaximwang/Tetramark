@@ -59,7 +59,7 @@ Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 ```sh
 tm entity add plasmid --name pZET035 \
   --set backbone=pZET035 --set resistance=kan --alias p035
-tm stock add bacterial --entity p035 \
+tm stock add bacterial_glycerol --entity p035 \
   --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
 tm box show WFL-12-01
@@ -69,10 +69,10 @@ tm find p035
 The stock gets an ID from the date-code strategy; the default one aliquot is `<stock_id>.1` and sits
 in `A1`. Use `--aliquots 0` when you only want the logical batch.
 
-### Consume part of a pellet
+### Consume part of a bacterial pellet
 
 ```sh
-tm stock add pellet --entity p035 --aliquots 3 \
+tm stock add bacterial_pellet --entity p035 --aliquots 3 \
   --quantity 500 --unit ml \
   --set culture_volume_ml=1500 --set od600=2.4 --set induction=iptg
 tm aliquot use 1226KO02.1 500 ml --purpose purification   # ID printed by stock add

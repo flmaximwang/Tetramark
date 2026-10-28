@@ -130,14 +130,17 @@ def test_every_generated_view_exposes_aliases() -> None:
 def test_alias_list_avoids_the_construct_aliases_field() -> None:
     """``alias_list`` is a view column; the domain field ``aliases`` stays one.
 
-    The bundled ``construct`` kind has a field called ``aliases``; naming the
-    generated column ``aliases`` would produce duplicate view columns.
+    The bundled ``protein_construct`` kind has a field called ``aliases``;
+    naming the generated column ``aliases`` would produce duplicate view
+    columns.
     """
     schema = load_schema(
         LedgerConfig(name="molbio", presets=[str(REPO_PRESETS / "molbio.yaml")])
     )
     construct = next(
-        s.sql for s in view_statements(schema) if s.name == "v_entity_construct"
+        s.sql
+        for s in view_statements(schema)
+        if s.name == "v_entity_protein_construct"
     )
     assert "`aliases`" in construct
     assert "AS `alias_list`" in construct
@@ -812,8 +815,8 @@ def test_construct_view_keeps_aliases_field_and_alias_list_apart(
 ) -> None:
     """A kind's own ``aliases`` field and the generated ``alias_list`` coexist.
 
-    The bundled ``construct`` kind has a domain field ``aliases`` (alternative
-    construct names); the aggregated alias-table column is called
+    The bundled ``protein_construct`` kind has a domain field ``aliases``
+    (alternative construct names); the aggregated alias-table column is called
     ``alias_list`` so both can be projected by one view.
     """
     schema = load_schema(
@@ -823,8 +826,9 @@ def test_construct_view_keeps_aliases_field_and_alias_list_apart(
     execute(
         dolt_run,
         dolt_repo,
-        "INSERT INTO entity (id, kind, name) VALUES ('C-1', 'construct', 'c1');"
-        "INSERT INTO entity_construct (id, name, aliases) "
+        "INSERT INTO entity (id, kind, name) "
+        "VALUES ('C-1', 'protein_construct', 'c1');"
+        "INSERT INTO entity_protein_construct (id, name, aliases) "
         "VALUES ('C-1', 'c1', 'old-name');"
         "INSERT INTO alias (object_type, object_id, alias) "
         "VALUES ('entity', 'C-1', 'C-OLD');",
@@ -832,7 +836,8 @@ def test_construct_view_keeps_aliases_field_and_alias_list_apart(
     row = query(
         dolt_run,
         dolt_repo,
-        "SELECT aliases, alias_list FROM v_entity_construct WHERE id = 'C-1'",
+        "SELECT aliases, alias_list FROM v_entity_protein_construct "
+        "WHERE id = 'C-1'",
     )[0]
     assert row["aliases"] == "old-name"
     assert row["alias_list"] == "C-OLD"

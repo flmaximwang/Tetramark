@@ -1,0 +1,256 @@
+preset: molbio
+version: 1
+description: >-
+  Molecular-biology inventory derived from the zsqlab08/zsqlab10 ledgers:
+  protein constructs, plasmids, strains and their bacterial, plasmid-prep,
+  protein-prep and pellet stocks.
+
+include: [base]
+
+mixins:
+  sequence_fields:
+    sequence:
+      type: sequence
+      unique: true
+      description: >-
+        Nucleotide sequence; normalised (uppercase, whitespace stripped) by the
+        app and fingerprinted through the generated sequence_sha256 column.
+    length_bp:
+      type: computed
+      expr: "CHAR_LENGTH(sequence)"
+      sql_type: int
+      description: Sequence length in base pairs, recomputed from sequence.
+
+kinds:
+  construct:
+    object: entity
+    description: >-
+      A protein design (the old entity_constructs table); one row per amino-acid
+      sequence, with the extinction-coefficient formulas from zsqlab08.
+    mixins: [named_fields, sequence_fields]
+    fields:
+      mature_sequence:
+        type: sequence
+        description: Mature protein sequence after signal-peptide/tag removal, when known.
+      aliases:
+        type: string
+        length: 255
+        description: Alternative names used in notebooks or vendor labels (semicolon-separated).
+      molecular_weight_da:
+        type: decimal
+        precision: 12
+        scale: 2
+        description: Calculated molecular weight in daltons (Da).
+      pi:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Isoelectric point of the construct.
+      extinction_coefficient_reduced_m1cm1:
+        type: int
+        description: Molar extinction coefficient at 280 nm, reduced cysteines (M-1 cm-1).
+      extinction_coefficient_oxidized_m1cm1:
+        type: int
+        description: Molar extinction coefficient at 280 nm, oxidized cysteines (M-1 cm-1).
+      extinction_coefficient_reduced_0p1pct:
+        type: computed
+        expr: "CAST(extinction_coefficient_reduced_m1cm1 AS DECIMAL(20,10)) / molecular_weight_da"
+        sql_type: decimal
+        precision: 12
+        scale: 8
+        description: >-
+          Reduced extinction coefficient per 0.1% solution, i.e.
+          epsilon_reduced / molecular_weight_da (the zsqlab08 Excel formula).
+      extinction_coefficient_oxidized_0p1pct:
+        type: computed
+        expr: "CAST(extinction_coefficient_oxidized_m1cm1 AS DECIMAL(20,10)) / molecular_weight_da"
+        sql_type: decimal
+        precision: 12
+        scale: 8
+        description: >-
+          Oxidized extinction coefficient per 0.1% solution, i.e.
+          epsilon_oxidized / molecular_weight_da (the zsqlab08 Excel formula).
+      tag:
+        type: string
+        length: 16
+        description: Affinity/purification tag appended to the design (e.g. 6H, SUMO, MBP).
+
+  plasmid:
+    object: entity
+    description: >-
+      A plasmid design (the old entity_plasmids table); optionally linked to the
+      protein construct it expresses.
+    mixins: [named_fields, sequence_fields]
+    fields:
+      construct:
+        type: ref
+        to: construct
+        description: Protein construct expressed by this plasmid (lineage to the design).
+      backbone:
+        type: string
+        length: 64
+        description: Backbone vector name, e.g. pZET035 or pET28a.
+      resistance:
+        type: enum
+        values: [amp, kan, cm, spec, tet]
+        description: Antibiotic resistance cassette carried by the plasmid.
+      origin_of_replication:
+        type: string
+        length: 64
+        description: Replication origin (e.g. pBR322, p15A, ColE1).
+      promoter:
+        type: string
+        length: 64
+        description: Promoter driving expression of the construct.
+      affinity_tags:
+        type: string
+        length: 64
+        description: Tags encoded on the plasmid, if different from the construct design.
+
+  strain:
+    object: entity
+    description: A microbial strain (the old zsqlab10 stock_strains lineage) used for cultures.
+    mixins: [named_fields]
+    fields:
+      genotype:
+        type: text
+        description: Genotype / relevant markers of the strain.
+      species:
+        type: string
+        length: 64
+        default: Escherichia coli
+        description: Species name, defaulting to Escherichia coli.
+      source:
+        type: string
+        length: 128
+        description: Where the strain came from (lab stock, vendor, collaborator).
+
+  bacterial:
+    object: stock
+    description: A bacterial glycerol stock or culture of a plasmid or strain.
+    entity_kinds: [plasmid, strain]
+    fields:
+      strain:
+        type: string
+        length: 64
+        required: true
+        description: Host strain used for the culture, e.g. BL21(DE3).
+      medium:
+        type: string
+        length: 64
+        description: Growth medium, e.g. LB, TB or SOC.
+      batch:
+        type: string
+        length: 8
+        description: Short batch code from the old zsqlab batch column.
+    aliquot_fields:
+      glycerol_pct:
+        type: decimal
+        precision: 5
+        scale: 2
+        default: 15
+        description: Glycerol concentration of the frozen stock, in percent.
+
+  plasmid_prep:
+    object: stock
+    description: A plasmid DNA preparation made from a bacterial culture.
+    entity_kinds: [plasmid]
+    fields:
+      concentration_ng_ul:
+        type: decimal
+        precision: 12
+        scale: 2
+        description: DNA concentration measured for the preparation, in ng/µL.
+      prep_method:
+        type: string
+        length: 64
+        description: Preparation protocol, e.g. miniprep, midiprep or maxiprep.
+      elution_buffer:
+        type: string
+        length: 64
+        description: Buffer the DNA was eluted in (e.g. EB, TE, water).
+
+  protein_prep:
+    object: stock
+    description: A purified protein preparation derived from a pellet or culture.
+    entity_kinds: [construct]
+    fields:
+      concentration_mg_ml:
+        type: decimal
+        precision: 10
+        scale: 3
+        description: Protein concentration of the preparation, in mg/mL.
+      buffer:
+        type: string
+        length: 128
+        description: Storage buffer of the purified protein.
+      purification_id:
+        type: string
+        length: 64
+        description: Identifier of the purification run/record this prep belongs to.
+      purity_pct:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Estimated purity in percent (SDS-PAGE / SEC), when measured.
+
+  pellet:
+    object: stock
+    description: >-
+      A cell pellet harvested from a culture. Aliquot volumes live in the core
+      aliquot quantity, matching the zsqlab10 pellet aliquots model.
+    entity_kinds: [plasmid, strain]
+    fields:
+      culture_volume_ml:
+        type: decimal
+        precision: 10
+        scale: 2
+        description: Volume of culture harvested for this pellet, in mL.
+      od600:
+        type: decimal
+        precision: 6
+        scale: 2
+        description: Optical density at 600 nm when the culture was harvested.
+      induction:
+        type: enum
+        values: [iptg, auto, lactose, none]
+        default: none
+        description: Induction regime used before harvesting the culture.
+      induction_temp_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Temperature during induction, in degrees Celsius.
+
+rules:
+  - id: MB01
+    description: every plasmid with a construct also records its sequence
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM entity_plasmid
+      WHERE construct IS NOT NULL AND sequence IS NULL
+    expect: {single_value: 0}
+
+  - id: MB02
+    description: glycerol percentage of bacterial aliquots stays between 0 and 50
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM aliquot_bacterial
+      WHERE glycerol_pct IS NOT NULL AND (glycerol_pct < 0 OR glycerol_pct > 50)
+    expect: {single_value: 0}
+
+  - id: MB03
+    description: protein preparations record a positive concentration when known
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_protein_prep
+      WHERE concentration_mg_ml IS NOT NULL AND concentration_mg_ml <= 0
+    expect: {single_value: 0}
+
+  - id: MB04
+    description: constructs with a sequence also record their molecular weight (informational)
+    severity: info
+    sql: >-
+      SELECT COUNT(*) FROM entity_construct
+      WHERE sequence IS NOT NULL AND molecular_weight_da IS NULL
+    expect: {single_value: 0}

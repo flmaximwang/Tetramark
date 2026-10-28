@@ -95,7 +95,7 @@ tm box add grid96 WFL-12-01
 tm entity add plasmid --name pZET035 \
   --set backbone=pZET035 --set resistance=kan --alias p035
 
-tm stock add bacterial --entity p035 \
+tm stock add bacterial_glycerol --entity p035 \
   --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
 
@@ -117,7 +117,7 @@ names the expected file rather than silently reading a different preset. `tm pre
 inspect the configured `presets_dir`. Change it later with `tm config set presets_dir PATH` or by
 editing `workspace.yaml`.
 
-More flows: register a design and its glycerol stock, aliquot a pellet and use part of it, move boxes,
+More flows: register a design and its glycerol stock, aliquot a bacterial pellet and use part of it, move boxes,
 audit, import/export, back up. See `skills/tetramark/references/recipes.md`. Legacy stock ids can be
 repaired in place with `tm stock renumber OLD --auto`; the old ids stay findable as aliases.
 
@@ -161,7 +161,7 @@ back without removing the database directory. See `docs/spec.md` §3.1.
 
 | Object | What it is | ID |
 |---|---|---|
-| **entity** | The design or abstract thing (plasmid, construct, book title, item). | UUID v4 |
+| **entity** | The design or abstract thing (plasmid, protein construct, book title, item). | UUID v4 |
 | **stock** | One preparation/batch of exactly one entity. Carries lineage. | date code, e.g. `1226FP01` |
 | **aliquot** | One physical tube/vial; the only thing in a box slot. | `<stock_id>.<n>` |
 | **box** | A container with a geometry; boxes nest. | unique name, e.g. `WFL-12-01` |

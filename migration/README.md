@@ -62,7 +62,10 @@ only declares its counter and its SQL:
 5. apply → **exactly one** Dolt commit, message
    `migrate(ledger): spec N -> N+1` or `migrate(ledger): <preset> N -> N+1`.
    The counter, `tetramark_version` and the fingerprint are bumped in that same
-   commit, and the commit message is verified afterwards;
+   commit, and the commit message is verified afterwards. A step that declares
+   its **target schema** (`schema=`) records *that* schema's fingerprint and
+   regenerates the derived `dolt_tests` from it in the same commit, so no stale
+   test names an old table after the step;
 6. Dolt DDL is **not transactional**. If a statement fails, the step prints the
    last good commit and the restore command (`dolt reset --hard <hash>`), makes
    **no** commit, and exits 1. The pre-migration tag stays as the restore
@@ -70,6 +73,17 @@ only declares its counter and its SQL:
 
 A second run on an already-migrated ledger refuses: the counter is `N+1`, not
 `N`.
+
+A preset step also updates files, which are **not** Dolt content: `<ledger>/presets/`
+is the ledger's own preset copy (ticket 20) and the repository copy must replace
+it, or the next `open` loads the old preset while `preset_versions` says `N+1`.
+The step passes `after_commit=` for that; the runner runs it **only on a real
+apply**, after the commit, describes it in `--dry-run` via `after_commit_note=`,
+and then re-reads the ledger from its new copy (`reopened_schema=`) and verifies
+the fingerprint before reporting success. If the file hook fails, the report says
+`commit <hash> was made but the preset copy update failed` and exits 1 — the Dolt
+side is already migrated and only the files need the manual fix from the step
+README.
 
 ## Writing a step
 
@@ -87,7 +101,12 @@ A second run on an already-migrated ledger refuses: the counter is `N+1`, not
 
 `migrate.py` is short; it imports `MigrationStep`/`main` from
 `tetramark.migrate` and builds its SQL from the schema helpers (never from
-hard-coded DDL where a generator exists). Use the `Ledger`/`Driver` API
+hard-coded DDL where a generator exists). A step whose new schema differs from
+the ledger's current one loads the repository preset itself and passes it as
+both `schema=` (fingerprint + regenerated `dolt_tests`) and, through a small
+`reopened_schema=` wrapper around `tetramark.schema.loader.load_ledger_schema`,
+for the post-commit verification; the step's `plan` calls the same loader to
+build the diff. Use the `Ledger`/`Driver` API
 (`driver.execute`/`query`/`commit`, `Ledger.write`) — **no direct `dolt`
 shelling**: the step must also run against a ledger served by
 `dolt sql-server`.
@@ -125,3 +144,4 @@ values, and translates constraints/views — no hand-written SQL, no data loss.
 | Step | Counter | What it does |
 |---|---|---|
 | [`spec/1-to-2`](spec/1-to-2/README.md) | `spec_version` 1 → 2 | Recreates the generated views in the spec-2 shape (`alias_list`/`occupant_alias_list`). |
+| [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the v2 preset copy. |

@@ -1,9 +1,9 @@
 preset: molbio
-version: 1
+version: 2
 description: >-
   Molecular-biology inventory derived from the zsqlab08/zsqlab10 ledgers:
-  protein constructs, plasmids, strains and their bacterial, plasmid-prep,
-  protein-prep and pellet stocks.
+  protein constructs, plasmids, bacterial strains and cell lines, with their
+  bacterial glycerol, plasmid-prep, protein-prep, pellet and cell stocks.
 
 include: [base]
 
@@ -22,7 +22,7 @@ mixins:
       description: Sequence length in base pairs, recomputed from sequence.
 
 kinds:
-  construct:
+  protein_construct:
     object: entity
     description: >-
       A protein design (the old entity_constructs table); one row per amino-acid
@@ -84,7 +84,7 @@ kinds:
     fields:
       construct:
         type: ref
-        to: construct
+        to: protein_construct
         description: Protein construct expressed by this plasmid (lineage to the design).
       backbone:
         type: string
@@ -107,7 +107,7 @@ kinds:
         length: 64
         description: Tags encoded on the plasmid, if different from the construct design.
 
-  strain:
+  bacterial_strain:
     object: entity
     description: A microbial strain (the old zsqlab10 stock_strains lineage) used for cultures.
     mixins: [named_fields]
@@ -125,10 +125,37 @@ kinds:
         length: 128
         description: Where the strain came from (lab stock, vendor, collaborator).
 
-  bacterial:
+  cell_line:
+    object: entity
+    description: >-
+      A eukaryotic cell line (e.g. HEK293T, CHO-K1); derived and stable lines
+      point at the parent line through parental.
+    mixins: [named_fields]
+    fields:
+      species:
+        type: string
+        length: 64
+        description: Species of origin, e.g. Homo sapiens or Cricetulus griseus.
+      cell_type:
+        type: string
+        length: 64
+        description: Cell type or tissue of origin (e.g. epithelial, CHO-K1).
+      source:
+        type: string
+        length: 128
+        description: Where the line came from (ATCC, collaborator, lab stock).
+      genotype:
+        type: text
+        description: Genotype / modifications / markers of the line.
+      parental:
+        type: ref
+        to: cell_line
+        description: Parental line this line derives from (stable or derivative lines).
+
+  bacterial_glycerol:
     object: stock
-    description: A bacterial glycerol stock or culture of a plasmid or strain.
-    entity_kinds: [plasmid, strain]
+    description: A bacterial glycerol stock of a plasmid or bacterial strain.
+    entity_kinds: [plasmid, bacterial_strain]
     fields:
       strain:
         type: string
@@ -143,7 +170,6 @@ kinds:
         type: string
         length: 8
         description: Short batch code from the old zsqlab batch column.
-    aliquot_fields:
       glycerol_pct:
         type: decimal
         precision: 5
@@ -173,7 +199,7 @@ kinds:
   protein_prep:
     object: stock
     description: A purified protein preparation derived from a pellet or culture.
-    entity_kinds: [construct]
+    entity_kinds: [protein_construct]
     fields:
       concentration_mg_ml:
         type: decimal
@@ -194,12 +220,12 @@ kinds:
         scale: 2
         description: Estimated purity in percent (SDS-PAGE / SEC), when measured.
 
-  pellet:
+  bacterial_pellet:
     object: stock
     description: >-
-      A cell pellet harvested from a culture. Aliquot volumes live in the core
-      aliquot quantity, matching the zsqlab10 pellet aliquots model.
-    entity_kinds: [plasmid, strain]
+      A bacterial cell pellet harvested from a culture. Aliquot volumes live in
+      the core aliquot quantity, matching the zsqlab10 pellet aliquots model.
+    entity_kinds: [plasmid, bacterial_strain]
     fields:
       culture_volume_ml:
         type: decimal
@@ -222,9 +248,56 @@ kinds:
         scale: 2
         description: Temperature during induction, in degrees Celsius.
 
+  cell_vial:
+    object: stock
+    description: A cryovial of a cell line, with its passage and freezing medium.
+    entity_kinds: [cell_line]
+    fields:
+      passage:
+        type: int
+        description: Passage number of the cells when the vial was frozen.
+      medium:
+        type: string
+        length: 64
+        description: Growth medium the line is kept in, e.g. DMEM + 10% FBS.
+      freezing_medium:
+        type: string
+        length: 64
+        description: Medium the vial was frozen in, e.g. 90% FBS + 10% DMSO.
+      cells_per_vial:
+        type: int
+        description: Number of cells frozen per vial, when counted.
+      dmso_pct:
+        type: decimal
+        precision: 5
+        scale: 2
+        default: 10
+        description: DMSO concentration of the freezing mix, in percent.
+
+  cell_pellet:
+    object: stock
+    description: >-
+      A harvested cell pellet; a plasmid instead of a cell line records a
+      transient-transfection / transduction harvest.
+    entity_kinds: [cell_line, plasmid]
+    fields:
+      cell_count:
+        type: int
+        description: Number of cells harvested, when counted.
+      passage:
+        type: int
+        description: Passage number of the cells when the pellet was harvested.
+      transfection:
+        type: string
+        length: 128
+        description: Transfection reagent/method or virus used, when applicable.
+      harvested_on:
+        type: date
+        description: Date the cells were harvested (ISO yyyy-mm-dd).
+
 rules:
   - id: MB01
-    description: every plasmid with a construct also records its sequence
+    description: every plasmid with a protein construct also records its sequence
     severity: fail
     sql: >-
       SELECT COUNT(*) FROM entity_plasmid
@@ -232,10 +305,10 @@ rules:
     expect: {single_value: 0}
 
   - id: MB02
-    description: glycerol percentage of bacterial aliquots stays between 0 and 50
+    description: glycerol percentage of bacterial glycerol stocks stays between 0 and 50
     severity: fail
     sql: >-
-      SELECT COUNT(*) FROM aliquot_bacterial
+      SELECT COUNT(*) FROM stock_bacterial_glycerol
       WHERE glycerol_pct IS NOT NULL AND (glycerol_pct < 0 OR glycerol_pct > 50)
     expect: {single_value: 0}
 
@@ -251,6 +324,14 @@ rules:
     description: constructs with a sequence also record their molecular weight (informational)
     severity: info
     sql: >-
-      SELECT COUNT(*) FROM entity_construct
+      SELECT COUNT(*) FROM entity_protein_construct
       WHERE sequence IS NOT NULL AND molecular_weight_da IS NULL
+    expect: {single_value: 0}
+
+  - id: MB05
+    description: DMSO percentage of cell vials stays between 0 and 100
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM stock_cell_vial
+      WHERE dmso_pct IS NOT NULL AND (dmso_pct < 0 OR dmso_pct > 100)
     expect: {single_value: 0}
