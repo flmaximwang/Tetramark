@@ -179,3 +179,137 @@ tm check
 ```
 
 See `skills/tetramark-schema/SKILL.md` for additive/destructive rules and worked examples.
+
+## 10. Register a colony (angenet organisms)
+
+The `angenet` bundle models a **line** (entity), a **colony** (stock) and the **aliquots**: one animal
+for individually tracked species (mouse, tagged fish; quantity 1, in a `cage`) or one housing unit's
+population for group-counted ones (fly vial, worm plate, fish tank; quantity = headcount, unit
+`individuals`). Individuals of one stock are identical in every recorded property, so **sex,
+genotype, birth date and cross are stock fields** — a breeding pair is two stocks, not two aliquots
+of one.
+
+```sh
+# Fly: a line and a vial of 30 flies in an incubator.  The vial is one aliquot.
+tm entity add fly_line --name w1118 --set balancers=CyO \
+  --set stock_centre=BDSC --set stock_number=12345 --alias w1118
+tm box add incubator INC-25
+tm stock add fly_culture --entity w1118 --box INC-25 \
+  --quantity 30 --unit individuals \
+  --set temperature_c=25 --set generation=P1 --set food_type=standard
+# -> fly_culture 7726KU06, aliquot 7726KU06.1 (alive)
+
+# Worm: a strain on a plate, plus the frozen backup (the real colony).
+tm entity add worm_strain --name N2 --set allele=N2 \
+  --set lab_prefix=CB --set wormbase_id=WBStrain00000001 --alias N2
+tm stock add worm_culture --entity N2 --box INC-25 \
+  --quantity 200 --unit individuals \
+  --set temperature_c=20 --set plate_type=NGM --set stage=adult
+tm stock add worm_cryo --entity N2 --quantity 1 --unit vial \
+  --set frozen_on=2026-01-10 --set method="-80 C soft agar"
+# -> worm_cryo 7726KW01, aliquot 7726KW01.1 (stored)
+
+# Fish: a tank is one group aliquot; a tagged fish would be one aliquot of
+# quantity 1, its tag going in the core aliquot label on import/back-fill.
+tm entity add fish_line --name Tg(flk1:GFP) --set zfin_name=Tg(flk1:GFP) \
+  --set background=AB --alias flk1g
+tm stock add fish_group --entity flk1g --box INC-25 \
+  --quantity 25 --unit individuals \
+  --set birth_on=2026-03-01 --set sex=u --set density_per_l=5
+
+# Mouse: one mouse per aliquot, quantity 1, in a cage (slotless, capacity 5).
+tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J \
+  --set supplier="Jackson Laboratory" --set mgi_id=MGI:3029029 --alias b6j
+tm box add cage MC-01
+tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
+  --quantity 1 --unit mouse --box MC-01 --status alive
+```
+
+Every new aliquot gets a status from its stock kind's set (`fly`, `worm`, `animal` or `cryo`);
+`tm schema show KIND` prints the set and its allowed transitions. Use `tm aliquot status ALQ NEW`
+to move a culture/vial/animal, and `tm aliquot use` for quantities.
+
+## 11. Record a cross (dam/sire are aliquots)
+
+There is no cross object: the **progeny stock is the cross**, and its `dam`/`sire` fields are refs to
+**aliquots** (a virgins vial for flies, a mouse, a breeding tank for fish). Both are `lineage: true`
+edges, so `tm lineage` still walks the pedigree after the parents are gone.
+
+```sh
+# A virgins vial is just another fly_culture; its aliquot is the dam.
+tm stock add fly_culture --entity w1118 --box INC-25 \
+  --quantity 20 --unit individuals \
+  --set temperature_c=25 --set generation=P0 \
+  --set notes="virgin females collected 2026-10-20"
+# -> 7726KU07, aliquot 7726KU07.1
+tm stock add fly_culture --entity w1118 --box INC-25 \
+  --quantity 10 --unit individuals \
+  --set temperature_c=25 --set generation=P0
+# -> 7726KU08, aliquot 7726KU08.1 (the male parent)
+
+# The cross vial names the two parent aliquots.
+tm stock add fly_culture --entity w1118 --box INC-25 \
+  --quantity 5 --unit individuals \
+  --set temperature_c=25 --set food_type=standard \
+  --set virgins_collected_on=2026-10-20 \
+  --set dam=7726KU07.1 --set sire=7726KU08.1
+# -> cross vial 7726KU09; tm lineage 7726KU09 --up shows both parents
+```
+
+The same fields exist on `fish_group`, `fish_clutch` and `mouse_cohort`; `worm_culture` deliberately
+has none (selfing hermaphrodites — the strain's `parental` ref carries the lineage).
+
+## 12. Split a litter at genotyping
+
+A litter is a `mouse_cohort` with **`genotype` NULL** and **one group aliquot** (quantity = pups).
+Genotyping/weaning creates one stock per genotype × sex, each mouse its own aliquot, linked to the
+litter through the core `parent_stock_id` (`--parent`); the litter aliquot is then finished.
+
+```sh
+tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J --alias b6j
+tm box add cage MC-01
+tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
+  --quantity 1 --unit mouse --box MC-01 --status alive      # 7726KU01.1
+tm stock add mouse_cohort --entity b6j --set sex=m --set birth_on=2026-05-01 \
+  --quantity 1 --unit mouse --box MC-01 --status alive      # 7726KU02.1
+
+# The litter: one stock, no --set genotype, one group aliquot of 7 pups.
+tm box add cage MC-02
+tm stock add mouse_cohort --entity b6j --box MC-02 \
+  --quantity 7 --unit individuals --set birth_on=2026-07-01 \
+  --set dam=7726KU01.1 --set sire=7726KU02.1                # 7726KU03, aliquot .1
+
+# Genotyping: one stock per genotype x sex, parent_stock_id = the litter.
+tm stock add mouse_cohort --entity b6j --parent 7726KU03 \
+  --box MC-03 --aliquots 3 --quantity 1 --unit mouse \
+  --set genotype=Apobec+/- --set sex=f --set birth_on=2026-07-01
+tm stock add mouse_cohort --entity b6j --parent 7726KU03 \
+  --box MC-04 --aliquots 4 --quantity 1 --unit mouse \
+  --set genotype=Apobec-/- --set sex=m --set birth_on=2026-07-01
+
+tm aliquot status 7726KU03.1 euthanized
+tm lineage 7726KU04 --up      # pup stock -> litter -> dam and sire aliquots -> breeders
+tm lineage 7726KU04 --down    # the split stocks below this one
+```
+
+The litter stock keeps its own history: `tm find 7726KU03` and `tm stock show 7726KU03` still show
+the untyped litter and its finished aliquot.
+
+## 13. Thaw a cryo vial
+
+Frozen stocks (`worm_cryo`, `mouse_sperm_cryo`, `mouse_embryo_cryo`, `fish_sperm_cryo`, cellbio's
+`cell_vial`) use the `cryo` set: created `stored`, thawed with a status change, and `thawed` is
+final. Record the thaw on the aliquot — do not edit the stock fields.
+
+```sh
+tm aliquot status 7726KW01.1 thawed
+tm aliquot status 7726KW01.1 stored   # refused: thawed is final
+```
+
+If the thaw was a mistake, override deliberately (requires a note; records `forced = TRUE`, which
+`tm check` accepts):
+
+```sh
+tm aliquot status 7726KW01.1 stored \
+  --force --note "thaw was recorded on the wrong vial"
+```

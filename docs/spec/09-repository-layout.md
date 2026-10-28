@@ -3,8 +3,9 @@
 ```
 pyproject.toml            # uv; deps: typer, pyyaml, pydantic>=2, pymysql, rich
 presets/                  # parts (base, nucleic_acids, bacteria, proteins, cell_culture, immuno,
-                          # viral_vectors, biosamples, library) and bundles (molbio, cellbio) +
-                          # README.md (part/bundle table); tm init copies them
+                          # viral_vectors, biosamples, drosophila, c_elegans, zebrafish, mouse,
+                          # library) and bundles (molbio, cellbio, angenet) + README.md
+                          # (part/bundle table, include graph, recipes); tm init copies them
 src/tetramark/
   driver/                 # base.py, server.py, embedded.py, workspace.py (server start/stop)
   schema/                 # model.py (pydantic), loader.py (presets/include/mixins), ddl.py, diff.py, tests_gen.py

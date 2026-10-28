@@ -22,15 +22,20 @@ stay one global namespace.
 | `immuno` | antibody, antibody_lot | | ✓ | |
 | `viral_vectors` | virus, virus_prep | | ✓ | |
 | `biosamples` | animal_biosample (the angenet side; cell samples are `cell_biosample` in `cell_culture`) | | | ✓ |
-| `drosophila`, `c_elegans`, `zebrafish`, `mouse` | organism kinds (see `docs/preset-parts.md` §3) | | | ✓ |
+| `drosophila` | fly_line; fly_culture; status set `fly` | | | ✓ |
+| `c_elegans` | worm_strain; worm_culture, worm_cryo; status set `worm` | | | ✓ |
+| `zebrafish` | fish_line; fish_group, fish_clutch, fish_sperm_cryo | | | ✓ |
+| `mouse` | mouse_strain; mouse_cohort, mouse_sperm_cryo, mouse_embryo_cryo; box kind `cage` (slotless, capacity 5) | | | ✓ |
 
 The bundles:
 
 - `molbio` — `include: [base, nucleic_acids, bacteria, proteins, cell_culture]`, version 3.
 - `cellbio` — `include: [base, nucleic_acids, cell_culture, immuno, viral_vectors]`, version 1.
   `proteins` arrives through `nucleic_acids` (a plasmid points at its protein design).
-- `angenet` — ticket 29; `include: [base, nucleic_acids, biosamples, drosophila, c_elegans,
-  zebrafish, mouse]`.
+- `angenet` — `include: [base, nucleic_acids, biosamples, drosophila, c_elegans, zebrafish,
+  mouse]`, version 1. `proteins` arrives through `nucleic_acids` (the constructs a line may carry);
+  `biosamples` is listed because it names the organism line kinds, and only this union loads them
+  all. The four organism parts are the model of `docs/preset-parts.md` §3.
 
 Each part's `description:` says what it covers and which bundles include it. New parts start at
 `version: 1` and grow through `migration/presets/<name>/N-to-N+1/`, never by editing a shipped
@@ -43,6 +48,11 @@ version in place. Every part that adds kinds adapted from [BioManager](https://g
 base
 ├── immuno                 (antibody, antibody_lot)
 ├── biosamples             (animal_biosample; loaded with the organism parts, not by include)
+├── drosophila             (fly_line, fly_culture; status set fly)
+├── c_elegans              (worm_strain, worm_culture, worm_cryo; status set worm)
+├── zebrafish              (fish_line, fish_group, fish_clutch, fish_sperm_cryo)
+├── mouse                  (mouse_strain, mouse_cohort, mouse_sperm_cryo,
+│                           mouse_embryo_cryo; box cage)
 └── proteins               (sequence_fields mixin; protein_construct, protein_prep)
     └── nucleic_acids      (plasmid, plasmid_prep, oligo, oligo_stock)
         ├── bacteria       (bacterial_strain, bacterial_glycerol, bacterial_pellet)
@@ -61,11 +71,15 @@ base
 - **`biosamples` is the one part that is not self-contained.** It names the organism line kinds
   (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`) in `animal_biosample.entity_kinds`, and a
   stock's `entity_kinds` may only name entity kinds the same ledger loads — the loader raises
-  `'fly_line' is not an entity kind` otherwise. Those kinds arrive in ticket 29's organism parts, so
+  `'fly_line' is not an entity kind` otherwise. Those kinds are owned by the four organism parts, so
   `biosamples` is loaded **with** them: the `angenet` bundle lists `biosamples` and all four
   organism parts, and that union is what makes the file valid. Do not add `biosamples` to
-  `cellbio`, `molbio` or any other bundle, and do not `tm presets show biosamples` on its own until
-  ticket 29 has landed.
+  `cellbio`, `molbio` or any other bundle, and do not `tm presets show biosamples` on its own.
+- **A part includes only base when it references nothing else.** The organism parts name the core
+  `aliquot` table in their `dam`/`sire` refs (core objects need no include) and use `named_fields`
+  and the status sets from `base`; `cage` lives in `mouse`, because no other part uses it. Set names
+  are global, so `fly` and `worm` are declared in their own parts while `animal` and `cryo` stay in
+  `base` (shared by zebrafish/mouse and by every frozen stock).
 
 ## The biosamples split (ticket 28)
 
@@ -87,6 +101,67 @@ A sample's **origin is the core stock column** `source_aliquot_id`, exposed as
 `tm stock add KIND --entity E --source-aliquot ALQ` — not a schema field. `tm lineage` follows it
 from the sample to the tube it was taken from and on to that tube's stock/line, so a cell biosample
 taken from a cryovial appears under that vial.
+
+## Organisms: line, colony and aliquot (`angenet`)
+
+The model is the one in `docs/preset-parts.md` §3, and it needs no core change:
+
+- a **line is an entity** (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`); its `parental`
+  ref is a lineage edge;
+- a **colony is a stock** (`fly_culture`, `worm_culture`, `fish_group`/`fish_clutch`,
+  `mouse_cohort`): the organisms of one line that are identical in every recorded property (cohort
+  or cross, birth date, sex, genotype);
+- an **aliquot is one animal** (mouse, tagged fish: quantity 1, its tag in the core aliquot
+  `label`) **or one housing unit's population** (fly vial, worm plate, fish tank: quantity =
+  headcount, unit `individuals`). The vial/plate/tank/cage **is** the aliquot and sits in a box
+  (`incubator`, `rack`, `shelf`, or the mouse `cage`);
+- a **cross is its progeny stock**: `fly_culture`/`fish_group`/`fish_clutch`/`mouse_cohort` carry
+  `dam` and `sire` refs to **aliquots** (a mouse or a virgins vial), both `lineage: true`;
+- **statuses come from the stock kind**: `fly` (alive/crossed/discarded/lost), `worm`
+  (growing/starved/contaminated/discarded), `animal` and `cryo` from `base`.
+
+### Recipe: register a litter, then split it at genotyping
+
+A litter is a `mouse_cohort` with **`genotype` NULL** and **one group aliquot** (quantity = pups).
+Genotyping/weaning creates one stock per genotype × sex with `parent_stock_id` = the litter stock,
+each animal as its own aliquot, and finishes the litter aliquot. The IDs below are illustrative (a
+ledger with `--id-prefix 77`); substitute the ones `tm` prints.
+
+```sh
+# One strain, one cage, the two breeders.  Sex is a stock field (individuals of
+# one stock are identical), so the female and the male are two cohorts, each
+# with one mouse: aliquot 7726KU01.1 and 7726KU02.1 in cage MC-01.
+tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J --alias b6j
+tm box add cage MC-01
+tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
+  --quantity 1 --unit mouse --box MC-01 --status alive
+tm stock add mouse_cohort --entity b6j --set sex=m --set birth_on=2026-05-01 \
+  --quantity 1 --unit mouse --box MC-01 --status alive
+
+# The litter: one stock with genotype NULL (omit --set genotype) and one group
+# aliquot of 7 pups, whose parents are the two breeder aliquots.
+tm box add cage MC-02
+tm stock add mouse_cohort --entity b6j --box MC-02 --quantity 7 --unit individuals \
+  --set birth_on=2026-07-01 --set dam=7726KU01.1 --set sire=7726KU02.1
+
+# Genotyping / weaning: one stock per genotype x sex, parent_stock_id = litter,
+# each mouse its own aliquot (a cage holds at most 5).
+tm stock add mouse_cohort --entity b6j --parent 7726KU03 --box MC-03 --aliquots 3 \
+  --quantity 1 --unit mouse --set genotype=Apobec+/- --set sex=f \
+  --set birth_on=2026-07-01
+tm stock add mouse_cohort --entity b6j --parent 7726KU03 --box MC-04 --aliquots 4 \
+  --quantity 1 --unit mouse --set genotype=Apobec-/- --set sex=m \
+  --set birth_on=2026-07-01
+
+# The litter aliquot is done, and the pedigree is one command away.
+tm aliquot status 7726KU03.1 euthanized
+tm lineage 7726KU04 --up        # pup stock -> litter -> dam + sire aliquots -> breeders
+tm lineage <strain_id> --down   # strain -> breeders -> litter -> the split stocks
+```
+
+There is no cross object and no `tm cross` command: a cross **is** the progeny stock, `parent_stock_id`
+carries the litter link, and the `dam`/`sire` refs are lineage edges. `tm lineage` shows both parents
+even though a stock has one `parent_stock_id` column.
 
 ## Naming rule: entity = what it is, stock = what you can hold
 

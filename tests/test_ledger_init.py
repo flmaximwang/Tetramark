@@ -740,17 +740,22 @@ def test_cli_presets_list_and_show(
     assert listed.exit_code == 0, listed.output
     # The parts are listed next to the bundles: molbio is `include:`-only now.
     assert listed.output.split() == [
+        "angenet",
         "bacteria",
         "base",
         "biosamples",
+        "c_elegans",
         "cell_culture",
         "cellbio",
+        "drosophila",
         "immuno",
         "library",
         "molbio",
+        "mouse",
         "nucleic_acids",
         "proteins",
         "viral_vectors",
+        "zebrafish",
     ]
 
     shown = runner.invoke(

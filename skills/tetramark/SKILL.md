@@ -29,7 +29,9 @@ one Dolt commit; every read is a normal `tm` command.
    its kinds come from the parts it includes (`base`, `nucleic_acids`, `bacteria`, `proteins`,
    `cell_culture`), so a kind the ledger shows may live in any of those files. `cellbio` is the
    cell-biology bundle over `base`, `nucleic_acids`, `cell_culture`, `immuno` and `viral_vectors`;
-   one ledger can list both (`presets: [molbio, cellbio]`) and the shared parts load once.
+   `angenet` is the animal-genetics bundle over `base`, `nucleic_acids`, `biosamples` and the four
+   organism parts (`drosophila`, `c_elegans`, `zebrafish`, `mouse`). One ledger can list any
+   combination (`presets: [molbio, cellbio, angenet]`) and the shared parts load once.
 
 ## Decision table
 
@@ -51,6 +53,8 @@ one Dolt commit; every read is a normal `tm` command.
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
 | Find anything | `tm find ID\|ALIAS\|TEXT` |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
+| Register an organism line and its colony | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse` |
+| Record a cross / pedigree link | `tm stock add fly_culture … --set dam=ALQ --set sire=ALQ` (refs to aliquots, `lineage: true`) |
 | Where material came from / what derives from it | `tm lineage ID [--up \| --down] [--depth N]` |
 | Validate the ledger | `tm check [-v] [--group G]` |
 | Bulk load / dump | `tm import …`, `tm export …` |
@@ -61,55 +65,45 @@ Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 
 ## Short recipes
 
-### New plasmid + glycerol stock in a box
-
 ```sh
-tm entity add plasmid --name pZET035 \
-  --set backbone=pZET035 --set resistance=kan --alias p035
-tm stock add bacterial_glycerol --entity p035 \
-  --set strain='BL21(DE3)' --set medium=LB \
+tm entity add plasmid --name pZET035 --set backbone=pZET035 --set resistance=kan --alias p035
+tm stock add bacterial_glycerol --entity p035 --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
-tm box show WFL-12-01
-tm find p035
-```
-
-The stock gets an ID from the date-code strategy; the default one aliquot is `<stock_id>.1` and sits
-in `A1`. Use `--aliquots 0` when you only want the logical batch.
-
-### Consume part of a bacterial pellet
-
-```sh
-tm stock add bacterial_pellet --entity p035 --aliquots 3 \
-  --quantity 500 --unit ml \
-  --set culture_volume_ml=1500 --set od600=2.4 --set induction=iptg
-tm aliquot use 1226KO02.1 500 ml --purpose purification   # ID printed by stock add
-```
-
-`use` decrements the quantity and flips the status to `consumed` at zero (a stock kind whose status
-set has no `consumed`, e.g. `cryo`, keeps its status); the event records the purpose.
-
-### Move a box, then a tube
-
-```sh
+tm aliquot use 1226KO02.1 500 ml --purpose purification   # decrements; zero = consumed
 tm box move WFL-12-02 --in shelf-1
 tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3
+tm lineage p035 --up                                      # lineage:true edges + core links
 ```
 
-Moving a box moves its whole subtree; moving a tube changes only that aliquot.
+The stock gets a date-code ID; its default one aliquot is `<stock_id>.1`. Full multi-step flows
+(new plasmid + glycerol stock, pellet consumption, moving and lineage formats):
+`references/recipes.md` §1-4.
 
-### Trace where material came from
+### Organisms: line, colony, aliquot (angenet)
+
+A line is an entity, a colony a stock, and an aliquot either one animal (quantity 1, in a `cage`)
+or one housing unit's population (quantity = headcount, unit `individuals`). A cross **is** its
+progeny stock: `dam`/`sire` are refs to parent aliquots and both are `lineage: true` edges. A
+litter is a `mouse_cohort` with `genotype` NULL and one group aliquot; at genotyping link each
+genotype × sex stock through `--parent` and finish the litter aliquot:
 
 ```sh
-tm lineage p035                 # the plasmid: construct above, stocks below
-tm lineage p035 --up            # ancestors only (e.g. the construct it expresses)
-tm lineage 1226KT02 --down --depth 2
-tm lineage 1226KT02.1 --json    # children of one tube
-tm lineage p035 --format dot > graph.dot && dot -Tsvg graph.dot > graph.svg
+tm stock add mouse_cohort --entity b6j --box MC-02 --quantity 7 --unit individuals \
+  --set dam=ALQ_F --set sire=ALQ_M                            # genotype stays NULL
+tm stock add mouse_cohort --entity b6j --parent LITTER --box MC-03 --aliquots 3 \
+  --quantity 1 --unit mouse --set genotype=G+ --set sex=f     # one per genotype x sex
+tm aliquot status LITTER.1 euthanized
+tm lineage PUP --up                                           # litter and both parents
 ```
 
-Edges come from the stock's entity, `--parent`/`--source-aliquot`, and schema fields marked
-`lineage: true` (`plasmid.construct`, `cell_line.parental`). A node seen twice prints
-`<id> (see above)`; `--depth` counts edges from the ID you gave. Read-only, like `history`.
+Other angenet commands: register a colony with `tm entity add fly_line …` then
+`tm stock add fly_culture … --quantity 30 --unit individuals` (one animal:
+`--quantity 1 --unit mouse` in a `cage`); record a cross by pointing the progeny
+stock at parent aliquots with `--set dam=ALQ --set sire=ALQ`; thaw a cryo vial
+with `tm aliquot status VIAL thawed` (`thawed` is final).
+
+Full recipes - register a colony, record a cross, split a litter, thaw a cryo vial:
+`references/recipes.md` §10-13.
 
 ### Audit
 

@@ -1,0 +1,20 @@
+preset: angenet
+version: 1
+description: >-
+  Animal-genetics inventory assembled from reusable parts: the shared inventory
+  and status sets (base), nucleic acids for the constructs the lines carry, the
+  animal biosample kind, and the four organism parts - Drosophila, C. elegans,
+  zebrafish and mouse. A bundle: it has no kinds, mixins, rules or status sets
+  of its own. Every organism part owns its own line, stock and box kinds, so a
+  kind lives exactly where its organism model lives; biosamples names all four
+  line kinds and is loaded with them here, never alone. Adapted from BioManager
+  (MIT).
+
+# A bundle only includes parts.  The organism parts are listed explicitly so
+# the file is self-describing: each includes base, and the loader loads every
+# file once.  biosamples is listed because animal_biosample's entity_kinds name
+# fly_line, worm_strain, fish_line and mouse_strain - a stock's entity_kinds may
+# name only entity kinds the same ledger loads, so the union of this list is
+# what makes the part valid.  nucleic_acids (with proteins below it) keeps the
+# plasmid-style lineage rows an animal line may carry.
+include: [base, nucleic_acids, biosamples, drosophila, c_elegans, zebrafish, mouse]
