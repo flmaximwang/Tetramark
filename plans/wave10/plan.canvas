@@ -27,8 +27,8 @@
    "y": 170,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-002#B-001\nimplement ticket 26 in worktree w26\n\n`running` · @w26 · 在做 @w26\n\nRead docs/tickets/26-tm-lineage.md and docs/preset-parts.md section 5. Work only in the worktree .dsh/gitworktree/w26 (branch wave10/t26, own .venv). Real dolt,"
+   "color": "4",
+   "text": "### T-002#B-001\nimplement ticket 26 in worktree w26\n\n`done` · @w26\n\nRead docs/tickets/26-tm-lineage.md and docs/preset-parts.md section 5. Work only in the worktree .dsh/gitworktree/w26 (branch wave10/t26, own .venv). Real dolt,"
   },
   {
    "id": "T-002#B-002",
@@ -37,8 +37,8 @@
    "y": 170,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-002#B-002\nreview and merge ticket 26\n\n`waiting` · @lead\n\nLead: review the worktree diff against the ticket and design, run the full suite, check the lineage accessor is the single place that reads stock counts, then c"
+   "color": "5",
+   "text": "### T-002#B-002\nreview and merge ticket 26\n\n`running` · @lead · 在做 @lead\n\nLead: review the worktree diff against the ticket and design, run the full suite, check the lineage accessor is the single place that reads stock counts, then c"
   },
   {
    "id": "T-003#B-001",
