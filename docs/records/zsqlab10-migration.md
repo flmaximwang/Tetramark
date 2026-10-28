@@ -5,7 +5,7 @@
 `tetramark-upgrade` and fast-forwarded into the ledger's `main`. Backup taken first and restore-proven;
 nothing pushed.
 
-This was the first real run of `migration/` (ticket 24). The procedure was rehearsed on a restored copy
+This was the first real run of `migration/` (the zsqlab10 migration). The procedure was rehearsed on a restored copy
 of the actual backup before any write; rehearsal and real run produced the same fingerprint and counts.
 
 ## Result

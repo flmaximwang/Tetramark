@@ -97,7 +97,7 @@ so the views never show tubes that are gone.
 - tests (new: each view shape, empty grid row, zero-row slotless view, add/import keep views, check drift,
   name rule, grid refuses a box, position cleared on missing/consumed/use-to-0, stored without position
   refused, move restores status, grid96 rename, 4-to-5 step)
-- `docs/spec.md` (§3 views, §3 enforcement list, box commands, aliquot commands), `skills/tetramark/SKILL.md`,
+- `docs/spec/03-physical-model.md` (views, enforcement list), `docs/spec/06-cli.md` (box and aliquot commands), `skills/tetramark/SKILL.md`,
   `README.md`
 
 ## Constraints

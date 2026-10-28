@@ -37,7 +37,8 @@ up to date.
   and pass `tm check`. A round-trip test runs per step that has a downgrade.
 - `tm upgrade` on an up-to-date ledger prints "ledger is at spec N" and makes no commit.
 - The guard tests cover older, newer and missing `spec_version`.
-- The `docs/spec.md` section on format versions explains when to bump `SPEC_VERSION` and how to add a step.
+- [`docs/spec/05-schema-evolution.md`](../spec/05-schema-evolution.md) explains when to bump
+  `SPEC_VERSION` and how to add a step.
 
 ## Out of scope
 

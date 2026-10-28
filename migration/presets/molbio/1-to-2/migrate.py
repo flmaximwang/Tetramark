@@ -1,6 +1,6 @@
 """molbio 1 -> 2: kind renames, cell kinds, and ``glycerol_pct`` on the stock.
 
-Molbio preset version 2 (release 0.2.0, ticket 22) applies one model rule — *all
+Molbio preset version 2 (release 0.2.0) applies one model rule — *all
 aliquots of one stock are the same* — to the bundled biology preset:
 
 * four kind renames, done by the diff planner through ``renames.yaml``:
@@ -359,7 +359,7 @@ def vendor_presets(ledger: Ledger, result) -> str:
 
     ``after_commit`` hook: the files are not Dolt content, so the runner can
     only do this after the migration commit exists.  A ledger resolves presets
-    **only** from ``<ledger>/presets/`` (ticket 20), so without this the next
+    **only** from ``<ledger>/presets/`` (0.2.0 rule), so without this the next
     ``open`` would load molbio v1 while ``preset_versions.molbio`` says 2.
     The runner's ``reopened_schema`` hook then re-reads the ledger from these
     files and verifies the fingerprint, so a partial copy cannot pass.

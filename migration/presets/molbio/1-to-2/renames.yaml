@@ -1,4 +1,4 @@
-# Explicit kind renames for the molbio 1 -> 2 step (ticket 22, release 0.2.0).
+# Explicit kind renames for the molbio 1 -> 2 step (release 0.2.0).
 #
 # Presets never carry ``renamed_from``: a migration step ships this map and
 # ``tetramark.schema.diff`` reuses its rename machinery (kind table, columns,

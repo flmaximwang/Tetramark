@@ -1,6 +1,6 @@
 """Pydantic models for the declarative Tetramark schema.
 
-The schema language is described in ``docs/spec.md`` §2.  This module only
+The schema language is described in ``docs/spec/02-schema-language.md``.  This module only
 models *shape*: loading, includes, mixins and cross references are handled by
 :mod:`tetramark.schema.loader`.  Everything here is pure (no database access)
 and safe to import from anywhere.

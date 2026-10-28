@@ -74,7 +74,7 @@ As a consequence:
   views were generated from — normally true, because presets were not renamed
   in 0.1.2.  The step regenerates the views from the ledger's own presets, so
   a kind set that is already spec-2 shaped works unchanged.
-- A backup/branch rule for real lab ledgers (ticket 24): work on a branch
+- A backup/branch rule for real lab ledgers: work on a branch
   (`--branch tetramark-upgrade`), never on `main`, never push.
 - The tag `pre-migrate-spec-1` must not exist at a different commit; the script
   refuses if it points anywhere other than HEAD.

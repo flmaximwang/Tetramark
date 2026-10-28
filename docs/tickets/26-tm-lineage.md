@@ -37,7 +37,7 @@ stocks (lineage, not phylogeny).
 - `presets/*.yaml` (the two flags; no `version:` bump: the flag changes no stored shape, so note in the
   README of `migration/` that flags affecting only reads need no step)
 - tests: `tests/test_lineage.py` (new)
-- `docs/spec.md` (CLI section, field attributes), `skills/tetramark/SKILL.md`
+- `docs/spec/06-cli.md`, `docs/spec/02-schema-language.md` (field attributes), `skills/tetramark/SKILL.md`
 
 ## Constraints
 

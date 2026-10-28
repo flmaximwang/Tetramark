@@ -75,7 +75,7 @@ A second run on an already-migrated ledger refuses: the counter is `N+1`, not
 `N`.
 
 A preset step also updates files, which are **not** Dolt content: `<ledger>/presets/`
-is the ledger's own preset copy (ticket 20) and the repository copy must replace
+is the ledger's own preset copy (0.2.0) and the repository copy must replace
 it, or the next `open` loads the old preset while `preset_versions` says `N+1`.
 The step passes `after_commit=` for that; the runner runs it **only on a real
 apply**, after the commit, describes it in `--dry-run` via `after_commit_note=`,

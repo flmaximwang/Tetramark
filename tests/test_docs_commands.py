@@ -477,7 +477,7 @@ def test_schema_skill_local_kind_rules_and_destructive_flow(
 def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     docs_env: Path, docs_server: int
 ) -> None:
-    """The zsqlab08 mapping in docs/migration.md runs end to end."""
+    """The zsqlab08 mapping in docs/guides/migrating-a-legacy-ledger.md runs end to end."""
     del docs_env
     run(
         "workspace", "init", ".", "--default-ledger", "zsqlab08",
@@ -602,7 +602,7 @@ def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
         "skills/tetramark/references/commands.md",
         "skills/tetramark/references/recipes.md",
         "skills/tetramark-schema/SKILL.md",
-        "docs/migration.md",
+        "docs/guides/migrating-a-legacy-ledger.md",
         "README.md",
     ):
         assert (root / relative).is_file(), relative

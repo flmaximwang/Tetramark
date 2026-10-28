@@ -1050,7 +1050,7 @@ def resolve_ledger_presets(
             f"{expected}. A ledger resolves presets only from <ledger>/presets/, "
             "never from a search path; copy the preset and its includes into "
             "that directory (a manual copy works), or run the matching "
-            "migration/ script (see docs/migration.md)",
+            "migration/ script (see docs/guides/migrating-a-legacy-ledger.md)",
             file=str(root / "ledger.yaml"),
             path="presets",
         )
@@ -1162,7 +1162,7 @@ def load_ledger_schema(
             f"{error.message}. A ledger resolves presets only from "
             f"{path / 'presets'}: copy the missing included preset file there (a "
             "manual copy works), or run the matching migration/ script (see "
-            "docs/migration.md)",
+            "docs/guides/migrating-a-legacy-ledger.md)",
             file=error.file,
             path=error.path,
         ) from error

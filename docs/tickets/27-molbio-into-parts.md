@@ -33,7 +33,7 @@ duplicate kind names.
 - `presets/{base,molbio,nucleic_acids,bacteria,proteins,cell_culture}.yaml`, `presets/README.md`
 - `migration/presets/molbio/2-to-3/`, `migration/presets/base/N-to-N+1/`
 - tests that assert molbio's file layout or `preset_versions`
-- `docs/spec.md` §4 (parts and bundles), `docs/migration.md` (preset names), `skills/tetramark/SKILL.md`
+- `docs/spec/02-schema-language.md` / `docs/spec/08-presets.md` (parts and bundles), `docs/guides/migrating-a-legacy-ledger.md` (preset names), `skills/tetramark/SKILL.md`
 
 ## Constraints
 

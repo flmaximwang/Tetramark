@@ -46,7 +46,7 @@ of how many in total.
 - `presets/*.yaml` (`statuses:` on every stock kind, the three sets in `base`, version bumps)
 - `migration/spec/3-to-4/`, `migration/presets/<each changed preset>/N-to-N+1/`
 - tests (new: status-set loading errors, transition allow/deny/force, check rules, views, 3-to-4)
-- `docs/spec.md` (status vocabulary, aliquot table, views, `tm aliquot status`), `skills/tetramark/SKILL.md`, `README.md`
+- `docs/spec/` (status vocabulary: `01-concepts`, `03-physical-model`, `04-validation`, `06-cli`), `skills/tetramark/SKILL.md`, `README.md`
 
 ## Constraints
 
