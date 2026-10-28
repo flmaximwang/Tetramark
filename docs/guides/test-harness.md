@@ -227,6 +227,37 @@ Tickets 15–19 landed on the `optimize-tests` worktree. Same machine, same dolt
 - Optional next wins: template databases (`DOLT_CLONE`) to remove the per-test DDL (~0.5–1 s each),
   migrating the remaining `test_remote_backup`/`test_presets` cases, and `-n 8` on 8 P-cores.
 
+## 9c. Ledger templates and the fast lane (0.2.0+)
+
+A second lever on the same cost: most tests only need "a fresh ledger of a standard shape", and a real
+`tm init` costs ~11 s (≈120 DDL statements, each a separate `dolt sql` process) while copying a closed
+ledger directory costs ~0.05 s. `tests/conftest.py` therefore builds each standard shape **once per
+pytest session per xdist worker** and hands out copies:
+
+- `LedgerTemplates` initialises three shapes lazily — `tests/data/presets/base`,
+  `tests/data/presets/full`, `<repo>/presets/base.yaml`. `embedded_ledger_factory` / `ledger_factory`
+  `shutil.copytree` the closed ledger into the test's workspace and rewrite only `name:` in
+  `ledger.yaml`. `server_ledger_factory` cannot copy a directory into a running server, so it exports
+  the template to a Dolt backup once and restores it per call (`dolt_backup('restore')`, ~0.4 s).
+- Anything non-standard keeps the real init path: a custom `id_prefix`, `author`, `statuses`, or a
+  preset list outside the three shapes. Tests whose subject *is* what `init` generates pass
+  `real_init=True` (init-matches-embedded, no-dolt-process, generated-test install, preset-init shapes).
+- A copy carries the template's init commit and the `ledger_meta.ledger_yaml` name; tests asserting
+  those use the real path.
+
+Fast lane: `pytest.mark.fast` marks the Dolt-free modules (`test_ids`, `test_schema_model`,
+`test_driver_literals`, `test_schema_loader`):
+
+```sh
+uv run pytest -q -m fast     # ~340 tests, seconds — while iterating
+uv run pytest -q -n 4        # the full suite — on merges and before a release
+```
+
+Measured on a shared box (0.2.0): per ledger 11.17 s → 0.84 s (13.3×); full suite 763.5 s → 597.9 s
+(−21.7 %, with a load spike in the final run); the 50th-slowest test 19.0 s → 11.0 s. The remaining
+wall is concentrated in `tests/test_migrate.py` (multi-preset builds and the molbio-1 migration
+fixture).
+
 ## 10. Rollout / ticket wave
 
 | Ticket | Scope | Depends | Parallel-safe |
