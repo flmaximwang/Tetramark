@@ -24,6 +24,7 @@ from tetramark.schema.loader import (
     PresetFile,
     expand_presets,
     list_presets,
+    load_ledger_schema,
     load_preset,
     load_schema,
     preset_copy_files,
@@ -659,6 +660,153 @@ def test_preset_helpers_resolve_names_and_paths(tmp_path: Path) -> None:
     custom.write_text("preset: custom\nversion: 1\n", encoding="utf-8")
     path_spec = resolve_preset_spec(str(custom), presets_dir=None)
     assert path_spec.name == "custom" and path_spec.path == custom.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Ticket-20 review fixes: preset names, self-contained includes, copy reload
+# ---------------------------------------------------------------------------
+
+
+def write_preset(path: Path, payload: dict[str, object]) -> Path:
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "evil_name",
+    ["../../lab1/presets/molbio", "/tmp/abs/presets/molbio", "..", "a/b", "1nope"],
+)
+def test_init_rejects_an_invalid_preset_name_and_writes_nothing_outside(
+    tmp_path: Path, dolt_env: dict[str, str], evil_name: str
+) -> None:
+    """F1: a path-like ``preset:`` must not escape ``<ledger>/presets/``."""
+    workspace = make_workspace(tmp_path, dolt_env)
+    victim = workspace.ledger_path("lab1") / "presets"
+    victim.mkdir(parents=True)
+    (victim / "molbio.yaml").write_bytes(b"victim preset\n")
+    evil = write_preset(
+        tmp_path / "evil.yaml",
+        {"preset": evil_name, "version": 1, "kinds": {"evil": {"object": "entity"}}},
+    )
+
+    with pytest.raises(UsageError, match="invalid preset name"):
+        init_ledger(workspace, "labC", [evil], author=FACTORY_AUTHOR)
+
+    assert not workspace.ledger_path("labC").exists()
+    # Nothing outside the failed ledger was written or overwritten.
+    assert (victim / "molbio.yaml").read_bytes() == b"victim preset\n"
+    assert sorted(item.name for item in victim.iterdir()) == ["molbio.yaml"]
+
+
+@pytest.mark.parametrize("bad_name", ["../evil", "..", "/tmp/abs/evil", "a/b"])
+def test_preset_copy_destinations_cannot_escape_the_presets_dir(
+    tmp_path: Path, bad_name: str
+) -> None:
+    """F1 defence in depth: the copy destination itself is checked too."""
+    source = write_preset(tmp_path / "p.yaml", {"preset": "p", "version": 1})
+    preset = PresetFile(name=bad_name, path=source, is_file=True)
+    with pytest.raises(
+        UsageError, match="outside <ledger>/presets/|invalid preset name"
+    ):
+        preset_copy_files(preset)
+
+
+def test_init_rejects_an_include_given_by_path(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    """F2: a path include cannot be reproduced by the flattened copy."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shutil.copyfile(REPO_PRESETS / "base.yaml", shared / "base.yaml")
+    preset = write_preset(
+        tmp_path / "custom.yaml",
+        {
+            "preset": "custom",
+            "version": 1,
+            "include": ["./shared/base.yaml"],
+            "kinds": {"widget": {"object": "entity"}},
+        },
+    )
+    workspace = make_workspace(tmp_path, dolt_env)
+
+    with pytest.raises(SchemaError, match="is a path") as caught:
+        init_ledger(workspace, "pathinclude", [preset], author=FACTORY_AUTHOR)
+
+    message = str(caught.value)
+    assert "bare preset names" in message
+    assert "own 'preset:' field" in message
+    assert caught.value.path == "include"
+    assert not workspace.ledger_path("pathinclude").exists()
+
+
+def test_init_rejects_an_include_name_not_matching_the_preset_name(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    """F2: including ``mybase`` while the target calls itself ``base`` would not reopen."""
+    (tmp_path / "mybase.yaml").write_text(
+        (REPO_PRESETS / "base.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    preset = write_preset(
+        tmp_path / "custom.yaml",
+        {
+            "preset": "custom",
+            "version": 1,
+            "include": ["mybase"],
+            "kinds": {"widget": {"object": "entity"}},
+        },
+    )
+    workspace = make_workspace(tmp_path, dolt_env)
+
+    with pytest.raises(SchemaError, match="own name is 'base'") as caught:
+        init_ledger(workspace, "nameinclude", [preset], author=FACTORY_AUTHOR)
+
+    assert "bare preset names" in str(caught.value)
+    assert not workspace.ledger_path("nameinclude").exists()
+
+
+def test_init_verifies_the_copy_reloads_and_rolls_back_when_it_cannot(
+    tmp_path: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2: init reloads the ledger from its own copy before doing any DB work."""
+    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
+
+    def boom(path: object) -> None:
+        raise SchemaError("injected copy verification failure")
+
+    monkeypatch.setattr("tetramark.core.ledger.load_ledger_schema", boom)
+    with pytest.raises(LedgerError, match="do not reopen from the ledger itself") as caught:
+        init_ledger(workspace, "unverifiable", ["molbio"], author=FACTORY_AUTHOR)
+
+    assert "injected copy verification failure" in str(caught.value)
+    assert "self-contained" in str(caught.value)
+    # The failed init left nothing behind (no half-initialised ledger).
+    assert not workspace.ledger_path("unverifiable").exists()
+
+
+def test_a_missing_include_copy_keeps_the_documented_hint(
+    tmp_path: Path, dolt_env: dict[str, str]
+) -> None:
+    """F7: deleting ``presets/base.yaml`` still points at migration/ + manual copy."""
+    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
+    ledger = init_ledger(workspace, "falling_apart", ["molbio"], author=FACTORY_AUTHOR)
+    fingerprint = ledger.fingerprint
+    ledger.close()
+
+    # The supported copy reloads exactly (this is what init now verifies).
+    _config, reloaded = load_ledger_schema(ledger.path)
+    assert reloaded.fingerprint() == fingerprint
+
+    (ledger.path / "presets" / "base.yaml").unlink()
+    with pytest.raises(SchemaError) as caught:
+        open_ledger(workspace, "falling_apart")
+    message = str(caught.value)
+    assert "presets/base.yaml" in message
+    assert "migration/" in message
+    assert "manual copy" in message
+    assert caught.value.path == "include"
 
 
 # This module intentionally keeps the embedded-driver path covered.

@@ -41,6 +41,7 @@ Public entry points
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -742,13 +743,37 @@ def _expand_many(
     return units
 
 
+#: A preset name is also the filename of the ledger's own copy, so it must be
+#: a plain name (no path separators, no absolute/relative path parts).
+_PRESET_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+
+def _preset_name_error(name: object, *, source: _Source) -> UsageError:
+    display = str(source.root) if source.is_file else source.primary_display
+    return UsageError(
+        f"invalid preset name {name!r} in {display}: the preset name (its "
+        "'preset:' field, or the file/directory name when that field is absent) "
+        "must match [A-Za-z][A-Za-z0-9._-]*; it is the filename of the ledger's "
+        "own copy, so it must be a name and not a path"
+    )
+
+
 def _unit_name(unit: _PresetUnit) -> str:
-    """The preset's own ``preset:`` name, else its file stem / directory name."""
+    """The preset's own ``preset:`` name, else its file stem / directory name.
+
+    Validated here because the name is also the destination of the ledger's own
+    copy: a path-like ``preset:`` (``../../other/presets/molbio``) must never
+    be able to write outside ``<ledger>/presets/``.
+    """
     if unit.primary.preset:
-        return unit.primary.preset
-    if unit.source.is_file:
-        return unit.source.root.stem
-    return unit.source.root.name
+        name: object = unit.primary.preset
+    elif unit.source.is_file:
+        name = unit.source.root.stem
+    else:
+        name = unit.source.root.name
+    if not isinstance(name, str) or not _PRESET_NAME_RE.match(name):
+        raise _preset_name_error(name, source=unit.source)
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -824,22 +849,86 @@ def resolve_preset_spec(
     return PresetFile(name=_unit_name(unit), path=resolved, is_file=resolved.is_file())
 
 
+def _check_copy_includes(units: Sequence[_PresetUnit]) -> None:
+    """Reject includes a ledger copy could not resolve from ``<ledger>/presets/``.
+
+    The include closure is copied flat into ``<ledger>/presets/``, so every
+    ``include:`` must be a bare preset name that equals the included preset's
+    own name (its ``preset:`` field, else its file stem/directory name).  A path
+    include, or an include whose name differs from the target's name, would
+    produce a ledger that ``tm init`` claims to have created but that can never
+    reopen.
+    """
+    by_key = {unit.source.key: unit for unit in units}
+    for unit in units:
+        display = unit.source.primary_display
+        for raw in unit.primary.include:
+            text = str(raw).strip()
+            if "/" in text or "\\" in text or text.endswith(YAML_SUFFIXES):
+                raise SchemaError(
+                    f"include {text!r} is a path; includes of a ledger preset must "
+                    "be bare preset names that match each included preset's own "
+                    "'preset:' field, because the include closure is copied into "
+                    "<ledger>/presets/",
+                    file=display,
+                    path="include",
+                )
+            if not _PRESET_NAME_RE.match(text):
+                raise SchemaError(
+                    f"include {text!r} is not a valid preset name; includes of a "
+                    "ledger preset must be bare preset names matching each included "
+                    "preset's own 'preset:' field ([A-Za-z][A-Za-z0-9._-]*)",
+                    file=display,
+                    path="include",
+                )
+            try:
+                src = _resolve_source(
+                    text,
+                    base_dir=unit.source.include_base,
+                    search_paths=(),
+                    error_path="include",
+                )
+            except SchemaError as error:
+                raise SchemaError(error.message, file=display, path="include") from None
+            included = by_key.get(src.key)
+            included_name = _unit_name(included) if included is not None else None
+            if included_name != text:
+                if included_name is None:
+                    detail = "it is not part of the copied include closure"
+                else:
+                    detail = f"its own name is {included_name!r}"
+                raise SchemaError(
+                    f"include {text!r} cannot be copied as a self-contained ledger "
+                    f"preset ({src.primary_display}: {detail}); includes must be "
+                    "bare preset names matching each included preset's own "
+                    "'preset:' field (rename the included preset or fix the include)",
+                    file=display,
+                    path="include",
+                )
+
+
 def expand_presets(
     sources: Sequence[str | Path],
     *,
     base_dir: str | Path | None = None,
     search_paths: Sequence[str | Path] = (),
+    require_self_contained: bool = False,
 ) -> list[PresetFile]:
     """Every preset a ledger needs: each source plus its include closure.
 
     Ordered include-first, each resolved source once.  Used by ``tm init`` to
-    decide what to copy into ``<ledger>/presets/``.
+    decide what to copy into ``<ledger>/presets/``.  With
+    ``require_self_contained=True`` (the init path) every include must be a bare
+    preset name matching the included preset's own name, so the copy reopens on
+    its own.
     """
     units = _expand_many(
         sources,
         base_dir=Path(base_dir) if base_dir is not None else None,
         search_paths=[Path(path) for path in search_paths],
     )
+    if require_self_contained:
+        _check_copy_includes(units)
     return [
         PresetFile(
             name=_unit_name(unit),
@@ -850,6 +939,26 @@ def expand_presets(
     ]
 
 
+def _checked_destination(name: str, destination: Path) -> Path:
+    """Refuse a copy destination that is not a plain name inside presets/."""
+    if not _PRESET_NAME_RE.match(name):
+        raise UsageError(
+            f"invalid preset name {name!r} for a copy destination: preset names "
+            "must match [A-Za-z][A-Za-z0-9._-]*"
+        )
+    if (
+        destination.is_absolute()
+        or ".." in destination.parts
+        or not destination.parts
+        or destination.parts[0] in ("", ".", "..")
+    ):
+        raise UsageError(
+            f"refusing to copy preset {name!r} outside <ledger>/presets/: "
+            f"invalid destination {str(destination)!r}"
+        )
+    return destination
+
+
 def preset_copy_files(preset: PresetFile) -> list[PresetCopy]:
     """The files that place ``preset`` inside ``<ledger>/presets/``.
 
@@ -858,14 +967,18 @@ def preset_copy_files(preset: PresetFile) -> list[PresetCopy]:
     Includes are plain preset names, so they resolve inside the copy directory.
     """
     if preset.is_file:
-        destination = Path(f"{preset.name}{preset.path.suffix}")
+        destination = _checked_destination(
+            preset.name, Path(f"{preset.name}{preset.path.suffix}")
+        )
         return [PresetCopy(name=preset.name, source=preset.path, destination=destination)]
 
     files = [
         PresetCopy(
             name=preset.name,
             source=preset.path / "preset.yaml",
-            destination=Path(preset.name) / "preset.yaml",
+            destination=_checked_destination(
+                preset.name, Path(preset.name) / "preset.yaml"
+            ),
         )
     ]
     for sub in ("kinds", "rules"):
@@ -900,6 +1013,14 @@ def resolve_ledger_presets(
     missing: list[tuple[str, Path]] = []
     for raw in config.presets:
         name = _reference_name(raw)
+        if not _PRESET_NAME_RE.match(name):
+            raise SchemaError(
+                f"preset reference {str(raw)!r} in ledger.yaml is not a valid "
+                "preset name; a ledger lists bare preset names whose copies live "
+                "in <ledger>/presets/",
+                file=str(root / "ledger.yaml"),
+                path="presets",
+            )
         found = _find_preset_in_dir(presets_dir, name)
         if found is None:
             suffix = Path(str(raw)).suffix
@@ -1014,6 +1135,23 @@ def load_ledger_schema(
     config = load_ledger_config(path / "ledger.yaml")
     presets = resolve_ledger_presets(path, config)
     effective = config.model_copy(update={"presets": [str(preset.path) for preset in presets]})
-    return config, load_schema(
-        effective, base_dir=path, search_paths=search_paths
-    )
+    try:
+        return config, load_schema(
+            effective, base_dir=path, search_paths=search_paths
+        )
+    except SchemaError as error:
+        # A missing *include* copy (e.g. <ledger>/presets/base.yaml deleted) is
+        # still "the ledger's own copy is incomplete": append the same hint the
+        # top-level preset error carries, naming the expected file candidates.
+        # Other include errors (a cycle, an invalid included document) keep
+        # their own message.
+        if error.path != "include" or "not found" not in error.message:
+            raise
+        raise SchemaError(
+            f"{error.message}. A ledger resolves presets only from "
+            f"{path / 'presets'}: copy the missing included preset file there (a "
+            "manual copy works), or run the matching migration/ script (see "
+            "docs/migration.md)",
+            file=error.file,
+            path=error.path,
+        ) from error

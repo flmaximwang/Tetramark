@@ -1195,6 +1195,54 @@ def test_failed_adopt_with_force_config_restores_the_ledger_yaml(
     assert object_names(path, dolt_run) == []
 
 
+def test_failed_adopt_mid_preset_copy_restores_every_preset_file(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    dolt_run,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F6: a copy failure halfway through still rolls back exactly what was written.
+
+    ``_write_presets`` records each destination *before* writing it, so the
+    adopt rollback can restore a pre-existing copy and remove the ones this
+    attempt created — even when the failure happens mid-copy.
+    """
+    workspace = make_workspace(tmp_path, dolt_env)
+    path = make_bare_database(workspace, "copyfail", dolt_run)
+    presets = path / "presets"
+    (presets / "base").mkdir(parents=True)
+    previous = b"pre-existing base preset\n"
+    (presets / "base" / "preset.yaml").write_bytes(previous)
+
+    real_copyfile = shutil.copyfile
+    calls = {"n": 0}
+
+    def flaky(source: object, destination: object, *args: object, **kwargs: object):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("injected mid-copy failure")
+        return real_copyfile(source, destination, *args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr("tetramark.core.ledger.shutil.copyfile", flaky)
+        with pytest.raises(OSError, match="injected mid-copy failure"):
+            adopt_ledger(
+                workspace, "copyfail", [PRESETS / "full"], author=LEGACY_AUTHOR
+            )
+
+    # Exactly the file that existed before survives, byte for byte; the files
+    # this attempt created (and the partially written one) are gone.
+    assert (presets / "base" / "preset.yaml").read_bytes() == previous
+    remaining = sorted(
+        str(item.relative_to(presets)) for item in presets.rglob("*") if item.is_file()
+    )
+    assert remaining == ["base/preset.yaml"]
+    assert not (path / "ledger.yaml").exists()
+    assert head_hash(path, dolt_run)  # the database directory/history is intact
+    assert object_names(path, dolt_run) == []
+    assert working_set(path, dolt_run) == []
+
+
 def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
