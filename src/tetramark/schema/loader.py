@@ -58,6 +58,7 @@ from tetramark.schema.model import (
     FieldType,
     Kind,
     LedgerConfig,
+    ObjectType,
     Preset,
     Rule,
     SchemaError,
@@ -597,6 +598,37 @@ def _apply_mixins(collector: _Collector) -> dict[str, Kind]:
     return resolved
 
 
+def _validate_lineage_ref(
+    kind_name: str,
+    object_type: ObjectType,
+    field_name: str,
+    target: str,
+    kinds: dict[str, Kind],
+    display: str,
+) -> None:
+    """A ``lineage: true`` ref must be an edge of the lineage graph (spec §6).
+
+    ``tm lineage`` nodes are entities and stocks, with aliquots as edge
+    endpoints, so the flag only makes sense on entity and stock kinds and only
+    when it points at one of those: a ref to a box is not a descent edge.
+    """
+    path = f"kinds.{kind_name}.fields.{field_name}.lineage"
+    if object_type is ObjectType.box:
+        raise SchemaError(
+            "'lineage' is only valid on entity and stock kinds",
+            file=display,
+            path=path,
+        )
+    target_object = kinds[target].object.value if target in kinds else target
+    if target_object == "box":
+        raise SchemaError(
+            f"lineage ref target {target!r} is a box; a lineage edge connects "
+            "entities, stocks and aliquots",
+            file=display,
+            path=path,
+        )
+
+
 def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry]) -> None:
     entity_kinds = {
         name for name, kind in kinds.items() if kind.object.value == "entity"
@@ -629,6 +661,15 @@ def _validate_references(kinds: dict[str, Kind], entries: dict[str, _KindEntry])
                     f"({', '.join(sorted(_CORE_OBJECTS))})",
                     file=display,
                     path=f"kinds.{kind_name}.fields.{field_name}.to",
+                )
+            if schema_field.lineage:
+                _validate_lineage_ref(
+                    kind_name,
+                    kind.object,
+                    field_name,
+                    target,
+                    kinds,
+                    display,
                 )
 
         for field_name, schema_field in kind.fields.items():

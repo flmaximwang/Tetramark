@@ -6,6 +6,14 @@
 preset's `version:` adds exactly one folder for that step, in the same change.**
 No release may ship a bumped counter without its step folder here.
 
+A change that affects **only reads** is the one case that bumps no counter, so
+it gets no step. The current example is `lineage: true` on a `ref` field
+(`tm lineage`): it changes no stored shape, but it *is* part of the schema
+fingerprint. Replacing a ledger's preset copy makes `ledger_meta.fingerprint`
+stale, and `tm schema apply` refreshes it — that is a meta refresh, not a
+migration step. If you cannot describe a change with "no DDL and no stored
+values move", it needs a counter and a folder.
+
 ## What this directory is
 
 Hand-run upgrade steps for ledgers whose **format** changed. One folder per

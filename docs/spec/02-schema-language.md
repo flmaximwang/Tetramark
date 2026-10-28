@@ -21,7 +21,7 @@ kinds:
       name: {type: string, required: true, unique: true}
       backbone: {type: string}
       resistance: {type: enum, values: [amp, kan, cm, spec, tet]}
-      construct: {type: ref, to: protein_construct}  # FK → entity_protein_construct
+      construct: {type: ref, to: protein_construct, lineage: true}  # FK → entity_protein_construct; a lineage edge
   bacterial_glycerol:
     object: stock
     entity_kinds: [plasmid, bacterial_strain]
@@ -57,6 +57,13 @@ rules:
 
 Modifiers: `required` (NOT NULL), `unique`, `default`, `pattern` (regex, enforced by app and by a
 generated Dolt test — Dolt CHECK has no REGEXP guarantee), `description`, `length`.
+
+`lineage: true` marks a **`ref`** field as a descent edge for `tm lineage` (§6): `plasmid.construct` and
+`cell_line.parental` are the bundled examples. It is valid only on `type: ref`, on entity and stock
+kinds, and the target must be an entity kind, a stock kind or the core `entity`/`stock`/`aliquot` — a
+ref to a box is a load error. The flag changes no DDL and is read-only, but it **is** part of the schema
+fingerprint and appears in `tm schema show`; a preset that adds or removes it, like any other
+read-only change, needs no `version:` bump and no migration step (§5).
 
 ### 2.2 Box geometry
 

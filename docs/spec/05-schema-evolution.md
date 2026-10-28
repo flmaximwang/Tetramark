@@ -31,4 +31,9 @@ feed them to the diff planner as an explicit rename map instead of `renamed_from
 no `tm` command for this yet — the older `tm upgrade` proposal (`docs/issues/001-tm-upgrade.md`) may
 absorb `migration/` later.
 
+A schema change that affects **reads only** — `lineage: true` on a `ref` field is the current example —
+changes no stored shape, so it needs no counter bump and no migration step: replace the ledger's preset
+copy as usual, and the now-stale `ledger_meta.fingerprint` is refreshed by `tm schema apply` (which has
+no DDL steps to run). `migration/README.md` states the same rule.
+
 ---

@@ -45,6 +45,7 @@ tm box ls ; tm box move NAME --in PARENT --slot S
 tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
 tm find QUERY               # id → alias → name/text match across all objects and kinds
 tm history ID               # aliquot_event + dolt_log entries touching the object
+tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 tm check [-v] [--group G]
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
 tm export KIND|all [--out DIR]
@@ -56,6 +57,23 @@ tm branch ls | create NAME [--from REF] | delete NAME
 `aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays
 narrow and unchanged. The generated views expose the same data as `alias_list` /
 `occupant_alias_list` (§3).
+
+`tm lineage ID` is the read-only **descent** graph of entities and stocks (lineage/pedigree, not
+phylogeny). `ID` resolves like `tm find` (id, then alias) to an entity, a stock or an aliquot; an aliquot
+starts the walk at that tube. Edges point **child → parent** and come from the core links — every stock
+to its entity, `stock.parent_stock_id`, and `stock.source_aliquot_id` (child stock → that aliquot → the
+stock the aliquot belongs to) — plus every `type: ref` field declared `lineage: true` (§2.1), whose
+`via` in the output is `<kind>.<field>`. Nodes are entities and stocks; a stock node shows its kind, id,
+entity name and the in-stock/total aliquot counts of `v_stock_<kind>` (§3). An aliquot is a
+node only where a relation names one (`source_aliquot_id` or a lineage ref): it then has an upstream
+edge to the stock that owns it, carrying the same `via`, so a `source_aliquot` path reads child stock →
+source aliquot → that aliquot's stock. The default is both directions and unlimited depth; `--up` walks
+ancestors, `--down` descendants, `--depth N` stops after N edges (0 = the root alone). A node reached a
+second time prints `<id> (see above)` with no subtree, and is listed once in the JSON. `--format dot`
+prints a Graphviz digraph whose edge labels are the `via`; `--json` prints
+`{"root": <id>, "nodes": [{id, object, kind, label, counts?}], "edges": [{from, to, via}]}` with
+`via` ∈ `entity | parent_stock | source_aliquot | <kind>.<field>`. `tm lineage` respects `--branch`,
+writes nothing and never commits.
 
 `tm stock renumber` is the audited way to repair ids that do not follow the ledger's stock id strategy
 (legacy imports, hand-made ids). It renumbers one stock (`REF --id NEW`), many (`REF ... --auto`), or a
