@@ -21,11 +21,13 @@ This script is the only supported way to (re)produce the fixture.  It:
    (``add_box``/``add_entity``/``add_stock``/``set_aliquot_status``, the code
    behind its ``tm box/entity/stock/aliquot`` commands):
 
-   * ``G`` (grid9x9): tubes in A1 and B2;
+   * ``R`` (rack): holds child **box** ``G`` in slot 1 — the issue's named-view
+     acceptance row (``1 | G``); a rack may hold boxes (only grid boxes hold
+     tubes exclusively);
+   * ``G`` (grid9x9, nested in ``R`` slot 1): its own tubes in A1 and B2;
    * ``H`` (grid96): tubes in A1 and B2, plus a third tube in C3 that is created
      placed and then set ``consumed`` — 0.3.0 kept the position, which is the
      spec-4 shape ``migration/spec/4-to-5`` has to clear;
-   * ``R`` (rack): one tube in slot 1;
    * ``S`` (shelf, slotless): two tubes;
    * ``F`` (freezer, slotless): empty;
 
@@ -139,9 +141,11 @@ EXPECTED_META = {
 EXPECTED_DOLT_TESTS = 14
 
 #: The logical data shape (ids are random UUIDs, so they are never compared).
+#: ``(name, kind, parent box name, parent slot)``: the rack holds child box G in
+#: slot 1 (the issue's named-view acceptance), everything else is top-level.
 EXPECTED_BOXES = [
     ("F", "freezer", None, None),
-    ("G", "grid9x9", None, None),
+    ("G", "grid9x9", "R", "1"),
     ("H", "grid96", None, None),
     ("R", "rack", None, None),
     ("S", "shelf", None, None),
@@ -154,7 +158,6 @@ EXPECTED_ALIQUOTS = [
     ("H", "B2", "stored"),
     # created placed, then set consumed: 0.3.0 kept the position (spec-4 shape)
     ("H", "C3", "consumed"),
-    ("R", "1", "stored"),
     ("S", None, "stored"),
     ("S", None, "stored"),
 ]
@@ -371,13 +374,15 @@ try:
         workspace, ledger_name, [preset], author=author
     )
     for kind, name in (
-        ("grid9x9", "G"),
-        ("grid96", "H"),
         ("rack", "R"),
+        ("grid96", "H"),
         ("shelf", "S"),
         ("freezer", "F"),
     ):
         objects.add_box(ledger, kind, name)
+    # The issue's named-view acceptance: the rack holds child box G in slot 1,
+    # while G keeps its own tubes (a rack may hold boxes; grids hold tubes).
+    objects.add_box(ledger, "grid9x9", "G", parent="R", slot="1")
 
     reagent_a = objects.add_entity(ledger, "item", name="Reagent A")
     reagent_b = objects.add_entity(ledger, "item", name="Reagent B")
@@ -394,7 +399,7 @@ try:
             **kwargs,
         )
 
-    # G (grid9x9): two tubes in A1 and B2.
+    # G (grid9x9, in R slot 1): two tubes in A1 and B2.
     lot(reagent_a, aliquots=2, box="G", slots=["A1", "B2"])
     # H (grid96): two tubes in A1 and B2, and a third tube in C3 created placed
     # and then set consumed: 0.3.0 kept its position, the spec-4 shape the
@@ -402,8 +407,6 @@ try:
     lot(reagent_b, aliquots=2, box="H", slots=["A1", "B2"])
     consumed = lot(reagent_a, aliquots=1, box="H", slots=["C3"])
     objects.set_aliquot_status(ledger, consumed["aliquots"][0], "consumed")
-    # R (rack): one tube in slot 1.
-    lot(reagent_b, aliquots=1, box="R", slots=["1"])
     # S (shelf, slotless): two direct tubes.  F (freezer): empty.
     lot(reagent_a, aliquots=2, box="S")
 
@@ -527,15 +530,18 @@ def _verify_built_ledger(ledger: Path, dolt: str) -> dict[str, Any]:
     boxes = _dolt_query(
         dolt,
         ledger,
-        "SELECT `name`, `kind`, `parent_box_id`, `parent_slot` "
-        "FROM `box` ORDER BY `name`",
+        "SELECT c.`name` AS `name`, c.`kind` AS `kind`, "
+        "p.`name` AS `parent`, c.`parent_slot` AS `parent_slot` "
+        "FROM `box` c LEFT JOIN `box` p ON p.`id` = c.`parent_box_id` "
+        "ORDER BY c.`name`",
     )
-    # ``dolt sql --result-format json`` omits NULL columns from a row.
+    # ``dolt sql --result-format json`` omits NULL columns from a row; the
+    # parent is compared by *name* because box ids are random UUIDs.
     box_shape = [
         (
             str(row["name"]),
             str(row["kind"]),
-            row.get("parent_box_id"),
+            row.get("parent"),
             row.get("parent_slot"),
         )
         for row in boxes
@@ -543,6 +549,11 @@ def _verify_built_ledger(ledger: Path, dolt: str) -> dict[str, Any]:
     if box_shape != EXPECTED_BOXES:
         raise BuildError(
             f"the built ledger has boxes {box_shape}, expected {EXPECTED_BOXES}"
+        )
+    if ("G", "grid9x9", "R", "1") not in box_shape:
+        raise BuildError(
+            "the built ledger must nest box G in rack R slot 1 (the issue's "
+            f"named-view acceptance), got {box_shape}"
         )
 
     aliquots = _dolt_query(

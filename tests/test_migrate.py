@@ -3193,9 +3193,15 @@ def test_spec_4_to_5_clears_positions_and_creates_the_box_views(
     boxes = {
         str(row["name"]): row
         for row in ledger.driver.query(
-            "SELECT `id`, `name`, `kind` FROM `box`"
+            "SELECT `id`, `name`, `kind`, `parent_box_id`, `parent_slot` "
+            "FROM `box`"
         )
     }
+    # The issue's named-view acceptance: the rack R holds child box G in slot 1.
+    assert (boxes["G"]["parent_box_id"], boxes["G"]["parent_slot"]) == (
+        boxes["R"]["id"],
+        "1",
+    )
     placed = spec4_placed_aliquots(ledger)
     by_position = {
         (box, slot): aliquot
@@ -3328,14 +3334,21 @@ def test_spec_4_to_5_clears_positions_and_creates_the_box_views(
     }
     assert h_by_row["C"]["3"] is None
 
-    # -- v_box_R: 10 named slots, only slot 1 filled ------------------------
+    # -- v_box_R: 10 named slots; slot 1 holds the child BOX G (the issue's
+    #    ``1 | G`` acceptance row), never one of its aliquots -----------------
     assert column_names(ledger, "v_box_R") == {"slot", "occupants"}
     r_rows = ledger.driver.query("SELECT * FROM `v_box_R`")
     assert [str(row["slot"]) for row in r_rows] == [
         str(number) for number in range(1, 11)
     ]
-    assert r_rows[0]["occupants"] == by_position[("R", "1")]
+    assert r_rows[0]["occupants"] == "G"
     assert [row["occupants"] for row in r_rows[1:]] == [None] * 9
+    # G is a box, not an aliquot of R: R has no aliquots at all, and G's own
+    # tubes stay in v_box_G (asserted above) rather than showing up in R.
+    occupant = str(r_rows[0]["occupants"])
+    assert boxes[occupant]["kind"] == "grid9x9"
+    assert "G" not in {aliquot for _, _, aliquot in placed}
+    assert not any(box == "R" for box, _, _ in placed)
 
     # -- v_box_S: two tubes; v_box_F: zero rows ----------------------------
     assert column_names(ledger, "v_box_S") == {"occupant"}
@@ -3609,12 +3622,15 @@ def spec4_fixture_data(dolt: str, ledger: Path) -> dict[str, Any]:
         (
             str(row["name"]),
             str(row["kind"]),
-            row.get("parent_box_id"),
+            # the parent is compared by name: box ids are random UUIDs
+            row.get("parent"),
             row.get("parent_slot"),
         )
         for row in rows(
-            "SELECT `name`, `kind`, `parent_box_id`, `parent_slot` "
-            "FROM `box` ORDER BY `name`"
+            "SELECT c.`name` AS `name`, c.`kind` AS `kind`, "
+            "p.`name` AS `parent`, c.`parent_slot` AS `parent_slot` "
+            "FROM `box` c LEFT JOIN `box` p ON p.`id` = c.`parent_box_id` "
+            "ORDER BY c.`name`"
         )
     ]
     aliquots = [
@@ -3747,3 +3763,6 @@ def test_spec4_boxes_fixture_matches_its_builder(
     assert "v_box_grid9x9" in checked["views"]
     assert "v_box_g" not in checked["views"]
     assert ("H", "C3", "consumed") in checked_data["aliquots"]
+    # The named-view acceptance shape: rack R holds child box G in slot 1.
+    assert ("G", "grid9x9", "R", "1") in checked_data["boxes"]
+    assert ("R", "1", "stored") not in checked_data["aliquots"]
