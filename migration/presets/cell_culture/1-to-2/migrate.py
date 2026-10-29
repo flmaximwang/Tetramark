@@ -14,12 +14,15 @@ line and the material taken from it (design §2.1):
 
 The step therefore
 
-* places the whole current preset closure the ledger lists - ``base`` v3, the
-  parts and the bundles - **before** the runner opens the ledger (files are not
-  Dolt content, and the spec-4 loader needs a current copy for every stock
-  kind's ``statuses:``), then puts the **frozen cell_culture v2** shipped next
-  to this file over its own copy (the repository's ``presets/`` only holds the
-  current version),
+* places the whole current preset closure the ledger lists - the parts and the
+  bundles - **before** the runner opens the ledger (files are not Dolt content,
+  and the spec-5 loader needs a current copy for every stock kind's
+  ``statuses:``), then puts the **frozen copies** shipped next to this file over
+  their repository versions: **cell_culture v2** (the repository's
+  ``presets/`` only holds the current version) and **base v3** (the repository
+  copy is v4 since spec 5's ``grid96`` -> ``grid8x12`` rename; this wave-10
+  step must keep installing the base content of its era, per the retrofit rule
+  in ``migration/README.md``),
 * applies the **additive** diff plan (three ``stock_cell_vial`` columns, the
   ``stock_cell_biosample`` table and the regenerated views); a destructive plan
   is refused before anything is written,
@@ -30,9 +33,11 @@ The step therefore
   already carries the same content), recreates the generated views so the
   commit has its own statements.
 
-Run it by hand, **after** ``migration/spec/3-to-4`` and, on a molbio ledger,
-after ``migration/presets/molbio/2-to-3`` (that step installs the frozen
-cell_culture v1 this one upgrades)::
+Run it by hand under the wave-11 tool **after** ``migration/spec/4-to-5``
+(the ledger formats at spec 5 first) and, on a molbio ledger, after
+``migration/presets/molbio/2-to-3`` (that step installs the frozen cell_culture
+v1 this one upgrades).  Run it **before** ``migration/presets/base/3-to-4``,
+which renames the base v3 copy this step keeps::
 
     uv run migration/presets/cell_culture/1-to-2/migrate.py --ledger PATH [--branch B] [--dry-run]
 
@@ -74,13 +79,19 @@ TO_VERSION = 2
 #: the historical step must carry the content whose counter it bumps.
 FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-2.yaml")
 
+#: The frozen base v3 this step installs over the repository copy: spec 5
+#: (ticket 30) bumps the repository's ``presets/base.yaml`` to v4 (``grid96``
+#: renamed to ``grid8x12``), and this wave-10 step must keep installing the base
+#: content its era reads.  ``migration/README.md`` requires the retrofit.
+FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
+
 #: What the target content must contain, checked before anything is written.
 REQUIRED_COLUMNS = ("selection", "mycoplasma", "mycoplasma_tested_on")
 REQUIRED_KINDS = ("cell_biosample",)
 
 
 def _require_ready(ledger: Ledger) -> None:
-    """The ledger must be spec 4 and carry the v2 copy this step bumps to."""
+    """The ledger must be spec 5 and carry the v2 copy this step bumps to."""
     raw = ledger.meta.get(META_SPEC_VERSION)
     try:
         current = int(str(raw).strip())
@@ -90,7 +101,7 @@ def _require_ready(ledger: Ledger) -> None:
         raise LedgerError(
             f"refusing to migrate cell_culture 1 -> 2: ledger {ledger.name!r} is "
             f"at spec_version {current}, but the v2 preset needs spec "
-            f"{SPEC_VERSION}. Run migration/spec/3-to-4/migrate.py first; "
+            f"{SPEC_VERSION}. Run migration/spec/4-to-5/migrate.py first; "
             "nothing was written."
         )
     versions = ledger.schema.preset_versions
@@ -99,10 +110,10 @@ def _require_ready(ledger: Ledger) -> None:
         raise LedgerError(
             f"refusing to migrate cell_culture 1 -> 2: the ledger's own "
             f"cell_culture copy is version {version}, expected {TO_VERSION}. "
-            "Copy this checkout's presets/cell_culture.yaml (and the parts it "
-            "includes) into <ledger>/presets/ first, or run "
-            "migration/presets/molbio/2-to-3/migrate.py when the ledger still "
-            "lists molbio v2 (files are not Dolt content). Nothing was written."
+            "This step places the frozen cell_culture-2.yaml and base-3.yaml "
+            "next to migrate.py over <ledger>/presets/ first (files are not "
+            "Dolt content); or run migration/presets/molbio/2-to-3/migrate.py "
+            "when the ledger still lists molbio v2. Nothing was written."
         )
     vial = ledger.schema.kinds.get("cell_vial")
     missing = [
@@ -188,12 +199,16 @@ def main(argv: list[str] | None = None) -> None:
     """Place the preset copies, then run the shared one-commit step.
 
     Every other preset the ledger lists is placed from the repository (the
-    spec-4 loader needs current copies); cell_culture itself comes from the
-    frozen v2 file, because that is the version this counter bumps to.
+    spec-5 loader needs current copies); cell_culture comes from the frozen v2
+    file, because that is the version this counter bumps to, and base from the
+    frozen v3 file (the repository copy is v4 since spec 5).
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
-    saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_CELL_CULTURE})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {PRESET: FROZEN_CELL_CULTURE, "base": FROZEN_BASE},
+    )
     try:
         run(
             step,

@@ -109,7 +109,10 @@ again:
   knows* by shipping a frozen copy too, or it would install the newer file
   behind that preset's own counter and the newer step could then not run. Ticket
   28's `cell_culture` 2 is the worked example: `base/2-to-3` and `molbio/2-to-3`
-  both ship and place `cell_culture-1.yaml`.
+  both ship and place `cell_culture-1.yaml`. Ticket 30's **base 4** (`grid96` →
+  `grid8x12`, spec 5) is the current example: `base/2-to-3`, `molbio/2-to-3`,
+  `cell_culture/1-to-2` and `library/1-to-2` all ship and place `base-3.yaml`,
+  and `base/3-to-4` must run last because it renames that content.
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.

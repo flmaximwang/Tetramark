@@ -26,6 +26,12 @@ commit.
   still carries its own base-v3 copy, so the `grid96` boxes are visible to it; it also lists any
   aliquot positions it cleared.
 - `ledger_meta.preset_versions.base = 3` (a second run refuses; the shared runner checks it).
+- **This is the last preset step.** The wave-11 upgrade order is `migration/spec/4-to-5` first, then
+  the older preset steps the ledger still needs — `migration/presets/base/2-to-3` and
+  `migration/presets/molbio/2-to-3` (and `cell_culture/1-to-2` / `library/1-to-2`) — and
+  `migration/presets/base/3-to-4` last. Those steps now install frozen base-v3 copies (the retrofit
+  is the maintenance rule in [`migration/README.md`](../../../README.md)); this step renames that
+  content. Running it before them would make them place v3 over a v4 ledger and refuse.
 - A clean working set.
 - Files, not Dolt content: the step places **every preset copy the ledger lists** from this checkout
   before it opens the ledger. Its own `base.yaml` is placed from the frozen [`base-4.yaml`](base-4.yaml)

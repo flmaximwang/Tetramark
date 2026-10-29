@@ -22,7 +22,13 @@ position follows its in-stock status (§3); base preset 4 renames the box kind `
 `grid8x12`. A spec-4 ledger at base 3 therefore runs **two** steps in this order:
 `migration/spec/4-to-5/` first (it keeps the ledger's own base-3 copy, so its `grid96` boxes stay
 readable, and creates the per-box views), then `migration/presets/base/3-to-4/` (it replaces that
-copy and renames the kind). The spec step's README states the preconditions, the upgrade order,
+copy and renames the kind). A spec-4 ledger still at base 2 — a molbio-2 ledger, for example —
+follows the same shape one counter lower: `migration/spec/4-to-5/` first, then
+`migration/presets/base/2-to-3/` and `migration/presets/molbio/2-to-3/` (and the
+`cell_culture`/`library` steps the ledger still needs), with
+`migration/presets/base/3-to-4/` **last**: the base v3 copies those steps install are what it
+renames, and it must not run before them. The spec step's README states the preconditions, the
+upgrade order,
 verification and rollback; the preset step's README covers the rename. Run both with `--dry-run`
 first; on a real ledger write on a Dolt branch and merge only after review. The rule: whoever bumps
 a counter adds exactly one folder in the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH [--branch B] [--dry-run]`

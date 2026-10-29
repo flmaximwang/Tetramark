@@ -66,13 +66,16 @@ MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
 MOLBIO_STEP = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "migrate.py"
 
 #: The frozen v2 preset content the historical steps install.  The repository's
-#: ``presets/`` only holds the current version (base 3, molbio 3), so the
+#: ``presets/`` only holds the current version (base 4, molbio 3), so the
 #: 1 -> 2 steps must ship what they upgrade to next to their ``migrate.py``.
 BASE_V2 = ROOT / "migration" / "presets" / "base" / "1-to-2" / "base-2.yaml"
 MOLBIO_V2 = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "molbio-2.yaml"
-#: The current repository copies (molbio 3 is a bundle of parts).
+#: The current repository molbio copy (v3 is a bundle of parts) and the frozen
+#: base v3 the wave-10 steps install: the repository copy is base 4 with the
+#: ``grid96`` -> ``grid8x12`` rename since spec 5, so every step that upgrades
+#: the closure to base 3 ships ``base-3.yaml`` next to its ``migrate.py``.
 MOLBIO_V3 = REPO_PRESETS / "molbio.yaml"
-BASE_V3 = REPO_PRESETS / "base.yaml"
+BASE_V3 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-3.yaml"
 PARTS_V3 = ("proteins", "nucleic_acids", "bacteria", "cell_culture")
 
 
@@ -2174,7 +2177,7 @@ def test_spec_3_to_4_refuses_a_custom_status_list_and_writes_nothing(
 def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
     ledger_factory, script_env: dict[str, str]
 ) -> None:
-    ledger = ledger_factory([REPO_PRESETS / "base.yaml"], name="base-v1", id_prefix="77")
+    ledger = ledger_factory([BASE_V3], name="base-v1", id_prefix="77")
     item = ledger.entities.add("item", name="alpha")
     ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
     # Pretend the ledger's metadata still records base 1 (the copy is current).
@@ -2188,7 +2191,7 @@ def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
     head_before = head(ledger)
     commits_before = commit_count(ledger)
     # The step installs the frozen base v2, so the plan recreates v2's views
-    # (one box kind fewer than the v3 repository copy this ledger started on).
+    # (one box kind fewer than the base v3 copy this ledger started on).
     view_count = len(view_statements(base_v2_schema()))
 
     dry = run_python(BASE_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env)
@@ -2217,11 +2220,26 @@ def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
     assert "preset_versions[base] 2, expected 1" in again.stdout + again.stderr
 
 
+def write_library_v1_presets(directory: Path) -> Path:
+    """Materialise a library-v1 closure on the frozen base v3.
+
+    The repository's ``presets/base.yaml`` is v4 since spec 5 (the
+    ``grid96`` -> ``grid8x12`` rename), so a ledger that reproduces the wave-10
+    content must start from the frozen base v3 copy the preset steps install.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(BASE_V3, directory / "base.yaml")
+    shutil.copyfile(REPO_PRESETS / "library.yaml", directory / "library.yaml")
+    return directory / "library.yaml"
+
+
 def test_library_1_to_2_bumps_its_counter_after_base(
-    embedded_ledger_factory, script_env: dict[str, str]
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     ledger = embedded_ledger_factory(
-        [REPO_PRESETS / "library.yaml"], name="library-v1", id_prefix="77"
+        [write_library_v1_presets(tmp_path / "library-v1-presets")],
+        name="library-v1",
+        id_prefix="77",
     )
     ledger.driver.execute(
         "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
@@ -2239,6 +2257,8 @@ def test_library_1_to_2_bumps_its_counter_after_base(
         "library": 2,
     }
     assert ledger.schema.statuses_for("copy")[1] == "stored"
+    # The step installs the frozen base v3, not the repository's v4 copy.
+    assert (ledger.path / "presets" / "base.yaml").read_bytes() == BASE_V3.read_bytes()
 
 
 def test_preset_step_refuses_before_spec_4(
@@ -2336,12 +2356,12 @@ MOLBIO_V3_VERSIONS = {
     "proteins": 1,
 }
 
-#: Every preset copy a molbio ledger needs after the step.  cell_culture is the
-#: frozen v1 (ticket 28 bumped the repository copy to v2), so it is compared
-#: separately from the repository content.
+#: Every preset copy a molbio ledger needs after the step.  ``cell_culture`` is
+#: the frozen v1 (ticket 28 bumped the repository copy to v2) and ``base`` is
+#: the frozen v3 (the repository copy is v4 with the ``grid96`` -> ``grid8x12``
+#: rename since spec 5); both are compared separately from repository content.
 MOLBIO_V3_FILES = (
     "molbio.yaml",
-    "base.yaml",
     *[f"{part}.yaml" for part in PARTS_V3 if part != "cell_culture"],
 )
 
@@ -2578,12 +2598,17 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
         ) == [{"alias": "OLD-GLY"}]
 
         # The ledger's copy is this checkout's v3 content, byte for byte -
-        # except cell_culture, which the step froze at v1 (ticket 28's bump is
-        # migration/presets/cell_culture/1-to-2).
+        # except cell_culture and base, which the step froze at the versions
+        # whose era it belongs to (ticket 28's bump is
+        # migration/presets/cell_culture/1-to-2; spec 5's base v4 rename is
+        # base/3-to-4).
         for name in MOLBIO_V3_FILES:
             assert (reopened.path / "presets" / name).read_bytes() == (
                 REPO_PRESETS / name
             ).read_bytes(), name
+        assert (reopened.path / "presets" / "base.yaml").read_bytes() == (
+            BASE_V3.read_bytes()
+        )
         assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
             ROOT / "migration" / "presets" / "molbio" / "2-to-3"
             / "cell_culture-1.yaml"
@@ -2751,7 +2776,7 @@ def test_molbio_2_to_3_refuses_a_spec3_ledger_and_writes_nothing(
         assert result.returncode == 1, result.stdout + result.stderr
         output = result.stdout + result.stderr
         assert "refusing to migrate molbio 2 -> 3" in output
-        assert "migration/spec/3-to-4" in output
+        assert "migration/spec/4-to-5" in output
         assert "nothing was written" in output
         # No commit, no tag, no DDL, and the placed copies were restored.
         assert head(ledger) == head_before
@@ -2768,16 +2793,18 @@ def test_molbio_2_to_3_refuses_a_spec3_ledger_and_writes_nothing(
 
 
 def write_cell_culture_v1_presets(directory: Path) -> Path:
-    """Materialise a cell_culture-v1 closure from the frozen step copy.
+    """Materialise a cell_culture-v1 closure from the frozen step copies.
 
     The repository's ``presets/`` holds cell_culture v2, so the step copy
     shipped next to ``migration/presets/cell_culture/1-to-2/migrate.py`` is the
-    only copy of what a pre-ticket-28 ledger carries.  Its includes are still
-    the current repository version (base 3, nucleic_acids 1, proteins 1), which
-    is exactly what a molbio-v3 ledger has.
+    only copy of what a pre-ticket-28 ledger carries.  Its includes are the
+    wave-10 content: the frozen base v3 (the repository copy is v4 since spec 5)
+    plus nucleic_acids 1 and proteins 1, which is exactly what a molbio-v3
+    ledger has.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    for part in ("base", "nucleic_acids", "proteins"):
+    shutil.copyfile(BASE_V3, directory / "base.yaml")
+    for part in ("nucleic_acids", "proteins"):
         shutil.copyfile(REPO_PRESETS / f"{part}.yaml", directory / f"{part}.yaml")
     shutil.copyfile(CELL_CULTURE_V1, directory / "cell_culture.yaml")
     return directory / "cell_culture.yaml"
@@ -2877,9 +2904,13 @@ def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
             "proteins": 1,
         }
         head_after_migration = head(reopened)
-        # The frozen v2 content is what the ledger now carries, byte for byte.
+        # The frozen v2 content is what the ledger now carries, byte for byte;
+        # base stays the frozen v3 (the repository copy is v4 since spec 5).
         assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
             CELL_CULTURE_V2.read_bytes()
+        )
+        assert (reopened.path / "presets" / "base.yaml").read_bytes() == (
+            BASE_V3.read_bytes()
         )
 
         # Three additive columns plus the new stock kind and its view.
