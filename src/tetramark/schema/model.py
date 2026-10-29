@@ -23,7 +23,7 @@ import json
 import re
 import string
 from enum import StrEnum
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 from pydantic import Field as PydanticField
@@ -31,6 +31,9 @@ from pydantic import Field as PydanticField
 from tetramark.errors import LedgerError
 
 __all__ = [
+    "BOX_NAME_MAX_LENGTH",
+    "BOX_VIEW_PREFIX",
+    "CORE_VIEW_NAMES",
     "SPEC_VERSION",
     "UNSET",
     "EffectiveSchema",
@@ -50,6 +53,7 @@ __all__ = [
     "SqlType",
     "Status",
     "StatusSet",
+    "box_name_problem",
     "parse_labels",
 ]
 
@@ -63,8 +67,29 @@ __all__ = [
 #: CHECK, added ``aliquot_event.forced`` and replaced the stock views'
 #: ``aliquots_stored``/``quantity_stored``/five-value ``status`` with
 #: ``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock`` + ``unit`` and
-#: ``status`` ∈ {active, depleted, empty}.
-SPEC_VERSION = 4
+#: ``status`` ∈ {active, depleted, empty}; v5 replaced the per-box-kind
+#: ``v_box_<kind>`` views with one view per **existing box**
+#: (``v_box_<box name>``), so a box's contents are read by box rather than by
+#: kind.
+SPEC_VERSION = 5
+
+#: Views that exist for every ledger, independent of the selected kinds.
+#: ``box_name_problem`` reserves the ``v_box_*`` ones: a per-box view must never
+#: shadow a core view.  This tuple lives here (not in ``schema.ddl``, which
+#: generates the views) because :mod:`tetramark.schema.model` must not import
+#: the DDL module; ``schema.ddl.CORE_VIEWS`` re-exports it.
+CORE_VIEW_NAMES: tuple[str, ...] = (
+    "v_box_slots",
+    "v_aliquot_location",
+    "v_stock_status",
+)
+
+#: Prefix of the one generated view every existing box gets (spec 5).
+BOX_VIEW_PREFIX = "v_box_"
+
+#: Longest box name that still yields a view name Dolt accepts (64 characters
+#: is the identifier limit, minus the ``v_box_`` prefix).
+BOX_NAME_MAX_LENGTH = 64 - len(BOX_VIEW_PREFIX)
 
 #: Order-independent schema rendering version.  Bump when the normalised
 #: representation changes (invalidates stored fingerprints).
@@ -150,6 +175,62 @@ RESERVED_SQL_WORDS: frozenset[str] = frozenset(
 #: Columns generated in every kind table; repurposing one would shadow the
 #: core object's identity and discriminator.  The loader checks these (and the
 #: per-object aliquot variant) while resolving documents.
+
+
+# ---------------------------------------------------------------------------
+# Box names and generated view names (spec 5)
+# ---------------------------------------------------------------------------
+
+
+def box_name_problem(
+    box_name: str, existing_names: Iterable[str] = ()
+) -> str | None:
+    """Why ``box_name`` cannot name a box (spec 5), or ``None`` when it can.
+
+    Every existing box gets a view named ``v_box_<box name>``, so a box name has
+    to be a usable view name.  Three conditions make it unusable:
+
+    a. the view would collide with a core view (today ``slots`` —
+       ``v_box_slots`` — and any future core ``v_box_*`` view); the comparison
+       is case-insensitive because Dolt stores view names in lowercase;
+    b. it is longer than :data:`BOX_NAME_MAX_LENGTH` (58) characters, the Dolt
+       identifier limit minus the ``v_box_`` prefix;
+    c. it differs only in case from an existing box name: the two names would
+       share one view (Dolt view names are case-insensitive), so one box would
+       silently read the other's contents.
+
+    An exact duplicate of an existing name is **not** a problem here: ``tm box
+    add`` has its own duplicate check, and CSV import uses an existing name to
+    update that box.  The caller decides what to do with the returned message
+    (``tm box add`` and import refuse with it, the generated
+    ``core_box_name_safe`` rule lists the rows).
+    """
+    name = str(box_name)
+    view_name = f"{BOX_VIEW_PREFIX}{name}"
+    reserved = {
+        core.lower() for core in CORE_VIEW_NAMES if core.startswith(BOX_VIEW_PREFIX)
+    }
+    if view_name.lower() in reserved:
+        return (
+            f"box name {name!r} would make the view {view_name!r}, which is a "
+            "core view; choose another name"
+        )
+    if len(name) > BOX_NAME_MAX_LENGTH:
+        return (
+            f"box name {name!r} is {len(name)} characters long; the limit is "
+            f"{BOX_NAME_MAX_LENGTH} because every box gets a view named "
+            f"'{BOX_VIEW_PREFIX}<name>'"
+        )
+    lowered = name.lower()
+    for existing in existing_names:
+        other = str(existing)
+        if other != name and other.lower() == lowered:
+            return (
+                f"box name {name!r} differs only in case from the existing box "
+                f"{other!r}; box names must be unique ignoring case because "
+                "each one names a view"
+            )
+    return None
 
 
 # ---------------------------------------------------------------------------

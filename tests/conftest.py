@@ -28,7 +28,7 @@ import os
 import shutil
 import socket
 import subprocess
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -645,3 +645,39 @@ def fast_ledger_factory(
 ) -> Callable[..., Ledger]:
     """Alias of :func:`embedded_ledger_factory` (template-backed by default)."""
     return embedded_ledger_factory
+
+
+# ---------------------------------------------------------------------------
+# Spec 5: per-box views
+# ---------------------------------------------------------------------------
+
+
+def create_box_views(
+    ledger: Ledger,
+    boxes: Sequence[Mapping[str, object]] | None = None,
+) -> None:
+    """Create the per-box views the ledger's boxes need (spec 5).
+
+    ``tm box add`` and CSV import create a box's view themselves in the same
+    commit (wave 11's behavior layer).  Tests that insert boxes with raw SQL, or
+    that use a path predating the views, call this so the ledger is in the
+    spec-5 shape before ``tm check``/``tm schema plan``.  Only missing views are
+    created, so the helper is a no-op once the app path creates them.
+    """
+    from tetramark.schema.ddl import box_view_statements
+
+    rows = (
+        list(boxes)
+        if boxes is not None
+        else ledger.driver.query("SELECT `id`, `name`, `kind` FROM `box`")
+    )
+    existing = {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    for statement in box_view_statements(ledger.schema, rows):
+        if statement.name.lower() not in existing:
+            ledger.driver.execute(statement.sql)
