@@ -1,0 +1,298 @@
+{
+ "nodes": [
+  {
+   "id": "T-001#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-001#B-001\nimplement the schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5\n\n`done` · @w31\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+  },
+  {
+   "id": "T-001#B-002",
+   "type": "text",
+   "x": 380,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-001#B-002\nreview and merge the schema layer\n\n`done` · @lead\n\nLead: review the w31 diff against docs/issues/002-box-views.md and the interface contract, run the targeted suites and the full suite in .dsh/gitworktree/w31, c"
+  },
+  {
+   "id": "T-002#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 170,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-002#B-001\nimplement box lifecycle and position-follows-in-stock in core objects, CLI and CSV\n\n`done` · @w32\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+  },
+  {
+   "id": "T-002#B-002",
+   "type": "text",
+   "x": 720,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-002#B-002\nreview and merge the behavior layer\n\n`done` · @lead\n\nLead: review the w32 branch diff against docs/issues/002-box-views.md and the w31 interface, run the targeted suites and the full suite in .dsh/gitworktree/w32,"
+  },
+  {
+   "id": "T-003#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 300,
+   "width": 300,
+   "height": 110,
+   "color": "6",
+   "text": "### T-003#B-001\nrename grid96 to grid8x12, bump base to 4, update spec docs\n\n`review` · @w33 · 在做 @w33\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+  },
+  {
+   "id": "T-003#B-002",
+   "type": "text",
+   "x": 1740,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-003#B-002\nfinalize the base 3-to-4 migration step against the spec-5 fixture\n\n`waiting` · @w33\n\nDepends on T-003#B-001, T-001#B-002, T-002#B-002 and T-004#B-002. Lead: wake w33 (same worktree) once the spec 4-to-5 step from T-004 is merged, so the base 3-t"
+  },
+  {
+   "id": "T-003#B-003",
+   "type": "text",
+   "x": 2080,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-003#B-003\nreview and merge the preset rename and spec docs\n\n`waiting` · @lead\n\nLead: review the w33 branch against docs/issues/002-box-views.md, the spec tree conventions and the migration README rules; run the targeted migration/preset/do"
+  },
+  {
+   "id": "T-004#B-001",
+   "type": "text",
+   "x": 1060,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-004#B-001\nbuild a spec-4 fixture, implement migration/spec/4-to-5 with its tests\n\n`done` · @w34\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+  },
+  {
+   "id": "T-004#B-002",
+   "type": "text",
+   "x": 1400,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-004#B-002\nreview and merge the spec 4-to-5 migration\n\n`done` · @lead\n\nLead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real le"
+  },
+  {
+   "id": "T-005#B-001",
+   "type": "text",
+   "x": 40,
+   "y": 430,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-005#B-001\nfix the legacy molbio-v1 fixture drift guard\n\n`done` · @w35\n\nRead docs/records/wave10-delivery.md (Open items 3) and tests/data/ledgers/build_fixtures.py. Work only in your own worktree .dsh/gitworktree/w35 (branch wave11"
+  },
+  {
+   "id": "T-005#B-002",
+   "type": "text",
+   "x": 380,
+   "y": 170,
+   "width": 300,
+   "height": 110,
+   "color": "4",
+   "text": "### T-005#B-002\nreview and merge the legacy fixture fix\n\n`done` · @lead\n\nLead: review the w35 branch, confirm the fixture database shape did not change and the guard really executes, run the drift-guard test and the full suite in the"
+  },
+  {
+   "id": "T-006#B-001",
+   "type": "text",
+   "x": 2420,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-006#B-001\nwave 11 acceptance on main\n\n`waiting` · @lead\n\nLead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository pres"
+  },
+  {
+   "id": "T-006#B-002",
+   "type": "text",
+   "x": 2760,
+   "y": 40,
+   "width": 300,
+   "height": 110,
+   "color": "0",
+   "text": "### T-006#B-002\nrelease 0.4.0, wave-11 record and handover\n\n`waiting` · @lead\n\nLead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-deliver"
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "fromNode": "T-001#B-001",
+   "toNode": "T-001#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e1",
+   "fromNode": "T-001#B-002",
+   "toNode": "T-002#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e2",
+   "fromNode": "T-002#B-001",
+   "toNode": "T-002#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e3",
+   "fromNode": "T-003#B-001",
+   "toNode": "T-003#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e4",
+   "fromNode": "T-001#B-002",
+   "toNode": "T-003#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e5",
+   "fromNode": "T-002#B-002",
+   "toNode": "T-003#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e6",
+   "fromNode": "T-004#B-002",
+   "toNode": "T-003#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e7",
+   "fromNode": "T-003#B-002",
+   "toNode": "T-003#B-003",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e8",
+   "fromNode": "T-001#B-002",
+   "toNode": "T-004#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e9",
+   "fromNode": "T-002#B-002",
+   "toNode": "T-004#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e10",
+   "fromNode": "T-004#B-001",
+   "toNode": "T-004#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e11",
+   "fromNode": "T-005#B-001",
+   "toNode": "T-005#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e12",
+   "fromNode": "T-001#B-002",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e13",
+   "fromNode": "T-002#B-002",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e14",
+   "fromNode": "T-003#B-003",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e15",
+   "fromNode": "T-004#B-002",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e16",
+   "fromNode": "T-005#B-002",
+   "toNode": "T-006#B-001",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  },
+  {
+   "id": "e17",
+   "fromNode": "T-006#B-001",
+   "toNode": "T-006#B-002",
+   "fromSide": "right",
+   "toSide": "left",
+   "label": "",
+   "color": "6"
+  }
+ ]
+}

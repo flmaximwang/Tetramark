@@ -49,17 +49,28 @@ from tetramark.core.objects import (
     _CORE_EDITABLE,
     _box_geometry,
     _coerce_field,
+    _create_box_views,
     _insert,
     _mirror_name,
     _parse_quantity_unit,
     _require_fields,
     _update,
+    box_kind_columns,
+    box_kind_from,
     default_aliquot_status,
+    validate_creation_placement,
     validate_creation_status,
 )
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows, table_name
-from tetramark.schema.model import Field, FieldType, Kind, ObjectType
+from tetramark.schema.model import (
+    Field,
+    FieldType,
+    GeometryType,
+    Kind,
+    ObjectType,
+    box_name_problem,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checkers only
     from tetramark.core.ledger import Ledger
@@ -401,6 +412,9 @@ class _Planner:
         #: ``(row number, aliquot id, source file)`` checked once all files
         #: have been planned.
         self._deferred_sources: list[tuple[int, str, str]] = []
+        #: ``id``/``name``/``kind`` of every box row this import creates, for
+        #: the per-box views created in the same commit (spec 5).
+        self._new_box_views: list[dict[str, Any]] = []
 
         # Identity registries (existing rows + rows planned by this import).
         self._entity_kinds: dict[str, str] = {}
@@ -424,6 +438,10 @@ class _Planner:
         # added after a row validates).
         self._unique_seen: dict[tuple[str, str], set[Any]] = {}
         self._load_unique_values()
+
+    def new_box_views(self) -> list[dict[str, Any]]:
+        """The ``id``/``name``/``kind`` rows of the boxes this import creates."""
+        return list(self._new_box_views)
 
     # -- snapshot of the live ledger --------------------------------------
     def _load_identity(self) -> None:
@@ -1283,6 +1301,15 @@ class _Planner:
                 )
             )
             alq_id = f"{raw.id}.{index}"
+            # Same invariant as the object commands (spec 5): a position
+            # exactly when the status is in stock.
+            validate_creation_placement(
+                self.ledger,
+                kind_name,
+                aliquot_status,
+                placed=box_id is not None,
+                aliquot_id=alq_id,
+            )
             self._aliquot_ids.add(alq_id)
             self._aliquot_seqs.setdefault(raw.id, set()).add(index)
             plan.inserts.append(
@@ -1351,6 +1378,12 @@ class _Planner:
         core["name"] = name
         if len(str(name)) > 255:
             raise UsageError("name must be at most 255 characters")
+        # Spec 5: the name must be usable as `v_box_<name>`; the planner knows
+        # every live and planned box name, so the case-only duplicate and the
+        # core-view/length rules are checked before anything is written.
+        problem = box_name_problem(str(name), list(self._box_names))
+        if problem is not None:
+            raise UsageError(problem)
         _require_fields(kind, kind_name, fields)
         self._check_unique(kind_name, kind.fields, fields)
 
@@ -1364,6 +1397,12 @@ class _Planner:
             if resolved is None:
                 raise UsageError(f"unknown parent box {parent_text!r}")
             parent_id, parent_kind_name = resolved
+            parent_geometry = _box_geometry(self.schema.kind(parent_kind_name))
+            if parent_geometry.type is GeometryType.grid:
+                raise UsageError(
+                    f"box {self._box_label(parent_id)!r} is a grid box: grid "
+                    "boxes hold tubes only, so a box cannot be nested in it"
+                )
             self._check_child_placement(parent_id, parent_slot, parent_kind_name)
             dep = self._planned_key("box", parent_id)
             if dep is not None:
@@ -1404,6 +1443,9 @@ class _Planner:
                 self._box_occupancy.get(parent_id, 0) + 1
             )
         self._add_alias_inserts(plan, "box", raw.id, raw.aliases)
+        self._new_box_views.append(
+            {"id": raw.id, "name": str(payload["name"]), "kind": kind_name}
+        )
         self._remember_unique(kind_name, kind.fields, fields)
         return plan
 
@@ -1456,6 +1498,15 @@ class _Planner:
             status = default_aliquot_status(
                 self.ledger, kind_name, placed=box_id is not None
             )
+        # Same invariant as the object commands (spec 5): a position exactly
+        # when the status is in stock.
+        validate_creation_placement(
+            self.ledger,
+            kind_name,
+            status,
+            placed=box_id is not None,
+            aliquot_id=raw.id,
+        )
         label = _text(data, "label")
         if label is not None and len(label) > 255:
             raise UsageError(
@@ -1997,6 +2048,8 @@ def import_csv(
         for plan in plans:
             for table, key, payload in plan.deferred_updates:
                 _update(session, table, key, payload)
+        # Spec 5: every imported box gets its per-box view in this same commit.
+        _create_box_views(session, ledger, planner.new_box_views())
 
     return ImportResult(
         object=result_object,
@@ -2137,8 +2190,16 @@ def _export_boxes(
 
     data: list[dict[str, Any]] = []
     for kind_name in sorted(kinds):
+        # Spec 5 dropped the per-kind box views; read the same row shape by
+        # joining the core `box` row with its `box_<kind>` row.
+        kind = ledger.schema.kind(kind_name)
+        select_items = [
+            f"{expression} AS {_quote(column)}"
+            for column, expression in box_kind_columns(kind).items()
+        ]
         rows = ledger.driver.query(
-            f"SELECT * FROM {_quote(f'v_box_{kind_name}')} ORDER BY `id`"
+            f"SELECT {', '.join(select_items)} FROM {box_kind_from(kind_name)} "
+            f"ORDER BY c.{_quote('id')}"
         )
         for row in rows:
             record = dict(row)

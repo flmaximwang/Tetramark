@@ -1,0 +1,9 @@
+name: spec4-boxes
+presets:
+- base
+author: Fixture Builder <fixture@tetramark.invalid>
+ids:
+  entity:
+    strategy: uuid
+  stock:
+    strategy: uuid

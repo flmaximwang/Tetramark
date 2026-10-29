@@ -19,10 +19,13 @@ box_app = typer.Typer(
 @box_app.command("add")
 def add_box_command(
     ctx: typer.Context,
-    kind: str = typer.Argument(..., help="Box kind (e.g. grid96, rack, shelf)."),
+    kind: str = typer.Argument(..., help="Box kind (e.g. grid8x12, rack, shelf)."),
     name: str = typer.Argument(..., help="Unique human box name (e.g. WFL-08-01)."),
     parent: str | None = typer.Option(
-        None, "--in", "-i", help="Parent box name/id/alias to nest this box in."
+        None,
+        "--in",
+        "-i",
+        help="Parent box name/id/alias to nest this box in (not a grid box).",
     ),
     slot: str | None = typer.Option(
         None, "--slot", "-s", help="Slot in the parent box (slotted parents only)."

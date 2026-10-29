@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PLAN</title>
+<style>
+  /* loomerto 的**共用主题**：只读看板（plan.html）与可编辑画布（canvas.html）都注入这一段。
+   颜色 / 字体 / 状态色 / 状态胶囊 / 面板 / 按钮 / 分隔线 / 进度条只有这一份来源 ——
+   改这里，两个页面一起变；页面里只留各自**布局**规则。
+   注入方式：页面里放一个 CSS 注释标记，render.py（plan.html）与 serve.py（canvas.html）
+   在生成 / 送出时把那个标记换成这份文本（两页因此仍然是自包含的单文件）。 */
+:root{
+  --bg:#f7f8fa; --panel:#fff; --ink:#1f2328; --dim:#6b7280; --line:#e3e6ea;
+  /* 状态色：图例顺序 = 一个块的一生（待批准 → 等前置 → 待认领 → 已认领 → 进行中 → 待评审 → 已完成） */
+  --blocked:#e03131; --waiting:#98a2b3; --ready:#f08c00; --claimed:#0c8599;
+  --running:#1c7ed6; --review:#7048e8; --done:#2f9e44;
+  /* 「待排」与「等前置」同色：都还没轮到人动手；「已取消」也同色，靠虚线/空心方框区分 */
+  --pending:#98a2b3; --cancelled:#98a2b3;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 4px 14px rgba(16,24,40,.06);
+  --font:-apple-system,"SF Pro SC","PingFang SC","Helvetica Neue",Segoe UI,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#14161a; --panel:#1c1f24; --ink:#e6e8eb; --dim:#9aa4b2; --line:#2b3038;
+         --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.35); }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--font)}
+a{color:var(--running)}
+code,kbd,pre{font-family:var(--mono)}
+h1{margin:0 0 4px;font-size:20px;letter-spacing:.2px}
+.goal{margin:0;color:var(--dim);max-width:70ch}
+.meta{margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;color:var(--dim);font-size:12.5px}
+.meta code{background:var(--bg);padding:2px 6px;border-radius:5px;border:1px solid var(--line)}
+.kv{margin:8px 0;color:var(--dim)}
+
+/* 状态胶囊：一处定义，两页共用（颜色一律走上面的 token） */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:99px;
+      font-size:12px;font-weight:600;color:#fff;background:var(--waiting);white-space:nowrap}
+.pill.done{background:var(--done)} .pill.running{background:var(--running)}
+.pill.claimed{background:var(--claimed)} .pill.review{background:var(--review)}
+.pill.ready{background:var(--ready)} .pill.waiting{background:var(--waiting)}
+.pill.pending{background:var(--pending)} .pill.blocked{background:var(--blocked)}
+.pill.cancelled{background:var(--cancelled)}
+
+/* 平面与按钮：卡片 / 泳道 / 面板 / 工具条在两页是同一套观感 */
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.panel > h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+            color:var(--dim);border-bottom:1px solid var(--line)}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--dim);border-radius:6px;
+     padding:3px 10px;font-size:12px;line-height:1.7;cursor:pointer;font-family:inherit}
+.btn:hover{color:var(--ink);border-color:var(--dim)}
+.btn.primary{background:var(--running);border-color:var(--running);color:#fff}
+.btn.primary:hover{background:#1864ab;border-color:#1864ab;color:#fff}
+.btn.ghost{border-style:dashed}
+
+/* 拖动分隔线：1px 细线，hover / 拖动时变 3px 并换成 --running 色（两页同一套手感） */
+#splitter{position:fixed;top:0;bottom:0;width:9px;z-index:61;cursor:col-resize;background:transparent}
+#splitter::after{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;background:var(--line)}
+#splitter:hover::after,#splitter.dragging::after,#splitter:focus-visible::after{
+          left:3px;width:3px;background:var(--running)}
+body.resizing{user-select:none;cursor:col-resize}
+
+/* 进度条与图例 */
+.track{margin-top:12px;height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.track > i{display:block;height:100%;border-radius:99px;transition:width .4s;
+           background:linear-gradient(90deg,var(--running),var(--done))}
+.legend{display:flex;flex-wrap:wrap;gap:12px;padding:10px 16px;color:var(--dim);font-size:12px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+.legend .zebra{border:1px dashed var(--dim);background:transparent}
+
+  /* ↓ 下面只放这一页的**布局**规则：颜色 / 字体 / 状态胶囊(.pill) / 按钮(.btn) / 分隔线(#splitter) /
+     进度条(.track) / 图例(.legend) 都来自上面的共用主题 theme.css —— 改样式去改那里，两个页面一起变。 */
+  :root{ --detail-w:clamp(280px,26vw,420px); }   /* 详情栏宽度：拖动分隔线后由 JS 写成固定 px */
+  header{padding:20px 24px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .wrap{display:block}
+  section.card{margin:16px 24px;background:var(--panel);border:1px solid var(--line);
+               border-radius:12px;box-shadow:var(--shadow)}
+  section.card > h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:.08em;
+                    text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line)}
+  .nodes{padding:16px}
+  .nowlist{display:flex;flex-wrap:wrap;gap:10px;padding:14px 16px}
+  .nowcard{border:1px solid var(--line);border-radius:10px;padding:9px 12px;min-width:220px;
+           background:var(--bg);cursor:pointer;transition:border-color .12s,transform .12s}
+  .nowcard:hover{border-color:var(--running);transform:translateY(-1px)}
+  .nowcard.sel{outline:2px solid var(--running)}
+  .nowcard b{display:block;font-size:13px}
+  .nowcard .sub{color:var(--dim);font-size:12px}
+  #graph{position:relative;min-height:200px;overflow:auto;padding:8px 8px 8px 0}
+  #edges{position:absolute;inset:0;pointer-events:none}
+  .lane{position:absolute;font-size:12px;color:var(--dim);display:flex;align-items:center;
+        gap:8px;padding-bottom:2px;border-bottom:1px dashed var(--line)}
+  .lane i{width:9px;height:9px;border-radius:3px;display:inline-block;flex:none}
+  .lane b{color:var(--ink);font-weight:600}
+  .lane .lz{margin-left:auto;padding-right:4px}
+  .node{position:absolute;width:216px;height:88px;border-radius:10px;background:var(--panel);
+        border:1px solid var(--line);border-left:4px solid var(--waiting);padding:8px 10px;
+        cursor:pointer;box-shadow:var(--shadow);transition:transform .12s;overflow:hidden}
+        /* 宽度由 graph() 按 #graph 可用宽度动态写进行内样式；这里的 216px 只是没有 JS 时的兜底 */
+  .node:hover{transform:translateY(-2px)}
+  .node.sel{outline:2px solid var(--running)}
+  .node .id{font-size:11px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .node .ttl{font-weight:600;margin-top:3px;line-height:1.3;height:34px;overflow:hidden;
+             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .node .own{font-size:11.5px;color:var(--dim);margin-top:4px;display:flex;
+             justify-content:space-between;gap:6px}
+  .node.done{opacity:.6}
+  .node.cancelled{border-left-style:dashed}
+  /* 详情栏：常驻右侧、占满整页高度（不是点开才出现 —— 页面布局因此一次都不跳）；body 常驻让出
+     这段宽度，所以画布不会被盖住。宽度由 #splitter 这条分隔线拖拽控制。 */
+  body{padding-right:var(--detail-w)}
+  #detailpanel{position:fixed;right:0;top:0;bottom:0;width:var(--detail-w);z-index:60;
+               display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line);
+               box-shadow:-10px 0 30px rgba(16,24,40,.10);overflow:hidden}
+  #detailbar{display:flex;align-items:center;justify-content:space-between;gap:8px;
+             padding:6px 8px 6px 12px;border-bottom:1px solid var(--line);background:var(--bg);
+             user-select:none}
+  #splitter{right:var(--detail-w)}     /* 其余（宽度/细线/hover）在共用主题里 */
+  #detailbar b{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  #detailbar button{border:1px solid var(--line);background:var(--panel);color:var(--dim);
+                    border-radius:6px;padding:2px 9px;font-size:11.5px;line-height:1.6;cursor:pointer;
+                    font-family:inherit}
+  #detailbar button:hover{color:var(--ink);border-color:var(--dim)}
+  #detail{padding:14px 16px;font-size:13px;overflow:auto;flex:1 1 auto;min-height:0}
+  @media (max-width:900px){
+    /* 窄屏别让详情栏吃掉画布：默认栏宽收窄（拖过分隔线的话以拖出来的宽度为准） */
+    :root{--detail-w:clamp(240px,42vw,340px)}
+  }
+  #detail h3{margin:0 0 6px;font-size:15px}
+  #detail .kv{margin:8px 0;color:var(--dim)}
+  #detail ul{margin:6px 0 6px 18px;padding:0}
+  #detail p.doc{margin:8px 0;line-height:1.62}
+  #detail pre.cb{margin:8px 0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.5;
+    white-space:pre;color:var(--ink)}
+  #detail .run{border-left:2px solid var(--line);padding:2px 0 2px 8px;margin:6px 0;color:var(--dim);font-size:12px}
+  .journal{padding:6px 16px 16px;font-size:12.5px;max-height:280px;overflow:auto}
+  .journal div{padding:3px 0;border-bottom:1px dashed var(--line);color:var(--dim)}
+  .journal b{color:var(--ink);font-weight:600}
+  .toolbar{padding:8px 16px;display:flex;gap:14px;align-items:center;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">—</h1>
+  <p class="goal" id="goal"></p>
+  <div class="meta">
+    <span id="prog"></span>
+    <span id="status"></span>
+    <span>更新 <span id="updated"></span></span>
+    <span id="who"></span>
+    <span><code id="slug"></code></span>
+  </div>
+  <div class="track"><i id="fill" style="width:0"></i></div>
+</header>
+
+<div class="wrap">
+  <div>
+    <section class="card"><h2>现在该谁动</h2><div class="nowlist" id="nownext"></div></section>
+    <section class="card">
+      <h2>任务图（块 = 文档，边 = 依赖）</h2>
+      <div class="toolbar">
+        <label><input type="checkbox" id="hidedone"> 隐藏已完成</label>
+        <span>点节点或卡片看详情（详情常驻右侧，拖分隔线可调宽度 · Esc 清空）</span>
+      </div>
+      <div id="graph"><svg id="edges"></svg></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="card"><h2>日志</h2><div class="journal" id="journal"></div></section>
+  </div>
+</div>
+
+<div id="splitter" tabindex="0" role="separator" aria-orientation="vertical"
+     aria-label="拖动调整详情栏宽度" title="拖动调整详情栏宽度（方向键微调）"></div>
+<aside id="detailpanel">
+  <div id="detailbar">
+    <b>详情</b>
+    <button id="detailclear" title="清空详情内容（Esc）—— 只清内容，边栏常驻不动">清空</button>
+  </div>
+  <div id="detail"><p class="goal">点任务图里的节点，或「现在该谁动」里的卡片。</p></div>
+</aside>
+
+<script>
+const PLAN = {"schema": "plan-weave/plan@1", "slug": "wave11", "title": "Wave 11: one view per box (spec 5, ticket 30)", "goal": "Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.", "status": "active", "created_at": "2026-10-29T11:57:27+08:00", "updated_at": "2026-10-29T18:03:05+08:00", "cadence": {"digest_hours": 6, "quiet_hours": "23:00-08:00"}, "participants": [{"id": "lead", "kind": "agent", "label": "lead", "channel": ""}, {"id": "maxim", "kind": "human", "label": "Maxim", "channel": ""}, {"id": "w31", "kind": "agent", "label": "w31", "channel": ""}, {"id": "w32", "kind": "agent", "label": "w32", "channel": ""}, {"id": "w33", "kind": "agent", "label": "w33", "channel": ""}, {"id": "w34", "kind": "agent", "label": "w34", "channel": ""}, {"id": "w35", "kind": "agent", "label": "w35", "channel": ""}, {"id": "you", "kind": "human", "label": "本人", "channel": ""}], "tasks": [{"id": "T-001", "title": "31 schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5", "owner": "w31", "status": "pending", "deps": [], "blocks": [{"id": "T-001#B-001", "title": "implement the schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5", "kind": "impl", "status": "done", "owner": "w31", "doc": "Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w31 (branch wave11/t31): create it from main with the worktree tool, then run uv sync -q so it gets its own .venv. Real dolt, no mocks. Never touch a real ledger. Do not commit and do not merge: leave the tree dirty and report. Iterate with uv run pytest -q -m fast; run the full suite before reporting. Stay inside your write scope; if another workstream must change a file, report it instead of editing it.\n\nScope (only these files): src/tetramark/schema/ddl.py, src/tetramark/schema/diff.py, src/tetramark/schema/model.py, src/tetramark/schema/tests_gen.py, src/tetramark/cli/check.py, src/tetramark/cli/schema.py, plus tests for this layer (test_ddl.py, test_schema_diff.py, test_schema_model.py, test_validation.py and new tests). Do NOT edit core/objects.py, cli/box.py, cli/aliquot.py, ops/io_csv.py, presets/, migration/ or docs/ - other workstreams own those.\n\nThe interface you owe the rest of the wave (the Lead fixes it; w32 and w34 code against it):\n1. ddl.view_statements(schema) emits only the core views (v_box_slots, v_aliquot_location, v_stock_status) plus v_entity_<kind> and v_stock_<kind>. Box kinds get no v_box_<kind> view any more.\n2. New ddl.box_view_name(box_name) -> v_box_ + name, and ddl.box_view_statements(schema, boxes) -> list[Statement] where boxes are mappings with at least the keys id, name, kind; each Statement.object is view and its name is the full v_box_<name>. A helper for one box may exist too.\n3. View shapes exactly as the issue states. grid geometry: a pivot, first column named row, then one column per column label in geometry order; one row per row label in geometry order, empty rows included; a cell is GROUP_CONCAT of the aliquot ids in that box slot ordered by id with separator comma and NULL when empty; no other columns. named geometry: columns slot and occupants; one row per slot in geometry order, empty slots included with occupants NULL; occupants are aliquot ids or child box names joined with comma. slotless geometry: one column occupant, one row per direct occupant (aliquot id or child box name) sorted ascending, zero rows when the box is empty. Only direct contents of that box are listed.\n4. model.py: SPEC_VERSION = 5; new box_name_problem(box_name, existing_names) -> str | None returning a refusal message when (a) v_box_<name> would equal a core view name (compare case-insensitively; today that is the name slots, and any future core v_box_* view), (b) the name is longer than 58 characters, or (c) it differs only in case from an existing box name. w32 calls this from box add and CSV import.\n5. diff.py: build_plan reconciles per-box views from the live box rows in addition to the schema-derived views (create missing, drop orphaned, replace changed); when the box table does not exist yet there are no box views. _managed_view must treat any v_box_* that is not a core view as managed (box names are not lowercase and can contain a dash). A live box row whose kind the schema does not know is a LedgerError naming the box. renames.yaml / RenameMap support must keep working, because w33 and w34 feed a base rename through build_plan.\n6. tm check: report per-box views that are missing, orphaned or out of date as a failing (blocking) result; dropping a per-box view by hand must make tm check fail and tm schema apply recreate it.\n7. tests_gen.py: remove the old core_in_stock_aliquot_slot rule and add: position-follows-in-stock in both directions (a not-in-stock aliquot must have box_id AND slot NULL; an in-stock aliquot must have box_id NOT NULL, and slot NOT NULL when its box is slotted), grid boxes hold no child boxes, and a box-name validity rule with the same three conditions as box_name_problem (listing the offending boxes). Keep the generated tests deterministic and grouped; update any test that counts dolt_tests.\n8. Tests for the view SQL shapes (see Acceptance in the issue), plan reconciliation, check drift, the name helper and SPEC_VERSION 5; update existing expectations that mention v_box_<kind> or old test counts.\n\nDone when: fast lane green; targeted suites (test_ddl, test_schema_diff, test_schema_model, test_validation) green; full suite green in the worktree; the view-shape and reconciliation acceptance bullets of docs/issues/002-box-views.md can be demonstrated from a scratch ledger (paste commands and outputs in your report). Report: files changed, the interface exactly as delivered (signatures), decisions you had to make, full suite count, and anything that belongs to another workstream.", "input": "", "output": "", "command": "", "done_when": ["view_statements emits no box kind views; box_view_statements produces the grid pivot, named and slotless shapes with the exact columns/ordering/empty rows stated in docs/issues/002-box-views.md; SPEC_VERSION is 5; box_name_problem refuses core-name collision, 59-char names and case-only duplicates; build_plan creates/drops/replaces per-box views from live box rows and keeps renames working; tm check fails on a hand-dropped per-box view and tm schema apply recreates it; position/grid/name rules generated; targeted and full suites green in the worktree."], "artifacts": ["wave11/t31 @ 1c698d3 (merged 5ab0a69)"], "deps": [], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T14:11:26+08:00", "runs": [{"at": "2026-10-29T12:05:39+08:00", "by": "w31", "from": "pending", "to": "running", "note": "schema layer started"}, {"at": "2026-10-29T14:09:32+08:00", "by": "w31", "from": "running", "to": "review", "note": "Schema layer delivered on branch wave11/t31, commit 1c698d3 (worktree .agents/worktrees/wave11/t31, tree clean, not merged/pushed). Artifact: the branch/commit itself plus the scratch-ledger demo in /tmp/w31-demo (molbio ledger: G grid9x9, R rack, S shelf, F freezer -> schema apply created exactly v_box_G/R/S/F + core views; v_box_G 9 rows A-H,J with columns row,1..9 and A1/A2/B2 ids; v_box_R 10 rows with 1|id; v_box_S 2 rows; v_box_F 0 rows; hand-dropping v_box_G made tm check fail with core_box_views and tm schema apply recreated it, check OK). Fast lane 352 passed; targeted suites test_ddl/test_schema_diff/test_schema_model/test_validation 229 passed. Full suite measured before the final pure-expectation test updates: 43 failed/825 passed/1 skipped, all failures cross-workstream: w32 box read side still reads the removed v_box_<kind> views (core/objects.py:943, ops/find.py:271, ops/io_csv.py:2141), w32 creation path leaves stored aliquots unplaced, w32 box add/import does not create per-box views yet, and w33 turn 2b owns the old-step test_migrate check assertions that now see the spec-5 position rule. Details in my report to the Lead."}, {"at": "2026-10-29T14:11:26+08:00", "by": "lead", "from": "review", "to": "done", "note": "Schema layer accepted: per-box view SQL for the three geometries, plan/check reconciliation from live box rows with RenameMap kind translation and case-insensitive view names, SPEC_VERSION 5, name helper, position/grid/name core rules, blocking core_box_views drift result. Fast 352, targeted schema suites 229. Full-suite failures are cross-workstream (w32 read paths/creation/box-add views, w33 old-step test_migrate)."}]}, {"id": "T-001#B-002", "title": "review and merge the schema layer", "kind": "review", "status": "done", "owner": "lead", "doc": "Lead: review the w31 diff against docs/issues/002-box-views.md and the interface contract, run the targeted suites and the full suite in .dsh/gitworktree/w31, check that no file outside the declared scope changed, then commit on wave11/t31 and merge into main with the wave-10 merge style. Record the decisions the agent made, especially the per-box view SQL shape and any interface change w32/w34 must follow. Update plans/wave11.", "input": "", "output": "", "command": "", "done_when": ["Diff reviewed line by line; no real ledger touched; no file outside the declared scope changed; targeted and full suites green in the worktree; branch committed and merged into main with a merge commit naming ticket 30."], "artifacts": [], "deps": ["T-001#B-001"], "review_of": "T-001#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-29T14:11:26+08:00", "runs": [{"at": "2026-10-29T14:11:26+08:00", "by": "lead", "from": "pending", "to": "running", "note": "Reviewing and merging wave11/t31"}, {"at": "2026-10-29T14:11:26+08:00", "by": "lead", "from": "running", "to": "done", "note": "Reviewed ddl/diff/model/tests_gen, conftest helper, golden diff and the minimal view-expectation edits; verified fast 352 and targeted 229 in the worktree; merged into main 5ab0a69. Full-suite gate moves to w32 integration."}]}], "note": "", "exec": {}}, {"id": "T-002", "title": "32 behavior layer: box lifecycle, position follows in stock, import/export", "owner": "w32", "status": "pending", "deps": [], "blocks": [{"id": "T-002#B-001", "title": "implement box lifecycle and position-follows-in-stock in core objects, CLI and CSV", "kind": "impl", "status": "done", "owner": "w32", "doc": "Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w32 (branch wave11/t32): create it from main with the worktree tool, then run uv sync -q so it gets its own .venv. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch when you need to integrate another branch, and you may finish with the tree dirty. Report the branch state. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it instead of editing it.\n\nScope (only these files): src/tetramark/core/objects.py (aliquot status/use/move functions and box add/move only), src/tetramark/cli/box.py, src/tetramark/cli/aliquot.py, src/tetramark/ops/io_csv.py (box export and box/aliquot import), tests/test_objects.py, tests/test_cli_objects.py, tests/test_csv_io.py, tests/test_read_side.py, tests/test_docs_commands.py only if a doc snippet changes. Do NOT edit src/tetramark/schema/, presets/, migration/ or docs/.\n\nThis ticket is staged. Turn 1 (now): implement part B below (the position rules), which needs no other workstream, plus its tests; then report and end your turn. The Lead will wake you once wave11/t31 (the schema layer) is merged into main: then commit, git merge main, implement part A against the delivered ddl/model interface, run targeted and full suites, report.\n\nPart A - box lifecycle and views (needs wave11/t31 in main):\n- add_box: call model.box_name_problem(box_name, existing_names) and refuse with the returned message; refuse nesting a box inside a grid box, for both box add (parent) and box move, because grid boxes hold tubes only. After inserting the box, create its per-box view with ddl.box_view_statements(schema, [row]) inside the same write session/commit. The row has id, name, kind.\n- CSV import: boxes imported (new rows) create their per-box views in the same commit; the same name rule and grid-holds-tubes-only rule apply to import; keep the update path consistent and record what happens when an imported box changes name (there is no rename command yet).\n- CSV export of boxes must read box JOIN box_<kind> per kind instead of v_box_<kind>; keep the header and column order identical.\n- tm box add help text may mention grid8x12 instead of grid96.\n\nPart B - position follows in stock:\n- set_aliquot_status: when the target status is not in stock, clear box_id and slot in the same write and record the status event with the old position in from_box_id/from_slot and NULL in to_box_id/to_slot. When the target status is in stock and the aliquot has no position (box_id NULL), refuse with a message pointing at tm aliquot move ALQ --box NAME --slot S. The slotted-box-missing-slot refusal becomes part of this rule. The transition check (and --force --note path) stays; clearing also happens on a forced change.\n- use_aliquot: when the remaining quantity reaches 0 and the target status is not in stock (consumed), clear the position in the same write and record the use event with the old position in from_* and NULL to_*; when the stock kind set has no consumed status (cryo), status and position stay.\n- move_aliquot: if the aliquot is not in stock, set it to the single in-stock status of its stock kind set; if the set has more than one in-stock status, refuse and list them unless the new --status option names one. Validate that --status is in the set and in stock. The move event records old and new status. If the aliquot is already in stock and --status is given, run the normal transition check and apply it (the result must stay in stock). Moving a tube into a grid box is allowed.\n- cli/aliquot.py: add --status to tm aliquot move, with help and clear refusals.\n- CSV import: enforce both directions of the invariant for imported/updated aliquots (in-stock status requires a position per geometry; not-in-stock status must not carry one), with the same messages as the app path.\n- Check the tm stock add --box and tm aliquot add --box creation paths: an in-stock aliquot must end up placed and a placed aliquot must end up in stock; record the decision you take.\n- Tests for every acceptance bullet that lives here, including CLI smoke.\n\nDone when: parts A and B are implemented with tests; fast lane and targeted suites green; full suite green in the worktree before the final report; the position bullets of docs/issues/002-box-views.md Acceptance (status consumed clears position and the event keeps the old one, status stored without position refused, move restores stored) pass through the real CLI. Report: files changed, decisions, branch state, full suite count, blockers and anything that belongs to another workstream.", "input": "", "output": "", "command": "", "done_when": ["box add refuses view-unsafe names and a box inside a grid box; box add and import create the per-box view in the same commit; export reads box JOIN box_<kind>; status to a not-in-stock status clears box_id/slot and the event keeps the old position; status to in-stock without a position is refused with the move hint; use to zero clears the position; move restores the single in-stock status or refuses listing several unless --status; import enforces the invariant; targeted and full suites green in the worktree."], "artifacts": ["wave11/t32 @ af0437f (merged e643581)"], "deps": [], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T17:12:59+08:00", "runs": [{"at": "2026-10-29T12:04:25+08:00", "by": "w32", "from": "pending", "to": "running", "note": "behavior layer turn 1: position rules"}, {"at": "2026-10-29T13:35:27+08:00", "by": "w32", "from": "running", "to": "running", "note": "turn 1 done: part B committed 13ca169 on wave11/t32; main merged (a839e59); targeted 66 green; waiting for w31 merge"}, {"at": "2026-10-29T17:10:56+08:00", "by": "w32", "from": "running", "to": "review", "note": "branch wave11/t32, head af0437f (part B 13ca169 + part A af0437f). Full suite: 879 passed / 1 failed / 0 skipped - only test_migrate::test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path, approved by the Lead (molbio 2-to-3 now needs spec 5; migration/spec/4-to-5 is w34's step, w33 owns the ordering test after that). Targeted suites green; fixture fallout placed or seeded not-in-stock in test_cellbio/test_angenet/test_presets/test_migrate/test_renumber; tests/data/ledgers/molbio-v1 clean, no stray LOCK files."}, {"at": "2026-10-29T17:12:59+08:00", "by": "lead", "from": "review", "to": "done", "note": "Behavior layer accepted: position/creation invariant both directions, box add/move name rule and grid tube-only, per-box view creation on add and import in the same commit, all box read paths via box JOIN box_<kind> (objects._list_records, ops/find.py, io_csv export), CSV import rules; fixture fallout fixed by placing aliquots or seeding pending, no check assertions relaxed. Full suite in the worktree: 879 passed / 1 failed / 0 skipped; the failure is the approved upgrade-order test that needs migration/spec/4-to-5 (w33 in turn 2b)."}]}, {"id": "T-002#B-002", "title": "review and merge the behavior layer", "kind": "review", "status": "done", "owner": "lead", "doc": "Lead: review the w32 branch diff against docs/issues/002-box-views.md and the w31 interface, run the targeted suites and the full suite in .dsh/gitworktree/w32, check that no file outside the declared scope changed and that no real ledger was touched, then commit on wave11/t32 and merge into main. Record the decisions the agent took (creation-path semantics, --status on move, import update behavior). Update plans/wave11.", "input": "", "output": "", "command": "", "done_when": ["Diff reviewed line by line; scope respected; targeted and full suites green in the worktree; branch committed and merged into main with a merge commit naming ticket 30; decisions recorded."], "artifacts": [], "deps": ["T-001#B-002", "T-002#B-001"], "review_of": "T-002#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-29T17:12:59+08:00", "runs": [{"at": "2026-10-29T17:12:59+08:00", "by": "lead", "from": "pending", "to": "running", "note": "Reviewing and merging wave11/t32"}, {"at": "2026-10-29T17:12:59+08:00", "by": "lead", "from": "running", "to": "done", "note": "Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581."}]}], "note": "", "exec": {}}, {"id": "T-003", "title": "33 presets: grid96 -> grid8x12, base 3->4, spec docs", "owner": "w33", "status": "pending", "deps": [], "blocks": [{"id": "T-003#B-001", "title": "rename grid96 to grid8x12, bump base to 4, update spec docs", "kind": "impl", "status": "review", "owner": "w33", "doc": "Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w33 (branch wave11/t33): create it from main with the worktree tool, then run uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch to integrate main, and may finish with the tree dirty. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it.\n\nScope (only these files): presets/base.yaml, presets/README.md, migration/presets/base/3-to-4/ (new folder), migration/README.md (add the step to its list only), tests/test_presets.py, tests/test_docs_commands.py, docs/spec/03-physical-model.md, docs/spec/05-schema-evolution.md, docs/spec/06-cli.md, docs/spec/08-presets.md, README.md, skills/tetramark/SKILL.md and its references/commands.md and references/recipes.md, docs/README.md (only the issues/records pointers if needed). Do NOT edit src/tetramark/ (w31 and w32 own it), docs/issues/002-box-views.md (the Lead retires it at closeout), docs/records/wave11-delivery.md (the Lead writes it), migration/spec/ (w34 owns it), or tests/test_migrate.py (w34 appends there; if you need a base 3-to-4 test in that file, report it and the Lead will sequence it with w34).\n\nTurn 1 (now): the preset rename and docs, no dependency:\n- presets/base.yaml: rename the box kind grid96 to grid8x12 (geometry unchanged: rows A-H, columns 1-12), and bump the base preset version from 3 to 4. Grep the whole repo for grid96 and update presets/README.md, docs, skills and tests (README quickstart, skills/tetramark examples, tests/test_presets.py, tests/test_docs_commands.py).\n- Draft the spec updates against docs/issues/002-box-views.md: spec 03 (one view per existing box with the grid pivot, named and slotless shapes; v_box_<kind> gone; box names must be view-safe; enforcement list gains grid-holds-tubes-only and position-follows-in-stock; replace the old in-stock-slot wording), spec 05 (SPEC_VERSION 5, the spec/4-to-5 and base/3-to-4 steps, upgrade order), spec 06 (box add name rules and grid refusal, aliquot move --status, position cleared when leaving stock, export/import without kind views), spec 08 and presets/README (base 4 grid8x12). Keep the docs command snippets working for tests/test_docs_commands.py.\n- Write migration/presets/base/3-to-4/README.md and renames.yaml (box: grid96 -> grid8x12) following migration/presets/base/2-to-3; you may also write migrate.py, but its test needs the spec-5 code, so finalize it in turn 2.\n\nTurn 2 (after the Lead wakes you once wave11/t31, wave11/t32 and wave11/t34 are merged into main): commit, git merge main, then finish migration/presets/base/3-to-4/migrate.py and its tests. The step must: vendor the current repo preset copies, require ledger_meta spec_version 5 and the ledger own base copy at version 4 (the target) with the grid96 kind still loaded from the old shape (read the 2-to-3 step for the pattern; a base-3 ledger opening needs the placed v4 copy and must keep the pre-rename kind available through the rename map, follow what 2-to-3 does with _require_ready and target_schema), feed renames.yaml to build_plan as an explicit RenameMap so the plan rewrites box_grid96 to box_grid8x12, the core kind values, constraints and the views, refuse any other destructive step, bump preset_versions.base to 4 and the fingerprint, and regenerate dolt_tests in the one commit. Append its test to tests/test_migrate.py only after agreeing with the Lead so it does not collide with w34. Run the step on the spec-5 fixture from w34 (copy, dry-run then apply) and assert grid8x12 boxes, empty schema plan and clean tm check.\n\nDone when: the repository has no grid96 reference left except historical migration folders that must keep it; presets/base.yaml is version 4 with grid8x12; migration/presets/base/3-to-4 runs on a spec-5 fixture and produces the empty plan; docs describe spec 5 and the two migration steps; targeted tests green; full suite green in the worktree. Report: files changed, decisions, branch state, full suite count, anything for another workstream.", "input": "", "output": "", "command": "", "done_when": ["no stray grid96 references remain; base preset version 4 with grid8x12; spec 03/05/06/08, README and skills describe per-box views, SPEC_VERSION 5, the two migration steps and the new CLI rules; doc snippets still pass; full suite green in the worktree at the end of the turn."], "artifacts": [], "deps": [], "review_of": "", "feedback": "", "exec": {"by": "w33", "started": "2026-10-29T12:05:07+08:00"}, "status_since": "2026-10-29T12:37:30+08:00", "runs": [{"at": "2026-10-29T12:05:07+08:00", "by": "w33", "from": "pending", "to": "running", "note": "preset rename and spec docs"}, {"at": "2026-10-29T12:37:30+08:00", "by": "w33", "from": "running", "to": "review", "note": "turn 1 done on wave11/t33 (8a78113): base 4 grid8x12, spec 03/05/06/08 + README/skills, base/3-to-4 draft; fast 346 passed, test_presets 62, test_docs_commands 5. Finalize + fixture test wait for w31/w32/w34."}]}, {"id": "T-003#B-002", "title": "finalize the base 3-to-4 migration step against the spec-5 fixture", "kind": "impl", "status": "pending", "owner": "w33", "doc": "Depends on T-003#B-001, T-001#B-002, T-002#B-002 and T-004#B-002. Lead: wake w33 (same worktree) once the spec 4-to-5 step from T-004 is merged, so the base 3-to-4 step and its test run against a real spec-5 fixture. This block tracks the finalize turn only: migration/presets/base/3-to-4/migrate.py complete, its test appended to tests/test_migrate.py in the sequence the Lead chooses, verification on the w34 fixture copy (dry-run and apply, box_grid96 gone, box_grid8x12 present, preset_versions.base 4, tm schema plan empty, tm check clean), docs final. Do not start before the Lead says the three branches are merged.", "input": "", "output": "", "command": "", "done_when": ["base 3-to-4 migrate.py applies on a copy of the spec-5 fixture and produces the renamed box kind, base counter 4, empty tm schema plan and clean tm check; its test is in tests/test_migrate.py; docs match the implemented behavior."], "artifacts": [], "deps": ["T-003#B-001", "T-001#B-002", "T-002#B-002", "T-004#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:00:20+08:00", "runs": []}, {"id": "T-003#B-003", "title": "review and merge the preset rename and spec docs", "kind": "review", "status": "pending", "owner": "lead", "doc": "Lead: review the w33 branch against docs/issues/002-box-views.md, the spec tree conventions and the migration README rules; run the targeted migration/preset/docs suites and the full suite; check no file outside the declared scope changed; then commit on wave11/t33 and merge into main. Update plans/wave11 and note any doc statement that depends on the behavior layers.", "input": "", "output": "", "command": "", "done_when": ["Diff reviewed; scope respected; targeted and full suites green in the worktree; branch committed and merged"], "artifacts": [], "deps": ["T-003#B-002"], "review_of": "T-003#B-002", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:00:21+08:00", "runs": []}], "note": "", "exec": {}}, {"id": "T-004", "title": "34 migration: spec 4->5 and a spec-4 fixture", "owner": "w34", "status": "pending", "deps": [], "blocks": [{"id": "T-004#B-001", "title": "build a spec-4 fixture, implement migration/spec/4-to-5 with its tests", "kind": "impl", "status": "done", "owner": "w34", "doc": "Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w34 (branch wave11/t34): create it from main with the worktree tool, then run uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch, and may finish with the tree dirty. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it.\n\nStart only after the Lead confirms wave11/t31 and wave11/t32 are merged into main, then git merge main into your branch before you begin.\n\nScope (only these files): migration/spec/4-to-5/ (new folder: migrate.py and README.md), tests/data/ledgers/build_spec4_fixture.py (new builder script), tests/data/ledgers/spec4-boxes/ (new checked-in fixture; copy the shape of tests/data/ledgers/build_fixtures.py and its drift guard), tests/test_migrate.py (append the spec 4-to-5 tests; do not modify existing tests there), migration/README.md only if the Lead asks (w33 updates the list). Do NOT edit src/tetramark/ (w31 and w32 own it), presets/ or docs/spec (w33 owns them), or migration/presets/ (w33 owns base 3-to-4).\n\nWork:\n1. Build a real spec-4 fixture (base 3, grid96, spec_version 4) by driving the 0.3.0-era checkout commit 2aee18b in a temporary worktree, the same way tests/data/ledgers/build_fixtures.py drives 3ec57d5 for the molbio-1 fixture. The fixture must contain: box G of kind grid9x9 (for the 9-row A-H,J acceptance shape), box H of kind grid96 with two tubes in A1 and B2, box R of kind rack with one tube in slot 1, box S of kind box_slotless with two tubes (a local or base slotless kind, e.g. shelf), an empty freezer F, one tube that is not in stock but still carries a box position (created and then set consumed with the 0.3.0 CLI, which did not clear positions), and enough stock/entity rows for tm check to pass on the fixture itself. Check the fixture in under tests/data/ledgers/spec4-boxes/ with a builder script that can regenerate it; add the same logical-shape drift guard the molbio-1 fixture has if git, uv and dolt are available, otherwise make that guard skip gracefully while the migration test still runs from the checked-in copy.\n2. Implement migration/spec/4-to-5/migrate.py with the shared runner (MigrationStep kind=spec, from_version=4, schema=the opened ledger schema so SPEC_VERSION 5 enters the recorded fingerprint, reopened_schema=load_ledger_schema). Its plan, in this order:\n   - refuse before writing (LedgerError listing rows) when a box name breaks the naming rule from model.box_name_problem (view-unsafe core-name collision, longer than 58 characters, case-only duplicate), when a grid box holds a child box, or when an in-stock aliquot has no position. Lead decision: an aliquot is in stock exactly when it is placed, so the step lists each offending aliquot with the tm aliquot move command that fixes it and writes nothing.\n   - clear box_id and slot of every not-in-stock aliquot that still has a position, one move event per cleared row (event move, from_box_id/from_slot the old position, to_* NULL, old_status and new_status the current status, actor ledger.actor, note spec 4-to-5), ordered by aliquot id.\n   - drop every managed v_box_* view (all v_box_<kind> views), create one per-box view per existing box via ddl.box_view_statements, recreate the other generated views changed by spec 5 via ddl.view_statements, and regenerate the derived dolt_tests in the same commit through the runner.\n3. README: what changes, preconditions (a spec-4 ledger at base 3 with its own preset copies; run this step before migration/presets/base/3-to-4), upgrade order, verification commands, what a refusal lists, rollback.\n4. Tests appended to tests/test_migrate.py against a copy of the fixture: dry-run writes nothing and prints the plan; apply produces spec_version 5, no v_box_<kind> view, v_box_G with columns row,1..9 and 9 rows (A-H,J), v_box_H (grid96) with 8 rows, v_box_R with 10 rows and one occupant, v_box_S with 2 rows, v_box_F with 0 rows, the consumed tube position cleared with its move event old position in from_box_id/from_slot and NULL to_*, tm check clean; the three refusals (view-unsafe name, grid holding a box, in-stock without position) each write nothing and list rows; then base 3-to-4 from w33 on the migrated copy if it is merged (coordinate with the Lead).\n\nDone when: fixture and builder exist; migration/spec/4-to-5 works on a copy of it (dry-run then apply); every acceptance bullet in docs/issues/002-box-views.md that concerns spec/4-to-5 passes; targeted tests and the full suite are green in the worktree. Report: files changed, decisions (especially fixture shape and any refusal you had to add), branch state, full suite count.", "input": "", "output": "", "command": "", "done_when": ["checked-in spec-4 fixture plus builder; spec/4-to-5 dry-run and apply on a copy produce spec 5 with the per-box views (G 9 rows, R 10 rows, S 2 rows, F 0 rows), kind views gone, cleared positions with move events, and clean tm check; the three refusals write nothing; targeted and full suites green in the worktree."], "artifacts": ["wave11/t34 @ 62d3224 (merged 4a14ec3)"], "deps": ["T-001#B-002", "T-002#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T18:03:04+08:00", "runs": [{"at": "2026-10-29T14:13:57+08:00", "by": "w34", "from": "pending", "to": "running", "note": "spec-4 fixture and migration skeleton"}, {"at": "2026-10-29T15:38:12+08:00", "by": "w34", "from": "running", "to": "running", "note": "turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2"}, {"at": "2026-10-29T17:59:27+08:00", "by": "w34", "from": "running", "to": "review", "note": "artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped."}, {"at": "2026-10-29T18:03:04+08:00", "by": "lead", "from": "review", "to": "done", "note": "Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped."}]}, {"id": "T-004#B-002", "title": "review and merge the spec 4-to-5 migration", "kind": "review", "status": "done", "owner": "lead", "doc": "Lead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real ledger was touched; run the migration tests and the full suite in the worktree; commit on wave11/t34 and merge into main. Record the Lead decision on in-stock-without-position (refusal) and the fixture shape in the plan.", "input": "", "output": "", "command": "", "done_when": ["Diff reviewed; fixture genuine and drift-guarded; targeted and full suites green; branch committed and merged."], "artifacts": [], "deps": ["T-004#B-001"], "review_of": "T-004#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-29T18:03:05+08:00", "runs": [{"at": "2026-10-29T18:03:05+08:00", "by": "lead", "from": "pending", "to": "running", "note": "Reviewing and merging wave11/t34"}, {"at": "2026-10-29T18:03:05+08:00", "by": "lead", "from": "running", "to": "done", "note": "Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3."}]}], "note": "", "exec": {}}, {"id": "T-005", "title": "35 wave-10 follow-up: legacy molbio-v1 fixture drift guard", "owner": "w35", "status": "pending", "deps": [], "blocks": [{"id": "T-005#B-001", "title": "fix the legacy molbio-v1 fixture drift guard", "kind": "impl", "status": "done", "owner": "w35", "doc": "Read docs/records/wave10-delivery.md (Open items 3) and tests/data/ledgers/build_fixtures.py. Work only in your own worktree .dsh/gitworktree/w35 (branch wave11/t35): create it from main with the worktree tool, then uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch and may finish dirty. Report branch state.\nProblem: tests/test_migrate.py::test_molbio_v1_fixture_matches_its_builder skips because the builder cannot load its own legacy input: tests/data/presets/molbio-v1/molbio-v1.yaml and base.yaml now carry spec-4 statuses / status_sets keys, and the 0.1.2-era checkout (3ec57d5) the builder drives cannot load them.\nScope (only these files): tests/data/ledgers/build_fixtures.py, tests/data/presets/molbio-v1/ (the frozen legacy inputs), tests/data/ledgers/molbio-v1/ (only if a rebuild is genuinely required), and the skip logic of the drift-guard test in tests/test_migrate.py only if unavoidable (prefer no edit there; w34 appends to that file - report if you need it). Do not change product code, the v1 database shape, or the migration coverage.\nFix so that the drift guard actually runs and passes when git, uv and dolt are available: hand the legacy checkout a preset it can load (for example strip statuses/status_sets keys into a temporary copy the builder feeds the legacy init, keeping the built database a genuine molbio-v1 shape), keep the checked-in fixture consistent with what the builder produces (rebuild it if its logical shape or preset files change), and do not weaken the guard to always skip. The checked-in fixture is a real Dolt database: copy it before any rebuild, never reset the repository copy in place.\nDone when: the drift-guard test runs (no skip) and passes; uv run python tests/data/ledgers/build_fixtures.py --out /tmp/molbio-v1-probe succeeds; the full suite is green in the worktree with the same pass/skip counts as before except that this skip is gone; report the exact commands and their output.", "input": "", "output": "", "command": "", "done_when": ["build_fixtures.py can rebuild the molbio-1 fixture; the drift guard executes and passes instead of skipping; checked-in fixture still has the v1 shape and its migration test still passes; full suite green in the worktree."], "artifacts": ["wave11/t35 @ 9b69ddd (merged dc3498f)"], "deps": [], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:31:21+08:00", "runs": [{"at": "2026-10-29T12:09:32+08:00", "by": "w35", "from": "pending", "to": "running", "note": "legacy fixture drift guard"}, {"at": "2026-10-29T12:29:33+08:00", "by": "w35", "from": "running", "to": "review", "note": "artifact: wave11/t35 @ 9b69ddd (clean tree). Root cause: spec-4 commit 6faa557 added status_sets/kind statuses to tests/data/presets/molbio-v1/, the 0.1.2 builder input; that loader rejects them so the rebuild failed and the guard skipped. Fix: restore both frozen v1 presets to their v1 bytes (base.yaml == 3ec57d5 presets/base.yaml; the rebuilt preset copies are byte-identical to the checked-in fixture, so tests/data/ledgers/molbio-v1 is untouched) and make build_fixtures.py reject later-spec keys up front with a clear BuildError. No edit to tests/test_migrate.py. Evidence: builder --out /tmp/molbio-v1-probe -> 24 tables, 18 views, 20 dolt_tests, spec_version 2, preset_versions base/molbio 1; drift guard 1 passed (no skip); full suite 845 passed, 0 skipped (baseline 844 passed + 1 skip)."}, {"at": "2026-10-29T12:31:21+08:00", "by": "lead", "from": "review", "to": "done", "note": "Root cause: wave-10 commit 6faa557 added spec-4 status_sets/statuses keys to tests/data/presets/molbio-v1/, the 0.1.2 checkout input; the legacy loader rejected them so the rebuild failed and the drift guard skipped. Frozen inputs restored to v1 bytes; builder now fails fast on later-spec keys; checked-in fixture untouched. Drift guard runs (1 passed). Full suite in the worktree: 845 passed, 0 skipped (baseline 844 + the skip gone)."}]}, {"id": "T-005#B-002", "title": "review and merge the legacy fixture fix", "kind": "review", "status": "done", "owner": "lead", "doc": "Lead: review the w35 branch, confirm the fixture database shape did not change and the guard really executes, run the drift-guard test and the full suite in the worktree, then commit on wave11/t35 and merge into main. Update the wave-10 record open item and plans/wave11.", "input": "", "output": "", "command": "", "done_when": ["Diff reviewed; fixture shape unchanged; drift guard runs and passes; full suite green; branch committed and merged."], "artifacts": [], "deps": ["T-005#B-001"], "review_of": "T-005#B-001", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:31:21+08:00", "runs": [{"at": "2026-10-29T12:31:21+08:00", "by": "lead", "from": "pending", "to": "running", "note": "Reviewing and merging wave11/t35"}, {"at": "2026-10-29T12:31:21+08:00", "by": "lead", "from": "running", "to": "done", "note": "Reviewed the builder guard and the frozen-preset revert (3 files, +48/-17); no product code and no fixture database change; drift guard 1 passed in 7.5s and fast lane 346 passed on main after merge dc3498f."}]}], "note": "", "exec": {}}, {"id": "T-006", "title": "acceptance, release 0.4.0 and the wave-11 record", "owner": "lead", "status": "pending", "deps": [], "blocks": [{"id": "T-006#B-001", "title": "wave 11 acceptance on main", "kind": "impl", "status": "pending", "owner": "lead", "doc": "Lead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository presets: tm init plus tm check plus tm schema plan for molbio, cellbio, angenet and [molbio, cellbio]; then a scratch ledger with boxes G (grid9x9, two tubes), H (grid96), R (rack with a tube), S (slotless with two tubes) and an empty freezer F and walk every bullet of the Acceptance section of docs/issues/002-box-views.md: exact view set and shapes, name refusals (slots, a 59-character name, a case-only duplicate), box move into a grid refused, tm aliquot status consumed clears the position and the event keeps the old one, tm aliquot status stored without a position refused, tm aliquot move restores stored, dropping a per-box view by hand fails tm check and tm schema apply recreates it, tm export/tm import round-trip without kind views, migration/spec/4-to-5 on a copy of the w34 fixture, migration/presets/base/3-to-4 on the migrated copy with an empty tm schema plan. Verify git status is clean and that no stray temporary files were left in the repository. Paste commands and outputs into the run note.", "input": "", "output": "", "command": "", "done_when": ["Fast lane and full suite green on main; every acceptance bullet of docs/issues/002-box-views.md demonstrated with recorded commands and outputs; init/check/plan clean for all four preset combinations; both migration steps verified on copies; no real ledger touched; repository clean."], "artifacts": [], "deps": ["T-001#B-002", "T-002#B-002", "T-003#B-003", "T-004#B-002", "T-005#B-002"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:01:09+08:00", "runs": []}, {"id": "T-006#B-002", "title": "release 0.4.0, wave-11 record and handover", "kind": "impl", "status": "pending", "owner": "lead", "doc": "Lead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-delivery.md: what shipped, decisions worth remembering (including the Lead decision that in-stock means physically placed, so spec 4-to-5 refuses in-stock aliquots without a position; the per-box view shapes; the base 3-to-4 rename), verification evidence, the upgrade order for a spec-4/base-3 ledger, and open items (real zsqlab10 upgrade needs the user, box schemas are a separate issue, tm upgrade proposal remains open). Retire docs/issues/002-box-views.md (delete it, it is delivered) and update docs/README, the wave-10 record open items, and plans/wave11 (close the plan, record the final state). Commit plans/ with the docs. Do not push to origin and do not touch a real ledger.", "input": "", "output": "", "command": "", "done_when": ["Version 0.4.0 committed and tagged; docs/records/wave11-delivery.md exists and is linked from docs/README; docs/issues/002-box-views.md retired; wave-10 open items updated; plans/wave11 closed and committed; full suite still green on the release commit."], "artifacts": [], "deps": ["T-006#B-001"], "review_of": "", "feedback": "", "exec": {}, "status_since": "2026-10-29T12:01:09+08:00", "runs": []}], "note": "", "exec": {}}], "log": [{"at": "2026-10-29T11:57:27+08:00", "actor": "agent", "kind": "created", "text": "建立 plan：Wave 11: one view per box (spec 5, ticket 30)"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-001「31 schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5」", "ref": "T-001"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-002「32 behavior layer: box lifecycle, position follows in stock, import/export」", "ref": "T-002"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-003「33 presets: grid96 -> grid8x12, base 3->4, spec docs」", "ref": "T-003"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-004「34 migration: spec 4->5 and a spec-4 fixture」", "ref": "T-004"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-005「35 wave-10 follow-up: legacy molbio-v1 fixture drift guard」", "ref": "T-005"}, {"at": "2026-10-29T11:57:41+08:00", "actor": "lead", "kind": "task", "text": "新增任务 T-006「acceptance, release 0.4.0 and the wave-11 record」", "ref": "T-006"}, {"at": "2026-10-29T11:58:12+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-001#B-001「implement the schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5」", "ref": "T-001#B-001"}, {"at": "2026-10-29T11:58:12+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-001#B-002「review and merge the schema layer」", "ref": "T-001#B-002"}, {"at": "2026-10-29T11:59:54+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-002#B-001「implement box lifecycle and position-follows-in-stock in core objects, CLI and CSV」", "ref": "T-002#B-001"}, {"at": "2026-10-29T11:59:54+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-002#B-002「review and merge the behavior layer」", "ref": "T-002#B-002"}, {"at": "2026-10-29T12:00:20+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-003#B-001「rename grid96 to grid8x12, bump base to 4, update spec docs」", "ref": "T-003#B-001"}, {"at": "2026-10-29T12:00:20+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-003#B-002「finalize the base 3-to-4 migration step against the spec-5 fixture」", "ref": "T-003#B-002"}, {"at": "2026-10-29T12:00:21+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-003#B-003「review and merge the preset rename and spec docs」", "ref": "T-003#B-003"}, {"at": "2026-10-29T12:00:47+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-004#B-001「build a spec-4 fixture, implement migration/spec/4-to-5 with its tests」", "ref": "T-004#B-001"}, {"at": "2026-10-29T12:00:47+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-004#B-002「review and merge the spec 4-to-5 migration」", "ref": "T-004#B-002"}, {"at": "2026-10-29T12:00:47+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-005#B-001「fix the legacy molbio-v1 fixture drift guard」", "ref": "T-005#B-001"}, {"at": "2026-10-29T12:00:47+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-005#B-002「review and merge the legacy fixture fix」", "ref": "T-005#B-002"}, {"at": "2026-10-29T12:01:09+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-006#B-001「wave 11 acceptance on main」", "ref": "T-006#B-001"}, {"at": "2026-10-29T12:01:09+08:00", "actor": "lead", "kind": "block", "text": "新增块 T-006#B-002「release 0.4.0, wave-11 record and handover」", "ref": "T-006#B-002"}, {"at": "2026-10-29T12:01:31+08:00", "actor": "lead", "kind": "block", "text": "T-006#B-001 改了 类型", "ref": "T-006#B-001"}, {"at": "2026-10-29T12:01:31+08:00", "actor": "lead", "kind": "summary", "text": "Wave 11 = ticket 30 / docs/issues/002-box-views.md (spec 5). Plan: five workstreams in separate worktrees. w31 schema layer (per-box view SQL, diff reconciliation, tm check drift, SPEC_VERSION 5, name helper, generated data rules); w32 behavior layer (box lifecycle creates views, grid tube-only, position follows in stock, import/export); w33 presets and spec docs (grid96 -> grid8x12, base 4, base/3-to-4, docs); w34 spec/4-to-5 migration plus a checked-in spec-4 fixture/builder; w35 wave-10 follow-up (legacy molbio-v1 fixture drift guard). Merge order: w31, w32, w34, w33, w35; then acceptance, release 0.4.0, record. w32 starts with the position rules and is woken for integration after w31; w33 starts with the preset rename and docs and is woken for the base step after w31/w32/w34; w34 starts after w31/w32 merge.", "ref": ""}, {"at": "2026-10-29T12:01:31+08:00", "actor": "lead", "kind": "decision", "text": "Lead decisions for wave 11. (1) Design source is docs/issues/002-box-views.md; its settled decisions are not re-opened. (2) Interface contract: ddl.view_statements stops emitting box kind views; ddl.box_view_statements(schema, boxes with id/name/kind) emits v_box_<box name> in the grid-pivot / named / slotless shapes; model.box_name_problem(name, existing) owns the view-safety rule; diff.build_plan derives the desired per-box views from live box rows and treats any v_box_* outside the core views as managed. (3) In stock means physically placed: an aliquot has box_id (and slot when slotted) exactly when its status is in stock. spec/4-to-5 therefore refuses, listing rows and the tm aliquot move command, if an in-stock aliquot has no position, besides the two refusals named in the issue. (4) A not-in-stock change clears the position and records it on the same status/use event in from_*; a move of a not-in-stock aliquot restores the single in-stock status or asks for --status. (5) Upgrade order for a spec-4/base-3 ledger: migration/spec/4-to-5 first (ledger keeps its own base v3 copy), then migration/presets/base/3-to-4. (6) No real ledger is touched; zsqlab10 upgrade is a user-run follow-up, and box schemas stay out of scope.", "ref": ""}, {"at": "2026-10-29T12:04:25+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-001: pending → running（behavior layer turn 1: position rules）", "ref": "T-002#B-001"}, {"at": "2026-10-29T12:05:07+08:00", "actor": "agent", "kind": "status", "text": "T-003#B-001: pending → running（preset rename and spec docs）", "ref": "T-003#B-001"}, {"at": "2026-10-29T12:05:39+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-001: pending → running（schema layer started）", "ref": "T-001#B-001"}, {"at": "2026-10-29T12:08:51+08:00", "actor": "lead", "kind": "decision", "text": "Worktree path note: the harness creates teammate worktrees under .agents/worktrees/wave11/tXX (branch wave11/tXX), not .dsh/gitworktree/wXX. The .dsh/gitworktree paths in the block docs are placeholders; the real worktrees are .agents/worktrees/wave11/t31 (w31), /t32 (w32), /t33 (w33), /t34 (w34, later), /t35 (w35). Lead review and merge use those paths.", "ref": ""}, {"at": "2026-10-29T12:09:32+08:00", "actor": "agent", "kind": "status", "text": "T-005#B-001: pending → running（legacy fixture drift guard）", "ref": "T-005#B-001"}, {"at": "2026-10-29T12:29:33+08:00", "actor": "agent", "kind": "status", "text": "T-005#B-001: running → review（artifact: wave11/t35 @ 9b69ddd (clean tree). Root cause: spec-4 commit 6faa557 added status_sets/kind statuses to tests/data/presets/molbio-v1/, the 0.1.2 builder input; that loader rejects them so the rebuild failed and the guard skipped. Fix: restore both frozen v1 presets to their v1 bytes (base.yaml == 3ec57d5 presets/base.yaml; the rebuilt preset copies are byte-identical to the checked-in fixture, so tests/data/ledgers/molbio-v1 is untouched) and make build_fixtures.py reject later-spec keys up front with a clear BuildError. No edit to tests/test_migrate.py. Evidence: builder --out /tmp/molbio-v1-probe -> 24 tables, 18 views, 20 dolt_tests, spec_version 2, preset_versions base/molbio 1; drift guard 1 passed (no skip); full suite 845 passed, 0 skipped (baseline 844 passed + 1 skip).）", "ref": "T-005#B-001"}, {"at": "2026-10-29T12:31:21+08:00", "actor": "agent", "kind": "exec", "text": "T-005#B-001: 线程登记已清除（@w35 收工）", "ref": "T-005#B-001"}, {"at": "2026-10-29T12:31:21+08:00", "actor": "agent", "kind": "status", "text": "T-005#B-001: review → done（Root cause: wave-10 commit 6faa557 added spec-4 status_sets/statuses keys to tests/data/presets/molbio-v1/, the 0.1.2 checkout input; the legacy loader rejected them so the rebuild failed and the drift guard skipped. Frozen inputs restored to v1 bytes; builder now fails fast on later-spec keys; checked-in fixture untouched. Drift guard runs (1 passed). Full suite in the worktree: 845 passed, 0 skipped (baseline 844 + the skip gone).）", "ref": "T-005#B-001"}, {"at": "2026-10-29T12:31:21+08:00", "actor": "agent", "kind": "status", "text": "T-005#B-002: pending → running（Reviewing and merging wave11/t35）", "ref": "T-005#B-002"}, {"at": "2026-10-29T12:31:21+08:00", "actor": "agent", "kind": "exec", "text": "T-005#B-002: 线程登记已清除（@lead 收工）", "ref": "T-005#B-002"}, {"at": "2026-10-29T12:31:21+08:00", "actor": "agent", "kind": "status", "text": "T-005#B-002: running → done（Reviewed the builder guard and the frozen-preset revert (3 files, +48/-17); no product code and no fixture database change; drift guard 1 passed in 7.5s and fast lane 346 passed on main after merge dc3498f.）", "ref": "T-005#B-002"}, {"at": "2026-10-29T12:37:30+08:00", "actor": "agent", "kind": "status", "text": "T-003#B-001: running → review（turn 1 done on wave11/t33 (8a78113): base 4 grid8x12, spec 03/05/06/08 + README/skills, base/3-to-4 draft; fast 346 passed, test_presets 62, test_docs_commands 5. Finalize + fixture test wait for w31/w32/w34.）", "ref": "T-003#B-001"}, {"at": "2026-10-29T13:35:27+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-001: running → running（turn 1 done: part B committed 13ca169 on wave11/t32; main merged (a839e59); targeted 66 green; waiting for w31 merge）", "ref": "T-002#B-001"}, {"at": "2026-10-29T14:09:32+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-001: running → review（Schema layer delivered on branch wave11/t31, commit 1c698d3 (worktree .agents/worktrees/wave11/t31, tree clean, not merged/pushed). Artifact: the branch/commit itself plus the scratch-ledger demo in /tmp/w31-demo (molbio ledger: G grid9x9, R rack, S shelf, F freezer -> schema apply created exactly v_box_G/R/S/F + core views; v_box_G 9 rows A-H,J with columns row,1..9 and A1/A2/B2 ids; v_box_R 10 rows with 1|id; v_box_S 2 rows; v_box_F 0 rows; hand-dropping v_box_G made tm check fail with core_box_views and tm schema apply recreated it, check OK). Fast lane 352 passed; targeted suites test_ddl/test_schema_diff/test_schema_model/test_validation 229 passed. Full suite measured before the final pure-expectation test updates: 43 failed/825 passed/1 skipped, all failures cross-workstream: w32 box read side still reads the removed v_box_<kind> views (core/objects.py:943, ops/find.py:271, ops/io_csv.py:2141), w32 creation path leaves stored aliquots unplaced, w32 box add/import does not create per-box views yet, and w33 turn 2b owns the old-step test_migrate check assertions that now see the spec-5 position rule. Details in my report to the Lead.）", "ref": "T-001#B-001"}, {"at": "2026-10-29T14:11:26+08:00", "actor": "agent", "kind": "exec", "text": "T-001#B-001: 线程登记已清除（@w31 收工）", "ref": "T-001#B-001"}, {"at": "2026-10-29T14:11:26+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-001: review → done（Schema layer accepted: per-box view SQL for the three geometries, plan/check reconciliation from live box rows with RenameMap kind translation and case-insensitive view names, SPEC_VERSION 5, name helper, position/grid/name core rules, blocking core_box_views drift result. Fast 352, targeted schema suites 229. Full-suite failures are cross-workstream (w32 read paths/creation/box-add views, w33 old-step test_migrate).）", "ref": "T-001#B-001"}, {"at": "2026-10-29T14:11:26+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-002: pending → running（Reviewing and merging wave11/t31）", "ref": "T-001#B-002"}, {"at": "2026-10-29T14:11:26+08:00", "actor": "agent", "kind": "exec", "text": "T-001#B-002: 线程登记已清除（@lead 收工）", "ref": "T-001#B-002"}, {"at": "2026-10-29T14:11:26+08:00", "actor": "agent", "kind": "status", "text": "T-001#B-002: running → done（Reviewed ddl/diff/model/tests_gen, conftest helper, golden diff and the minimal view-expectation edits; verified fast 352 and targeted 229 in the worktree; merged into main 5ab0a69. Full-suite gate moves to w32 integration.）", "ref": "T-001#B-002"}, {"at": "2026-10-29T14:13:57+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-001: pending → running（spec-4 fixture and migration skeleton）", "ref": "T-004#B-001"}, {"at": "2026-10-29T15:38:12+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-001: running → running（turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2）", "ref": "T-004#B-001"}, {"at": "2026-10-29T17:10:56+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-001: running → review（branch wave11/t32, head af0437f (part B 13ca169 + part A af0437f). Full suite: 879 passed / 1 failed / 0 skipped - only test_migrate::test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path, approved by the Lead (molbio 2-to-3 now needs spec 5; migration/spec/4-to-5 is w34's step, w33 owns the ordering test after that). Targeted suites green; fixture fallout placed or seeded not-in-stock in test_cellbio/test_angenet/test_presets/test_migrate/test_renumber; tests/data/ledgers/molbio-v1 clean, no stray LOCK files.）", "ref": "T-002#B-001"}, {"at": "2026-10-29T17:12:59+08:00", "actor": "agent", "kind": "exec", "text": "T-002#B-001: 线程登记已清除（@w32 收工）", "ref": "T-002#B-001"}, {"at": "2026-10-29T17:12:59+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-001: review → done（Behavior layer accepted: position/creation invariant both directions, box add/move name rule and grid tube-only, per-box view creation on add and import in the same commit, all box read paths via box JOIN box_<kind> (objects._list_records, ops/find.py, io_csv export), CSV import rules; fixture fallout fixed by placing aliquots or seeding pending, no check assertions relaxed. Full suite in the worktree: 879 passed / 1 failed / 0 skipped; the failure is the approved upgrade-order test that needs migration/spec/4-to-5 (w33 in turn 2b).）", "ref": "T-002#B-001"}, {"at": "2026-10-29T17:12:59+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-002: pending → running（Reviewing and merging wave11/t32）", "ref": "T-002#B-002"}, {"at": "2026-10-29T17:12:59+08:00", "actor": "agent", "kind": "exec", "text": "T-002#B-002: 线程登记已清除（@lead 收工）", "ref": "T-002#B-002"}, {"at": "2026-10-29T17:12:59+08:00", "actor": "agent", "kind": "status", "text": "T-002#B-002: running → done（Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.）", "ref": "T-002#B-002"}, {"at": "2026-10-29T17:59:27+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-001: running → review（artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped.）", "ref": "T-004#B-001"}, {"at": "2026-10-29T18:03:04+08:00", "actor": "agent", "kind": "exec", "text": "T-004#B-001: 线程登记已清除（@w34 收工）", "ref": "T-004#B-001"}, {"at": "2026-10-29T18:03:04+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-001: review → done（Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped.）", "ref": "T-004#B-001"}, {"at": "2026-10-29T18:03:05+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-002: pending → running（Reviewing and merging wave11/t34）", "ref": "T-004#B-002"}, {"at": "2026-10-29T18:03:05+08:00", "actor": "agent", "kind": "exec", "text": "T-004#B-002: 线程登记已清除（@lead 收工）", "ref": "T-004#B-002"}, {"at": "2026-10-29T18:03:05+08:00", "actor": "agent", "kind": "status", "text": "T-004#B-002: running → done（Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3.）", "ref": "T-004#B-002"}], "rev": "7f5909bc11e8"};
+// 视图渲染失败时把原因显示出来，而不是留一片空白
+function boom(where, e){
+  const el = document.getElementById('graph') || document.body;
+  el.insertAdjacentHTML('afterbegin',
+    `<pre style="color:var(--blocked);white-space:pre-wrap;padding:8px">渲染失败 @${where}: ${e && (e.stack||e.message||e)}</pre>`);
+  console.error(where, e);
+}
+const view = (name, fn) => { try { fn(); } catch (e) { boom(name, e); } };
+// 图例顺序 = 一个块要走的流程：待批准(要人点头) → 等前置 → 待认领 → 已认领 → 进行中 → 待评审 → 已完成，旁支（已取消）放最后
+/* 状态色**只从共用主题取**（theme.css 里的 --blocked / --running / …）：
+   这里再写一遍十六进制，两个页面迟早各长一套颜色。键序 = 图例顺序 = 一个块的一生。 */
+const C = {blocked:'var(--blocked)',waiting:'var(--waiting)',ready:'var(--ready)',claimed:'var(--claimed)',
+           running:'var(--running)',review:'var(--review)',done:'var(--done)',cancelled:'var(--cancelled)'};
+const ZH = {blocked:'待批准',done:'已完成',running:'进行中',claimed:'已认领',
+            review:'待评审',ready:'待认领',waiting:'等前置',pending:'待排',
+            cancelled:'已取消'};
+const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* 块文档：``` 围起来的分成等宽 <pre>（保留空格，能画目录树/命令块），其余仍按 \n 换行 */
+const docHtml = d => String(d??'').split('```')
+  .map((s,i) => i%2
+     ? `<pre class="cb">${esc(s.replace(/^\n/,'').replace(/\n$/,''))}</pre>`
+     : (s.trim() ? `<p class="doc">${esc(s.replace(/^\n/,'').replace(/\n$/,'')).replace(/\n/g,'<br>')}</p>` : ''))
+  .join('');
+
+let BLOCKS = [], TASKS = new Map();
+PLAN.tasks.forEach(t => { TASKS.set(t.id, t); t.blocks.forEach(b => BLOCKS.push(b)); });
+const byId = id => BLOCKS.find(b => b.id === id);
+const taskOf = b => TASKS.get(b.id.split('#')[0]);
+// 返工次数 = 被打回几次。打回 = 从「待评审」走出去、且不是通过（review → claimed/running/blocked）。
+// 块本身没变、owner 也没变，所以它不是新节点：状态上就是回到「已认领」再重走一遍。
+// （老的 plan.json 里可能还留着 to === 'needs_changes' 的 run，一并算。）
+const reworkCount = b => (b.runs || []).filter(r =>
+  r.to === 'needs_changes' || (r.from === 'review' && r.to !== 'done')).length;
+
+// 块的实际前置 = 自身 deps ∪ 所属任务的任务级 deps 里的每一个块（与 plan.py 的 block_deps 一致）
+function depBlocks(b){
+  const out = new Set(b.deps || []);
+  if (b.review_of) out.add(b.review_of);
+  const t = taskOf(b);
+  ((t && t.deps) || []).forEach(tid => {
+    const dt = TASKS.get(tid); if (!dt) return;
+    dt.blocks.forEach(x => { if (x.status !== 'cancelled') out.add(x.id); });
+  });
+  return [...out].filter(id => byId(id));
+}
+function eff(b){
+  if (b.status !== 'pending') return b.status;
+  for (const d of depBlocks(b)){
+    const db = byId(d);
+    if (!db || db.status !== 'done') return 'waiting';
+  }
+  // 待认领 = 依赖就绪 **且没人接**；有 owner 的块是「已认领」（有人接了、还没开干）
+  return b.owner ? 'claimed' : 'ready';
+}
+// 画边用的前置：显式 deps + review_of + 任务级交接（只从本任务首块引到前置任务的收尾块）
+function edgeDeps(b){
+  const out = new Set(b.deps || []);
+  if (b.review_of) out.add(b.review_of);
+  const t = taskOf(b);
+  if (t){
+    const live = t.blocks.filter(x => x.status !== 'cancelled');
+    if (live.length && live[0].id === b.id){
+      (t.deps || []).forEach(tid => {
+        const dt = TASKS.get(tid); if (!dt) return;
+        const dl = dt.blocks.filter(x => x.status !== 'cancelled');
+        if (dl.length) out.add(dl[dl.length - 1].id);
+      });
+    }
+  }
+  return [...out].filter(id => byId(id));
+}
+function depth(visible){
+  // 只在"可见子图"里算深度：被隐藏（已完成）的前置当作已折叠，否则它们会把可见节点推到屏幕外
+  const D = {}, seen = new Set();
+  const go = id => {
+    if (id in D) return D[id];
+    const b = byId(id); if (!b || seen.has(id)) return 0;
+    seen.add(id);
+    let d = 0;
+    for (const dep of depBlocks(b)) if (!visible || visible.has(dep)) d = Math.max(d, go(dep)+1);
+    seen.delete(id);
+    return D[id] = d;
+  };
+  BLOCKS.forEach(b => go(b.id));
+  return D;
+}
+
+function header(){
+  const live = BLOCKS.filter(b => b.status !== 'cancelled');
+  const done = live.filter(b => b.status === 'done').length;
+  const pct = live.length ? Math.round(100*done/live.length) : 0;
+  document.getElementById('title').textContent = PLAN.title;
+  document.getElementById('goal').textContent = PLAN.goal || '';
+  document.getElementById('prog').textContent = `进度 ${done}/${live.length} 块 · ${pct}%`;
+  document.getElementById('status').textContent = `状态 ${PLAN.status}`;
+  document.getElementById('updated').textContent = (PLAN.updated_at||'').slice(0,16).replace('T',' ');
+  document.getElementById('who').textContent =
+    (PLAN.participants||[]).map(p => `${p.label}(${p.kind})`).join(' · ');
+  document.getElementById('slug').textContent = PLAN.slug;
+  document.getElementById('fill').style.width = pct + '%';
+  document.title = `PLAN · ${PLAN.title}`;
+}
+
+function nownext(){
+  const order = {blocked:0, review:1, running:2, claimed:3, ready:4};
+  const rows = BLOCKS.map(b => [eff(b), b]).filter(([e,b]) => e in order)
+    .sort((a,b) => (order[a[0]]-order[b[0]]) || a[1].id.localeCompare(b[1].id));
+  const el = document.getElementById('nownext');
+  if (!rows.length){ el.innerHTML = '<span class="sub">没有在途工作。</span>'; return; }
+  const CAP = 12, shown = rows.slice(0, CAP);
+  el.innerHTML = shown.map(([e,b]) => `
+    <div class="nowcard" data-id="${esc(b.id)}" style="border-left:4px solid ${C[e]}" title="点开看详情">
+      <b>${esc(b.title)}</b>
+      <span class="sub">${esc(b.id)} · ${ZH[e]||e} · @${esc(b.owner||'未指派')}${
+        (b.exec && b.exec.by) ? ` · 在做 @${esc(b.exec.by)}` : ''}</span>
+      ${b.feedback ? `<span class="sub" style="color:${C.blocked}">⚠ ${esc(b.feedback)}</span>`:''}
+    </div>`).join('')
+    + (rows.length > shown.length
+        ? `<div class="sub" style="padding:4px 0">…… 另有 ${rows.length - shown.length} 条同类块（多为同一个 owner 的待批准项）—— 去下面的任务图点节点看全部。</div>`
+        : '');
+  // 卡片本身也能点开详情（原来只能去任务图里点节点）
+  el.querySelectorAll('.nowcard').forEach(c =>
+    c.onclick = () => detail(byId(c.dataset.id), {reveal:true}));
+}
+
+function graph(){
+  const hideDone = document.getElementById('hidedone').checked;
+  const shown = BLOCKS.filter(b => !(hideDone && b.status === 'done'));
+  const visible = new Set(shown.map(b => b.id));
+  const H = 88, LAB = 24, GY = 26, PAD = 18;
+  const g = document.getElementById('graph');
+  [...g.querySelectorAll('.node,.lane')].forEach(n => n.remove());
+  const svg = document.getElementById('edges');
+  const pos = {};
+  const lanes = PLAN.tasks
+    .map(t => ({t, blocks: t.blocks.filter(b => visible.has(b.id))}))
+    .filter(l => l.blocks.length);
+
+  // 节点宽度与「一行几块」都按 #graph 的实际宽度算（窗口一改就重算，见文件末尾的 resize）：
+  // 先取宽度放得下的列数（列宽不低于 WMIN），再把剩余宽度摊到每列 —— 宽屏上块更宽、一行放得更多，
+  // 不再无故折到第二行；列数不超过「块最多的那条泳道」，多出来的列本来也是空的。
+  const mostBlocks = lanes.reduce((m, l) => Math.max(m, l.blocks.length), 1);
+  const avail = Math.max(180, g.clientWidth);
+  const WMIN = 216, WMAX = 380, GXMIN = 56, GAPCAP = 120;
+  const byWidth = Math.floor((avail - 2 * PAD + GXMIN) / (WMIN + GXMIN));
+  const PER = Math.max(1, Math.min(mostBlocks, byWidth));
+  const W = Math.round(Math.min(WMAX, Math.max(WMIN, (avail - 2 * PAD - (PER - 1) * GXMIN) / PER)));
+  // 宽度被 WMAX/WMIN 夹住后剩下的空间摊到列间距上（有上限，别把边拉成一条长线）
+  const GX = PER > 1
+    ? Math.min(GAPCAP, Math.max(GXMIN, Math.floor((avail - 2 * PAD - PER * W) / (PER - 1))))
+    : GXMIN;
+  let maxX = W + PAD, y = PAD;
+
+  lanes.forEach(l => {
+    const sts = l.blocks.map(eff);
+    let st = 'waiting';
+    if (sts.every(s => s === 'done')) st = 'done';
+    else if (sts.some(s => ['running','claimed','review'].includes(s))) st = 'running';
+    else if (sts.some(s => s === 'blocked')) st = 'blocked';
+    else if (sts.some(s => s === 'ready')) st = 'ready';
+    const lab = document.createElement('div');
+    lab.className = 'lane';
+    lab.style.cssText = `left:${PAD}px;top:${y}px;right:${PAD}px`;
+    lab.innerHTML = `<i style="background:${C[st]||C.waiting}"></i>
+      <b>${esc(l.t.id)} ${esc(l.t.title)}</b>
+      <span class="lz">${ZH[st]||st} · @${esc(l.t.owner || '—')}</span>`;
+    g.appendChild(lab);
+    const top = y + LAB;
+    // 一行最多 PER 块（PER 由上面的可用宽度算出），放不下的才折到下一行
+    let rowsN = 1;
+    l.blocks.forEach((b, j) => {
+      const row = Math.floor(j / PER), colIdx = j % PER;
+      rowsN = Math.max(rowsN, row + 1);
+      const x = PAD + colIdx * (W + GX);
+      const ny = top + row * (H + GY);
+      pos[b.id] = {x, y: ny};
+      const e = eff(b), rw = reworkCount(b), n = document.createElement('div');
+      n.className = 'node ' + e + (b.status === 'done' ? ' done' : '');
+      n.dataset.id = b.id;
+      n.style.cssText = `left:${x}px;top:${ny}px;width:${W}px;border-left-color:${C[e]||C.waiting}`;
+      // 「认领的人」与「在做的人」可能不是同一个（记录员认领、子代理在做）：
+      // 一样就写 @A ⚙，不一样写 @A→@B；完整线程路径放在 title 里（悬停可见）
+      const ex = b.exec || {};
+      const who = !ex.by ? esc(b.owner || '—')
+        : (ex.by === b.owner ? `${esc(b.owner || '—')} ⚙` : `${esc(b.owner || '—')}→${esc(ex.by)}`);
+      n.innerHTML = `<div class="id">${esc(b.id)} · ${esc(b.kind)}</div>
+        <div class="ttl">${esc(b.title)}</div>
+        <div class="own"><span>${ZH[e]||e}${rw ? ` ⟲${rw}` : ''}</span><span>@${who}</span></div>`;
+      if (ex.by){
+        n.title = `在做 @${ex.by}`
+          + (ex.delegation ? ` · 线程 ${ex.delegation}#${ex.task_index ?? 0}` : '')
+          + (ex.transcript ? `\n${ex.transcript}` : '');
+      }
+      n.onclick = () => detail(b, {reveal:false});
+      g.appendChild(n);
+      maxX = Math.max(maxX, x + W);
+    });
+    y = top + rowsN * (H + GY);
+  });
+
+  const maxY = y - GY + PAD;
+  svg.setAttribute('width', maxX + PAD); svg.setAttribute('height', maxY);
+  svg.setAttribute('viewBox', `0 0 ${maxX + PAD} ${maxY}`);
+  svg.style.width = (maxX + PAD) + 'px'; svg.style.height = maxY + 'px';
+  let paths = '';
+  BLOCKS.forEach(b => {
+    if (!pos[b.id]) return;
+    edgeDeps(b).forEach(d => {
+      if (!pos[d]) return;
+      const a = pos[d], z = pos[b.id];
+      const x1 = a.x + W, y1 = a.y + H/2, x2 = z.x, y2 = z.y + H/2;
+      paths += `<path d="M${x1},${y1} C${x1+40},${y1} ${x2-40},${y2} ${x2},${y2}"
+        fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="1.6"/>`;
+    });
+  });
+  svg.innerHTML = `<g style="color:var(--ink)">${paths}</g>`;
+  g.style.minHeight = (maxY + 10) + 'px';
+  if (CUR) markSel(CUR.id);            // 重画后恢复选中高亮
+}
+
+let CUR = null;                        // 当前在详情里看的块
+// 初始提示就是「清空后」的样子：直接取 DOM 里那份，别在 JS 里再抄一遍文案
+// （innerHTML 这里不是外部输入：取的就是本文件 <div id="detail"> 里那段静态提示，写回去也是同一段）
+const DETAIL_HINT = document.getElementById('detail').innerHTML;
+function markSel(bid){
+  document.querySelectorAll('.node,.nowcard').forEach(m =>
+    m.classList.toggle('sel', m.dataset.id === bid));
+}
+function clearDetail(){                // 只清内容：详情栏常驻，所以布局一点都没动（不要再重排画布）
+  document.getElementById('detail').innerHTML = DETAIL_HINT;
+  CUR = null; markSel(null);
+}
+function detail(b, opts){
+  if (!b) return;
+  CUR = b;
+  const e = eff(b), rw = reworkCount(b), t = TASKS.get(b.id.split('#')[0]);
+  const ex = b.exec || {};
+  document.getElementById('detail').innerHTML = `
+    <h3>${esc(b.title)}</h3>
+    <div class="kv"><span class="pill" style="background:${C[e]||C.waiting}">${ZH[e]||e}</span>
+      &nbsp;<code>${esc(b.id)}</code> · ${esc(b.kind)} · 认领 @${esc(b.owner||'未指派')}</div>
+    ${ex.by ? `<b>谁在做</b>
+      <div class="kv">@${esc(ex.by)}${ex.delegation ? ` · 线程 <code>${esc(ex.delegation)}#${ex.task_index ?? 0}</code>` : ''}${
+        ex.started ? ` · 起于 ${esc((ex.started||'').slice(0,16).replace('T',' '))}` : ''}</div>
+      ${ex.transcript ? `<div class="kv"><a href="file://${esc(ex.transcript)}">${esc(ex.transcript)}</a></div>` : ''}
+      ${ex.note ? `<div class="kv">${esc(ex.note)}</div>` : ''}` : ''}
+    ${b.doc ? docHtml(b.doc) : ''}
+    ${(b.done_when||[]).length ? `<b>完成判据</b><ul>${b.done_when.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
+    ${(b.deps||[]).length ? `<b>依赖</b><div class="kv">${b.deps.map(esc).join(' · ')}</div>`:''}
+    ${b.review_of ? `<b>评审对象</b><div class="kv">${esc(b.review_of)}</div>`:''}
+    ${b.feedback ? `<b style="color:${C.blocked}">评审意见</b><div class="kv">${esc(b.feedback)}</div>`:''}
+    ${rw ? `<b>返工</b><div class="kv">⟲ 被打回 ${rw} 次（待评审 →（打回）已认领 →（重做）进行中 →（再送审）待评审，块还是原 owner 的，所以不产生新节点）</div>`:''}
+    ${(b.artifacts||[]).length ? `<b>产物</b><ul>${b.artifacts.map(a=>`<li><code>${esc(a)}</code></li>`).join('')}</ul>`:''}
+    ${t ? `<div class="kv">所属任务：${esc(t.id)} ${esc(t.title)}（${ZH[t.status]||t.status||''}）</div>`:''}
+    ${(b.runs||[]).length ? `<b>run 记录</b>${b.runs.slice().reverse().map(r=>
+        `<div class="run">${esc((r.at||'').slice(0,16).replace('T',' '))} ${esc(r.by||'')}
+         ${esc(r.from||'')}→${esc(r.to||'')}<br>${esc(r.note||'')}</div>`).join('')}`:''}
+  `;
+  markSel(b.id);
+  if (opts && opts.reveal){
+    const n = [...document.querySelectorAll('.node')].find(m => m.dataset.id === b.id);
+    if (n) n.scrollIntoView({block:'nearest', behavior:'smooth'});
+  }
+}
+
+function legend(){
+  // 已取消与等前置同色：图例里用「空心 + 虚线」方框区分，不靠颜色
+  document.getElementById('legend').innerHTML =
+    Object.entries(C).map(([k,v]) => k === 'cancelled'
+      ? `<span><i style="background:transparent;border:1.5px dashed ${v}"></i>${ZH[k]||k}</span>`
+      : `<span><i style="background:${v}"></i>${ZH[k]||k}</span>`).join('')
+    + `<span style="opacity:.85">节点右下 <b>@A→@B</b> = 认领的人 → 此刻在做的人（同一个只写 <b>@A ⚙</b>）；
+       悬停看子代理线程，详情栏里有转录文件的路径</span>`;
+}
+
+function journal(){
+  const el = document.getElementById('journal');
+  const logs = (PLAN.log||[]).slice().reverse();
+  el.innerHTML = logs.length ? logs.map(e =>
+      `<div><b>${esc(e.actor)}</b> [${esc(e.kind)}] ${esc(e.text)}
+       <span style="float:right">${esc((e.at||'').slice(5,16).replace('T',' '))}</span></div>`).join('')
+    : '<div>（空）</div>';
+}
+
+// ── 详情栏：常驻右侧（不是点开才出现，所以点节点不会改动页面布局）；一条分隔线同时改
+//    「详情栏宽」与「画布宽」（画布宽 = 窗口宽 − 详情栏宽，body 让出同样的 padding-right）
+//    必须放在下面 view('graph', …) 之前：先把宽度（含 localStorage 里记着的）定下来，
+//    否则首帧会按默认宽排一遍、再按记住的宽排第二遍（白白跳一次）
+const DWKEY = 'plan.detailw.' + (PLAN.slug || '');
+const DWMIN = 240, CANVASMIN = 360;    // 栏最小宽 / 画布最小宽
+let detailW = null;                    // null = 用 CSS 里的默认宽度（clamp，随窗口伸缩）
+let redrawRAF = 0;
+function scheduleRedraw(){             // 一帧内多次触发只重排一次
+  if (redrawRAF) return;
+  redrawRAF = requestAnimationFrame(() => { redrawRAF = 0; view('graph', graph); });
+}
+function setDetailW(px, redraw){
+  detailW = Math.max(DWMIN, Math.min(Math.round(px), Math.max(DWMIN, window.innerWidth - CANVASMIN)));
+  document.documentElement.style.setProperty('--detail-w', detailW + 'px');
+  if (redraw) scheduleRedraw();
+}
+try { const s = localStorage.getItem(DWKEY); if (s) setDetailW(parseFloat(s), false); } catch(e){}
+(function(){
+  const sp = document.getElementById('splitter');
+  const panel = document.getElementById('detailpanel');
+  let dragging = false;
+  const curW = () => (detailW != null ? detailW : panel.getBoundingClientRect().width);
+  sp.addEventListener('mousedown', ev => {
+    dragging = true; sp.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    ev.preventDefault();
+  });
+  window.addEventListener('mousemove', ev => {
+    if (dragging) setDetailW(window.innerWidth - ev.clientX, true);   // 分隔线跟着指针，画布跟着重排
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false; sp.classList.remove('dragging'); document.body.style.userSelect = '';
+    try { localStorage.setItem(DWKEY, String(detailW)); } catch(e){}
+    scheduleRedraw();
+  });
+  // 焦点在分隔线上时左右方向键微调（左 = 变宽）
+  sp.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    setDetailW(curW() + (ev.key === 'ArrowLeft' ? 24 : -24), true);
+    try { localStorage.setItem(DWKEY, String(detailW)); } catch(e){}
+  });
+})();
+
+view('header', header); view('nownext', nownext); view('legend', legend);
+view('graph', graph); view('journal', journal);
+document.getElementById('detailclear').onclick = clearDetail;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') clearDetail(); });
+document.getElementById('hidedone').onchange = () => view('graph', graph);
+// 窗口尺寸变了：先把详情栏宽度夹进新窗口，再按新宽度重排；拖动窗口会连发 resize，用 rAF 合帧
+window.addEventListener('resize', () => {
+  if (detailW != null) setDetailW(detailW, false);
+  scheduleRedraw();
+});
+</script>
+</body>
+</html>

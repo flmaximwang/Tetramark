@@ -127,7 +127,6 @@ kinds:
 
   bacterial:
     object: stock
-    statuses: tube
     description: A bacterial glycerol stock or culture of a plasmid or strain.
     entity_kinds: [plasmid, strain]
     fields:
@@ -154,7 +153,6 @@ kinds:
 
   plasmid_prep:
     object: stock
-    statuses: tube
     description: A plasmid DNA preparation made from a bacterial culture.
     entity_kinds: [plasmid]
     fields:
@@ -174,7 +172,6 @@ kinds:
 
   protein_prep:
     object: stock
-    statuses: tube
     description: A purified protein preparation derived from a pellet or culture.
     entity_kinds: [construct]
     fields:
@@ -199,7 +196,6 @@ kinds:
 
   pellet:
     object: stock
-    statuses: tube
     description: >-
       A cell pellet harvested from a culture. Aliquot volumes live in the core
       aliquot quantity, matching the zsqlab10 pellet aliquots model.

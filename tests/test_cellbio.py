@@ -477,6 +477,7 @@ def test_add_one_object_of_each_new_kind_and_check(ledger_factory) -> None:
         "--set",
         "species=Homo sapiens",
     )
+    ok_json(ledger, "box", "add", "freezer", "CRYO-1")
     vial = ok_json(
         ledger,
         "stock",
@@ -484,6 +485,8 @@ def test_add_one_object_of_each_new_kind_and_check(ledger_factory) -> None:
         "cell_vial",
         "--entity",
         line["id"],
+        "--box",
+        "CRYO-1",
         "--set",
         "passage=7",
         "--set",
@@ -610,6 +613,7 @@ def test_cell_biosample_appears_under_its_cell_vial_in_lineage(ledger_factory) -
     """Verify bullet 4: ``source_aliquot_id`` makes the sample a descendant."""
     ledger = ledger_factory(["cellbio"], name="cellbio_biosample_lineage")
     line = ok_json(ledger, "entity", "add", "cell_line", "--name", "HEK293T")
+    ok_json(ledger, "box", "add", "freezer", "CRYO-1")
     vial = ok_json(
         ledger,
         "stock",
@@ -617,6 +621,8 @@ def test_cell_biosample_appears_under_its_cell_vial_in_lineage(ledger_factory) -
         "cell_vial",
         "--entity",
         line["id"],
+        "--box",
+        "CRYO-1",
         "--set",
         "passage=7",
         "--quantity",

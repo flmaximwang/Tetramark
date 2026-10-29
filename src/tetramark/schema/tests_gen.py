@@ -8,9 +8,11 @@ by the app to decide whether a ledger is valid.
 Three groups of tests are generated from the effective schema:
 
 ``core``
-    The invariants the DDL cannot express (spec §3): slot capacity,
-    aliquot-vs-child-box exclusivity, box nesting acyclicity, stored aliquots
-    in slotted boxes, and slotless-box capacity.
+    The invariants the DDL cannot express (spec §3, §5): slot capacity,
+    aliquot-vs-child-box exclusivity, box nesting acyclicity, position
+    follows in stock (a not-in-stock aliquot has no position; an in-stock one
+    is placed), grid boxes hold tubes only, box names that can name their
+    view, and slotless-box capacity.
 ``schema:<kind>``
     Field patterns, required refs and the ``entity_kinds`` restriction.
 ``rules:<preset|local>[:info]``
@@ -33,11 +35,22 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from tetramark.driver.base import Driver, literal
-from tetramark.schema.ddl import _in_stock_sql, table_name
+from tetramark.errors import LedgerError
+from tetramark.schema.ddl import (
+    _in_stock_sql,
+    box_view_statements,
+    is_managed_view,
+    table_name,
+    view_body,
+)
 from tetramark.schema.model import (
+    BOX_NAME_MAX_LENGTH,
+    BOX_VIEW_PREFIX,
+    CORE_VIEW_NAMES,
     EffectiveSchema,
     Field,
     FieldType,
+    GeometryType,
     ObjectType,
     Rule,
     RuleExpect,
@@ -54,6 +67,7 @@ __all__ = [
     "CheckReport",
     "TestDefinition",
     "TestResult",
+    "box_view_drift",
     "generate_tests",
     "install_tests",
     "run_check",
@@ -293,47 +307,175 @@ def _acyclic_test() -> TestDefinition:
     )
 
 
-def _in_stock_slot_test(schema: EffectiveSchema) -> TestDefinition | None:
-    """An **in-stock** aliquot in a slotted box has a slot (spec §3, §4)."""
-    slotted = _slotted_box_kinds(schema)
-    if not slotted:
+def _in_stock_position_test(schema: EffectiveSchema) -> TestDefinition | None:
+    """An **in-stock** aliquot is physically placed (spec 5).
+
+    ``box_id`` is required, and ``slot`` is required when the box is slotted:
+    a stored tube that is in a box has to name its slot, while a slotless box
+    (freezer/shelf/drawer) has none.
+    """
+    if not schema.stock_kinds:  # pragma: no cover - a ledger always has stock
         return None
     in_stock = _in_stock_sql(
         schema, kind=f"st.{_q('kind')}", status=f"a.{_q('status')}"
     )
-    if in_stock == "FALSE":
+    if in_stock == "FALSE":  # pragma: no cover - status sets define in-stock
         return None
+    slotted = _slotted_box_kinds(schema)
+    missing: list[str] = [f"a.{_q('box_id')} IS NULL"]
+    if slotted:
+        missing.append(
+            f"(b.{_q('kind')} IN ("
+            + ", ".join(_lit(name) for name in slotted)
+            + f") AND a.{_q('slot')} IS NULL)"
+        )
     condition = (
         f"({in_stock})\n"
-        f"  AND a.{_q('slot')} IS NULL\n"
-        f"  AND b.{_q('kind')} IN ("
-        + ", ".join(_lit(name) for name in slotted)
-        + ")"
+        "  AND (\n    " + "\n    OR ".join(missing) + "\n  )"
     )
-    body = (
-        f"SELECT a.{_q('id')}\n"
+    source = (
         f"FROM {_q('aliquot')} a\n"
         f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
-        f"JOIN {_q('box')} b ON b.{_q('id')} = a.{_q('box_id')}\n"
-        f"WHERE {condition}"
+        f"LEFT JOIN {_q('box')} b ON b.{_q('id')} = a.{_q('box_id')}"
     )
+    body = f"SELECT a.{_q('id')}\n{source}\nWHERE {condition}"
     detail = (
         f"SELECT a.{_q('id')} AS {_q('aliquot_id')}, "
-        f"a.{_q('stock_id')} AS {_q('stock_id')}, "
         f"a.{_q('status')} AS {_q('status')}, "
-        f"b.{_q('name')} AS {_q('box')}\n"
-        f"FROM {_q('aliquot')} a\n"
-        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}\n"
-        f"JOIN {_q('box')} b ON b.{_q('id')} = a.{_q('box_id')}\n"
-        f"WHERE {condition}\n"
-        f"ORDER BY a.{_q('id')}"
+        f"b.{_q('name')} AS {_q('box')}, "
+        f"b.{_q('kind')} AS {_q('box_kind')}, "
+        f"a.{_q('slot')} AS {_q('slot')}\n"
+        f"{source}\nWHERE {condition}\nORDER BY a.{_q('id')}"
     )
     return TestDefinition(
-        name="core_in_stock_aliquot_slot",
+        name="core_aliquot_in_stock_position",
         group=CORE_GROUP,
         query=_count(body),
         detail=detail,
-        description="an in-stock aliquot in a slotted box has a slot",
+        description=(
+            "an in-stock aliquot has a box and, in a slotted box, a slot"
+        ),
+    )
+
+
+def _not_in_stock_no_position_test(
+    schema: EffectiveSchema,
+) -> TestDefinition | None:
+    """An aliquot that is **not** in stock has no box position (spec 5).
+
+    A tube that left stock is no longer physically in its box: ``box_id`` and
+    ``slot`` must be NULL, and ``aliquot_event.from_box_id``/``from_slot`` keep
+    where it was.
+    """
+    if not schema.stock_kinds:  # pragma: no cover - a ledger always has stock
+        return None
+    in_stock = _in_stock_sql(
+        schema, kind=f"st.{_q('kind')}", status=f"a.{_q('status')}"
+    )
+    if in_stock == "FALSE":  # pragma: no cover - status sets define in-stock
+        return None
+    condition = (
+        f"NOT ({in_stock})\n"
+        f"  AND (a.{_q('box_id')} IS NOT NULL "
+        f"OR a.{_q('slot')} IS NOT NULL)"
+    )
+    source = (
+        f"FROM {_q('aliquot')} a\n"
+        f"JOIN {_q('stock')} st ON st.{_q('id')} = a.{_q('stock_id')}"
+    )
+    body = f"SELECT a.{_q('id')}\n{source}\nWHERE {condition}"
+    detail = (
+        f"SELECT a.{_q('id')} AS {_q('aliquot_id')}, "
+        f"a.{_q('status')} AS {_q('status')}, "
+        f"a.{_q('box_id')} AS {_q('box_id')}, "
+        f"a.{_q('slot')} AS {_q('slot')}\n"
+        f"{source}\nWHERE {condition}\nORDER BY a.{_q('id')}"
+    )
+    return TestDefinition(
+        name="core_aliquot_not_in_stock_no_position",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description="an aliquot that is not in stock has no box position",
+    )
+
+
+def _grid_box_no_child_test(schema: EffectiveSchema) -> TestDefinition | None:
+    """Grid boxes hold tubes only, never a child box (spec 5)."""
+    grids = [
+        name
+        for name in sorted(schema.box_kinds)
+        if schema.kinds[name].geometry is not None
+        and schema.kinds[name].geometry.type is GeometryType.grid
+    ]
+    if not grids:  # pragma: no cover - bundled presets always have a grid
+        return None
+    condition = (
+        f"p.{_q('kind')} IN (" + ", ".join(_lit(name) for name in grids) + ")"
+    )
+    source = (
+        f"FROM {_q('box')} c\n"
+        f"JOIN {_q('box')} p ON p.{_q('id')} = c.{_q('parent_box_id')}"
+    )
+    body = f"SELECT c.{_q('id')}\n{source}\nWHERE {condition}"
+    detail = (
+        f"SELECT c.{_q('name')} AS {_q('child_box')}, "
+        f"p.{_q('name')} AS {_q('parent_box')}, "
+        f"p.{_q('kind')} AS {_q('parent_kind')}\n"
+        f"{source}\nWHERE {condition}\n"
+        f"ORDER BY p.{_q('name')}, c.{_q('name')}"
+    )
+    return TestDefinition(
+        name="core_grid_box_no_child_box",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description="a grid box holds tubes, never a child box",
+    )
+
+
+def _box_name_test() -> TestDefinition:
+    """Every box name can name its generated view (spec 5's name rule)."""
+    reserved = ", ".join(
+        _lit(core.lower())
+        for core in CORE_VIEW_NAMES
+        if core.startswith(BOX_VIEW_PREFIX)
+    )
+    view_name = f"CONCAT({_lit(BOX_VIEW_PREFIX)}, b.{_q('name')})"
+    collides = f"LOWER({view_name}) IN ({reserved})"
+    too_long = f"CHAR_LENGTH(b.{_q('name')}) > {BOX_NAME_MAX_LENGTH}"
+    case_duplicate = (
+        f"EXISTS (SELECT 1 FROM {_q('box')} o\n"
+        f"    WHERE o.{_q('id')} <> b.{_q('id')}\n"
+        f"      AND LOWER(o.{_q('name')}) = LOWER(b.{_q('name')})\n"
+        f"      AND BINARY o.{_q('name')} <> BINARY b.{_q('name')})"
+    )
+    condition = f"({collides})\n  OR ({too_long})\n  OR ({case_duplicate})"
+    body = (
+        f"SELECT b.{_q('id')}\n"
+        f"FROM {_q('box')} b\n"
+        f"WHERE {condition}"
+    )
+    detail = (
+        f"SELECT b.{_q('name')} AS {_q('box')},\n"
+        f"  CASE\n"
+        f"    WHEN {collides} THEN 'collides with a core view'\n"
+        f"    WHEN {too_long} THEN 'longer than {BOX_NAME_MAX_LENGTH} characters'\n"
+        f"    ELSE 'differs only in case from another box'\n"
+        f"  END AS {_q('problem')}\n"
+        f"FROM {_q('box')} b\n"
+        f"WHERE {condition}\n"
+        f"ORDER BY b.{_q('name')}"
+    )
+    return TestDefinition(
+        name="core_box_name_safe",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description=(
+            "every box name yields a usable view name (not a core view, at most "
+            f"{BOX_NAME_MAX_LENGTH} characters, unique ignoring case)"
+        ),
     )
 
 
@@ -387,7 +529,7 @@ def _slotless_capacity_tests(schema: EffectiveSchema) -> list[TestDefinition]:
 
 
 def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
-    """The app-enforced invariants of spec §3, as ``core`` tests."""
+    """The app-enforced invariants of spec §3/§5, as ``core`` tests."""
     tests: list[TestDefinition] = []
     capacity = _slot_capacity_test(schema)
     if capacity is not None:
@@ -395,9 +537,16 @@ def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
     tests.append(_slot_exclusive_test())
     tests.append(_single_child_test())
     tests.append(_acyclic_test())
-    in_stock = _in_stock_slot_test(schema)
+    grid_children = _grid_box_no_child_test(schema)
+    if grid_children is not None:
+        tests.append(grid_children)
+    in_stock = _in_stock_position_test(schema)
     if in_stock is not None:
         tests.append(in_stock)
+    not_in_stock = _not_in_stock_no_position_test(schema)
+    if not_in_stock is not None:
+        tests.append(not_in_stock)
+    tests.append(_box_name_test())
     tests.extend(_slotless_capacity_tests(schema))
     status = _status_known_test(schema)
     if status is not None:
@@ -837,6 +986,89 @@ def _group_matches(group: str, wanted: str) -> bool:
     return group == wanted or group.startswith(f"{wanted}:")
 
 
+# ---------------------------------------------------------------------------
+# Per-box view drift (spec 5)
+# ---------------------------------------------------------------------------
+
+
+def box_view_drift(
+    driver: Driver, schema: EffectiveSchema
+) -> list[dict[str, str]]:
+    """Per-box views that are missing, orphaned or out of date (spec 5).
+
+    The expected views are generated from the live ``box`` rows, exactly as
+    :func:`tetramark.schema.diff.build_plan` does, and compared with
+    ``information_schema.views``.  View names are compared case-insensitively:
+    Dolt stores them in lowercase, so the desired ``v_box_WFL-10-01`` and the
+    live ``v_box_wfl-10-01`` are the same view.  ``tm check`` turns a non-empty
+    result into a blocking failure; ``tm schema apply`` recreates the views.
+
+    A ledger whose ``box`` table does not exist yet (never initialised) has no
+    per-box views to check; a box name that cannot become a view name is
+    reported here instead of raising, so ``tm check`` can list it.
+    """
+    rows = driver.query(
+        "SELECT table_name AS name, view_definition AS definition "
+        "FROM information_schema.views WHERE table_schema = DATABASE()"
+    )
+    live = {str(row["name"]): str(row["definition"] or "") for row in rows}
+    try:
+        boxes = driver.query("SELECT `id`, `name`, `kind` FROM `box`")
+    except LedgerError:  # a database that was never initialised
+        return []
+    try:
+        statements = box_view_statements(schema, boxes)
+    except LedgerError as error:
+        return [
+            {
+                "view": "",
+                "problem": "cannot be generated",
+                "detail": str(error),
+            }
+        ]
+    desired = {statement.name: view_body(statement) for statement in statements}
+    live_by_key = {
+        name.lower(): (name, definition) for name, definition in live.items()
+    }
+    desired_by_key = {
+        name.lower(): (name, body) for name, body in desired.items()
+    }
+
+    problems: list[dict[str, str]] = []
+    for key, (name, body) in desired_by_key.items():
+        current = live_by_key.get(key)
+        if current is None:
+            problems.append(
+                {
+                    "view": name,
+                    "problem": "missing",
+                    "detail": "the box exists but its view does not",
+                }
+            )
+        elif current[1] != body:
+            problems.append(
+                {
+                    "view": name,
+                    "problem": "out of date",
+                    "detail": "the live view body differs from the generated one",
+                }
+            )
+    for key, (name, _definition) in live_by_key.items():
+        if name in CORE_VIEW_NAMES or not name.startswith(BOX_VIEW_PREFIX):
+            continue
+        if not is_managed_view(name):  # pragma: no cover - prefix implies it
+            continue
+        if key not in desired_by_key:
+            problems.append(
+                {
+                    "view": name,
+                    "problem": "orphaned",
+                    "detail": "no box of that name exists",
+                }
+            )
+    return problems
+
+
 def run_check(
     driver: Driver,
     schema: EffectiveSchema,
@@ -850,6 +1082,13 @@ def run_check(
     executed and the result is filtered here.  With ``verbose`` each failing
     test's derived detail query is executed; a broken detail query is reported
     on the result rather than hiding the failure itself.
+
+    Spec 5 adds one check that is not a ``dolt_tests`` row: the per-box views
+    are derived state generated from the live ``box`` rows, so
+    :func:`box_view_drift` compares them in Python and reports drift as a
+    blocking ``core`` failure (missing, orphaned or out-of-date view).  It is
+    appended only when there is drift, so a clean ledger's test count is
+    unchanged.
     """
     rows = driver.query(
         "SELECT `test_name`, `test_group_name`, `query`, `status`, `message` "
@@ -878,4 +1117,18 @@ def run_check(
                 except Exception as error:  # detail must not mask the failure
                     result.detail_error = str(error)
         report.results.append(result)
+
+    if group is None or _group_matches(CORE_GROUP, group):
+        problems = box_view_drift(driver, schema)
+        if problems:
+            report.results.append(
+                TestResult(
+                    name="core_box_views",
+                    group=CORE_GROUP,
+                    query="",
+                    status="FAIL",
+                    message=f"{len(problems)} per-box view problem(s)",
+                    detail_rows=problems,
+                )
+            )
     return report

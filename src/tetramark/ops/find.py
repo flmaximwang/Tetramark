@@ -22,7 +22,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from tetramark.core.objects import OBJECT_TYPES, _box_paths
+from tetramark.core.objects import (
+    OBJECT_TYPES,
+    _box_paths,
+    box_kind_columns,
+    box_kind_from,
+)
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import CORE_COLUMNS
 from tetramark.schema.model import FieldType, Kind
@@ -259,17 +264,35 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
                 continue
             search_columns = [*name_columns, *text_columns]
             select_columns = list(dict.fromkeys(["id", "kind", *search_columns]))
+            # Spec 5 dropped the per-kind box views; search the core `box` row
+            # joined with its `box_<kind>` row instead (same columns).
+            if object_type == "box":
+                column_sql = box_kind_columns(kind)
+                expressions = {
+                    column: column_sql[column] for column in select_columns
+                }
+                from_sql = box_kind_from(kind_name)
+            else:
+                expressions = {
+                    column: _quote(column) for column in select_columns
+                }
+                from_sql = _quote(f"v_{object_type}_{kind_name}")
             clauses: list[str] = []
             params: list[Any] = []
             for column in search_columns:
                 clauses.append(
-                    f"LOCATE(LOWER(%s), LOWER(COALESCE({_quote(column)}, ''))) > 0"
+                    "LOCATE(LOWER(%s), LOWER(COALESCE("
+                    f"{expressions[column]}, ''))) > 0"
                 )
                 params.append(needle)
             sql = (
-                f"SELECT {', '.join(_quote(column) for column in select_columns)} "
-                f"FROM {_quote(f'v_{object_type}_{kind_name}')} "
-                "WHERE " + " OR ".join(clauses)
+                "SELECT "
+                + ", ".join(
+                    f"{expressions[column]} AS {_quote(column)}"
+                    for column in select_columns
+                )
+                + f" FROM {from_sql} WHERE "
+                + " OR ".join(clauses)
             )
             for row in ledger.driver.query(sql, tuple(params)):
                 score, match = _score_row(

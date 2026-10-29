@@ -241,7 +241,9 @@ def test_command_reference_object_and_read_flows(docs_env: Path, docs_server: in
     assert run_json("box", "add", "rack", "RACK-1")["slots"] == 10
     run("box", "add", "freezer", "FR-1")
     run("box", "move", "BOX-1", "--in", "FR-1")
-    run("box", "move", "BOX-2", "--in", "RACK-1", "--slot", "1")
+    # Spec 5: grid boxes hold tubes only, so a box nests in a slotless freezer
+    # (a grid box can no longer be a parent).  The doc reference matches.
+    run("box", "move", "BOX-2", "--in", "FR-1")
     boxes = run("box", "ls", "--kind", "grid8x12")
     assert "BOX-1" in boxes.output
     box_path = run_json("box", "show", "BOX-2")
