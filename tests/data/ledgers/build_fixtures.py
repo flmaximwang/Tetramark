@@ -20,7 +20,11 @@ This script is the only supported way to (re)produce the fixture.  It:
    create a molbio-1 ledger from the frozen v1 preset
    (``tests/data/presets/molbio-v1/molbio-v1.yaml``).  The server path is the
    same schema/DDL/meta/tests/commit as the embedded ``tm init`` but takes ~4 s
-   instead of ~25 s (embedded spawns one ``dolt sql`` per DDL statement);
+   instead of ~25 s (embedded spawns one ``dolt sql`` per DDL statement).  The
+   frozen preset directory is the legacy checkout's **input**, so it must stay
+   v1-shaped: keys a later spec introduced (top-level ``status_sets``, kind
+   ``statuses``) are rejected up front with a clear :class:`BuildError` instead
+   of surfacing as pydantic noise from inside the temporary checkout;
 3. strips the ``aliquot_fields`` key from the ledger's own
    ``presets/molbio.yaml`` copy after the build: the key is what made the old
    tool create ``aliquot_bacterial``, but the current (spec 3) loader refuses
@@ -80,6 +84,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LEGACY_COMMIT = "3ec57d5bf6b8d708cff92a27c596a9095c6fd331"
 
 #: The frozen molbio v1 preset (kept as raw test data for exactly this build).
+#: The whole directory is the 0.1.2 checkout's input, not a current-schema
+#: fixture: it must keep v1-shaped files, because that loader rejects the keys
+#: later specs added (see :func:`_assert_legacy_preset_inputs`).
 MOLBIO_V1_PRESET = (
     REPO_ROOT / "tests" / "data" / "presets" / "molbio-v1" / "molbio-v1.yaml"
 )
@@ -115,6 +122,12 @@ DEFAULT_OUT = Path(__file__).resolve().parent / LEDGER_NAME
 #: The spec-3 key the current loader refuses; it must not remain in the
 #: fixture's preset copy even though the built database *shape* includes it.
 REMOVED_PRESET_KEY = "aliquot_fields"
+
+#: Keys added by later specs that the 0.1.2 loader rejects outright.  A frozen
+#: v1 preset input carrying one cannot be loaded, so the build would fail and
+#: the drift guard would skip instead of guarding.
+FORBIDDEN_LEGACY_PRESET_KEYS = ("status_sets",)
+FORBIDDEN_LEGACY_KIND_KEYS = ("statuses",)
 
 
 class BuildError(RuntimeError):
@@ -203,6 +216,39 @@ def _human(size: int) -> str:
 # ---------------------------------------------------------------------------
 # The build
 # ---------------------------------------------------------------------------
+
+
+def _assert_legacy_preset_inputs() -> None:
+    """Fail fast when a later spec polluted the frozen v1 preset inputs.
+
+    The directory beside :data:`MOLBIO_V1_PRESET` is the legacy checkout's
+    *input*; ``status_sets`` on a preset and ``statuses`` on a kind are spec-4
+    concepts that checkout cannot parse.  The old code surfaced that as
+    pydantic noise from inside the temporary checkout and the drift guard
+    skipped; naming the file and key here makes the failure actionable (remove
+    the key — the checked-in fixture does not need a rebuild for that).
+    """
+    offenders: list[str] = []
+    for preset_file in sorted(MOLBIO_V1_PRESET.parent.glob("*.yaml")):
+        document = yaml.safe_load(preset_file.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise BuildError(f"{preset_file}: not a YAML mapping")
+        for key in FORBIDDEN_LEGACY_PRESET_KEYS:
+            if key in document:
+                offenders.append(f"{preset_file.name}: top-level {key!r}")
+        for name, kind in (document.get("kinds") or {}).items():
+            if not isinstance(kind, dict):
+                continue
+            for key in FORBIDDEN_LEGACY_KIND_KEYS:
+                if key in kind:
+                    offenders.append(f"{preset_file.name}: kinds.{name}.{key}")
+    if offenders:
+        raise BuildError(
+            "the frozen v1 presets are the 0.1.2 checkout's input and must stay "
+            "v1-shaped, but they carry keys its loader rejects: "
+            + ", ".join(offenders)
+            + "; remove those keys (no fixture rebuild is needed for that)"
+        )
 
 
 def _materialise_legacy_checkout(tmp_root: Path, git: str) -> Path:
@@ -436,6 +482,7 @@ def build(
     dolt = _which("dolt")
     if not MOLBIO_V1_PRESET.is_file():
         raise BuildError(f"the frozen v1 preset is missing: {MOLBIO_V1_PRESET}")
+    _assert_legacy_preset_inputs()
 
     tmp_root = Path(tempfile.mkdtemp(prefix="tetramark-legacy-"))
     if keep:
