@@ -32,19 +32,26 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   sets, dropped the global `aliquot.status` CHECK, added `aliquot_event.forced`
   and replaced the stock views' `aliquots_stored`/`quantity_stored`/five-value
   `status` with in-stock counts, `quantity_in_stock` + `unit` and a three-value
-  `status`. A **v2** ledger upgrades to v3 with the hand-run
-  `migration/spec/2-to-3/` step (`migration/spec/3-to-4/` then moves v3 to v4);
-  a v1
+  `status`. Version 5 replaced the per-kind `v_box_<kind>` views with one
+  generated view per existing box, `v_box_<box name>` (§3), and made the stored
+  position follow the in-stock status. A **v2** ledger upgrades to v3 with the
+  hand-run `migration/spec/2-to-3/` step; a v3 ledger then runs
+  `migration/spec/3-to-4/`, and a v4 ledger `migration/spec/4-to-5/`. A v1
   ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs
   `migration/presets/molbio/1-to-2`, which needs the last tool version that
   still reads `aliquot_fields` (a 0.2.0+ tool cannot open such a ledger at
   all). Presets have their own counters: a molbio-2 ledger moves to 3 with
   `migration/presets/molbio/2-to-3/` (the preset becomes a bundle of parts and
-  gains the oligo kinds) and a base-2 ledger to 3 with
-  `migration/presets/base/2-to-3/` (the slotless `incubator` box kind), in
-  either order; a bundle step also records the counters of the parts it
-  introduces. See `migration/README.md`; within one version
-  `tm schema plan` → `tm schema apply` stays additive.
+  gains the oligo kinds), a base-2 ledger to 3 with
+  `migration/presets/base/2-to-3/` (the slotless `incubator` box kind), and a
+  base-3 ledger to 4 with `migration/presets/base/3-to-4/` (the `grid96` →
+  `grid8x12` rename); a bundle step also records the counters of the parts it
+  introduces. On a spec-4/base-3 ledger, run `migration/spec/4-to-5/` **before**
+  `migration/presets/base/3-to-4/`: the spec step keeps the ledger's own base-3
+  copy (and so its `grid96` kind) while it creates the per-box views, then the
+  preset step replaces that copy and renames the kind. See
+  `migration/README.md`; within one version `tm schema plan` → `tm schema apply`
+  stays additive.
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger
@@ -102,12 +109,30 @@ Views (generated):
   `depleted` when it has aliquots but none in stock; `empty` when it has none) +
   `aliquots_in_stock`/`aliquots_total` + `quantity_in_stock` + `unit` + `alias_list`. "In stock" means
   the aliquot's status has `in_stock: true` in its stock kind's status set (§2.4).
-- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench). Every
+- `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench), for
+  every **entity** and **stock** kind. Every
   `v_stock_<kind>` additionally shows, in this order: `entity_kind`/`entity_name` (the owning design,
   from core `entity`), `aliquots_in_stock`, `aliquots_total`, `quantity_in_stock` + `unit` (the sum of
   the in-stock quantities; `unit` is that unit when every in-stock tube **with a quantity** shares one,
   otherwise both are NULL), `status` (the same derived status as `v_stock_status`, generated from one
   shared SQL fragment). The final column is always `alias_list`.
+- `v_box_<box name>` — one view per **existing box**, named after the box (quoted, because box names
+  may contain `-` and upper case). It lists the box's **direct** contents only, never the contents of
+  a box inside it, and its shape follows the box kind's geometry:
+  - **grid**: a pivot. First column `row`, then one column per column label in geometry order
+    (`1`…`9`, `1`…`12`); one row per row label in geometry order, empty rows included. A cell is the
+    aliquot id (several aliquots in one slot, `slot_capacity` > 1, are joined with `,`); an empty cell
+    is NULL. No extra columns.
+  - **named**: `slot | occupants`, one row per slot in geometry order, empty slots included
+    (`occupants` NULL). Occupants are aliquot ids or child box names, joined with `,`.
+  - **slotless**: one column `occupant` (an aliquot id or a child box name), one row per direct
+    occupant, sorted. An empty box returns **zero rows**.
+
+  Every path that creates a box (`tm box add`, CSV import; there is no box rename or delete command
+  yet) maintains its view in the same Dolt commit, and
+  `tm schema plan/apply` reconciles the views from the live `box` rows (`tm check` reports a view
+  that is missing, orphaned or out of date). There are **no `v_box_<kind>` views** any more: one
+  view per box replaces them (spec 5).
 
 **Aliquots have no kind.** An aliquot is a generic tube — location, quantity, unit, status, label,
 notes — and everything specific to a type of material lives on the stock kind (tubes that differ in a
@@ -128,8 +153,12 @@ aliases (§6), so these columns are how a view reader still sees the pre-renumbe
 What the DB enforces vs the app:
 - DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values.
 - App + Dolt tests (cannot be expressed as DB constraints): slot capacity & aliquot-vs-child-box exclusivity,
-  nesting acyclicity, stock→entity kind restriction, `pattern`, status/slot consistency
-  (an in-stock aliquot in a slotted box ⇒ slot NOT NULL), statuses belonging to their stock kind's set,
-  transition rules for unforced `status` events, slotless box capacity.
+  nesting acyclicity, **grid boxes hold tubes only** (a child box in a grid is refused), stock→entity kind
+  restriction, `pattern`, **position follows in stock** (an aliquot has `box_id` exactly when its status
+  has `in_stock: true`, and `slot` exactly when that box is slotted; a not-in-stock aliquot carries no
+  position), statuses belonging to their stock kind's set, transition rules for unforced `status` events,
+  slotless box capacity, and **box names are view-safe**: `v_box_<name>` must not equal a core view,
+  the name is at most 58 characters (64 − `v_box_`) and it must not differ only in case from another
+  box name.
 
 No triggers (Dolt 2.3.x triggers are single-statement only; all logic lives in the app).

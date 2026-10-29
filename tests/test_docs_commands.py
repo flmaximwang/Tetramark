@@ -128,7 +128,7 @@ def test_readme_quickstart_runs(docs_env: Path, port: int) -> None:
         status = run("server", "status")
         assert f":{port}" in status.output
 
-        created_box = run_json("box", "add", "grid96", "WFL-12-01")
+        created_box = run_json("box", "add", "grid8x12", "WFL-12-01")
         assert created_box["slots"] == 96
 
         created_entity = run_json(
@@ -236,13 +236,13 @@ def test_command_reference_object_and_read_flows(docs_env: Path, docs_server: in
     ]
 
     # Boxes: grid, rack, slotless; nest, move, list, show.
-    assert run_json("box", "add", "grid96", "BOX-1")["slots"] == 96
+    assert run_json("box", "add", "grid8x12", "BOX-1")["slots"] == 96
     assert run_json("box", "add", "grid9x9", "BOX-2")["slots"] == 81
     assert run_json("box", "add", "rack", "RACK-1")["slots"] == 10
     run("box", "add", "freezer", "FR-1")
     run("box", "move", "BOX-1", "--in", "FR-1")
-    run("box", "move", "BOX-2", "--in", "BOX-1", "--slot", "A1")
-    boxes = run("box", "ls", "--kind", "grid96")
+    run("box", "move", "BOX-2", "--in", "RACK-1", "--slot", "1")
+    boxes = run("box", "ls", "--kind", "grid8x12")
     assert "BOX-1" in boxes.output
     box_path = run_json("box", "show", "BOX-2")
     assert "BOX-2" in json.dumps(box_path)

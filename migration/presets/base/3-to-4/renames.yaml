@@ -1,0 +1,8 @@
+# base 3 -> 4: rename the box kind grid96 to grid8x12 (same A-H x 1-12 geometry).
+#
+# Spec 5 (ticket 30) drops the per-kind v_box_<kind> views and gives every
+# existing box its own v_box_<box name> view, so the kind keeps the geometry
+# name.  The diff planner renames the kind table, rewrites the core `kind`
+# discriminator values, translates the constraints and the generated views;
+# nothing is dropped or rewritten by hand.
+box: {grid96: grid8x12}

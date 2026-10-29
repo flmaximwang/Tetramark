@@ -43,7 +43,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Put its tube in a box | `tm stock add … --box NAME --slot A1` |
 | Take a sample from a tube (lineage edge) | `tm stock add cell_biosample --entity LINE --source-aliquot ALQ` (cellbio; `animal_biosample` in angenet) |
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
-| Move one tube | `tm aliquot move ALQ --box NAME --slot S` |
+| Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S]` (also restores a not-in-stock tube) |
 | Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |
 | Mark lost / consumed without a quantity | `tm aliquot status ALQ missing\|consumed\|stored` (follows the stock kind's `to:` rules) |
 | Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event) |
@@ -126,6 +126,12 @@ tm check --group core
   allowed `to:` transitions; creation accepts any status of the set, a later change must follow `to:`.
   Check the set with `tm schema show KIND` and override only deliberately, with
   `tm aliquot status … --force --note "why"` (the event then carries `forced = TRUE`).
+- **A tube has a position exactly when it is in stock.** Changing to a status that is not in stock
+  clears its box/slot (the event keeps the old position); a change to an in-stock status without a
+  position is refused — place it with `tm aliquot move ALQ --box NAME --slot S`.
+- **Box names are view-safe and grid boxes hold tubes only.** A `box add` name must not collide with
+  a core view, is at most 58 characters and must differ from existing names beyond letter case; a box
+  can be nested in a named or slotless box, not in a grid.
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
   delete with no undo (only Dolt history can recover it).
 - **One writer at a time.** Do not write through the CLI while another dolt process writes the same

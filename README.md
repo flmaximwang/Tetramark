@@ -92,7 +92,7 @@ tm init lab101 --preset molbio --id-prefix 12
 
 tm server start -d
 
-tm box add grid96 WFL-12-01
+tm box add grid8x12 WFL-12-01
 
 tm entity add plasmid --name pZET035 \
   --set backbone=pZET035 --set resistance=kan --alias p035

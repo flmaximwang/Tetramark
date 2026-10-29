@@ -37,7 +37,7 @@ tm stock show|edit|ls ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
-tm aliquot move ALQ --box NAME [--slot S]
+tm aliquot move ALQ --box NAME [--slot S] [--status S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
 tm aliquot purge ALQ                                  # hard delete, explicit only
@@ -60,6 +60,27 @@ Creating aliquots accepts any status of the stock kind's set (`--status`, or the
 column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
 `aliquot_event.forced = TRUE` and is the only way to make an unforced-illegal change; without
 `--force` the CLI refuses and names the allowed next status(es).
+
+An aliquot's **position follows its status** (spec 5): a status with `in_stock: true` needs a
+position (a box, plus a slot when that box is slotted), and changing to any other status clears
+`box_id`/`slot` in the same write. A `status`/`use` change that leaves stock records the old
+position in the event's `from_box_id`/`from_slot` (with `to_*` NULL), so `tm history` still shows
+where the tube was; changing to an in-stock status without a position is refused with a hint to run
+`tm aliquot move ALQ --box NAME --slot S`. `tm aliquot move` of a not-in-stock aliquot also sets the
+single in-stock status of its stock kind's set; when the set has more than one in-stock status it
+refuses and lists them unless `--status` names one. If the aliquot is already in stock, a move with
+`--status` runs the normal transition check and the result must stay in stock.
+
+A box name must be **view-safe**, because each existing box gets a generated view (§3):
+`v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters
+(64 − `v_box_`), and it must not differ only in case from another box's name. `tm box add` and CSV
+box import refuse such a name; there is no rename command yet. **Grid boxes hold tubes only**, so
+`tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box may sit in a named
+or slotless box.
+
+`tm export` reads a box from `box` joined with `box_<kind>` — the per-kind `v_box_<kind>` views are
+gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and
+grid rules above, in the same commit as the rows.
 
 `tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
 `aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays

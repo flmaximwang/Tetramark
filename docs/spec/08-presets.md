@@ -46,10 +46,12 @@ part/bundle table, the include graph and the rule for adding a part.
 
 Preset catalogue:
 
-- `base` (**version 3**) — box kinds `grid9x9` (A–J!I × 1–9), `grid96` (A–H × 1–12), `rack` (named),
+- `base` (**version 4**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
   `shelf`/`freezer`/`drawer` (slotless, with a capacity) and `incubator` (slotless, unbounded);
   entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
   received_on, expires_on, `statuses: tube`); the status sets `tube`, `cryo` and `animal` (§2.4).
+  Version 4 renames the `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the
+  hand-run step is `migration/presets/base/3-to-4/`.
 - `proteins` (**version 1**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
   molecular_weight_da, pI, extinction coefficients as computed, tag) and stock `protein_prep`
   (concentration_mg_ml, buffer, purification_id, purity_pct, `statuses: tube`). It also owns the

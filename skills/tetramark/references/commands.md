@@ -125,7 +125,7 @@ rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session 
 ```sh
 tm aliquot add STOCK [--count N] [--box NAME --slot S ...] \
   [--quantity Q --unit U] [--json]
-tm aliquot move ALQ --box NAME [--slot S] [--json]
+tm aliquot move ALQ --box NAME [--slot S] [--status S] [--json]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT] [--note TEXT] [--json]
 tm aliquot status ALQ STATUS [--note TEXT] [--json]
 tm aliquot purge ALQ [--json]
@@ -135,6 +135,11 @@ tm aliquot purge ALQ [--json]
 - `use` subtracts `AMOUNT` in the aliquot's own unit and sets `consumed` when the quantity reaches
   zero; the event stores the purpose.
 - `status` sets one of the ledger's status vocabulary words.
+- An aliquot's **position follows its status**: a status with `in_stock: true` needs a box (and a slot
+  in a slotted box), and any other status clears `box_id`/`slot` in the same write. The status/use
+  event keeps the old position in its `from_*` columns, so `history` still shows where the tube was.
+- `move` of a not-in-stock aliquot also sets its in-stock status; when the stock kind's set has
+  several in-stock statuses it asks for `--status` instead of guessing.
 - `purge` hard-deletes an aliquot and its events. It is the only hard delete; prefer `status consumed`.
 
 ## Boxes
@@ -146,9 +151,13 @@ tm box ls [--kind KIND] [--where FIELD=VALUE ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 ```
 
-`box add` materialises the slots implied by the geometry (`grid96` → 96, `grid9x9` → 81, `rack` → the
-named positions, `shelf`/`freezer`/`drawer` → none). `--slot` is only valid for a slotted parent;
-slotless parents take one child box each (up to `capacity`). Nesting must stay acyclic.
+`box add` materialises the slots implied by the geometry (`grid8x12` → 96, `grid9x9` → 81, `rack` →
+the named positions, `shelf`/`freezer`/`drawer` → none). `--slot` is only valid for a slotted parent;
+slotless parents take one child box each (up to `capacity`). Nesting must stay acyclic, and a **grid
+box holds tubes only**, so `--in` a grid box is refused. Every box name must be **view-safe**: the
+generated view `v_box_<name>` must not collide with a core view, the name is at most 58 characters,
+and it must not differ only in case from an existing box name (`tm box add`, box import and the CSV
+path refuse it).
 
 `box show` prints a terminal grid with an `aliases: …` line when the box has aliases (or `--json` for
 `{box, kind, geometry, path, aliases, slots:[...]}`) and works for slotless boxes too (it lists child
@@ -169,18 +178,21 @@ tm history ID|ALIAS|BOX [--json]
 location. `history` merges aliquot events and the Dolt commits that touched the object.
 
 Aliases are also visible in the generated views (since ledger format 2): every
-`v_<object>_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated
-`alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list` for the slot's
-occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The column is not
-called `aliases` because some kinds have a domain field with that name (e.g.
+`v_entity_<kind>`, `v_stock_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted,
+`;`-separated `alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list`
+for the slot's occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The
+column is not called `aliases` because some kinds have a domain field with that name (e.g.
 `protein_construct.aliases`).
 
-Every `v_stock_<kind>` (ledger format 3) also shows the stock's own facts, before `alias_list`:
-`entity_kind`/`entity_name` (the owning design), `aliquots_stored` (tubes still on the shelf),
-`aliquots_total`, `quantity_stored` + `unit` (sum of stored quantities; both NULL when stored tubes
-mix units), and `status` — the same derived status `v_stock_status` reports (`active`, `pending`,
-`depleted`, `missing`, `empty`). Aliquots have no kind: a property of the material belongs on the
-stock kind.
+Since spec 5 every **existing box** has its own `v_box_<box name>` view (grid pivot with a `row`
+column and one column per column label; `slot | occupants` for a named box; one `occupant` column
+for a slotless box). There are no `v_box_<kind>` views any more.
+
+Every `v_stock_<kind>` (ledger format 4) also shows the stock's own facts, before `alias_list`:
+`entity_kind`/`entity_name` (the owning design), `aliquots_in_stock` (tubes on the shelf),
+`aliquots_total`, `quantity_in_stock` + `unit` (sum of the in-stock quantities; both NULL when they
+mix units), and `status` — the same derived status `v_stock_status` reports (`active`, `depleted`,
+`empty`). Aliquots have no kind: a property of the material belongs on the stock kind.
 
 ## Validation
 
