@@ -27,8 +27,8 @@
    "y": 170,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-002#B-001\nimplement box lifecycle and position-follows-in-stock in core objects, CLI and CSV\n\n`running` · @w32 · 在做 @w32\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "4",
+   "text": "### T-002#B-001\nimplement box lifecycle and position-follows-in-stock in core objects, CLI and CSV\n\n`done` · @w32\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-002#B-002",
@@ -37,8 +37,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-002#B-002\nreview and merge the behavior layer\n\n`waiting` · @lead\n\nLead: review the w32 branch diff against docs/issues/002-box-views.md and the w31 interface, run the targeted suites and the full suite in .dsh/gitworktree/w32,"
+   "color": "4",
+   "text": "### T-002#B-002\nreview and merge the behavior layer\n\n`done` · @lead\n\nLead: review the w32 branch diff against docs/issues/002-box-views.md and the w31 interface, run the targeted suites and the full suite in .dsh/gitworktree/w32,"
   },
   {
    "id": "T-003#B-001",
@@ -77,8 +77,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-004#B-001\nbuild a spec-4 fixture, implement migration/spec/4-to-5 with its tests\n\n`waiting` · @w34\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "5",
+   "text": "### T-004#B-001\nbuild a spec-4 fixture, implement migration/spec/4-to-5 with its tests\n\n`running` · @w34 · 在做 @w34\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-004#B-002",

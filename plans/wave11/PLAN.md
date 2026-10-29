@@ -2,14 +2,14 @@
 
 > Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.
 
-**进度** 4/13 块（31%） · 状态 `active` · 更新于 2026-10-29 14:11
+**进度** 6/13 块（46%） · 状态 `active` · 更新于 2026-10-29 17:12
 
 **参与方** lead(agent) · Maxim(human) · w31(agent) · w32(agent) · w33(agent) · w34(agent) · w35(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
 - `T-003#B-001` **rename grid96 to grid8x12, bump base to 4, update spec docs** — 待评审 · @w33 · 在做 @w33
-- `T-002#B-001` **implement box lifecycle and position-follows-in-stock in core objects, CLI and CSV** — 进行中 · @w32 · 在做 @w32
+- `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** — 进行中 · @w34 · 在做 @w34
 
 ## 图
 
@@ -47,13 +47,13 @@ flowchart LR
   T-005_B-002 --> T-006_B-001
   T-006_B-001 --> T-006_B-002
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-005_B-001,T-005_B-002 done;
-  classDef running stroke-width:1px;
-  class T-002_B-001 running;
-  classDef waiting stroke-width:1px;
-  class T-002_B-002,T-003_B-002,T-003_B-003,T-004_B-001,T-004_B-002,T-006_B-001,T-006_B-002 waiting;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-005_B-001,T-005_B-002 done;
   classDef review stroke-width:1px;
   class T-003_B-001 review;
+  classDef waiting stroke-width:1px;
+  class T-003_B-002,T-003_B-003,T-004_B-002,T-006_B-001,T-006_B-002 waiting;
+  classDef running stroke-width:1px;
+  class T-004_B-001 running;
 ```
 
 ## 任务
@@ -88,9 +88,9 @@ Done when: fast lane green; targeted suites (test_ddl, test_schema_diff, test_sc
     - run 2026-10-29 14:11 lead pending→running Reviewing and merging wave11/t31
     - run 2026-10-29 14:11 lead running→done Reviewed ddl/diff/model/tests_gen, conftest helper, golden diff and the minimal view-expectation edits; verified fast 352 and targeted 229 in the worktree; merged into main 5ab0a69. Full-suite gate moves to w32 integration.
 
-### T-002 32 behavior layer: box lifecycle, position follows in stock, import/export — 进行中
+### T-002 32 behavior layer: box lifecycle, position follows in stock, import/export — 已完成
 @w32
-- [ ] `T-002#B-001` **implement box lifecycle and position-follows-in-stock in core objects, CLI and CSV** _impl_ — 进行中 @w32
+- [x] `T-002#B-001` **implement box lifecycle and position-follows-in-stock in core objects, CLI and CSV** _impl_ — 已完成 @w32
     - 做什么：Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w32 (branch wave11/t32): create it from main with the worktree tool, then run uv sync -q so it gets its own .venv. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch when you need to integrate another branch, and you may finish with the tree dirty. Report the branch state. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it instead of editing it.
 
 Scope (only these files): src/tetramark/core/objects.py (aliquot status/use/move functions and box add/move only), src/tetramark/cli/box.py, src/tetramark/cli/aliquot.py, src/tetramark/ops/io_csv.py (box export and box/aliquot import), tests/test_objects.py, tests/test_cli_objects.py, tests/test_csv_io.py, tests/test_read_side.py, tests/test_docs_commands.py only if a doc snippet changes. Do NOT edit src/tetramark/schema/, presets/, migration/ or docs/.
@@ -114,14 +114,17 @@ Part B - position follows in stock:
 
 Done when: parts A and B are implemented with tests; fast lane and targeted suites green; full suite green in the worktree before the final report; the position bullets of docs/issues/002-box-views.md Acceptance (status consumed clears position and the event keeps the old one, status stored without position refused, move restores stored) pass through the real CLI. Report: files changed, decisions, branch state, full suite count, blockers and anything that belongs to another workstream.
     - 判据：box add refuses view-unsafe names and a box inside a grid box; box add and import create the per-box view in the same commit; export reads box JOIN box_<kind>; status to a not-in-stock status clears box_id/slot and the event keeps the old position; status to in-stock without a position is refused with the move hint; use to zero clears the position; move restores the single in-stock status or refuses listing several unless --status; import enforces the invariant; targeted and full suites green in the worktree.
-    - 在做：@w32
-    - run 2026-10-29 12:04 w32 pending→running behavior layer turn 1: position rules
+    - 产物：`wave11/t32 @ af0437f (merged e643581)`
     - run 2026-10-29 13:35 w32 running→running turn 1 done: part B committed 13ca169 on wave11/t32; main merged (a839e59); targeted 66 green; waiting for w31 merge
-- [ ] `T-002#B-002` **review and merge the behavior layer** _review_ — 等前置 @lead
+    - run 2026-10-29 17:10 w32 running→review branch wave11/t32, head af0437f (part B 13ca169 + part A af0437f). Full suite: 879 passed / 1 failed / 0 skipped - only test_migrate::test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path, approved by the Lead (molbio 2-to-3 now needs spec 5; migration/spec/4-to-5 is w34's step, w33 owns the ordering test after that). Targeted suites green; fixture fallout placed or seeded not-in-stock in test_cellbio/test_angenet/test_presets/test_migrate/test_renumber; tests/data/ledgers/molbio-v1 clean, no stray LOCK files.
+    - run 2026-10-29 17:12 lead review→done Behavior layer accepted: position/creation invariant both directions, box add/move name rule and grid tube-only, per-box view creation on add and import in the same commit, all box read paths via box JOIN box_<kind> (objects._list_records, ops/find.py, io_csv export), CSV import rules; fixture fallout fixed by placing aliquots or seeding pending, no check assertions relaxed. Full suite in the worktree: 879 passed / 1 failed / 0 skipped; the failure is the approved upgrade-order test that needs migration/spec/4-to-5 (w33 in turn 2b).
+- [x] `T-002#B-002` **review and merge the behavior layer** _review_ — 已完成 @lead
     - 做什么：Lead: review the w32 branch diff against docs/issues/002-box-views.md and the w31 interface, run the targeted suites and the full suite in .dsh/gitworktree/w32, check that no file outside the declared scope changed and that no real ledger was touched, then commit on wave11/t32 and merge into main. Record the decisions the agent took (creation-path semantics, --status on move, import update behavior). Update plans/wave11.
     - 判据：Diff reviewed line by line; scope respected; targeted and full suites green in the worktree; branch committed and merged into main with a merge commit naming ticket 30; decisions recorded.
     - 依赖：T-001#B-002
     - 依赖：T-002#B-001
+    - run 2026-10-29 17:12 lead pending→running Reviewing and merging wave11/t32
+    - run 2026-10-29 17:12 lead running→done Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.
 
 ### T-003 33 presets: grid96 -> grid8x12, base 3->4, spec docs — 进行中
 @w33
@@ -154,9 +157,9 @@ Done when: the repository has no grid96 reference left except historical migrati
     - 判据：Diff reviewed; scope respected; targeted and full suites green in the worktree; branch committed and merged
     - 依赖：T-003#B-002
 
-### T-004 34 migration: spec 4->5 and a spec-4 fixture — 待排
+### T-004 34 migration: spec 4->5 and a spec-4 fixture — 进行中
 @w34
-- [ ] `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** _impl_ — 等前置 @w34
+- [ ] `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** _impl_ — 进行中 @w34
     - 做什么：Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w34 (branch wave11/t34): create it from main with the worktree tool, then run uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch, and may finish with the tree dirty. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it.
 
 Start only after the Lead confirms wave11/t31 and wave11/t32 are merged into main, then git merge main into your branch before you begin.
@@ -176,6 +179,9 @@ Done when: fixture and builder exist; migration/spec/4-to-5 works on a copy of i
     - 判据：checked-in spec-4 fixture plus builder; spec/4-to-5 dry-run and apply on a copy produce spec 5 with the per-box views (G 9 rows, R 10 rows, S 2 rows, F 0 rows), kind views gone, cleared positions with move events, and clean tm check; the three refusals write nothing; targeted and full suites green in the worktree.
     - 依赖：T-001#B-002
     - 依赖：T-002#B-002
+    - 在做：@w34
+    - run 2026-10-29 14:13 w34 pending→running spec-4 fixture and migration skeleton
+    - run 2026-10-29 15:38 w34 running→running turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2
 - [ ] `T-004#B-002` **review and merge the spec 4-to-5 migration** _review_ — 等前置 @lead
     - 做什么：Lead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real ledger was touched; run the migration tests and the full suite in the worktree; commit on wave11/t34 and merge into main. Record the Lead decision on in-stock-without-position (refusal) and the fixture shape in the plan.
     - 判据：Diff reviewed; fixture genuine and drift-guarded; targeted and full suites green; branch committed and merged.
@@ -218,14 +224,6 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
 
 ## 日志（近 20 条）
 
-- `2026-10-29 12:01` **lead** [decision] Lead decisions for wave 11. (1) Design source is docs/issues/002-box-views.md; its settled decisions are not re-opened. (2) Interface contract: ddl.view_statements stops emitting box kind views; ddl.box_view_statements(schema, boxes with id/name/kind) emits v_box_<box name> in the grid-pivot / named / slotless shapes; model.box_name_problem(name, existing) owns the view-safety rule; diff.build_plan derives the desired per-box views from live box rows and treats any v_box_* outside the core views as managed. (3) In stock means physically placed: an aliquot has box_id (and slot when slotted) exactly when its status is in stock. spec/4-to-5 therefore refuses, listing rows and the tm aliquot move command, if an in-stock aliquot has no position, besides the two refusals named in the issue. (4) A not-in-stock change clears the position and records it on the same status/use event in from_*; a move of a not-in-stock aliquot restores the single in-stock status or asks for --status. (5) Upgrade order for a spec-4/base-3 ledger: migration/spec/4-to-5 first (ledger keeps its own base v3 copy), then migration/presets/base/3-to-4. (6) No real ledger is touched; zsqlab10 upgrade is a user-run follow-up, and box schemas stay out of scope.
-- `2026-10-29 12:04` **agent** [status] T-002#B-001: pending → running（behavior layer turn 1: position rules）
-- `2026-10-29 12:05` **agent** [status] T-003#B-001: pending → running（preset rename and spec docs）
-- `2026-10-29 12:05` **agent** [status] T-001#B-001: pending → running（schema layer started）
-- `2026-10-29 12:08` **lead** [decision] Worktree path note: the harness creates teammate worktrees under .agents/worktrees/wave11/tXX (branch wave11/tXX), not .dsh/gitworktree/wXX. The .dsh/gitworktree paths in the block docs are placeholders; the real worktrees are .agents/worktrees/wave11/t31 (w31), /t32 (w32), /t33 (w33), /t34 (w34, later), /t35 (w35). Lead review and merge use those paths.
-- `2026-10-29 12:09` **agent** [status] T-005#B-001: pending → running（legacy fixture drift guard）
-- `2026-10-29 12:29` **agent** [status] T-005#B-001: running → review（artifact: wave11/t35 @ 9b69ddd (clean tree). Root cause: spec-4 commit 6faa557 added status_sets/kind statuses to tests/data/presets/molbio-v1/, the 0.1.2 builder input; that loader rejects them so the rebuild failed and the guard skipped. Fix: restore both frozen v1 presets to their v1 bytes (base.yaml == 3ec57d5 presets/base.yaml; the rebuilt preset copies are byte-identical to the checked-in fixture, so tests/data/ledgers/molbio-v1 is untouched) and make build_fixtures.py reject later-spec keys up front with a clear BuildError. No edit to tests/test_migrate.py. Evidence: builder --out /tmp/molbio-v1-probe -> 24 tables, 18 views, 20 dolt_tests, spec_version 2, preset_versions base/molbio 1; drift guard 1 passed (no skip); full suite 845 passed, 0 skipped (baseline 844 passed + 1 skip).）
-- `2026-10-29 12:31` **agent** [exec] T-005#B-001: 线程登记已清除（@w35 收工）
 - `2026-10-29 12:31` **agent** [status] T-005#B-001: review → done（Root cause: wave-10 commit 6faa557 added spec-4 status_sets/statuses keys to tests/data/presets/molbio-v1/, the 0.1.2 checkout input; the legacy loader rejected them so the rebuild failed and the drift guard skipped. Frozen inputs restored to v1 bytes; builder now fails fast on later-spec keys; checked-in fixture untouched. Drift guard runs (1 passed). Full suite in the worktree: 845 passed, 0 skipped (baseline 844 + the skip gone).）
 - `2026-10-29 12:31` **agent** [status] T-005#B-002: pending → running（Reviewing and merging wave11/t35）
 - `2026-10-29 12:31` **agent** [exec] T-005#B-002: 线程登记已清除（@lead 收工）
@@ -238,6 +236,14 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
 - `2026-10-29 14:11` **agent** [status] T-001#B-002: pending → running（Reviewing and merging wave11/t31）
 - `2026-10-29 14:11` **agent** [exec] T-001#B-002: 线程登记已清除（@lead 收工）
 - `2026-10-29 14:11` **agent** [status] T-001#B-002: running → done（Reviewed ddl/diff/model/tests_gen, conftest helper, golden diff and the minimal view-expectation edits; verified fast 352 and targeted 229 in the worktree; merged into main 5ab0a69. Full-suite gate moves to w32 integration.）
+- `2026-10-29 14:13` **agent** [status] T-004#B-001: pending → running（spec-4 fixture and migration skeleton）
+- `2026-10-29 15:38` **agent** [status] T-004#B-001: running → running（turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2）
+- `2026-10-29 17:10` **agent** [status] T-002#B-001: running → review（branch wave11/t32, head af0437f (part B 13ca169 + part A af0437f). Full suite: 879 passed / 1 failed / 0 skipped - only test_migrate::test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path, approved by the Lead (molbio 2-to-3 now needs spec 5; migration/spec/4-to-5 is w34's step, w33 owns the ordering test after that). Targeted suites green; fixture fallout placed or seeded not-in-stock in test_cellbio/test_angenet/test_presets/test_migrate/test_renumber; tests/data/ledgers/molbio-v1 clean, no stray LOCK files.）
+- `2026-10-29 17:12` **agent** [exec] T-002#B-001: 线程登记已清除（@w32 收工）
+- `2026-10-29 17:12` **agent** [status] T-002#B-001: review → done（Behavior layer accepted: position/creation invariant both directions, box add/move name rule and grid tube-only, per-box view creation on add and import in the same commit, all box read paths via box JOIN box_<kind> (objects._list_records, ops/find.py, io_csv export), CSV import rules; fixture fallout fixed by placing aliquots or seeding pending, no check assertions relaxed. Full suite in the worktree: 879 passed / 1 failed / 0 skipped; the failure is the approved upgrade-order test that needs migration/spec/4-to-5 (w33 in turn 2b).）
+- `2026-10-29 17:12` **agent** [status] T-002#B-002: pending → running（Reviewing and merging wave11/t32）
+- `2026-10-29 17:12` **agent** [exec] T-002#B-002: 线程登记已清除（@lead 收工）
+- `2026-10-29 17:12` **agent** [status] T-002#B-002: running → done（Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.）
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave11` 生成。
