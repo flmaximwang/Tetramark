@@ -8,6 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from tetramark.schema.model import (
+    BOX_NAME_MAX_LENGTH,
+    BOX_VIEW_PREFIX,
+    CORE_VIEW_NAMES,
+    SPEC_VERSION,
     UNSET,
     EffectiveSchema,
     Field,
@@ -24,6 +28,7 @@ from tetramark.schema.model import (
     SqlType,
     Status,
     StatusSet,
+    box_name_problem,
     parse_labels,
 )
 
@@ -596,3 +601,55 @@ def test_schema_error_renders_file_and_path() -> None:
     assert error.path == "kinds.plasmid.fields.x"
     assert error.exit_code == 1
     assert str(SchemaError("plain")) == "plain"
+
+
+# ---------------------------------------------------------------------------
+# Spec 5: box names must work as view names
+# ---------------------------------------------------------------------------
+
+
+def test_spec_version_is_5() -> None:
+    assert SPEC_VERSION == 5
+
+
+def test_core_views_reserve_their_v_box_names() -> None:
+    assert "v_box_slots" in CORE_VIEW_NAMES
+    assert BOX_VIEW_PREFIX == "v_box_"
+    assert BOX_NAME_MAX_LENGTH == 58
+
+
+def test_box_name_problem_accepts_ordinary_names() -> None:
+    assert box_name_problem("WFL-10-01", []) is None
+    assert box_name_problem("G", []) is None
+    # An exact duplicate is not the naming rule's job: ``tm box add`` has its
+    # own duplicate check and CSV import updates the existing box.
+    assert box_name_problem("tube", ["tube"]) is None
+    assert box_name_problem("Rack-2", ["Rack-1"]) is None
+    assert box_name_problem("x" * BOX_NAME_MAX_LENGTH, []) is None
+
+
+def test_box_name_problem_refuses_a_core_view_collision() -> None:
+    problem = box_name_problem("slots", [])
+    assert problem is not None
+    assert "core view" in problem and "v_box_slots" in problem
+    # Dolt stores view names in lowercase, so the collision is case-insensitive.
+    assert box_name_problem("SLOTS", []) is not None
+    # The other core views are not v_box_*: a box may be named after them.
+    assert box_name_problem("aliquot_location", []) is None
+    assert box_name_problem("stock_status", []) is None
+
+
+def test_box_name_problem_refuses_a_name_longer_than_58() -> None:
+    problem = box_name_problem("x" * (BOX_NAME_MAX_LENGTH + 1), [])
+    assert problem is not None
+    assert "59" in problem and "58" in problem
+
+
+def test_box_name_problem_refuses_a_case_only_duplicate() -> None:
+    problem = box_name_problem("Tube", ["TUBE"])
+    assert problem is not None
+    assert "differs only in case" in problem and "TUBE" in problem
+    assert box_name_problem("TUBE", ["tube", "other"]) is not None
+    assert box_name_problem("wfl-10-01", ["WFL-10-01"]) is not None
+    # ... but a genuinely different name is fine.
+    assert box_name_problem("Tube-2", ["TUBE-1"]) is None

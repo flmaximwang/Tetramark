@@ -16,11 +16,14 @@ from typing import Any
 import pytest
 
 from tetramark.driver.base import literal
+from tetramark.errors import LedgerError
 from tetramark.schema.ddl import (
     CORE_TABLES,
     CORE_VIEWS,
     STOCK_VIEW_COLUMNS,
     Statement,
+    box_view_name,
+    box_view_statements,
     core_statements,
     kind_statements,
     schema_statements,
@@ -34,6 +37,8 @@ from tetramark.schema.model import (
     EffectiveSchema,
     Field,
     FieldType,
+    Geometry,
+    GeometryType,
     Kind,
     LedgerConfig,
     ObjectType,
@@ -91,13 +96,18 @@ def test_statements_are_tagged_and_ordered() -> None:
             assert statement.name.startswith("fk_")
             assert "ADD CONSTRAINT" in statement.sql
 
-    # Every kind has a table and a convenience view.
+    # Every entity/stock kind has a table and a convenience view.  Box kinds do
+    # not: spec 5 gives every *existing box* its own view instead (see
+    # test_box_views_* below), so a box kind must have no v_box_<kind> view.
     for kind_name, kind in schema.kinds.items():
         table = table_name(kind.object, kind_name)
         assert table in table_names
-        assert f"v_{kind.object.value}_{kind_name}" in {
-            s.name for s in statements if s.object == "view"
-        }
+        view_name = f"v_{kind.object.value}_{kind_name}"
+        view_names = {s.name for s in statements if s.object == "view"}
+        if kind.object is ObjectType.box:
+            assert view_name not in view_names, view_name
+        else:
+            assert view_name in view_names
 
     # An aliquot is a generic tube: no per-stock-kind extension tables exist.
     assert [name for name in table_names if name.startswith("aliquot_")] == [
@@ -253,7 +263,7 @@ def query(run: Any, repo: Path, sql: str) -> list[dict[str, Any]]:
     for line in result.stdout.splitlines():
         line = line.strip()
         if line:
-            rows.extend(json.loads(line)["rows"])
+            rows.extend(json.loads(line).get("rows", []))
     return rows
 
 
@@ -327,7 +337,12 @@ def test_core_tables_views_and_kind_objects_exist(
     schema = full_schema()
     for kind_name, kind in schema.kinds.items():
         assert objects.get(table_name(kind.object, kind_name)) == "BASE TABLE"
-        assert objects.get(f"v_{kind.object.value}_{kind_name}") == "VIEW"
+        view_name = f"v_{kind.object.value}_{kind_name}"
+        if kind.object is ObjectType.box:
+            # Spec 5: box kinds have no view; each box gets its own.
+            assert view_name not in objects, view_name
+        else:
+            assert objects.get(view_name) == "VIEW"
 
     # An aliquot is a generic tube: no per-stock-kind extension tables exist.
     assert [
@@ -1020,6 +1035,244 @@ def test_aliquot_status_check_is_gone_and_the_generated_rule_enforces_the_set(
         "INSERT INTO aliquot (id, stock_id, seq, status) "
         "VALUES ('STK-1.1', 'STK-1', 1, 'lost')",
     )
+
+
+# ---------------------------------------------------------------------------
+# Real Dolt: per-box views (spec 5)
+# ---------------------------------------------------------------------------
+
+
+def _box_rows() -> list[dict[str, Any]]:
+    """The boxes of the spec-5 acceptance shape (G, R, S, F + a child box)."""
+    return [
+        {"id": "B-G", "name": "G", "kind": "grid9x9"},
+        {"id": "B-R", "name": "R", "kind": "namedbox"},
+        {"id": "B-S", "name": "S", "kind": "slotlessbox"},
+        {"id": "B-F", "name": "F", "kind": "slotlessbox"},
+        {"id": "B-INNER", "name": "INNER-1", "kind": "grid9x9"},
+    ]
+
+
+def _install_box_view_ledger(run: Any, repo: Path) -> None:
+    """The full schema plus the spec-5 acceptance boxes and their views."""
+    schema = full_schema()
+    install(run, repo, schema_statements(schema))
+    execute(
+        run,
+        repo,
+        "INSERT INTO box (id, kind, name, parent_box_id, parent_slot) VALUES "
+        "('B-G', 'grid9x9', 'G', NULL, NULL),"
+        "('B-R', 'namedbox', 'R', NULL, NULL),"
+        "('B-S', 'slotlessbox', 'S', NULL, NULL),"
+        "('B-F', 'slotlessbox', 'F', NULL, NULL),"
+        "('B-INNER', 'grid9x9', 'INNER-1', 'B-R', 'top');"
+        "INSERT INTO box_grid9x9 (id) VALUES ('B-G'), ('B-INNER');"
+        "INSERT INTO box_namedbox (id) VALUES ('B-R');"
+        "INSERT INTO box_slotlessbox (id) VALUES ('B-S'), ('B-F');",
+    )
+    for box_id, kind in (
+        ("B-G", "grid9x9"),
+        ("B-R", "namedbox"),
+        ("B-INNER", "grid9x9"),
+    ):
+        rows = slot_rows(box_id, schema.kinds[kind].geometry)
+        values = ", ".join(
+            "("
+            + ", ".join(
+                literal(row[column])
+                for column in ("box_id", "label", "row_label", "col_label", "ordinal")
+            )
+            + ")"
+            for row in rows
+        )
+        execute(
+            run,
+            repo,
+            "INSERT INTO slot (box_id, label, row_label, col_label, ordinal) "
+            f"VALUES {values}",
+        )
+
+    _insert_entity(run, repo, "ENT-1", "Item")
+    for stock_id in ("STK-1", "STK-2", "STK-3", "STK-4", "STK-5", "STK-6"):
+        _insert_stock(run, repo, stock_id, "ENT-1")
+    execute(
+        run,
+        repo,
+        # G: two tubes share slot A1 (grid9x9 has slot_capacity 2), one in B2.
+        "INSERT INTO aliquot (id, stock_id, seq, box_id, slot, status) VALUES "
+        "('STK-1.1', 'STK-1', 1, 'B-G', 'A1', 'stored'),"
+        "('STK-2.1', 'STK-2', 1, 'B-G', 'A1', 'stored'),"
+        "('STK-3.1', 'STK-3', 1, 'B-G', 'B2', 'stored'),"
+        # S: two direct occupants, no slots.
+        "('STK-4.1', 'STK-4', 1, 'B-S', NULL, 'stored'),"
+        "('STK-5.1', 'STK-5', 1, 'B-S', NULL, 'stored'),"
+        # INNER-1 is only reachable through R: its tube must not show in v_box_R.
+        "('STK-6.1', 'STK-6', 1, 'B-INNER', 'A1', 'stored');",
+    )
+    install(run, repo, box_view_statements(schema, _box_rows()))
+
+
+def test_box_view_name_and_statement_shape() -> None:
+    schema = full_schema()
+    assert box_view_name("WFL-10-01") == "v_box_WFL-10-01"
+    assert box_view_name("G") == "v_box_G"
+    statements = box_view_statements(schema, _box_rows())
+    assert [statement.object for statement in statements] == ["view"] * 5
+    assert [statement.name for statement in statements] == [
+        "v_box_G",
+        "v_box_R",
+        "v_box_S",
+        "v_box_F",
+        "v_box_INNER-1",
+    ]
+    # A box kind is never a view on its own: no v_box_<kind> anywhere.
+    assert not any(
+        statement.name in {"v_box_grid9x9", "v_box_namedbox"}
+        for statement in statements
+    )
+
+
+def test_box_view_unknown_kind_is_refused() -> None:
+    schema = full_schema()
+    with pytest.raises(LedgerError, match="X-1"):
+        box_view_statements(schema, [{"id": "B-X", "name": "X-1", "kind": "gone"}])
+
+
+def test_box_view_refuses_a_name_that_cannot_be_a_view() -> None:
+    schema = full_schema()
+    with pytest.raises(LedgerError, match="core view"):
+        box_view_statements(
+            schema, [{"id": "B-1", "name": "slots", "kind": "slotlessbox"}]
+        )
+    with pytest.raises(LedgerError, match="characters long"):
+        box_view_statements(
+            schema, [{"id": "B-1", "name": "x" * 59, "kind": "slotlessbox"}]
+        )
+    with pytest.raises(LedgerError, match="differs only in case"):
+        box_view_statements(
+            schema,
+            [
+                {"id": "B-1", "name": "Tube", "kind": "slotlessbox"},
+                {"id": "B-2", "name": "TUBE", "kind": "slotlessbox"},
+            ],
+        )
+
+
+def test_box_view_grid_column_named_row_is_refused() -> None:
+    schema = full_schema()
+    schema.kinds["grid9x9"].geometry = Geometry(
+        type=GeometryType.grid, rows="A-B", cols=["row", "1"]
+    )
+    with pytest.raises(SchemaError, match="'row'"):
+        box_view_statements(schema, [{"id": "B-G", "name": "G", "kind": "grid9x9"}])
+
+
+def test_box_grid_view_is_a_pivot_with_empty_rows(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """Acceptance: ``v_box_G`` is 9 rows A–H, J with columns ``row, 1…9``."""
+    _install_box_view_ledger(dolt_run, dolt_repo)
+    columns = [
+        str(row["name"])
+        for row in query(
+            dolt_run,
+            dolt_repo,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'v_box_G' "
+            "ORDER BY ordinal_position",
+        )
+    ]
+    assert columns == ["row", *[str(number) for number in range(1, 10)]]
+
+    rows = query(dolt_run, dolt_repo, "SELECT * FROM v_box_G")
+    assert len(rows) == 9
+    assert [row["row"] for row in rows] == ["A", "B", "C", "D", "E", "F", "G", "H", "J"]
+    # Two tubes in one slot are comma-joined in id order; one tube is itself.
+    assert rows[0]["1"] == "STK-1.1,STK-2.1"
+    assert rows[1]["2"] == "STK-3.1"
+    # An empty cell and an empty row are NULL, not an empty string.
+    assert "2" not in rows[0]
+    empty_row = query(
+        dolt_run,
+        dolt_repo,
+        "SELECT `1` IS NULL AS is_empty, `9` IS NULL AS also_empty "
+        "FROM v_box_G WHERE `row` = 'C'",
+    )[0]
+    assert empty_row == {"is_empty": 1, "also_empty": 1}
+
+
+def test_box_named_view_lists_every_slot(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """Acceptance: ``v_box_R`` has one row per slot; a child box is an occupant."""
+    _install_box_view_ledger(dolt_run, dolt_repo)
+    columns = [
+        str(row["name"])
+        for row in query(
+            dolt_run,
+            dolt_repo,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'v_box_R' "
+            "ORDER BY ordinal_position",
+        )
+    ]
+    assert columns == ["slot", "occupants"]
+    rows = query(dolt_run, dolt_repo, "SELECT * FROM v_box_R")
+    assert [row["slot"] for row in rows] == ["top", "middle", "bottom"]
+    assert rows[0]["occupants"] == "INNER-1"
+    assert "occupants" not in rows[1]  # an empty slot is NULL
+    # Only direct contents: the tube inside INNER-1 is not listed in R.
+    assert all(
+        "STK-6.1" not in str(row.get("occupants", "")) for row in rows
+    )
+
+
+def test_box_slotless_view_has_one_occupant_column(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """Acceptance: ``v_box_S`` returns 2 rows; the empty ``v_box_F`` returns 0."""
+    _install_box_view_ledger(dolt_run, dolt_repo)
+    columns = [
+        str(row["name"])
+        for row in query(
+            dolt_run,
+            dolt_repo,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'v_box_S' "
+            "ORDER BY ordinal_position",
+        )
+    ]
+    assert columns == ["occupant"]
+    rows = query(dolt_run, dolt_repo, "SELECT occupant FROM v_box_S")
+    assert [row["occupant"] for row in rows] == ["STK-4.1", "STK-5.1"]
+    assert query(dolt_run, dolt_repo, "SELECT * FROM v_box_F") == []
+
+
+def test_box_views_replace_the_kind_views_in_a_real_ledger(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """No ``v_box_<kind>`` view exists after the spec-5 schema is installed."""
+    _install_box_view_ledger(dolt_run, dolt_repo)
+    views = {
+        row["name"]
+        for row in query(
+            dolt_run,
+            dolt_repo,
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()",
+        )
+    }
+    # Dolt stores view names in lowercase; queries stay case-insensitive.
+    lowered = {name.lower() for name in views}
+    assert {
+        "v_box_g",
+        "v_box_r",
+        "v_box_s",
+        "v_box_f",
+        "v_box_inner-1",
+    } <= lowered
+    for kind_name in ("grid9x9", "grid96", "namedbox", "slotlessbox", "rack", "shelf"):
+        assert f"v_box_{kind_name}" not in lowered
 
 
 # This module intentionally keeps the embedded-driver path covered.

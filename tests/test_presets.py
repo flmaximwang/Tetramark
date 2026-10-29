@@ -656,7 +656,9 @@ def test_preset_inits_a_ledger_and_its_rules_hold(
     expected: set[str] = set()
     for kind_name, kind in schema.kinds.items():
         expected.add(f"{kind.object.value}_{kind_name}")
-        expected.add(f"v_{kind.object.value}_{kind_name}")
+        # Spec 5: box kinds have no v_box_<kind> view; each box gets its own.
+        if kind.object.value != "box":
+            expected.add(f"v_{kind.object.value}_{kind_name}")
     missing = expected - tables
     assert not missing, f"missing generated objects: {sorted(missing)}"
 
@@ -693,7 +695,6 @@ def test_molbio_v3_fresh_init_has_every_kind_table_and_part_version(
         "box_incubator",
         "v_entity_oligo",
         "v_stock_oligo_stock",
-        "v_box_incubator",
     ):
         assert table in tables, table
     for gone in (

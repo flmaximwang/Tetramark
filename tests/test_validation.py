@@ -24,7 +24,7 @@ from tetramark.schema.tests_gen import (
     run_check,
 )
 
-from conftest import PRESETS
+from conftest import PRESETS, create_box_views
 
 FULL = PRESETS / "full"
 BASE = PRESETS / "base"
@@ -91,6 +91,9 @@ def add_box(
         "VALUES (%s, %s, %s, %s, %s)",
         (box_id, name, kind, parent, parent_slot),
     )
+    # Spec 5: the box's own view is generated state; a raw-SQL insert bypasses
+    # ``tm box add``, which creates it.  ``tm check`` reports a missing view.
+    create_box_views(ledger)
 
 
 def add_slots(ledger: Ledger, box_id: str = "b1", labels: tuple[str, ...] = ("A1",)) -> None:
@@ -339,7 +342,9 @@ def test_box_nesting_cycle_fails(server_ledger_factory) -> None:
 
 def test_bounded_acyclic_query_ignores_deep_non_cycles(server_ledger_factory) -> None:
     ledger = server_ledger_factory([FULL], name="deep")
-    # A chain longer than the bound is not a cycle and must keep passing.
+    # A chain longer than the bound is not a cycle and must keep passing.  Use a
+    # slotless kind: spec 5 forbids nesting a box inside a grid box, so the
+    # chain must not be built out of grid boxes.
     depth = MAX_NESTING_DEPTH + 3
     for index in range(depth):
         parent = f"b{index - 1}" if index else None
@@ -347,7 +352,7 @@ def test_bounded_acyclic_query_ignores_deep_non_cycles(server_ledger_factory) ->
             ledger,
             f"b{index}",
             f"B{index}",
-            "grid9x9",
+            "slotlessbox",
             parent=parent,
             parent_slot=None,
         )
@@ -355,17 +360,33 @@ def test_bounded_acyclic_query_ignores_deep_non_cycles(server_ledger_factory) ->
     assert report.passed
 
 
-def test_stored_aliquot_in_slotted_box_requires_a_slot(server_ledger_factory) -> None:
+def test_in_stock_aliquot_requires_a_position(server_ledger_factory) -> None:
+    """Spec 5: in stock ⇔ placed; a not-in-stock aliquot carries no position."""
     ledger = server_ledger_factory([FULL], name="stored")
     add_everything(ledger)
     add_prep(ledger)
     add_box(ledger)
+    add_slots(ledger, labels=("A1",))
+    # In stock in a slotted box but without a slot: not physically placed.
     add_aliquot(ledger, "s1.1", 1, box_id="b1", slot=None, status="stored")
+    # In stock without a box at all.
+    add_aliquot(ledger, "s1.2", 2, status="stored")
+    # Not in stock but still carrying a position.
+    add_aliquot(ledger, "s1.3", 3, box_id="b1", slot="A1", status="pending")
 
     report = ledger.check(group="core", verbose=True)
-    assert "core_in_stock_aliquot_slot" in failed_names(report)
-    detail = next(r for r in report.results if r.name == "core_in_stock_aliquot_slot")
-    assert detail.detail_rows[0]["aliquot_id"] == "s1.1"
+    assert {
+        "core_aliquot_in_stock_position",
+        "core_aliquot_not_in_stock_no_position",
+    } <= failed_names(report)
+    unplaced = next(
+        r for r in report.results if r.name == "core_aliquot_in_stock_position"
+    )
+    assert {row["aliquot_id"] for row in unplaced.detail_rows} == {"s1.1", "s1.2"}
+    placed = next(
+        r for r in report.results if r.name == "core_aliquot_not_in_stock_no_position"
+    )
+    assert [row["aliquot_id"] for row in placed.detail_rows] == ["s1.3"]
 
 
 def test_slotless_capacity_counts_aliquots_and_child_boxes(server_ledger_factory) -> None:
@@ -667,6 +688,18 @@ def test_handmade_status_rows_fail_check_and_a_forced_event_is_accepted(
         "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=1
     )
     alq = stock["aliquots"][0]
+    # Spec 5: an in-stock aliquot must be physically placed.  The shelf is
+    # slotless, so a box is enough; the raw SQL placement is what the app's
+    # ``tm aliquot move`` will do (the status rules are what this test checks).
+    shelf = ledger.boxes.add("shelf", "SHELF")
+    create_box_views(ledger)
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `box_id` = %s WHERE `id` = %s",
+        (shelf["id"], alq),
+    )
+    ledger.driver.commit("test: place the tube on the shelf")
+    ledger.read_meta()
+
     ledger.aliquots.status(alq, "stored")
     ledger.aliquots.status(alq, "consumed")
     # A row written by hand (Workbench/SQL): ``consumed`` is final, so this
@@ -697,6 +730,11 @@ def test_handmade_status_rows_fail_check_and_a_forced_event_is_accepted(
     ledger.driver.execute(
         "UPDATE `aliquot` SET `status` = 'stored' WHERE `id` = %s", (alq,)
     )
+    # ... and re-place it, so only the status rules decide the check.
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `box_id` = %s WHERE `id` = %s",
+        (shelf["id"], alq),
+    )
     ledger.driver.execute(
         "UPDATE `aliquot_event` SET `forced` = TRUE WHERE `aliquot_id` = %s "
         "AND `event` = 'status' AND `old_status` = 'consumed'",
@@ -705,3 +743,111 @@ def test_handmade_status_rows_fail_check_and_a_forced_event_is_accepted(
     ledger.driver.commit("test: mark the exception forced")
     ledger.read_meta()
     assert ledger.check(group="core").passed
+
+
+# ---------------------------------------------------------------------------
+# Spec 5: generated rules and per-box view drift
+# ---------------------------------------------------------------------------
+
+
+def test_grid_box_holding_a_child_box_fails_check(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([FULL], name="grid-child")
+    add_box(ledger, "b1", "B1", "grid9x9")
+    add_box(ledger, "b2", "B2", "grid9x9", parent="b1", parent_slot=None)
+
+    report = ledger.check(group="core", verbose=True)
+    assert "core_grid_box_no_child_box" in failed_names(report)
+    detail = next(r for r in report.results if r.name == "core_grid_box_no_child_box")
+    assert detail.detail_rows[0]["child_box"] == "B2"
+    assert detail.detail_rows[0]["parent_box"] == "B1"
+    assert detail.detail_rows[0]["parent_kind"] == "grid9x9"
+
+
+def test_box_name_rule_lists_unsafe_names(server_ledger_factory) -> None:
+    ledger = server_ledger_factory([FULL], name="box-names")
+    # Raw SQL: the app refuses these names; the rule catches existing rows.
+    ledger.driver.execute(
+        "INSERT INTO `box` (`id`, `name`, `kind`) "
+        "VALUES ('b1', 'slots', 'slotlessbox')"
+    )
+    ledger.driver.execute(
+        "INSERT INTO `box` (`id`, `name`, `kind`) VALUES ('b2', %s, 'slotlessbox')",
+        ("x" * 59,),
+    )
+    ledger.driver.execute(
+        "INSERT INTO `box` (`id`, `name`, `kind`) VALUES "
+        "('b3', 'Tube', 'slotlessbox'), ('b4', 'TUBE', 'slotlessbox')"
+    )
+
+    report = ledger.check(group="core", verbose=True)
+    assert "core_box_name_safe" in failed_names(report)
+    detail = next(r for r in report.results if r.name == "core_box_name_safe")
+    problems = {
+        row["box"]: row["problem"] for row in detail.detail_rows
+    }
+    assert "core view" in problems["slots"]
+    assert "longer than 58" in problems["x" * 59]
+    assert "differs only in case" in problems["Tube"]
+    assert "differs only in case" in problems["TUBE"]
+
+
+def test_hand_dropped_box_view_fails_check_and_schema_apply_recreates_it(
+    embedded_ledger_factory, cli_env
+) -> None:
+    """Acceptance: dropping a per-box view by hand fails check; apply restores it."""
+    from typer.testing import CliRunner
+
+    from tetramark.cli.app import app
+
+    ledger = embedded_ledger_factory([FULL], name="view-drift")
+    add_box(ledger, "b1", "B1", "grid9x9")
+    add_slots(ledger, labels=("A1",))
+    assert ledger.check(group="core").passed
+
+    ledger.driver.execute("DROP VIEW `v_box_B1`")
+    ledger.driver.commit("test: drop the per-box view")
+    report = ledger.check(group="core", verbose=True)
+    assert not report.passed
+    drift = next(r for r in report.results if r.name == "core_box_views")
+    assert drift.group == "core"
+    assert [row["problem"] for row in drift.detail_rows] == ["missing"]
+    assert drift.detail_rows[0]["view"].lower() == "v_box_b1"
+
+    runner = CliRunner()
+    applied = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(ledger.workspace.data_dir),
+            "--ledger",
+            "view-drift",
+            "schema",
+            "apply",
+        ],
+    )
+    assert applied.exit_code == 0, applied.output
+    assert "Applied" in applied.output
+    assert ledger.check(group="core").passed
+
+
+def test_out_of_date_and_orphaned_box_views_fail_check(
+    embedded_ledger_factory,
+) -> None:
+    ledger = embedded_ledger_factory([FULL], name="view-drift-2")
+    add_box(ledger, "b1", "B1", "grid9x9")
+    add_box(ledger, "b2", "B2", "slotlessbox")
+    assert ledger.check(group="core").passed
+
+    ledger.driver.execute("DROP VIEW `v_box_B1`")
+    ledger.driver.execute("CREATE VIEW `v_box_B1` AS SELECT 1 AS `x`")
+    ledger.driver.execute("CREATE VIEW `v_box_GONE` AS SELECT 1 AS `x`")
+    ledger.driver.commit("test: hand-written views")
+
+    report = ledger.check(group="core")
+    assert not report.passed
+    drift = next(r for r in report.results if r.name == "core_box_views")
+    rows = {(row["view"].lower(), row["problem"]) for row in drift.detail_rows}
+    assert ("v_box_b1", "out of date") in rows
+    assert ("v_box_gone", "orphaned") in rows
+    # The healthy box's view is not reported.
+    assert all(view != "v_box_b2" for view, _problem in rows)
