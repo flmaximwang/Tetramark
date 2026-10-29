@@ -7,8 +7,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-001#B-001\nimplement the schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5\n\n`running` · @w31 · 在做 @w31\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "4",
+   "text": "### T-001#B-001\nimplement the schema layer: per-box views, plan/check reconciliation, SPEC_VERSION 5\n\n`done` · @w31\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-001#B-002",
@@ -17,8 +17,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-001#B-002\nreview and merge the schema layer\n\n`waiting` · @lead\n\nLead: review the w31 diff against docs/issues/002-box-views.md and the interface contract, run the targeted suites and the full suite in .dsh/gitworktree/w31, c"
+   "color": "4",
+   "text": "### T-001#B-002\nreview and merge the schema layer\n\n`done` · @lead\n\nLead: review the w31 diff against docs/issues/002-box-views.md and the interface contract, run the targeted suites and the full suite in .dsh/gitworktree/w31, c"
   },
   {
    "id": "T-002#B-001",
@@ -47,8 +47,8 @@
    "y": 300,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-003#B-001\nrename grid96 to grid8x12, bump base to 4, update spec docs\n\n`running` · @w33 · 在做 @w33\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "6",
+   "text": "### T-003#B-001\nrename grid96 to grid8x12, bump base to 4, update spec docs\n\n`review` · @w33 · 在做 @w33\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-003#B-002",
