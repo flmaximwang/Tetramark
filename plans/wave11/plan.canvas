@@ -77,8 +77,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "5",
-   "text": "### T-004#B-001\nbuild a spec-4 fixture, implement migration/spec/4-to-5 with its tests\n\n`running` · @w34 · 在做 @w34\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "4",
+   "text": "### T-004#B-001\nbuild a spec-4 fixture, implement migration/spec/4-to-5 with its tests\n\n`done` · @w34\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-004#B-002",
@@ -87,8 +87,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-004#B-002\nreview and merge the spec 4-to-5 migration\n\n`waiting` · @lead\n\nLead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real le"
+   "color": "4",
+   "text": "### T-004#B-002\nreview and merge the spec 4-to-5 migration\n\n`done` · @lead\n\nLead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real le"
   },
   {
    "id": "T-005#B-001",

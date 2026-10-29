@@ -2,14 +2,13 @@
 
 > Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.
 
-**进度** 6/13 块（46%） · 状态 `active` · 更新于 2026-10-29 17:12
+**进度** 8/13 块（62%） · 状态 `active` · 更新于 2026-10-29 18:03
 
 **参与方** lead(agent) · Maxim(human) · w31(agent) · w32(agent) · w33(agent) · w34(agent) · w35(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
 - `T-003#B-001` **rename grid96 to grid8x12, bump base to 4, update spec docs** — 待评审 · @w33 · 在做 @w33
-- `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** — 进行中 · @w34 · 在做 @w34
 
 ## 图
 
@@ -47,13 +46,11 @@ flowchart LR
   T-005_B-002 --> T-006_B-001
   T-006_B-001 --> T-006_B-002
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-005_B-001,T-005_B-002 done;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002 done;
   classDef review stroke-width:1px;
   class T-003_B-001 review;
   classDef waiting stroke-width:1px;
-  class T-003_B-002,T-003_B-003,T-004_B-002,T-006_B-001,T-006_B-002 waiting;
-  classDef running stroke-width:1px;
-  class T-004_B-001 running;
+  class T-003_B-002,T-003_B-003,T-006_B-001,T-006_B-002 waiting;
 ```
 
 ## 任务
@@ -157,9 +154,9 @@ Done when: the repository has no grid96 reference left except historical migrati
     - 判据：Diff reviewed; scope respected; targeted and full suites green in the worktree; branch committed and merged
     - 依赖：T-003#B-002
 
-### T-004 34 migration: spec 4->5 and a spec-4 fixture — 进行中
+### T-004 34 migration: spec 4->5 and a spec-4 fixture — 已完成
 @w34
-- [ ] `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** _impl_ — 进行中 @w34
+- [x] `T-004#B-001` **build a spec-4 fixture, implement migration/spec/4-to-5 with its tests** _impl_ — 已完成 @w34
     - 做什么：Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w34 (branch wave11/t34): create it from main with the worktree tool, then run uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch, and may finish with the tree dirty. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it.
 
 Start only after the Lead confirms wave11/t31 and wave11/t32 are merged into main, then git merge main into your branch before you begin.
@@ -179,13 +176,16 @@ Done when: fixture and builder exist; migration/spec/4-to-5 works on a copy of i
     - 判据：checked-in spec-4 fixture plus builder; spec/4-to-5 dry-run and apply on a copy produce spec 5 with the per-box views (G 9 rows, R 10 rows, S 2 rows, F 0 rows), kind views gone, cleared positions with move events, and clean tm check; the three refusals write nothing; targeted and full suites green in the worktree.
     - 依赖：T-001#B-002
     - 依赖：T-002#B-002
-    - 在做：@w34
-    - run 2026-10-29 14:13 w34 pending→running spec-4 fixture and migration skeleton
+    - 产物：`wave11/t34 @ 62d3224 (merged 4a14ec3)`
     - run 2026-10-29 15:38 w34 running→running turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2
-- [ ] `T-004#B-002` **review and merge the spec 4-to-5 migration** _review_ — 等前置 @lead
+    - run 2026-10-29 17:59 w34 running→review artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped.
+    - run 2026-10-29 18:03 lead review→done Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped.
+- [x] `T-004#B-002` **review and merge the spec 4-to-5 migration** _review_ — 已完成 @lead
     - 做什么：Lead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real ledger was touched; run the migration tests and the full suite in the worktree; commit on wave11/t34 and merge into main. Record the Lead decision on in-stock-without-position (refusal) and the fixture shape in the plan.
     - 判据：Diff reviewed; fixture genuine and drift-guarded; targeted and full suites green; branch committed and merged.
     - 依赖：T-004#B-001
+    - run 2026-10-29 18:03 lead pending→running Reviewing and merging wave11/t34
+    - run 2026-10-29 18:03 lead running→done Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3.
 
 ### T-005 35 wave-10 follow-up: legacy molbio-v1 fixture drift guard — 已完成
 @w35
@@ -224,12 +224,6 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
 
 ## 日志（近 20 条）
 
-- `2026-10-29 12:31` **agent** [status] T-005#B-001: review → done（Root cause: wave-10 commit 6faa557 added spec-4 status_sets/statuses keys to tests/data/presets/molbio-v1/, the 0.1.2 checkout input; the legacy loader rejected them so the rebuild failed and the drift guard skipped. Frozen inputs restored to v1 bytes; builder now fails fast on later-spec keys; checked-in fixture untouched. Drift guard runs (1 passed). Full suite in the worktree: 845 passed, 0 skipped (baseline 844 + the skip gone).）
-- `2026-10-29 12:31` **agent** [status] T-005#B-002: pending → running（Reviewing and merging wave11/t35）
-- `2026-10-29 12:31` **agent** [exec] T-005#B-002: 线程登记已清除（@lead 收工）
-- `2026-10-29 12:31` **agent** [status] T-005#B-002: running → done（Reviewed the builder guard and the frozen-preset revert (3 files, +48/-17); no product code and no fixture database change; drift guard 1 passed in 7.5s and fast lane 346 passed on main after merge dc3498f.）
-- `2026-10-29 12:37` **agent** [status] T-003#B-001: running → review（turn 1 done on wave11/t33 (8a78113): base 4 grid8x12, spec 03/05/06/08 + README/skills, base/3-to-4 draft; fast 346 passed, test_presets 62, test_docs_commands 5. Finalize + fixture test wait for w31/w32/w34.）
-- `2026-10-29 13:35` **agent** [status] T-002#B-001: running → running（turn 1 done: part B committed 13ca169 on wave11/t32; main merged (a839e59); targeted 66 green; waiting for w31 merge）
 - `2026-10-29 14:09` **agent** [status] T-001#B-001: running → review（Schema layer delivered on branch wave11/t31, commit 1c698d3 (worktree .agents/worktrees/wave11/t31, tree clean, not merged/pushed). Artifact: the branch/commit itself plus the scratch-ledger demo in /tmp/w31-demo (molbio ledger: G grid9x9, R rack, S shelf, F freezer -> schema apply created exactly v_box_G/R/S/F + core views; v_box_G 9 rows A-H,J with columns row,1..9 and A1/A2/B2 ids; v_box_R 10 rows with 1|id; v_box_S 2 rows; v_box_F 0 rows; hand-dropping v_box_G made tm check fail with core_box_views and tm schema apply recreated it, check OK). Fast lane 352 passed; targeted suites test_ddl/test_schema_diff/test_schema_model/test_validation 229 passed. Full suite measured before the final pure-expectation test updates: 43 failed/825 passed/1 skipped, all failures cross-workstream: w32 box read side still reads the removed v_box_<kind> views (core/objects.py:943, ops/find.py:271, ops/io_csv.py:2141), w32 creation path leaves stored aliquots unplaced, w32 box add/import does not create per-box views yet, and w33 turn 2b owns the old-step test_migrate check assertions that now see the spec-5 position rule. Details in my report to the Lead.）
 - `2026-10-29 14:11` **agent** [exec] T-001#B-001: 线程登记已清除（@w31 收工）
 - `2026-10-29 14:11` **agent** [status] T-001#B-001: review → done（Schema layer accepted: per-box view SQL for the three geometries, plan/check reconciliation from live box rows with RenameMap kind translation and case-insensitive view names, SPEC_VERSION 5, name helper, position/grid/name core rules, blocking core_box_views drift result. Fast 352, targeted schema suites 229. Full-suite failures are cross-workstream (w32 read paths/creation/box-add views, w33 old-step test_migrate).）
@@ -244,6 +238,12 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
 - `2026-10-29 17:12` **agent** [status] T-002#B-002: pending → running（Reviewing and merging wave11/t32）
 - `2026-10-29 17:12` **agent** [exec] T-002#B-002: 线程登记已清除（@lead 收工）
 - `2026-10-29 17:12` **agent** [status] T-002#B-002: running → done（Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.）
+- `2026-10-29 17:59` **agent** [status] T-004#B-001: running → review（artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped.）
+- `2026-10-29 18:03` **agent** [exec] T-004#B-001: 线程登记已清除（@w34 收工）
+- `2026-10-29 18:03` **agent** [status] T-004#B-001: review → done（Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped.）
+- `2026-10-29 18:03` **agent** [status] T-004#B-002: pending → running（Reviewing and merging wave11/t34）
+- `2026-10-29 18:03` **agent** [exec] T-004#B-002: 线程登记已清除（@lead 收工）
+- `2026-10-29 18:03` **agent** [status] T-004#B-002: running → done（Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3.）
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave11` 生成。

@@ -5,7 +5,7 @@
   "goal": "Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.",
   "status": "active",
   "created_at": "2026-10-29T11:57:27+08:00",
-  "updated_at": "2026-10-29T17:12:59+08:00",
+  "updated_at": "2026-10-29T18:03:05+08:00",
   "cadence": {
     "digest_hours": 6,
     "quiet_hours": "23:00-08:00"
@@ -367,7 +367,7 @@
           "id": "T-004#B-001",
           "title": "build a spec-4 fixture, implement migration/spec/4-to-5 with its tests",
           "kind": "impl",
-          "status": "running",
+          "status": "done",
           "owner": "w34",
           "doc": "Read docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitworktree/w34 (branch wave11/t34): create it from main with the worktree tool, then run uv sync -q. Real dolt, no mocks. Never touch a real ledger. Do not commit to main and do not merge to main; you may commit on your own branch, and may finish with the tree dirty. Iterate with uv run pytest -q -m fast; run the full suite before your final report. Stay inside your write scope; if a file outside it must change, report it.\n\nStart only after the Lead confirms wave11/t31 and wave11/t32 are merged into main, then git merge main into your branch before you begin.\n\nScope (only these files): migration/spec/4-to-5/ (new folder: migrate.py and README.md), tests/data/ledgers/build_spec4_fixture.py (new builder script), tests/data/ledgers/spec4-boxes/ (new checked-in fixture; copy the shape of tests/data/ledgers/build_fixtures.py and its drift guard), tests/test_migrate.py (append the spec 4-to-5 tests; do not modify existing tests there), migration/README.md only if the Lead asks (w33 updates the list). Do NOT edit src/tetramark/ (w31 and w32 own it), presets/ or docs/spec (w33 owns them), or migration/presets/ (w33 owns base 3-to-4).\n\nWork:\n1. Build a real spec-4 fixture (base 3, grid96, spec_version 4) by driving the 0.3.0-era checkout commit 2aee18b in a temporary worktree, the same way tests/data/ledgers/build_fixtures.py drives 3ec57d5 for the molbio-1 fixture. The fixture must contain: box G of kind grid9x9 (for the 9-row A-H,J acceptance shape), box H of kind grid96 with two tubes in A1 and B2, box R of kind rack with one tube in slot 1, box S of kind box_slotless with two tubes (a local or base slotless kind, e.g. shelf), an empty freezer F, one tube that is not in stock but still carries a box position (created and then set consumed with the 0.3.0 CLI, which did not clear positions), and enough stock/entity rows for tm check to pass on the fixture itself. Check the fixture in under tests/data/ledgers/spec4-boxes/ with a builder script that can regenerate it; add the same logical-shape drift guard the molbio-1 fixture has if git, uv and dolt are available, otherwise make that guard skip gracefully while the migration test still runs from the checked-in copy.\n2. Implement migration/spec/4-to-5/migrate.py with the shared runner (MigrationStep kind=spec, from_version=4, schema=the opened ledger schema so SPEC_VERSION 5 enters the recorded fingerprint, reopened_schema=load_ledger_schema). Its plan, in this order:\n   - refuse before writing (LedgerError listing rows) when a box name breaks the naming rule from model.box_name_problem (view-unsafe core-name collision, longer than 58 characters, case-only duplicate), when a grid box holds a child box, or when an in-stock aliquot has no position. Lead decision: an aliquot is in stock exactly when it is placed, so the step lists each offending aliquot with the tm aliquot move command that fixes it and writes nothing.\n   - clear box_id and slot of every not-in-stock aliquot that still has a position, one move event per cleared row (event move, from_box_id/from_slot the old position, to_* NULL, old_status and new_status the current status, actor ledger.actor, note spec 4-to-5), ordered by aliquot id.\n   - drop every managed v_box_* view (all v_box_<kind> views), create one per-box view per existing box via ddl.box_view_statements, recreate the other generated views changed by spec 5 via ddl.view_statements, and regenerate the derived dolt_tests in the same commit through the runner.\n3. README: what changes, preconditions (a spec-4 ledger at base 3 with its own preset copies; run this step before migration/presets/base/3-to-4), upgrade order, verification commands, what a refusal lists, rollback.\n4. Tests appended to tests/test_migrate.py against a copy of the fixture: dry-run writes nothing and prints the plan; apply produces spec_version 5, no v_box_<kind> view, v_box_G with columns row,1..9 and 9 rows (A-H,J), v_box_H (grid96) with 8 rows, v_box_R with 10 rows and one occupant, v_box_S with 2 rows, v_box_F with 0 rows, the consumed tube position cleared with its move event old position in from_box_id/from_slot and NULL to_*, tm check clean; the three refusals (view-unsafe name, grid holding a box, in-stock without position) each write nothing and list rows; then base 3-to-4 from w33 on the migrated copy if it is merged (coordinate with the Lead).\n\nDone when: fixture and builder exist; migration/spec/4-to-5 works on a copy of it (dry-run then apply); every acceptance bullet in docs/issues/002-box-views.md that concerns spec/4-to-5 passes; targeted tests and the full suite are green in the worktree. Report: files changed, decisions (especially fixture shape and any refusal you had to add), branch state, full suite count.",
           "input": "",
@@ -376,18 +376,17 @@
           "done_when": [
             "checked-in spec-4 fixture plus builder; spec/4-to-5 dry-run and apply on a copy produce spec 5 with the per-box views (G 9 rows, R 10 rows, S 2 rows, F 0 rows), kind views gone, cleared positions with move events, and clean tm check; the three refusals write nothing; targeted and full suites green in the worktree."
           ],
-          "artifacts": [],
+          "artifacts": [
+            "wave11/t34 @ 62d3224 (merged 4a14ec3)"
+          ],
           "deps": [
             "T-001#B-002",
             "T-002#B-002"
           ],
           "review_of": "",
           "feedback": "",
-          "exec": {
-            "by": "w34",
-            "started": "2026-10-29T14:13:57+08:00"
-          },
-          "status_since": "2026-10-29T15:38:12+08:00",
+          "exec": {},
+          "status_since": "2026-10-29T18:03:04+08:00",
           "runs": [
             {
               "at": "2026-10-29T14:13:57+08:00",
@@ -402,6 +401,20 @@
               "from": "running",
               "to": "running",
               "note": "turn 1 done on wave11/t34 @ 9ce8cbf: spec-4 fixture+builder+drift guard, spec 4-to-5 migrate.py+README, 9 new tests green; dry-run/apply verified on main (tm check clean, schema plan up to date); full module still has 9 pre-existing old-step test failures owned by w33/w32; waiting for w32 merge for turn 2"
+            },
+            {
+              "at": "2026-10-29T17:59:27+08:00",
+              "by": "w34",
+              "from": "running",
+              "to": "review",
+              "note": "artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped."
+            },
+            {
+              "at": "2026-10-29T18:03:04+08:00",
+              "by": "lead",
+              "from": "review",
+              "to": "done",
+              "note": "Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped."
             }
           ]
         },
@@ -409,7 +422,7 @@
           "id": "T-004#B-002",
           "title": "review and merge the spec 4-to-5 migration",
           "kind": "review",
-          "status": "pending",
+          "status": "done",
           "owner": "lead",
           "doc": "Lead: review the w34 branch against docs/issues/002-box-views.md and migration/README.md conventions; check the fixture is a genuine spec-4 shape and no real ledger was touched; run the migration tests and the full suite in the worktree; commit on wave11/t34 and merge into main. Record the Lead decision on in-stock-without-position (refusal) and the fixture shape in the plan.",
           "input": "",
@@ -425,8 +438,23 @@
           "review_of": "T-004#B-001",
           "feedback": "",
           "exec": {},
-          "status_since": "2026-10-29T12:00:47+08:00",
-          "runs": []
+          "status_since": "2026-10-29T18:03:05+08:00",
+          "runs": [
+            {
+              "at": "2026-10-29T18:03:05+08:00",
+              "by": "lead",
+              "from": "pending",
+              "to": "running",
+              "note": "Reviewing and merging wave11/t34"
+            },
+            {
+              "at": "2026-10-29T18:03:05+08:00",
+              "by": "lead",
+              "from": "running",
+              "to": "done",
+              "note": "Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3."
+            }
+          ]
         }
       ],
       "note": "",
@@ -937,7 +965,49 @@
       "kind": "status",
       "text": "T-002#B-002: running → done（Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.）",
       "ref": "T-002#B-002"
+    },
+    {
+      "at": "2026-10-29T17:59:27+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-004#B-001: running → review（artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped.）",
+      "ref": "T-004#B-001"
+    },
+    {
+      "at": "2026-10-29T18:03:04+08:00",
+      "actor": "agent",
+      "kind": "exec",
+      "text": "T-004#B-001: 线程登记已清除（@w34 收工）",
+      "ref": "T-004#B-001"
+    },
+    {
+      "at": "2026-10-29T18:03:04+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-004#B-001: review → done（Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped.）",
+      "ref": "T-004#B-001"
+    },
+    {
+      "at": "2026-10-29T18:03:05+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-004#B-002: pending → running（Reviewing and merging wave11/t34）",
+      "ref": "T-004#B-002"
+    },
+    {
+      "at": "2026-10-29T18:03:05+08:00",
+      "actor": "agent",
+      "kind": "exec",
+      "text": "T-004#B-002: 线程登记已清除（@lead 收工）",
+      "ref": "T-004#B-002"
+    },
+    {
+      "at": "2026-10-29T18:03:05+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-004#B-002: running → done（Reviewed migration plan/refusals, fixture shape (R holds G), builder guard and appended tests; verified 10 migration tests in the worktree; merged into main 4a14ec3.）",
+      "ref": "T-004#B-002"
     }
   ],
-  "rev": "b4f0ea05d7cd"
+  "rev": "7f5909bc11e8"
 }
