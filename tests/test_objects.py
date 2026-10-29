@@ -444,7 +444,8 @@ def test_aliquot_move_placement_errors(ledger_factory) -> None:
     new_box(ledger, "GRID", "grid96")
     new_box(ledger, "TWO", "grid9x9")
     new_box(ledger, "FREE", "slotlessbox")
-    new_box(ledger, "CHILD", "rack", parent="TWO", slot="A1")
+    new_box(ledger, "NAMED", "namedbox")
+    new_box(ledger, "CHILD", "rack", parent="NAMED", slot="top")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=4)
 
     with pytest.raises(LedgerError, match="needs --slot"):
@@ -454,7 +455,7 @@ def test_aliquot_move_placement_errors(ledger_factory) -> None:
     with pytest.raises(LedgerError, match="no slots"):
         ledger.aliquots.move(stock["aliquots"][0], box="FREE", slot="A1")
     with pytest.raises(LedgerError, match="child box"):
-        ledger.aliquots.move(stock["aliquots"][0], box="TWO", slot="A1")
+        ledger.aliquots.move(stock["aliquots"][0], box="NAMED", slot="top")
     with pytest.raises(LedgerError, match="unknown box"):
         ledger.aliquots.move(stock["aliquots"][0], box="NOPE")
 
@@ -485,13 +486,206 @@ def test_aliquot_status_vocabulary_and_slot_consistency(ledger_factory) -> None:
         ledger.aliquots.status(alq, "stored")
     assert commit_count(ledger) == before
 
-    # A slotless box has no slot requirement.
+    # A slotless box has no slot requirement; moving restores the in-stock
+    # status in the same write (spec 5).
     new_box(ledger, "FREE", "slotlessbox")
-    ledger.aliquots.move(alq, box="FREE")
-    ledger.aliquots.status(alq, "stored")
+    moved = ledger.aliquots.move(alq, box="FREE")
+    assert moved["status"] == "stored"
+    assert moved["old_status"] == "pending"
     assert ledger.driver.query(
         "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
     )[0]["status"] == "stored"
+
+
+def test_aliquot_status_leaves_stock_clears_position_and_event_keeps_it(
+    ledger_factory,
+) -> None:
+    """Acceptance: consumed clears the position, the event keeps the old one."""
+    ledger = make_ledger(ledger_factory, name="clear-position")
+    item = new_item(ledger)
+    box = new_box(ledger, "GRID", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, box="GRID", slots=["A1"]
+    )
+    alq = stock["aliquots"][0]
+
+    before = commit_count(ledger)
+    changed = ledger.aliquots.status(alq, "missing")
+    assert changed["status"] == "missing"
+    # The status and the cleared position are one write, one commit.
+    assert commit_count(ledger) == before + 1
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "missing", "box_id": None, "slot": None}]
+
+    last = events(ledger, alq)[-1]
+    assert last["event"] == "status"
+    assert last["from_box_id"] == box["id"]
+    assert last["from_slot"] == "A1"
+    assert last["to_box_id"] is None
+    assert last["to_slot"] is None
+    assert last["old_status"] == "stored"
+    assert last["new_status"] == "missing"
+
+    # Going back to an in-stock status without a position is refused with the
+    # move hint, and writes nothing.
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="tm aliquot move"):
+        ledger.aliquots.status(alq, "stored")
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "missing"}]
+
+
+def test_aliquot_use_to_zero_clears_the_position(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="use-clears")
+    item = new_item(ledger)
+    box = new_box(ledger, "GRID", "grid96")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=1,
+        box="GRID",
+        slots=["B2"],
+        quantity=10,
+        unit="ul",
+    )
+    alq = stock["aliquots"][0]
+
+    # A partial use keeps the position.
+    ledger.aliquots.use(alq, "4", "ul")
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot`, `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"box_id": box["id"], "slot": "B2", "status": "stored"}]
+
+    before = commit_count(ledger)
+    emptied = ledger.aliquots.use(alq, "6", "ul")
+    assert emptied["status"] == "consumed"
+    assert commit_count(ledger) == before + 1
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot`, `status` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"box_id": None, "slot": None, "status": "consumed"}]
+
+    last = events(ledger, alq)[-1]
+    assert last["event"] == "use"
+    assert last["from_box_id"] == box["id"]
+    assert last["from_slot"] == "B2"
+    assert last["to_box_id"] is None
+    assert last["to_slot"] is None
+    assert last["old_status"] == "stored"
+    assert last["new_status"] == "consumed"
+
+
+def test_aliquot_move_restores_the_single_in_stock_status(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="move-restores")
+    item = new_item(ledger)
+    box = new_box(ledger, "GRID", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "pending", "box_id": None}]
+
+    moved = ledger.aliquots.move(alq, box="GRID", slot="A1")
+    assert moved["old_status"] == "pending"
+    assert moved["status"] == "stored"
+    assert moved["box_id"] == box["id"] and moved["slot"] == "A1"
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "stored", "box_id": box["id"], "slot": "A1"}]
+    last = events(ledger, alq)[-1]
+    assert last["event"] == "move"
+    assert last["old_status"] == "pending"
+    assert last["new_status"] == "stored"
+    assert last["to_slot"] == "A1"
+
+    # An aliquot already in stock keeps its status on a plain move.
+    again = ledger.aliquots.move(alq, box="GRID", slot="A2")
+    assert again["old_status"] == "stored" and again["status"] == "stored"
+
+
+def test_aliquot_move_with_several_in_stock_statuses_needs_status(
+    ledger_factory,
+) -> None:
+    from conftest import REPO_PRESETS
+
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "c_elegans.yaml"],
+        name="worm-statuses",
+    )
+    strain = ledger.entities.add("worm_strain", name="N2")
+    new_box(ledger, "GRID", "grid9x9")
+    # Creation is not a transition, so a non-in-stock status starts unplaced.
+    stock = ledger.stocks.add(
+        "worm_culture", entity=strain["id"], aliquots=1, status="contaminated"
+    )
+    alq = stock["aliquots"][0]
+
+    # ``worm`` has two in-stock statuses: the bare move is ambiguous.
+    with pytest.raises(LedgerError, match="several in-stock statuses"):
+        ledger.aliquots.move(alq, box="GRID", slot="A1")
+    with pytest.raises(UsageError, match="not in stock"):
+        ledger.aliquots.move(alq, box="GRID", slot="A1", status="contaminated")
+    with pytest.raises(UsageError, match="unknown status"):
+        ledger.aliquots.move(alq, box="GRID", slot="A1", status="nope")
+
+    # --status picks the in-stock status to restore; no transition check runs
+    # for a tube that was not in stock.
+    restored = ledger.aliquots.move(alq, box="GRID", slot="A1", status="growing")
+    assert restored["old_status"] == "contaminated"
+    assert restored["status"] == "growing"
+    assert restored["slot"] == "A1"
+
+    # An in-stock move with --status follows the normal transition rule.
+    starred = ledger.aliquots.move(alq, box="GRID", slot="A2", status="starved")
+    assert starred["old_status"] == "growing"
+    assert starred["status"] == "starved"
+    # Naming the current status is a plain move, not a transition error.
+    same = ledger.aliquots.move(alq, box="GRID", slot="A3", status="starved")
+    assert same["status"] == "starved"
+
+
+def test_aliquot_creation_enforces_the_position_invariant(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="creation-position")
+    item = new_item(ledger)
+    new_box(ledger, "GRID", "grid96")
+
+    # An in-stock creation status needs a position...
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="must be placed"):
+        ledger.stocks.add("lot", entity=item["id"], aliquots=1, status="stored")
+    assert commit_count(ledger) == before
+    # ...and a placed aliquot needs an in-stock status.
+    with pytest.raises(LedgerError, match="placed aliquot must be in stock"):
+        ledger.stocks.add(
+            "lot",
+            entity=item["id"],
+            aliquots=1,
+            box="GRID",
+            slots=["A1"],
+            status="pending",
+        )
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, status="missing"
+    )
+    with pytest.raises(LedgerError, match="placed aliquot must be in stock"):
+        ledger.aliquots.add(
+            stock["id"], count=1, box="GRID", slots=["A1"], status="consumed"
+        )
+    with pytest.raises(LedgerError, match="must be placed"):
+        ledger.aliquots.add(stock["id"], count=1, status="stored")
+
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id` FROM `aliquot` WHERE `id` = %s",
+        (stock["aliquots"][0],),
+    ) == [{"status": "missing", "box_id": None}]
+    # A placed creation defaults to the in-stock status; that is valid.
+    placed = ledger.aliquots.add(stock["id"], count=1, box="GRID", slots=["A1"])
+    assert ledger.driver.query(
+        "SELECT `status`, `slot` FROM `aliquot` WHERE `id` = %s",
+        (placed["ids"][0],),
+    ) == [{"status": "stored", "slot": "A1"}]
 
 
 def test_aliquot_purge_removes_events(ledger_factory) -> None:
@@ -546,7 +740,7 @@ def test_purge_refuses_an_aliquot_used_as_a_source(ledger_factory) -> None:
 def test_box_add_materialises_slots_and_lists_paths(ledger_factory) -> None:
     ledger = make_full_ledger(ledger_factory)
     before = commit_count(ledger)
-    grid = ledger.boxes.add("grid9x9", "FREEZER")
+    grid = ledger.boxes.add("grid9x9", "GRID82")
     assert commit_count(ledger) == before + 1
     assert grid["slots"] == 81
 
@@ -567,37 +761,100 @@ def test_box_add_materialises_slots_and_lists_paths(ledger_factory) -> None:
     slotless = ledger.boxes.add("slotlessbox", "SHELF")
     assert slotless["slots"] == 0
 
-    child = ledger.boxes.add("grid96", "RACK-1", parent="FREEZER", slot="A1")
+    # A named box is a valid parent; a grid box is not (spec 5).
+    child = ledger.boxes.add("grid96", "RACK-1", parent="TUBES", slot="top")
     paths = {row["name"]: row["path"] for row in ledger.boxes.ls()}
-    assert paths["FREEZER"] == "FREEZER"
-    assert paths["RACK-1"] == "FREEZER/RACK-1"
-    assert child["parent_slot"] == "A1"
+    assert paths["GRID82"] == "GRID82"
+    assert paths["RACK-1"] == "TUBES/RACK-1"
+    assert child["parent_slot"] == "top"
+    with pytest.raises(LedgerError, match="grid boxes hold tubes only"):
+        ledger.boxes.add("grid96", "NESTED", parent="GRID82", slot="A1")
 
     with pytest.raises(LedgerError, match="already in use"):
-        ledger.boxes.add("grid96", "FREEZER")
+        ledger.boxes.add("grid96", "GRID82")
     with pytest.raises(UsageError, match="requires --in"):
         ledger.boxes.add("grid96", "ORPHAN", slot="A1")
+
+
+def test_box_add_creates_its_view_and_refuses_view_unsafe_names(
+    ledger_factory,
+) -> None:
+    """Spec 5: every box gets its view in the add commit; names must be safe."""
+    ledger = make_ledger(ledger_factory, name="box-names")
+    before = commit_count(ledger)
+    box = ledger.boxes.add("grid96", "WFL-10-01")
+    # The box row, its slot rows and its view are one commit.
+    assert commit_count(ledger) == before + 1
+    views = {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    assert "v_box_wfl-10-01" in views
+    assert "v_box_grid96" not in views  # kind views are gone (spec 5)
+    # The grid pivot: one row per row label (A-H), a column per column label.
+    columns = [
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() "
+            "AND table_name = 'v_box_wfl-10-01' ORDER BY ordinal_position"
+        )
+    ]
+    assert columns == ["row", *[str(number) for number in range(1, 13)]]
+    assert len(
+        ledger.driver.query("SELECT * FROM `v_box_WFL-10-01`")
+    ) == 8
+    assert ledger.driver.query(
+        "SELECT * FROM `v_box_wfl-10-01` WHERE `row` = 'A'"
+    )[0]["1"] is None
+
+    # (a) a core view collision, (b) the 58-character limit, (c) a case-only
+    # duplicate of an existing box name.
+    with pytest.raises(UsageError, match="core view"):
+        ledger.boxes.add("rack", "slots")
+    with pytest.raises(UsageError, match="58"):
+        ledger.boxes.add("rack", "x" * 59)
+    with pytest.raises(UsageError, match="differs only in case"):
+        ledger.boxes.add("rack", "wfl-10-01")
+    # An exact duplicate keeps its own (clearer) error.
+    with pytest.raises(LedgerError, match="already in use"):
+        ledger.boxes.add("rack", "WFL-10-01")
+    # A name at the limit is fine and gets its own view.
+    longest = "y" * 58
+    ledger.boxes.add("rack", longest)
+    assert f"v_box_{longest}" in {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    assert box["id"]
 
 
 def test_box_nesting_exclusivity_acyclicity_and_slotless_capacity(
     ledger_factory,
 ) -> None:
     ledger = make_full_ledger(ledger_factory)
-    ledger.boxes.add("grid9x9", "FREEZER")
-    ledger.boxes.add("grid96", "SHELF", parent="FREEZER", slot="A1")
+    ledger.boxes.add("namedbox", "TUBES")
+    ledger.boxes.add("rack", "INNER", parent="TUBES", slot="top")
+    ledger.boxes.add("grid96", "SHELF")
     ledger.boxes.add("slotlessbox", "DRAWER")
 
     with pytest.raises(LedgerError, match="already holds child box"):
-        ledger.boxes.add("grid96", "CLASH", parent="FREEZER", slot="A1")
+        ledger.boxes.add("grid96", "CLASH", parent="TUBES", slot="top")
 
     item = new_item(ledger)
     with pytest.raises(LedgerError, match="child box"):
-        ledger.stocks.add("lot", entity=item["id"], box="FREEZER", slots=["A1"])
+        ledger.stocks.add("lot", entity=item["id"], box="TUBES", slots=["top"])
 
     with pytest.raises(LedgerError, match="inside itself"):
-        ledger.boxes.move("FREEZER", parent="SHELF", slot="A1")
+        ledger.boxes.move("TUBES", parent="INNER", slot="top")
     with pytest.raises(LedgerError, match="has no slot"):
-        ledger.boxes.move("SHELF", parent="FREEZER", slot="Z99")
+        ledger.boxes.move("SHELF", parent="TUBES", slot="Z99")
     with pytest.raises(LedgerError, match="no slots"):
         ledger.boxes.move("SHELF", parent="DRAWER", slot="A1")
 
@@ -614,16 +871,20 @@ def test_box_nesting_exclusivity_acyclicity_and_slotless_capacity(
 
 def test_box_move_updates_parent_and_path(ledger_factory) -> None:
     ledger = make_full_ledger(ledger_factory)
-    ledger.boxes.add("grid9x9", "FREEZER")
-    ledger.boxes.add("grid96", "SHELF", parent="FREEZER", slot="A1")
+    ledger.boxes.add("namedbox", "TUBES")
+    ledger.boxes.add("grid9x9", "GRID")
+    ledger.boxes.add("grid96", "SHELF", parent="TUBES", slot="top")
     before = commit_count(ledger)
-    moved = ledger.boxes.move("SHELF", parent="FREEZER", slot="B2")
+    moved = ledger.boxes.move("SHELF", parent="TUBES", slot="bottom")
     assert commit_count(ledger) == before + 1
-    assert moved["parent_slot"] == "B2"
+    assert moved["parent_slot"] == "bottom"
     paths = {row["name"]: row["path"] for row in ledger.boxes.ls()}
-    assert paths["SHELF"] == "FREEZER/SHELF"
+    assert paths["SHELF"] == "TUBES/SHELF"
+    # Grid boxes hold tubes only (spec 5), so they cannot become a parent.
+    with pytest.raises(LedgerError, match="grid boxes hold tubes only"):
+        ledger.boxes.move("SHELF", parent="GRID", slot="A1")
     with pytest.raises(LedgerError, match="unknown box"):
-        ledger.boxes.move("NOPE", parent="FREEZER", slot="A1")
+        ledger.boxes.move("NOPE", parent="TUBES", slot="top")
 
 
 # ---------------------------------------------------------------------------
@@ -686,8 +947,8 @@ def test_every_command_is_exactly_one_commit(ledger_factory) -> None:
     step(lambda: ledger.entities.edit(item["id"], values={"category": "x"}))
     box = step(lambda: ledger.boxes.add("grid96", "BOX"))
     assert box["slots"] == 96
-    step(lambda: ledger.boxes.add("grid96", "FREEZER"))
-    step(lambda: ledger.boxes.move("BOX", parent="FREEZER", slot="A1"))
+    step(lambda: ledger.boxes.add("rack", "RACK"))
+    step(lambda: ledger.boxes.move("BOX", parent="RACK", slot="top"))
     stock = step(lambda: ledger.stocks.add("lot", entity=item["id"]))
     step(lambda: ledger.stocks.edit(stock["id"], values={"supplier": "s"}))
     added = step(
@@ -779,9 +1040,15 @@ def test_stock_show_resolves_stock_aliases(ledger_factory) -> None:
 def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
     ledger = make_ledger(ledger_factory, name="transitions")
     item = new_item(ledger)
-    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    box = new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, box="BOX", slots=["A1"]
+    )
     alq = stock["aliquots"][0]
-    assert ledger.aliquots.status(alq, "stored")["status"] == "stored"
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "stored", "box_id": box["id"]}]
+
     consumed = ledger.aliquots.status(alq, "consumed")
     assert consumed["old_status"] == "stored"
     assert consumed["status"] == "consumed"
@@ -796,26 +1063,41 @@ def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
         "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"status": "consumed"}]
 
-    # --force overrides it and records the exception.
-    forced = ledger.aliquots.status(alq, "stored", force=True, note="found the tube")
-    assert forced["forced"] is True
+    # Forcing the change does not bypass the position invariant: ``stored`` is
+    # in stock, so the tube needs a position, and ``consumed`` cleared it.
+    with pytest.raises(LedgerError, match="tm aliquot move"):
+        ledger.aliquots.status(alq, "stored", force=True, note="found the tube")
     assert ledger.driver.query(
         "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
-    ) == [{"status": "stored"}]
+    ) == [{"status": "consumed"}]
+
+    # --force overrides a transition rule into a status that is not in stock.
+    forced = ledger.aliquots.status(alq, "missing", force=True, note="found the tube")
+    assert forced["forced"] is True
     last = events(ledger, alq)[-1]
     assert last["event"] == "status"
     assert last["old_status"] == "consumed"
-    assert last["new_status"] == "stored"
+    assert last["new_status"] == "missing"
     assert last["forced"] in (1, True)
     assert last["note"] == "found the tube"
+
+    # ``missing`` may go back to ``stored`` by the transition rules, but only
+    # after the tube is physically placed again.
+    with pytest.raises(LedgerError, match="tm aliquot move"):
+        ledger.aliquots.status(alq, "stored")
+    moved = ledger.aliquots.move(alq, box="BOX", slot="A1")
+    assert moved["status"] == "stored"
+    assert moved["old_status"] == "missing"
 
 
 def test_force_requires_a_note(ledger_factory) -> None:
     ledger = make_ledger(ledger_factory, name="force-note")
     item = new_item(ledger)
-    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, box="BOX", slots=["A1"]
+    )
     alq = stock["aliquots"][0]
-    ledger.aliquots.status(alq, "stored")
     ledger.aliquots.status(alq, "consumed")
     with pytest.raises(UsageError, match="--force requires --note"):
         ledger.aliquots.status(alq, "stored", force=True)
@@ -858,15 +1140,24 @@ def test_cryo_set_uses_stored_on_creation_and_has_no_consumed(ledger_factory) ->
         [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"], name="cryo"
     )
     line = ledger.entities.add("cell_line", name="HEK293T")
-    vial = ledger.stocks.add("cell_vial", entity=line["id"], aliquots=1)
+    new_box(ledger, "CRYO", "freezer")
+    # The cryo set has no ``pending``: creation without a box would default to
+    # ``stored``, which is in stock, so it needs a position (spec 5).
+    with pytest.raises(LedgerError, match="must be placed"):
+        ledger.stocks.add("cell_vial", entity=line["id"], aliquots=1)
+    vial = ledger.stocks.add(
+        "cell_vial", entity=line["id"], aliquots=1, box="CRYO"
+    )
     alq = vial["aliquots"][0]
-    # The cryo set has no ``pending``; creation without a box defaults to stored.
-    assert ledger.driver.query(
-        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
-    ) == [{"status": "stored"}]
+    row = ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    )[0]
+    assert row["status"] == "stored"
+    assert row["box_id"] is not None and row["slot"] is None
     with pytest.raises(UsageError, match="unknown status 'pending'"):
         ledger.aliquots.status(alq, "pending")
-    # The cryo set has no ``consumed`` either: a zero quantity keeps the status.
+    # The cryo set has no ``consumed`` either: a zero quantity keeps the status
+    # and the position.
     ledger.driver.execute(
         "UPDATE `aliquot` SET `quantity` = 1, `unit` = 'ml' WHERE `id` = %s", (alq,)
     )
@@ -874,6 +1165,13 @@ def test_cryo_set_uses_stored_on_creation_and_has_no_consumed(ledger_factory) ->
     used = ledger.aliquots.use(alq, "1", "ml")
     assert used["status"] == "stored"
     assert Decimal(used["quantity"]) == Decimal("0")
-    # A thawed cryo vial is a plain unforced transition.
+    assert ledger.driver.query(
+        "SELECT `box_id` FROM `aliquot` WHERE `id` = %s", (alq,)
+    )[0]["box_id"] is not None
+    # A thawed cryo vial is a plain unforced transition, and it leaves stock,
+    # so the position is cleared.
     thawed = ledger.aliquots.status(alq, "thawed")
     assert thawed["status"] == "thawed"
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"box_id": None, "slot": None}]
