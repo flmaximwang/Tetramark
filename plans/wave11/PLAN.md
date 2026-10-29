@@ -2,13 +2,13 @@
 
 > Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.
 
-**进度** 11/13 块（85%） · 状态 `active` · 更新于 2026-10-29 20:07
+**进度** 13/13 块（100%） · 状态 `active` · 更新于 2026-10-29 20:29
 
 **参与方** lead(agent) · Maxim(human) · w31(agent) · w32(agent) · w33(agent) · w34(agent) · w35(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
-- `T-006#B-001` **wave 11 acceptance on main** — 已认领 · @lead
+- （没有在途工作）
 
 ## 图
 
@@ -46,11 +46,7 @@ flowchart LR
   T-005_B-002 --> T-006_B-001
   T-006_B-001 --> T-006_B-002
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002,T-003_B-003,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002 done;
-  classDef claimed stroke-width:1px;
-  class T-006_B-001 claimed;
-  classDef waiting stroke-width:1px;
-  class T-006_B-002 waiting;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002,T-003_B-003,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 done;
 ```
 
 ## 任务
@@ -213,9 +209,9 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
     - run 2026-10-29 12:31 lead pending→running Reviewing and merging wave11/t35
     - run 2026-10-29 12:31 lead running→done Reviewed the builder guard and the frozen-preset revert (3 files, +48/-17); no product code and no fixture database change; drift guard 1 passed in 7.5s and fast lane 346 passed on main after merge dc3498f.
 
-### T-006 acceptance, release 0.4.0 and the wave-11 record — 进行中
+### T-006 acceptance, release 0.4.0 and the wave-11 record — 已完成
 @lead
-- [ ] `T-006#B-001` **wave 11 acceptance on main** _impl_ — 已认领 @lead
+- [x] `T-006#B-001` **wave 11 acceptance on main** _impl_ — 已完成 @lead
     - 做什么：Lead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository presets: tm init plus tm check plus tm schema plan for molbio, cellbio, angenet and [molbio, cellbio]; then a scratch ledger with boxes G (grid9x9, two tubes), H (grid96), R (rack with a tube), S (slotless with two tubes) and an empty freezer F and walk every bullet of the Acceptance section of docs/issues/002-box-views.md: exact view set and shapes, name refusals (slots, a 59-character name, a case-only duplicate), box move into a grid refused, tm aliquot status consumed clears the position and the event keeps the old one, tm aliquot status stored without a position refused, tm aliquot move restores stored, dropping a per-box view by hand fails tm check and tm schema apply recreates it, tm export/tm import round-trip without kind views, migration/spec/4-to-5 on a copy of the w34 fixture, migration/presets/base/3-to-4 on the migrated copy with an empty tm schema plan. Verify git status is clean and that no stray temporary files were left in the repository. Paste commands and outputs into the run note.
     - 判据：Fast lane and full suite green on main; every acceptance bullet of docs/issues/002-box-views.md demonstrated with recorded commands and outputs; init/check/plan clean for all four preset combinations; both migration steps verified on copies; no real ledger touched; repository clean.
     - 依赖：T-001#B-002
@@ -223,19 +219,17 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
     - 依赖：T-003#B-003
     - 依赖：T-004#B-002
     - 依赖：T-005#B-002
-- [ ] `T-006#B-002` **release 0.4.0, wave-11 record and handover** _impl_ — 等前置 @lead
+    - 产物：`main 0b1a175: 891 passed / 0 skipped, acceptance transcript in the plan note`
+    - run 2026-10-29 20:25 lead pending→done Acceptance on main after all merges: full suite 891 passed 0 failed 0 skipped (957 s, -n 4), fast lane 352; four preset inits and checks clean; every box/position/view/export/migration acceptance bullet demonstrated (details in the plan note).
+- [x] `T-006#B-002` **release 0.4.0, wave-11 record and handover** _impl_ — 已完成 @lead
     - 做什么：Lead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-delivery.md: what shipped, decisions worth remembering (including the Lead decision that in-stock means physically placed, so spec 4-to-5 refuses in-stock aliquots without a position; the per-box view shapes; the base 3-to-4 rename), verification evidence, the upgrade order for a spec-4/base-3 ledger, and open items (real zsqlab10 upgrade needs the user, box schemas are a separate issue, tm upgrade proposal remains open). Retire docs/issues/002-box-views.md (delete it, it is delivered) and update docs/README, the wave-10 record open items, and plans/wave11 (close the plan, record the final state). Commit plans/ with the docs. Do not push to origin and do not touch a real ledger.
     - 判据：Version 0.4.0 committed and tagged; docs/records/wave11-delivery.md exists and is linked from docs/README; docs/issues/002-box-views.md retired; wave-10 open items updated; plans/wave11 closed and committed; full suite still green on the release commit.
     - 依赖：T-006#B-001
+    - run 2026-10-29 20:25 lead pending→running Release 0.4.0, delivery record and closeout
+    - run 2026-10-29 20:29 lead running→done Released 0.4.0 (f1f2a00, tag v0.4.0), wrote docs/records/wave11-delivery.md, retired docs/issues/002-box-views.md, updated docs/README and the wave-10 record open items, closed the plan. Full suite green on the merge state; fast lane 352; tm --version 0.4.0.
 
 ## 日志（近 20 条）
 
-- `2026-10-29 17:10` **agent** [status] T-002#B-001: running → review（branch wave11/t32, head af0437f (part B 13ca169 + part A af0437f). Full suite: 879 passed / 1 failed / 0 skipped - only test_migrate::test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path, approved by the Lead (molbio 2-to-3 now needs spec 5; migration/spec/4-to-5 is w34's step, w33 owns the ordering test after that). Targeted suites green; fixture fallout placed or seeded not-in-stock in test_cellbio/test_angenet/test_presets/test_migrate/test_renumber; tests/data/ledgers/molbio-v1 clean, no stray LOCK files.）
-- `2026-10-29 17:12` **agent** [exec] T-002#B-001: 线程登记已清除（@w32 收工）
-- `2026-10-29 17:12` **agent** [status] T-002#B-001: review → done（Behavior layer accepted: position/creation invariant both directions, box add/move name rule and grid tube-only, per-box view creation on add and import in the same commit, all box read paths via box JOIN box_<kind> (objects._list_records, ops/find.py, io_csv export), CSV import rules; fixture fallout fixed by placing aliquots or seeding pending, no check assertions relaxed. Full suite in the worktree: 879 passed / 1 failed / 0 skipped; the failure is the approved upgrade-order test that needs migration/spec/4-to-5 (w33 in turn 2b).）
-- `2026-10-29 17:12` **agent** [status] T-002#B-002: pending → running（Reviewing and merging wave11/t32）
-- `2026-10-29 17:12` **agent** [exec] T-002#B-002: 线程登记已清除（@lead 收工）
-- `2026-10-29 17:12` **agent** [status] T-002#B-002: running → done（Reviewed objects/find/io_csv/cli and the test fixture choices; verified fast 352 and 114 targeted in the worktree; LOCK files removed, molbio-v1 fixture untouched; merged into main e643581.）
 - `2026-10-29 17:59` **agent** [status] T-004#B-001: running → review（artifact: wave11/t34 @ 62d3224 (worktree .agents/worktrees/wave11/t34, tree clean, not merged; main merged in at d823a55). Spec-4 fixture (spec_version 4, base 3, grid96, 14 dolt_tests) now carries the issue's named-view acceptance: rack R holds child box G in slot 1, G keeps tubes A1/B2, H grid96 has A1/B2 plus a consumed tube still at C3, S shelf 2 tubes, F freezer empty; rebuilt with tests/data/ledgers/build_spec4_fixture.py (drives 0.3.0 commit 2aee18b). migration/spec/4-to-5 dry-run+apply verified on a fixture copy: spec 5, no v_box_<kind>, v_box_G 9 rows A-H,J, v_box_H 8 rows, v_box_R 10 rows with 1 | G, v_box_S 2, v_box_F 0, cleared position with move event, tm check clean, schema plan up to date. Targeted tests/test_migrate.py: 52 passed, 1 failed (approved known failure test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path), 0 skipped. Full suite -n 4: 888 passed, 1 failed (same known failure), 0 skipped.）
 - `2026-10-29 18:03` **agent** [exec] T-004#B-001: 线程登记已清除（@w34 收工）
 - `2026-10-29 18:03` **agent** [status] T-004#B-001: review → done（Spec-4 fixture and spec/4-to-5 accepted: genuine 0.3.0/spec-4 fixture (R holds child box G in slot 1, H grid96 with a consumed-but-positioned tube, S/F), builder + drift guard; migration refuses unsafe names, grid-held boxes, unplaced in-stock rows and bad statuses, clears not-in-stock positions with one move event each, drops managed views, creates spec-5 views and regenerates tests in one commit. Verified 10 targeted tests (52 in file), full suite 888 passed/1 known failed/0 skipped.）
@@ -250,6 +244,12 @@ Done when: the drift-guard test runs (no skip) and passes; uv run python tests/d
 - `2026-10-29 20:07` **agent** [status] T-003#B-003: pending → running（Reviewing and merging wave11/t33）
 - `2026-10-29 20:07` **agent** [exec] T-003#B-003: 线程登记已清除（@lead 收工）
 - `2026-10-29 20:07` **agent** [status] T-003#B-003: running → done（Reviewed the base 3-to-4 step, frozen copies, retrofit diffs, docs and the ordering-test rewrite; verified targeted 122 passed in the worktree; merged into main c3f13f8.）
+- `2026-10-29 20:25` **lead** [summary] T-006 acceptance passed on main 0b1a175. Fast lane 352 passed; full suite -n 4: 891 passed, 0 failed, 0 skipped (957 s). Fresh-workspace preset acceptance: tm init + tm check + tm schema plan clean for molbio (30 checks), cellbio (31), angenet (34), molbio+cellbio (34). Scratch base-4 ledger: boxes G grid9x9 (A1/B2), H grid8x12 (A1), R rack holding G in slot 1, S shelf (2 tubes), F freezer empty; views exactly v_box_G/H/R/S/F plus core and entity/stock kind views, no v_box_<kind>; G 9 rows A-H,J (columns row,1..9), H 8 rows A-H (row,1..12), R 10 rows slot 1 = G, S 2 rows, F 0 rows; name refusals (slots, 59 chars, case-only duplicate) and grid-nesting refusal; consumed clears the position with the old box/slot on the event; stored without a position refused with the move hint; move restores stored; hand-dropping v_box_g fails tm check (core_box_views) and tm schema apply recreates it; export/import round-trip works (15 rows, views created, check clean, plan up to date). Migration end to end on a copy of the spec-4 fixture: spec/4-to-5 then base/3-to-4 gives spec 5/base 4, box_grid96 -> box_grid8x12, kinds grid8x12/grid9x9/rack/shelf/freezer, views shapes unchanged, tm check 17/17, plan up to date. No real ledger touched; repository clean.
+- `2026-10-29 20:25` **agent** [status] T-006#B-001: pending → done（Acceptance on main after all merges: full suite 891 passed 0 failed 0 skipped (957 s, -n 4), fast lane 352; four preset inits and checks clean; every box/position/view/export/migration acceptance bullet demonstrated (details in the plan note).）
+- `2026-10-29 20:25` **agent** [status] T-006#B-002: pending → running（Release 0.4.0, delivery record and closeout）
+- `2026-10-29 20:29` **lead** [summary] Wave 11 delivered: 0.4.0 (release f1f2a00, tag v0.4.0) tagged on top of the ticket-30 merges — per-box views 5ab0a69, box lifecycle/read paths e643581, migration/spec/4-to-5 + spec-4 fixture 4a14ec3, base 4 + spec docs + frozen-step retrofit c3f13f8, and the wave-10 legacy-fixture follow-up dc3498f. Delivery record docs/records/wave11-delivery.md; the box-views issue doc is retired; plans/wave11 is committed. Final gates: full suite 891 passed / 0 failed / 0 skipped on main 0b1a175 (the release commit f1f2a00 changes only the version stamps; docs a5a54b6 the record), fast lane 352, every acceptance bullet demonstrated. Nothing pushed to origin and no real ledger touched; the zsqlab10 spec 5/base 4 upgrade remains a user-run follow-up.
+- `2026-10-29 20:29` **agent** [exec] T-006#B-002: 线程登记已清除（@lead 收工）
+- `2026-10-29 20:29` **agent** [status] T-006#B-002: running → done（Released 0.4.0 (f1f2a00, tag v0.4.0), wrote docs/records/wave11-delivery.md, retired docs/issues/002-box-views.md, updated docs/README and the wave-10 record open items, closed the plan. Full suite green on the merge state; fast lane 352; tm --version 0.4.0.）
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave11` 生成。

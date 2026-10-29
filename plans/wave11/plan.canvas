@@ -117,8 +117,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-006#B-001\nwave 11 acceptance on main\n\n`claimed` · @lead\n\nLead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository pres"
+   "color": "4",
+   "text": "### T-006#B-001\nwave 11 acceptance on main\n\n`done` · @lead\n\nLead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository pres"
   },
   {
    "id": "T-006#B-002",
@@ -127,8 +127,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-006#B-002\nrelease 0.4.0, wave-11 record and handover\n\n`waiting` · @lead\n\nLead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-deliver"
+   "color": "4",
+   "text": "### T-006#B-002\nrelease 0.4.0, wave-11 record and handover\n\n`done` · @lead\n\nLead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-deliver"
   }
  ],
  "edges": [

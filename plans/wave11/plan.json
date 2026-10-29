@@ -5,7 +5,7 @@
   "goal": "Implement, review and merge ticket 30 of wave 11 on main: one generated view per existing box replaces v_box_<kind> (grid pivot / named slots / slotless occupant), grid boxes hold tubes only, grid96 becomes grid8x12 (base 3->4), an aliquot has a position exactly when in stock, box names must be view-safe, tm schema plan/apply and tm check reconcile per-box views, migration/spec/4-to-5 plus migration/presets/base/3-to-4. Done when every acceptance bullet of docs/issues/002-box-views.md passes, both migration steps run on fixtures, the full suite is green on main, 0.4.0 is tagged and a wave-11 delivery record exists.",
   "status": "active",
   "created_at": "2026-10-29T11:57:27+08:00",
-  "updated_at": "2026-10-29T20:07:59+08:00",
+  "updated_at": "2026-10-29T20:29:01+08:00",
   "cadence": {
     "digest_hours": 6,
     "quiet_hours": "23:00-08:00"
@@ -603,7 +603,7 @@
           "id": "T-006#B-001",
           "title": "wave 11 acceptance on main",
           "kind": "impl",
-          "status": "pending",
+          "status": "done",
           "owner": "lead",
           "doc": "Lead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository presets: tm init plus tm check plus tm schema plan for molbio, cellbio, angenet and [molbio, cellbio]; then a scratch ledger with boxes G (grid9x9, two tubes), H (grid96), R (rack with a tube), S (slotless with two tubes) and an empty freezer F and walk every bullet of the Acceptance section of docs/issues/002-box-views.md: exact view set and shapes, name refusals (slots, a 59-character name, a case-only duplicate), box move into a grid refused, tm aliquot status consumed clears the position and the event keeps the old one, tm aliquot status stored without a position refused, tm aliquot move restores stored, dropping a per-box view by hand fails tm check and tm schema apply recreates it, tm export/tm import round-trip without kind views, migration/spec/4-to-5 on a copy of the w34 fixture, migration/presets/base/3-to-4 on the migrated copy with an empty tm schema plan. Verify git status is clean and that no stray temporary files were left in the repository. Paste commands and outputs into the run note.",
           "input": "",
@@ -612,7 +612,9 @@
           "done_when": [
             "Fast lane and full suite green on main; every acceptance bullet of docs/issues/002-box-views.md demonstrated with recorded commands and outputs; init/check/plan clean for all four preset combinations; both migration steps verified on copies; no real ledger touched; repository clean."
           ],
-          "artifacts": [],
+          "artifacts": [
+            "main 0b1a175: 891 passed / 0 skipped, acceptance transcript in the plan note"
+          ],
           "deps": [
             "T-001#B-002",
             "T-002#B-002",
@@ -623,14 +625,22 @@
           "review_of": "",
           "feedback": "",
           "exec": {},
-          "status_since": "2026-10-29T12:01:09+08:00",
-          "runs": []
+          "status_since": "2026-10-29T20:25:39+08:00",
+          "runs": [
+            {
+              "at": "2026-10-29T20:25:39+08:00",
+              "by": "lead",
+              "from": "pending",
+              "to": "done",
+              "note": "Acceptance on main after all merges: full suite 891 passed 0 failed 0 skipped (957 s, -n 4), fast lane 352; four preset inits and checks clean; every box/position/view/export/migration acceptance bullet demonstrated (details in the plan note)."
+            }
+          ]
         },
         {
           "id": "T-006#B-002",
           "title": "release 0.4.0, wave-11 record and handover",
           "kind": "impl",
-          "status": "pending",
+          "status": "done",
           "owner": "lead",
           "doc": "Lead: bump the version to 0.4.0, commit the release (chore: release 0.4.0 (wave 11: one view per box, spec 5)) and tag v0.4.0. Write docs/records/wave11-delivery.md: what shipped, decisions worth remembering (including the Lead decision that in-stock means physically placed, so spec 4-to-5 refuses in-stock aliquots without a position; the per-box view shapes; the base 3-to-4 rename), verification evidence, the upgrade order for a spec-4/base-3 ledger, and open items (real zsqlab10 upgrade needs the user, box schemas are a separate issue, tm upgrade proposal remains open). Retire docs/issues/002-box-views.md (delete it, it is delivered) and update docs/README, the wave-10 record open items, and plans/wave11 (close the plan, record the final state). Commit plans/ with the docs. Do not push to origin and do not touch a real ledger.",
           "input": "",
@@ -646,8 +656,23 @@
           "review_of": "",
           "feedback": "",
           "exec": {},
-          "status_since": "2026-10-29T12:01:09+08:00",
-          "runs": []
+          "status_since": "2026-10-29T20:29:01+08:00",
+          "runs": [
+            {
+              "at": "2026-10-29T20:25:39+08:00",
+              "by": "lead",
+              "from": "pending",
+              "to": "running",
+              "note": "Release 0.4.0, delivery record and closeout"
+            },
+            {
+              "at": "2026-10-29T20:29:01+08:00",
+              "by": "lead",
+              "from": "running",
+              "to": "done",
+              "note": "Released 0.4.0 (f1f2a00, tag v0.4.0), wrote docs/records/wave11-delivery.md, retired docs/issues/002-box-views.md, updated docs/README and the wave-10 record open items, closed the plan. Full suite green on the merge state; fast lane 352; tm --version 0.4.0."
+            }
+          ]
         }
       ],
       "note": "",
@@ -1101,7 +1126,49 @@
       "kind": "status",
       "text": "T-003#B-003: running → done（Reviewed the base 3-to-4 step, frozen copies, retrofit diffs, docs and the ordering-test rewrite; verified targeted 122 passed in the worktree; merged into main c3f13f8.）",
       "ref": "T-003#B-003"
+    },
+    {
+      "at": "2026-10-29T20:25:39+08:00",
+      "actor": "lead",
+      "kind": "summary",
+      "text": "T-006 acceptance passed on main 0b1a175. Fast lane 352 passed; full suite -n 4: 891 passed, 0 failed, 0 skipped (957 s). Fresh-workspace preset acceptance: tm init + tm check + tm schema plan clean for molbio (30 checks), cellbio (31), angenet (34), molbio+cellbio (34). Scratch base-4 ledger: boxes G grid9x9 (A1/B2), H grid8x12 (A1), R rack holding G in slot 1, S shelf (2 tubes), F freezer empty; views exactly v_box_G/H/R/S/F plus core and entity/stock kind views, no v_box_<kind>; G 9 rows A-H,J (columns row,1..9), H 8 rows A-H (row,1..12), R 10 rows slot 1 = G, S 2 rows, F 0 rows; name refusals (slots, 59 chars, case-only duplicate) and grid-nesting refusal; consumed clears the position with the old box/slot on the event; stored without a position refused with the move hint; move restores stored; hand-dropping v_box_g fails tm check (core_box_views) and tm schema apply recreates it; export/import round-trip works (15 rows, views created, check clean, plan up to date). Migration end to end on a copy of the spec-4 fixture: spec/4-to-5 then base/3-to-4 gives spec 5/base 4, box_grid96 -> box_grid8x12, kinds grid8x12/grid9x9/rack/shelf/freezer, views shapes unchanged, tm check 17/17, plan up to date. No real ledger touched; repository clean.",
+      "ref": ""
+    },
+    {
+      "at": "2026-10-29T20:25:39+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-006#B-001: pending → done（Acceptance on main after all merges: full suite 891 passed 0 failed 0 skipped (957 s, -n 4), fast lane 352; four preset inits and checks clean; every box/position/view/export/migration acceptance bullet demonstrated (details in the plan note).）",
+      "ref": "T-006#B-001"
+    },
+    {
+      "at": "2026-10-29T20:25:39+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-006#B-002: pending → running（Release 0.4.0, delivery record and closeout）",
+      "ref": "T-006#B-002"
+    },
+    {
+      "at": "2026-10-29T20:29:01+08:00",
+      "actor": "lead",
+      "kind": "summary",
+      "text": "Wave 11 delivered: 0.4.0 (release f1f2a00, tag v0.4.0) tagged on top of the ticket-30 merges — per-box views 5ab0a69, box lifecycle/read paths e643581, migration/spec/4-to-5 + spec-4 fixture 4a14ec3, base 4 + spec docs + frozen-step retrofit c3f13f8, and the wave-10 legacy-fixture follow-up dc3498f. Delivery record docs/records/wave11-delivery.md; the box-views issue doc is retired; plans/wave11 is committed. Final gates: full suite 891 passed / 0 failed / 0 skipped on main 0b1a175 (the release commit f1f2a00 changes only the version stamps; docs a5a54b6 the record), fast lane 352, every acceptance bullet demonstrated. Nothing pushed to origin and no real ledger touched; the zsqlab10 spec 5/base 4 upgrade remains a user-run follow-up.",
+      "ref": ""
+    },
+    {
+      "at": "2026-10-29T20:29:01+08:00",
+      "actor": "agent",
+      "kind": "exec",
+      "text": "T-006#B-002: 线程登记已清除（@lead 收工）",
+      "ref": "T-006#B-002"
+    },
+    {
+      "at": "2026-10-29T20:29:01+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-006#B-002: running → done（Released 0.4.0 (f1f2a00, tag v0.4.0), wrote docs/records/wave11-delivery.md, retired docs/issues/002-box-views.md, updated docs/README and the wave-10 record open items, closed the plan. Full suite green on the merge state; fast lane 352; tm --version 0.4.0.）",
+      "ref": "T-006#B-002"
     }
   ],
-  "rev": "eb5ca5b891d4"
+  "rev": "2025f0f8491f"
 }
