@@ -3059,3 +3059,710 @@ def test_molbio_v3_ledger_upgrades_to_cellbio_era(
         assert "up to date" in planned.output
     finally:
         reopened.close()
+
+
+# ---------------------------------------------------------------------------
+# spec/4-to-5: one view per box, positions follow in stock (ticket 30)
+# ---------------------------------------------------------------------------
+
+SPEC_4_TO_5 = ROOT / "migration" / "spec" / "4-to-5" / "migrate.py"
+
+#: The checked-in spec-4 fixture, built by
+#: ``tests/data/ledgers/build_spec4_fixture.py`` from the 0.3.0 checkout
+#: (``2aee18b``): ``spec_version=4``, base 3, ``grid96`` still a box kind, the
+#: spec-4 per-box-kind views and a consumed tube that keeps its position.
+SPEC4_FIXTURE = ROOT / "tests" / "data" / "ledgers" / "spec4-boxes"
+BUILD_SPEC4_FIXTURE = ROOT / "tests" / "data" / "ledgers" / "build_spec4_fixture.py"
+
+#: ``dolt_tests`` the 0.3.0 tool generated for base 3 (spec 4).
+SPEC4_DOLT_TESTS = 14
+
+#: The spec-5 script's description and the meta bump it makes.
+SPEC4_COMMIT = "migrate(ledger): spec 4 -> 5"
+SPEC4_TAG = "pre-migrate-spec-4"
+CLEARED_NOTE = "spec 4-to-5"
+
+
+def copy_spec4_fixture(destination: Path) -> Path:
+    """Copy the checked-in spec-4 ledger directory to ``destination``."""
+    assert (SPEC4_FIXTURE / ".dolt").is_dir(), (
+        f"the checked-in spec-4 fixture is missing at {SPEC4_FIXTURE}; "
+        f"rebuild it with: uv run python {BUILD_SPEC4_FIXTURE.relative_to(ROOT)}"
+    )
+    shutil.copytree(SPEC4_FIXTURE, destination)
+    return destination
+
+
+def open_spec4_fixture(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    *,
+    name: str = "spec4",
+) -> Ledger:
+    """A fresh copy of the checked-in spec-4 fixture, opened embedded.
+
+    A spec-4 ledger records the fingerprint the 0.3.0 tool computed, so the
+    current loader warns about the stale fingerprint; migration steps are the
+    supported reader of that shape, so the helper opens it the same way.
+    """
+    workspace = Workspace.create(
+        tmp_path / f"ws-{name}",
+        presets_dir=str(REPO_PRESETS),
+        env=dolt_env,
+    )
+    copy_spec4_fixture(workspace.data_dir / "spec4-boxes")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        ledger = open_ledger(workspace, "spec4-boxes")
+    assert ledger.warnings, "a spec-4 ledger must warn about its stale fingerprint"
+    assert any("fingerprint does not match" in text for text in ledger.warnings)
+    return ledger
+
+
+@pytest.fixture
+def spec4_ledger(tmp_path: Path, dolt_env: dict[str, str]) -> Iterator[Ledger]:
+    """A fresh copy of the checked-in spec-4 fixture (embedded driver)."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env)
+    try:
+        yield ledger
+    finally:
+        ledger.close()
+
+
+def spec4_placed_aliquots(ledger: Ledger) -> list[tuple[str, str | None, str]]:
+    """``(box name, slot, aliquot id)`` for every placed aliquot, by id."""
+    rows = ledger.driver.query(
+        "SELECT a.`id` AS `id`, b.`name` AS `box`, a.`slot` AS `slot` "
+        "FROM `aliquot` a JOIN `box` b ON b.`id` = a.`box_id` "
+        "ORDER BY a.`id`"
+    )
+    return [
+        (str(row["box"]), row.get("slot"), str(row["id"])) for row in rows
+    ]
+
+
+def spec4_view_names(ledger: Ledger) -> set[str]:
+    """Every live view (Dolt stores view names in lowercase)."""
+    rows = ledger.driver.query(
+        "SELECT `table_name` AS `name` FROM `information_schema`.`tables` "
+        "WHERE `table_schema` = DATABASE() AND `table_type` = 'VIEW'"
+    )
+    return {str(row["name"]) for row in rows}
+
+
+def spec4_expected_view_names(ledger: Ledger, box_names: set[str]) -> set[str]:
+    """The spec-5 view set: generated views + one ``v_box_<name>`` per box."""
+    generated = {statement.name.lower() for statement in view_statements(ledger.schema)}
+    return generated | {f"v_box_{name}".lower() for name in box_names}
+
+
+def _assert_refused_without_writing(
+    ledger: Ledger,
+    script_env: dict[str, str],
+    *,
+    expected: list[str],
+) -> None:
+    """The step refuses on both ``--dry-run`` and apply and writes nothing."""
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    views_before = spec4_view_names(ledger)
+    for flags in (["--dry-run"], []):
+        result = run_python(
+            SPEC_4_TO_5, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate spec 4 -> 5" in output, output
+        for fragment in expected:
+            assert fragment in output, output
+        assert "Nothing was written" in output, output
+        # Nothing was written: no commit, no tag, no DDL, counter unchanged.
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+        ledger.read_meta()
+        assert ledger.meta["spec_version"] == "4"
+        assert spec4_view_names(ledger) == views_before
+
+
+def test_spec_4_to_5_clears_positions_and_creates_the_box_views(
+    spec4_ledger: Ledger, script_env: dict[str, str]
+) -> None:
+    """Acceptance: kind views gone, one view per box, cleared positions, check."""
+    ledger = spec4_ledger
+    boxes = {
+        str(row["name"]): row
+        for row in ledger.driver.query(
+            "SELECT `id`, `name`, `kind`, `parent_box_id`, `parent_slot` "
+            "FROM `box`"
+        )
+    }
+    # The issue's named-view acceptance: the rack R holds child box G in slot 1.
+    assert (boxes["G"]["parent_box_id"], boxes["G"]["parent_slot"]) == (
+        boxes["R"]["id"],
+        "1",
+    )
+    placed = spec4_placed_aliquots(ledger)
+    by_position = {
+        (box, slot): aliquot
+        for box, slot, aliquot in placed
+        if slot is not None
+    }
+    shelf_ids = sorted(aliquot for box, slot, aliquot in placed if box == "S")
+    consumed = ledger.driver.query(
+        "SELECT `id`, `box_id`, `slot`, `status` FROM `aliquot` "
+        "WHERE `status` = 'consumed'"
+    )
+    assert len(consumed) == 1
+    consumed_id = str(consumed[0]["id"])
+    assert (str(consumed[0]["box_id"]), consumed[0]["slot"]) == (
+        boxes["H"]["id"],
+        "C3",
+    )
+
+    # -- the checked-in fixture is a genuine spec-4 ledger -------------------
+    assert ledger.meta["spec_version"] == "4"
+    assert row_count(ledger, "dolt_tests") == SPEC4_DOLT_TESTS
+    views_before = spec4_view_names(ledger)
+    assert {
+        "v_box_grid9x9",
+        "v_box_grid96",
+        "v_box_rack",
+        "v_box_shelf",
+        "v_box_freezer",
+    } <= views_before
+    assert not {f"v_box_{name}".lower() for name in boxes} & views_before
+    # The installed spec-4 tests pass on the fixture itself (the builder asserts
+    # the same thing with the 0.3.0 tool that wrote them).  ``run_check`` would
+    # also append the spec-5 per-box-view drift check, which a spec-4 ledger is
+    # *expected* to fail, so query the installed tests directly.
+    installed = ledger.driver.query(
+        "SELECT `test_name` AS `name`, `status` AS `status` FROM `dolt_test_run`()"
+    )
+    assert len(installed) == SPEC4_DOLT_TESTS
+    failed_installed = [
+        str(row["name"])
+        for row in installed
+        if str(row["status"]).upper() == "FAIL"
+    ]
+    assert not failed_installed, failed_installed
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    assert tags(ledger) == {}
+
+    # -- dry run: the whole plan, nothing written ----------------------------
+    dry = run_python(
+        SPEC_4_TO_5, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: spec 4 -> 5" in dry.stdout
+    assert f"CALL DOLT_TAG('{SPEC4_TAG}'" in dry.stdout
+    assert "UPDATE `aliquot` SET `box_id` = NULL, `slot` = NULL WHERE `id` = " in dry.stdout
+    assert "'move'" in dry.stdout
+    assert "'C3'" in dry.stdout
+    assert f"'{CLEARED_NOTE}'" in dry.stdout
+    assert "DROP VIEW IF EXISTS `v_box_grid9x9`" in dry.stdout
+    assert "DROP VIEW IF EXISTS `v_box_grid96`" in dry.stdout
+    expected_views = spec4_expected_view_names(ledger, set(boxes))
+    assert dry.stdout.count("CREATE VIEW") == len(expected_views)
+    assert (
+        f"dolt tests: replace with {expected_installed_tests(ledger)} generated test(s)"
+        in dry.stdout
+    )
+    assert "'spec_version', '5'" in dry.stdout
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "4"
+    assert spec4_view_names(ledger) == views_before
+
+    # -- apply: one commit, tag, spec 5, the new view set --------------------
+    applied = run_python(SPEC_4_TO_5, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert SPEC4_COMMIT in applied.stdout
+    assert "is now at spec_version 5" in applied.stdout
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "5"
+    assert ledger.meta["tetramark_version"] == __version__
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert commit_count(ledger) == commits_before + 1
+    assert commit_message(ledger, head(ledger)) == SPEC4_COMMIT
+    assert tags(ledger) == {SPEC4_TAG: head_before}
+    assert row_count(ledger, "dolt_tests") == expected_installed_tests(ledger)
+
+    views = spec4_view_names(ledger)
+    assert views == spec4_expected_view_names(ledger, set(boxes))
+    kind_views = {f"v_box_{str(row['kind'])}".lower() for row in boxes.values()}
+    assert not kind_views & views, f"box kind views survived: {kind_views & views}"
+
+    # -- v_box_G: a 9x9 pivot over A-H,J, empty rows included ---------------
+    assert column_names(ledger, "v_box_G") == {"row"} | {
+        str(number) for number in range(1, 10)
+    }
+    g_rows = ledger.driver.query("SELECT * FROM `v_box_G`")
+    assert [str(row["row"]) for row in g_rows] == list("ABCDEFGHJ")
+    g_by_row = {str(row["row"]): row for row in g_rows}
+    g_cells = {
+        (label, column): value
+        for label, row in g_by_row.items()
+        for column, value in row.items()
+        if column != "row" and value is not None
+    }
+    assert g_cells == {
+        ("A", "1"): by_position[("G", "A1")],
+        ("B", "2"): by_position[("G", "B2")],
+    }
+
+    # -- v_box_H (grid96): 8 rows A-H, 12 columns, C3 cleared ---------------
+    assert column_names(ledger, "v_box_H") == {"row"} | {
+        str(number) for number in range(1, 13)
+    }
+    h_rows = ledger.driver.query("SELECT * FROM `v_box_H`")
+    assert [str(row["row"]) for row in h_rows] == list("ABCDEFGH")
+    h_by_row = {str(row["row"]): row for row in h_rows}
+    h_cells = {
+        (label, column): value
+        for label, row in h_by_row.items()
+        for column, value in row.items()
+        if column != "row" and value is not None
+    }
+    assert h_cells == {
+        ("A", "1"): by_position[("H", "A1")],
+        ("B", "2"): by_position[("H", "B2")],
+    }
+    assert h_by_row["C"]["3"] is None
+
+    # -- v_box_R: 10 named slots; slot 1 holds the child BOX G (the issue's
+    #    ``1 | G`` acceptance row), never one of its aliquots -----------------
+    assert column_names(ledger, "v_box_R") == {"slot", "occupants"}
+    r_rows = ledger.driver.query("SELECT * FROM `v_box_R`")
+    assert [str(row["slot"]) for row in r_rows] == [
+        str(number) for number in range(1, 11)
+    ]
+    assert r_rows[0]["occupants"] == "G"
+    assert [row["occupants"] for row in r_rows[1:]] == [None] * 9
+    # G is a box, not an aliquot of R: R has no aliquots at all, and G's own
+    # tubes stay in v_box_G (asserted above) rather than showing up in R.
+    occupant = str(r_rows[0]["occupants"])
+    assert boxes[occupant]["kind"] == "grid9x9"
+    assert "G" not in {aliquot for _, _, aliquot in placed}
+    assert not any(box == "R" for box, _, _ in placed)
+
+    # -- v_box_S: two tubes; v_box_F: zero rows ----------------------------
+    assert column_names(ledger, "v_box_S") == {"occupant"}
+    s_rows = ledger.driver.query("SELECT * FROM `v_box_S`")
+    assert [str(row["occupant"]) for row in s_rows] == shelf_ids
+    assert column_names(ledger, "v_box_F") == {"occupant"}
+    assert ledger.driver.query("SELECT * FROM `v_box_F`") == []
+
+    # -- the consumed tube's position is cleared, its history keeps it ------
+    cleared = ledger.driver.query(
+        "SELECT `box_id`, `slot`, `status` FROM `aliquot` WHERE `id` = %s",
+        (consumed_id,),
+    )
+    assert cleared == [{"box_id": None, "slot": None, "status": "consumed"}]
+    events = ledger.driver.query(
+        "SELECT `aliquot_id`, `event`, `from_box_id`, `from_slot`, `to_box_id`, "
+        "`to_slot`, `old_status`, `new_status`, `actor`, `note` "
+        "FROM `aliquot_event` WHERE `event` = 'move' ORDER BY `id`"
+    )
+    assert len(events) == 1
+    event = events[0]
+    assert str(event["aliquot_id"]) == consumed_id
+    assert event["from_box_id"] == boxes["H"]["id"]
+    assert event["from_slot"] == "C3"
+    assert event["to_box_id"] is None
+    assert event["to_slot"] is None
+    assert event["old_status"] == event["new_status"] == "consumed"
+    assert event["actor"] == ledger.actor
+    assert event["note"] == CLEARED_NOTE
+
+    # -- validation and reconciliation -------------------------------------
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+    assert "OK:" in checked.output
+    planned = CliRunner().invoke(app, [*base_args(ledger), "schema", "plan"])
+    assert planned.exit_code == 0, planned.output
+    assert "up to date" in planned.output
+
+    # A second run refuses: the counter is 5, not 4.
+    head_after = head(ledger)
+    again = run_python(SPEC_4_TO_5, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "spec_version 5, expected 4" in again.stdout + again.stderr
+    assert head(ledger) == head_after
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("core-name", id="core-name-collision"),
+        pytest.param("too-long", id="too-long"),
+        pytest.param("case-duplicate", id="case-only-duplicate"),
+    ],
+)
+def test_spec_4_to_5_refuses_view_unsafe_box_names(
+    case: str,
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """Acceptance: the three name rules are refusals that write nothing."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name=f"names-{case}")
+    try:
+        if case == "core-name":
+            ledger.driver.execute(
+                "UPDATE `box` SET `name` = 'slots' WHERE `name` = 'S'"
+            )
+            expected = ["'slots' would make the view 'v_box_slots'"]
+        elif case == "too-long":
+            name = "X" * 59
+            ledger.driver.execute(
+                "UPDATE `box` SET `name` = %s WHERE `name` = 'S'", (name,)
+            )
+            expected = ["is 59 characters long", "the limit is 58"]
+        else:
+            ledger.driver.execute(
+                "UPDATE `box` SET `name` = 'g' WHERE `name` = 'S'"
+            )
+            expected = ["differs only in case", "'G'", "'g'"]
+        ledger.driver.commit("test: make a box name unsafe")
+        ledger.read_meta()
+        _assert_refused_without_writing(ledger, script_env, expected=expected)
+    finally:
+        ledger.close()
+
+
+def test_spec_4_to_5_refuses_a_grid_box_holding_a_box(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """Acceptance: a grid box holds tubes only (refusal, nothing written)."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name="grid-child")
+    try:
+        (grid,) = ledger.driver.query("SELECT `id` FROM `box` WHERE `name` = 'G'")
+        ledger.driver.execute(
+            "INSERT INTO `box` (`id`, `kind`, `name`, `parent_box_id`, "
+            "`parent_slot`) VALUES ('test-inner', 'grid9x9', 'INNER', %s, 'A1')",
+            (grid["id"],),
+        )
+        ledger.driver.execute(
+            "INSERT INTO `box_grid9x9` (`id`) VALUES ('test-inner')"
+        )
+        ledger.driver.commit("test: nest a box in a grid box")
+        ledger.read_meta()
+        _assert_refused_without_writing(
+            ledger,
+            script_env,
+            expected=["INNER is inside grid box G (grid9x9)"],
+        )
+    finally:
+        ledger.close()
+
+
+def test_spec_4_to_5_refuses_an_in_stock_aliquot_without_a_position(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """Lead decision: in stock means placed, so an unplaced stored tube refuses."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name="unplaced")
+    try:
+        target = next(
+            aliquot
+            for box, slot, aliquot in spec4_placed_aliquots(ledger)
+            if (box, slot) == ("G", "A1")
+        )
+        ledger.driver.execute(
+            "UPDATE `aliquot` SET `box_id` = NULL, `slot` = NULL WHERE `id` = %s",
+            (target,),
+        )
+        ledger.driver.commit("test: an in-stock tube with no position")
+        ledger.read_meta()
+        _assert_refused_without_writing(
+            ledger,
+            script_env,
+            expected=[target, "has no box", f"tm aliquot move {target}"],
+        )
+    finally:
+        ledger.close()
+
+
+def test_spec_4_to_5_refuses_an_out_of_set_aliquot_status(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """A status outside the stock kind's set cannot be classified, so it refuses."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name="out-of-set")
+    try:
+        target = next(
+            aliquot
+            for box, slot, aliquot in spec4_placed_aliquots(ledger)
+            if (box, slot) == ("G", "B2")
+        )
+        ledger.driver.execute(
+            "UPDATE `aliquot` SET `status` = 'lost' WHERE `id` = %s", (target,)
+        )
+        ledger.driver.commit("test: a status outside the stock kind's set")
+        ledger.read_meta()
+        _assert_refused_without_writing(
+            ledger,
+            script_env,
+            expected=[target, "lost", "not in their stock kind's status set"],
+        )
+    finally:
+        ledger.close()
+
+
+def test_spec_4_to_5_clears_every_positioned_not_in_stock_row_in_id_order(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """One ``move`` event per cleared row, ordered by aliquot id."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name="clear-order")
+    try:
+        placed = spec4_placed_aliquots(ledger)
+        by_position = {
+            (box, slot): aliquot
+            for box, slot, aliquot in placed
+            if slot is not None
+        }
+        (consumed,) = ledger.driver.query(
+            "SELECT `id` FROM `aliquot` WHERE `status` = 'consumed'"
+        )
+        first_id = str(consumed["id"])
+        extra_id = by_position[("G", "A1")]
+        # A second spec-4-shaped row: consumed but still placed.
+        ledger.driver.execute(
+            "UPDATE `aliquot` SET `status` = 'consumed' WHERE `id` = %s",
+            (extra_id,),
+        )
+        ledger.driver.commit("test: a second consumed tube that still has a position")
+        ledger.read_meta()
+        assert ledger.meta["spec_version"] == "4"
+        expected = sorted([first_id, extra_id])
+
+        dry = run_python(
+            SPEC_4_TO_5, "--ledger", str(ledger.path), "--dry-run", env=script_env
+        )
+        assert dry.returncode == 0, dry.stdout + dry.stderr
+        assert dry.stdout.count("UPDATE `aliquot` SET `box_id` = NULL") == 2
+        assert dry.stdout.count("INSERT INTO `aliquot_event`") == 2
+
+        applied = run_python(SPEC_4_TO_5, "--ledger", str(ledger.path), env=script_env)
+        assert applied.returncode == 0, applied.stdout + applied.stderr
+        events = ledger.driver.query(
+            "SELECT `aliquot_id`, `from_box_id`, `from_slot`, `to_box_id`, "
+            "`to_slot`, `old_status`, `new_status`, `note` "
+            "FROM `aliquot_event` WHERE `event` = 'move' ORDER BY `id`"
+        )
+        assert [str(event["aliquot_id"]) for event in events] == expected
+        box_ids = {
+            str(row["name"]): str(row["id"])
+            for row in ledger.driver.query("SELECT `id`, `name` FROM `box`")
+        }
+        assert {
+            str(event["aliquot_id"]): (
+                event["from_box_id"],
+                event["from_slot"],
+            )
+            for event in events
+        } == {
+            first_id: (box_ids["H"], "C3"),
+            extra_id: (box_ids["G"], "A1"),
+        }
+        for event in events:
+            assert event["to_box_id"] is None
+            assert event["to_slot"] is None
+            assert event["old_status"] == event["new_status"] == "consumed"
+            assert event["note"] == CLEARED_NOTE
+        for aliquot_id in expected:
+            assert ledger.driver.query(
+                "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s",
+                (aliquot_id,),
+            ) == [{"box_id": None, "slot": None}]
+        # The cleared tube no longer shows in the grid.
+        (row_a,) = ledger.driver.query(
+            "SELECT * FROM `v_box_G` WHERE `row` = 'A'"
+        )
+        assert row_a["1"] is None
+    finally:
+        ledger.close()
+
+
+# ---------------------------------------------------------------------------
+# The checked-in spec-4 fixture: drift guard
+# ---------------------------------------------------------------------------
+
+
+def spec4_fixture_data(dolt: str, ledger: Path) -> dict[str, Any]:
+    """The logical data shape of a spec-4 fixture (ids are random UUIDs)."""
+
+    def rows(sql: str) -> list[dict[str, Any]]:
+        result = subprocess.run(
+            [dolt, "sql", "--result-format", "json", "-q", sql],
+            cwd=str(ledger),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout).get("rows", [])
+
+    meta = {
+        str(row["key"]): str(row["value"])
+        for row in rows("SELECT `key`, `value` FROM `ledger_meta`")
+    }
+    boxes = [
+        (
+            str(row["name"]),
+            str(row["kind"]),
+            # the parent is compared by name: box ids are random UUIDs
+            row.get("parent"),
+            row.get("parent_slot"),
+        )
+        for row in rows(
+            "SELECT c.`name` AS `name`, c.`kind` AS `kind`, "
+            "p.`name` AS `parent`, c.`parent_slot` AS `parent_slot` "
+            "FROM `box` c LEFT JOIN `box` p ON p.`id` = c.`parent_box_id` "
+            "ORDER BY c.`name`"
+        )
+    ]
+    aliquots = [
+        (str(row["box"]), row.get("slot"), str(row["status"]))
+        for row in rows(
+            "SELECT b.`name` AS `box`, a.`slot` AS `slot`, a.`status` AS `status` "
+            "FROM `aliquot` a LEFT JOIN `box` b ON b.`id` = a.`box_id` "
+            "ORDER BY b.`name`, a.`slot`, a.`seq`"
+        )
+    ]
+    slots = {
+        str(row["box"]): int(row["n"])
+        for row in rows(
+            "SELECT b.`name` AS `box`, COUNT(s.`label`) AS `n` "
+            "FROM `box` b LEFT JOIN `slot` s ON s.`box_id` = b.`id` "
+            "GROUP BY b.`name` ORDER BY b.`name`"
+        )
+    }
+    return {
+        "meta": {
+            key: meta.get(key)
+            for key in ("spec_version", "preset_versions", "tetramark_version")
+        },
+        "boxes": boxes,
+        "aliquots": aliquots,
+        "slots": slots,
+    }
+
+
+def _load_build_spec4_fixture():
+    spec = importlib.util.spec_from_file_location(
+        "tetramark_build_spec4_fixture", BUILD_SPEC4_FIXTURE
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def rebuilt_spec4_boxes(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Rebuild the spec-4 fixture once per module; skip when impossible.
+
+    The build needs ``git``, ``uv`` and ``dolt``, the legacy commit in this
+    clone, and either network or a warm uv cache.  A machine that cannot
+    materialise the legacy checkout skips the drift guard instead of failing;
+    the migration tests still run from the checked-in copy.
+    """
+    builder = _load_build_spec4_fixture()
+    missing = [name for name in ("git", "uv", "dolt") if shutil.which(name) is None]
+    if missing:
+        pytest.skip(f"cannot rebuild the spec-4 fixture without: {', '.join(missing)}")
+    probe = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "cat-file",
+            "-e",
+            f"{builder.LEGACY_COMMIT}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        pytest.skip(
+            f"the legacy commit {builder.LEGACY_COMMIT[:12]} is not in this clone"
+        )
+    target = tmp_path_factory.mktemp("spec4-boxes-rebuilt") / "spec4-boxes"
+    result = subprocess.run(
+        [sys.executable, str(BUILD_SPEC4_FIXTURE), "--out", str(target)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        output = (result.stdout + result.stderr).strip()
+        pytest.skip(f"cannot rebuild the spec-4 fixture here:\n{output[-1200:]}")
+    return target
+
+
+def test_spec4_boxes_fixture_matches_its_builder(
+    rebuilt_spec4_boxes: Path, dolt_binary: str, tmp_path: Path
+) -> None:
+    """The checked-in ledger still has the shape the builder produces.
+
+    Compares the **logical** shape — schema fingerprint, table/view list,
+    ``dolt_tests`` count, meta and the box/aliquot/slot rows — plus the
+    checked-in preset files, never the ``.dolt`` bytes or the random UUIDs.
+    The checked-in copy is queried from a temporary copy so the repository's
+    fixture directory is never written to.
+    """
+    checked_in = copy_spec4_fixture(tmp_path / "checked-in")
+    checked = fixture_shape(dolt_binary, checked_in)
+    fresh = fixture_shape(dolt_binary, rebuilt_spec4_boxes)
+
+    differences = [
+        f"{key}: checked-in={checked[key]!r}, builder={fresh[key]!r}"
+        for key in ("fingerprint", "tables", "views", "dolt_tests")
+        if checked[key] != fresh[key]
+    ]
+    checked_data = spec4_fixture_data(dolt_binary, checked_in)
+    fresh_data = spec4_fixture_data(dolt_binary, rebuilt_spec4_boxes)
+    for key in ("meta", "boxes", "aliquots", "slots"):
+        if checked_data[key] != fresh_data[key]:
+            differences.append(
+                f"{key}: checked-in={checked_data[key]!r}, "
+                f"builder={fresh_data[key]!r}"
+            )
+    for name in ("ledger.yaml", "presets/base.yaml"):
+        checked_file = SPEC4_FIXTURE / name
+        if not checked_file.is_file():
+            differences.append(f"{name}: missing from the checked-in fixture")
+        elif checked_file.read_bytes() != (rebuilt_spec4_boxes / name).read_bytes():
+            differences.append(f"{name}: differs from the builder's file byte for byte")
+
+    assert not differences, (
+        "the checked-in spec-4 fixture no longer matches what "
+        f"{BUILD_SPEC4_FIXTURE.relative_to(ROOT)} produces from the 0.3.0 "
+        "checkout:\n  - "
+        + "\n  - ".join(differences)
+        + f"\nRebuild it with: uv run python "
+        f"{BUILD_SPEC4_FIXTURE.relative_to(ROOT)} --force"
+    )
+    # ... and it is still the pre-migration shape the step needs, not a shell.
+    assert checked["fingerprint"]
+    assert checked_data["meta"]["spec_version"] == "4"
+    assert checked_data["meta"]["preset_versions"] == '{"base": 3}'
+    assert checked_data["meta"]["tetramark_version"] == "0.3.0"
+    assert "v_box_grid9x9" in checked["views"]
+    assert "v_box_g" not in checked["views"]
+    assert ("H", "C3", "consumed") in checked_data["aliquots"]
+    # The named-view acceptance shape: rack R holds child box G in slot 1.
+    assert ("G", "grid9x9", "R", "1") in checked_data["boxes"]
+    assert ("R", "1", "stored") not in checked_data["aliquots"]
