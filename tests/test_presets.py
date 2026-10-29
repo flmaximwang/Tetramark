@@ -788,6 +788,7 @@ def test_molbio_cell_line_parental_self_reference_is_usable(
     }
     assert links == {parent["id"]: None, child["id"]: parent["id"]}
 
+    ledger.boxes.add("freezer", "CRYO")
     voucher = ledger.stocks.add(
         "cell_vial",
         entity=child["id"],
@@ -799,6 +800,7 @@ def test_molbio_cell_line_parental_self_reference_is_usable(
             "dmso_pct": 10,
         },
         aliquots=1,
+        box="CRYO",
         quantity=1,
         unit="vial",
     )

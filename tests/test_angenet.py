@@ -733,6 +733,9 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
     """Verify bullet 3: alive -> euthanized works; the reverse needs --force."""
     ledger = ledger_factory(["angenet"], name="angenet_animal_status")
     strain = ok_json(ledger, "entity", "add", "mouse_strain", "--name", "C57BL/6J")
+    # Spec 5: an in-stock animal sits in a cage; euthanizing it clears the
+    # position and restoring ``alive`` means placing it again.
+    ok_json(ledger, "box", "add", "cage", "CAGE-1")
     cohort = ok_json(
         ledger,
         "stock",
@@ -740,6 +743,8 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
         "mouse_cohort",
         "--entity",
         strain["id"],
+        "--box",
+        "CAGE-1",
         "--set",
         "sex=f",
         "--set",
@@ -753,12 +758,17 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
     assert "alive -> euthanized" in ok(
         ledger, "aliquot", "status", aliquot, "euthanized"
     ).output
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (aliquot,)
+    ) == [{"box_id": None, "slot": None}]
 
     message = refused(run(ledger, "aliquot", "status", aliquot, "alive"))
     assert "cannot change an aliquot" in message
     assert "euthanized" in message and "alive" in message
 
-    forced = ok(
+    # Forcing the status does not bypass the position rule: ``alive`` is in
+    # stock, so the mouse needs a cage first.
+    forced = run(
         ledger,
         "aliquot",
         "status",
@@ -768,17 +778,18 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
         "--note",
         "euthanasia was recorded on the wrong mouse",
     )
-    assert "(forced)" in forced.output
+    assert forced.exit_code == 1
+    assert "tm aliquot move" in str(forced.exception)
+
+    # Placing the mouse again restores the in-stock status through one move.
+    restored = ok(ledger, "aliquot", "move", aliquot, "--box", "CAGE-1")
+    assert "alive" in restored.output
     row = ledger.driver.query(
-        "SELECT `forced`, `old_status`, `new_status` FROM `aliquot_event` "
-        "WHERE `aliquot_id` = %s AND `event` = 'status' ORDER BY `id` DESC LIMIT 1",
+        "SELECT `old_status`, `new_status` FROM `aliquot_event` "
+        "WHERE `aliquot_id` = %s AND `event` = 'move' ORDER BY `id` DESC LIMIT 1",
         (aliquot,),
     )[0]
-    assert (int(row["forced"]), row["old_status"], row["new_status"]) == (
-        1,
-        "euthanized",
-        "alive",
-    )
+    assert (row["old_status"], row["new_status"]) == ("euthanized", "alive")
     assert ledger.check().passed
 
 
@@ -786,6 +797,7 @@ def test_mouse_cohort_view_counts_drop_as_mice_are_euthanized(ledger_factory) ->
     """Verify bullet 5: ``v_stock_mouse_cohort.aliquots_in_stock`` is live."""
     ledger = ledger_factory(["angenet"], name="angenet_mouse_view")
     strain = ok_json(ledger, "entity", "add", "mouse_strain", "--name", "BALB/c")
+    ok_json(ledger, "box", "add", "cage", "CAGE-1")
     cohort = ok_json(
         ledger,
         "stock",
@@ -793,6 +805,8 @@ def test_mouse_cohort_view_counts_drop_as_mice_are_euthanized(ledger_factory) ->
         "mouse_cohort",
         "--entity",
         strain["id"],
+        "--box",
+        "CAGE-1",
         "--set",
         "sex=f",
         "--set",
@@ -951,6 +965,7 @@ def test_worm_cryo_stored_thawed_is_final(ledger_factory) -> None:
         "--set",
         "wormbase_id=WBStrain00000001",
     )
+    ok_json(ledger, "box", "add", "freezer", "CRYO-1")
     cryo = ok_json(
         ledger,
         "stock",
@@ -958,6 +973,8 @@ def test_worm_cryo_stored_thawed_is_final(ledger_factory) -> None:
         "worm_cryo",
         "--entity",
         strain["id"],
+        "--box",
+        "CRYO-1",
         "--quantity",
         "1",
         "--unit",

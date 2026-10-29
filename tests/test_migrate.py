@@ -1075,12 +1075,15 @@ def seed_molbio_v1(ledger: Ledger) -> None:
         "INSERT INTO `stock_pellet` (`id`, `culture_volume_ml`, `od600`) "
         "VALUES ('S5', 500, 2.4)"
     )
+    # Spec 5: an in-stock aliquot has a position, and this v1 fixture records
+    # none; the tubes are unplaced, so they are seeded ``pending``.  Placement
+    # is established later by migration/spec/4-to-5, not by molbio 1 -> 2.
     execute(
         "INSERT INTO `aliquot` (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`) "
-        "VALUES ('S1.1','S1',1,'stored',500,'ul'),('S1.2','S1',2,'stored',500,'ul'),"
-        "('S2.1','S2',1,'stored',500,'ul'),('S3.1','S3',1,'stored',50,'ul'),"
-        "('S4.1','S4',1,'stored',100,'ul'),('S5.1','S5',1,'stored',250,'ml'),"
-        "('S5.2','S5',2,'stored',250,'ml')"
+        "VALUES ('S1.1','S1',1,'pending',500,'ul'),('S1.2','S1',2,'pending',500,'ul'),"
+        "('S2.1','S2',1,'pending',500,'ul'),('S3.1','S3',1,'pending',50,'ul'),"
+        "('S4.1','S4',1,'pending',100,'ul'),('S5.1','S5',1,'pending',250,'ml'),"
+        "('S5.2','S5',2,'pending',250,'ml')"
     )
     execute(
         "INSERT INTO `aliquot_bacterial` (`id`, `glycerol_pct`) VALUES "
@@ -2391,11 +2394,15 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
     line = ledger.entities.add(
         "cell_line", name="HEK293T", values={"species": "Homo sapiens"}
     )
+    # Spec 5: an in-stock aliquot has a box position, so the seed places its
+    # tubes on one slotless shelf (the v2 schema has no per-box views either).
+    ledger.boxes.add("shelf", "SEED-SHELF")
     glycerol = ledger.stocks.add(
         "bacterial_glycerol",
         entity=strain["id"],
         values={"strain": "DH5a", "medium": "LB", "glycerol_pct": 25},
         aliquots=2,
+        box="SEED-SHELF",
         quantity=500,
         unit="ul",
     )
@@ -2404,6 +2411,7 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
         entity=plasmid["id"],
         values={"concentration_ng_ul": 120.5, "prep_method": "miniprep"},
         aliquots=1,
+        box="SEED-SHELF",
         quantity=50,
         unit="ul",
     )
@@ -2412,6 +2420,7 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
         entity=construct["id"],
         values={"concentration_mg_ml": 1.5},
         aliquots=1,
+        box="SEED-SHELF",
         quantity=100,
         unit="ul",
     )
@@ -2420,6 +2429,7 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
         entity=plasmid["id"],
         values={"culture_volume_ml": 500, "od600": 2.4},
         aliquots=2,
+        box="SEED-SHELF",
         quantity=250,
         unit="ml",
     )
@@ -2428,6 +2438,7 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
         entity=line["id"],
         values={"passage": 7, "dmso_pct": 10},
         aliquots=1,
+        box="SEED-SHELF",
         quantity=1,
         unit="vial",
     )
@@ -2436,6 +2447,7 @@ def seed_molbio_v2(ledger: Ledger) -> dict[str, Any]:
         entity=line["id"],
         values={"cell_count": 1_000_000, "passage": 8},
         aliquots=1,
+        box="SEED-SHELF",
         quantity=1,
         unit="tube",
     )
@@ -2813,11 +2825,14 @@ def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
     line = ledger.entities.add(
         "cell_line", name="HEK293T", values={"species": "Homo sapiens"}
     )
+    # Spec 5: an in-stock vial is placed; one freezer holds both seed stocks.
+    ledger.boxes.add("freezer", "CRYO-SEED")
     vial = ledger.stocks.add(
         "cell_vial",
         entity=line["id"],
         values={"passage": 7, "medium": "DMEM + 10% FBS", "dmso_pct": 10},
         aliquots=1,
+        box="CRYO-SEED",
         quantity=1,
         unit="vial",
     )
@@ -2826,6 +2841,7 @@ def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
         entity=line["id"],
         values={"cell_count": 2_000_000, "passage": 7},
         aliquots=1,
+        box="CRYO-SEED",
         quantity=1,
         unit="pellet",
     )
