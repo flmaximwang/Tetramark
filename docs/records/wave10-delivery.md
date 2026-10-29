@@ -86,7 +86,8 @@ The real zsqlab10 ledger was upgraded on 2026-10-29 (`spec/3-to-4` → `base/1-t
 1. **zsqlab10 follow-up**: done on 2026-10-29 — see
    [`zsqlab10-spec4-upgrade.md`](zsqlab10-spec4-upgrade.md).
 2. **git-bug `0a9acec`**: closed on 2026-10-29 with a comment pointing at 0.3.0 and this record.
-3. **Legacy-fixture drift guard**: rebuild `tests/data/ledgers/molbio-v1` (or teach the builder to strip
-   the spec-4 keys) so the guard stops skipping — small, separate task.
-4. **Wave 11 (ticket 30, box views)** is unblocked: it needs spec 4 and the parts/preset model from this
-   wave.
+3. **Legacy-fixture drift guard**: done in wave 11 (`dc3498f`) — the frozen v1 preset inputs are back
+   to their v1 bytes, the builder rejects later-spec keys up front, and
+   `test_molbio_v1_fixture_matches_its_builder` runs and passes instead of skipping.
+4. **Wave 11 (ticket 30, box views)**: shipped in 0.4.0 — see
+   [`wave11-delivery.md`](wave11-delivery.md).
