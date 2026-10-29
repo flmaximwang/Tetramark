@@ -5,7 +5,7 @@
   "goal": "Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.",
   "status": "active",
   "created_at": "2026-10-28T15:33:00+08:00",
-  "updated_at": "2026-10-29T02:10:56+08:00",
+  "updated_at": "2026-10-29T11:43:16+08:00",
   "cadence": {
     "digest_hours": 12.0,
     "quiet_hours": "8"
@@ -508,7 +508,7 @@
       "id": "T-006",
       "title": "wave 10 close: acceptance, release, handover",
       "owner": "lead",
-      "status": "pending",
+      "status": "done",
       "deps": [],
       "blocks": [
         {
@@ -581,7 +581,7 @@
           "id": "T-006#B-003",
           "title": "close git-bug 0a9acec and ask about zsqlab10",
           "kind": "decision",
-          "status": "blocked",
+          "status": "done",
           "owner": "maxim",
           "doc": "Needs the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (proposal only until the user agrees).\n\n```bash\ngit-bug bug show 0a9acec\n```",
           "input": "",
@@ -590,14 +590,16 @@
           "done_when": [
             "git-bug 0a9acec closed with the release pointer, and the user has answered the zsqlab10 follow-up question."
           ],
-          "artifacts": [],
+          "artifacts": [
+            "git-bug 0a9acec closed; ledger main = 28jls7aeh8vd; docs/records/zsqlab10-spec4-upgrade.md"
+          ],
           "deps": [
             "T-006#B-002"
           ],
           "review_of": "",
           "feedback": "",
           "exec": {},
-          "status_since": "2026-10-29T02:10:56+08:00",
+          "status_since": "2026-10-29T11:43:16+08:00",
           "runs": [
             {
               "at": "2026-10-29T02:10:56+08:00",
@@ -605,12 +607,20 @@
               "from": "blocked",
               "to": "blocked",
               "note": "Waiting on the user: close git-bug 0a9acec with the release pointer, and decide whether to run the zsqlab10 upgrade (spec/3-to-4 -> base/molbio/cell_culture preset steps) after reviewing the delivery record."
+            },
+            {
+              "at": "2026-10-29T11:43:16+08:00",
+              "by": "lead",
+              "from": "blocked",
+              "to": "done",
+              "note": "git-bug closed with the release pointer and a pointer to the ticket-free issue doc; real zsqlab10 ledger upgraded (backup, rehearsal, branch tetramark-upgrade-spec4, ff main) — 36 checks pass, schema plan empty, counts unchanged."
             }
           ]
         }
       ],
       "note": "",
-      "exec": {}
+      "exec": {},
+      "status_since": "2026-10-29T11:43:16+08:00"
     }
   ],
   "log": [
@@ -1291,7 +1301,28 @@
       "kind": "summary",
       "text": "Wave 10 delivered. plan checks: loomerto-check-commands APPROVED (13/13 blocks have a runnable command), loomerto-check-temps no temp artifacts. Release 0.3.0 at 2aee18b. Delivery record docs/records/wave10-delivery.md. Only T-006#B-003 remains blocked on the user (git-bug close + zsqlab10 go-ahead).",
       "ref": ""
+    },
+    {
+      "at": "2026-10-29T11:43:16+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-006#B-003: blocked → done（git-bug closed with the release pointer and a pointer to the ticket-free issue doc; real zsqlab10 ledger upgraded (backup, rehearsal, branch tetramark-upgrade-spec4, ff main) — 36 checks pass, schema plan empty, counts unchanged.）",
+      "ref": "T-006#B-003"
+    },
+    {
+      "at": "2026-10-29T11:43:16+08:00",
+      "actor": "agent",
+      "kind": "status",
+      "text": "T-006: pending → done（Wave 10 fully closed: delivery, release 0.3.0, docs restructure, git-bug closed, real ledger upgraded.）",
+      "ref": "T-006"
+    },
+    {
+      "at": "2026-10-29T11:43:16+08:00",
+      "actor": "lead",
+      "kind": "summary",
+      "text": "Close-out beyond the wave: docs/tickets and the design doc retired (open work now in docs/issues/002-box-views.md); git-bug 0a9acec closed; zsqlab10 upgraded spec 3 -> 4 and molbio 3 on branch tetramark-upgrade-spec4, fast-forwarded to main; record docs/records/zsqlab10-spec4-upgrade.md. Real-run caveat: content-only base/1-to-2 must run from its era tree (6faa557).",
+      "ref": ""
     }
   ],
-  "rev": "9d2b554f87a1"
+  "rev": "f11b22b0d191"
 }

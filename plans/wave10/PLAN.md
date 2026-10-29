@@ -2,13 +2,13 @@
 
 > Implement, review and merge tickets 25-29 of wave 10 on main: status sets per stock kind with transition rules and in-stock views (spec 4), lineage: true + tm lineage, molbio split into parts (molbio 2-to-3), cellbio and angenet bundles. Done when 25-29 are merged, the full suite is green, tm init works for molbio/cellbio/angenet/[molbio,cellbio] and each passes tm check.
 
-**进度** 12/13 块（92%） · 状态 `active` · 更新于 2026-10-29 02:10
+**进度** 13/13 块（100%） · 状态 `active` · 更新于 2026-10-29 11:43
 
 **参与方** lead(agent) · Maxim(human) · w25(agent) · w26(agent) · w27(agent) · w28(agent) · w29(agent) · 本人(human)
 
 ## 现在该谁动（NOW / NEXT）
 
-- `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** — 待批准 · @maxim
+- （没有在途工作）
 
 ## 图
 
@@ -40,9 +40,7 @@ flowchart LR
   T-006_B-001 --> T-006_B-002
   T-006_B-002 --> T-006_B-003
   classDef done stroke-width:1px;
-  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002 done;
-  classDef blocked stroke-width:1px;
-  class T-006_B-003 blocked;
+  class T-001_B-001,T-001_B-002,T-002_B-001,T-002_B-002,T-003_B-001,T-003_B-002,T-004_B-001,T-004_B-002,T-005_B-001,T-005_B-002,T-006_B-001,T-006_B-002,T-006_B-003 done;
 ```
 
 ## 任务
@@ -169,7 +167,7 @@ git -C .dsh/gitworktree/w29 diff main --stat
     - 产物：`main 49e168a`
     - run 2026-10-29 01:52 lead pending→done Reviewed the parts/bundle/status sets against design 3, biosamples kind names, lineage refs, cage box; merged to main; final suite running.
 
-### T-006 wave 10 close: acceptance, release, handover — 待批准
+### T-006 wave 10 close: acceptance, release, handover — 已完成
 @lead
 - [x] `T-006#B-001` **wave 10 acceptance on main** _impl_ — 已完成 @lead
     - 做什么：Lead: on main after all five merges, run the full suite, tm init for molbio, cellbio, angenet and [molbio, cellbio] and tm check each; confirm docs/spec/*, README and skills/tetramark/SKILL.md match the shipped behaviour and migration/README explains the preset parts.
@@ -191,7 +189,7 @@ git status --short && git log --oneline -3
     - 依赖：T-006#B-001
     - 产物：`2aee18b chore: release 0.3.0 + docs/records/wave10-delivery.md`
     - run 2026-10-29 02:10 lead pending→done Version bumped (pyproject/__init__/uv.lock), wave 10 delivery record written, tickets index now lists open work only, wave 10 handover retired; smoke tests 64 passed.
-- [ ] `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** _decision_ — 待批准 @maxim
+- [x] `T-006#B-003` **close git-bug 0a9acec and ask about zsqlab10** _decision_ — 已完成 @maxim
     - 做什么：Needs the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (proposal only until the user agrees).
 
 ```bash
@@ -199,13 +197,12 @@ git-bug bug show 0a9acec
 ```
     - 判据：git-bug 0a9acec closed with the release pointer, and the user has answered the zsqlab10 follow-up question.
     - 依赖：T-006#B-002
+    - 产物：`git-bug 0a9acec closed; ledger main = 28jls7aeh8vd; docs/records/zsqlab10-spec4-upgrade.md`
     - run 2026-10-29 02:10 lead blocked→blocked Waiting on the user: close git-bug 0a9acec with the release pointer, and decide whether to run the zsqlab10 upgrade (spec/3-to-4 -> base/molbio/cell_culture preset steps) after reviewing the delivery record.
+    - run 2026-10-29 11:43 lead blocked→done git-bug closed with the release pointer and a pointer to the ticket-free issue doc; real zsqlab10 ledger upgraded (backup, rehearsal, branch tetramark-upgrade-spec4, ff main) — 36 checks pass, schema plan empty, counts unchanged.
 
 ## 日志（近 20 条）
 
-- `2026-10-29 01:52` **lead** [summary] Tickets 25-29 all merged on main (49e168a): spec 4 status sets/transitions/in-stock views, tm lineage, molbio parts v3, cellbio v1, angenet v1. Next: acceptance on main, release 0.3.0, wave report, zsqlab10 follow-up proposal to the user.
-- `2026-10-29 02:10` **agent** [block] T-001#B-001 改了 做什么
-- `2026-10-29 02:10` **agent** [block] T-001#B-002 改了 做什么
 - `2026-10-29 02:10` **agent** [block] T-002#B-001 改了 做什么
 - `2026-10-29 02:10` **agent** [block] T-002#B-002 改了 做什么
 - `2026-10-29 02:10` **agent** [block] T-003#B-001 改了 做什么
@@ -223,6 +220,9 @@ git-bug bug show 0a9acec
 - `2026-10-29 02:10` **agent** [status] T-006#B-002: pending → done（Version bumped (pyproject/__init__/uv.lock), wave 10 delivery record written, tickets index now lists open work only, wave 10 handover retired; smoke tests 64 passed.）
 - `2026-10-29 02:10` **agent** [status] T-006#B-003: blocked → blocked（Waiting on the user: close git-bug 0a9acec with the release pointer, and decide whether to run the zsqlab10 upgrade (spec/3-to-4 -> base/molbio/cell_culture preset steps) after reviewing the delivery record.）
 - `2026-10-29 02:10` **lead** [summary] Wave 10 delivered. plan checks: loomerto-check-commands APPROVED (13/13 blocks have a runnable command), loomerto-check-temps no temp artifacts. Release 0.3.0 at 2aee18b. Delivery record docs/records/wave10-delivery.md. Only T-006#B-003 remains blocked on the user (git-bug close + zsqlab10 go-ahead).
+- `2026-10-29 11:43` **agent** [status] T-006#B-003: blocked → done（git-bug closed with the release pointer and a pointer to the ticket-free issue doc; real zsqlab10 ledger upgraded (backup, rehearsal, branch tetramark-upgrade-spec4, ff main) — 36 checks pass, schema plan empty, counts unchanged.）
+- `2026-10-29 11:43` **agent** [status] T-006: pending → done（Wave 10 fully closed: delivery, release 0.3.0, docs restructure, git-bug closed, real ledger upgraded.）
+- `2026-10-29 11:43` **lead** [summary] Close-out beyond the wave: docs/tickets and the design doc retired (open work now in docs/issues/002-box-views.md); git-bug 0a9acec closed; zsqlab10 upgraded spec 3 -> 4 and molbio 3 on branch tetramark-upgrade-spec4, fast-forwarded to main; record docs/records/zsqlab10-spec4-upgrade.md. Real-run caveat: content-only base/1-to-2 must run from its era tree (6faa557).
 
 ---
 plan.json 是唯一真相；本文件与 plan.html / plan.canvas 由 `plan.py render wave10` 生成。

@@ -61,7 +61,13 @@ A ledger at spec 3 / molbio 2 (the shape 0.2.0 left, e.g. zsqlab10):
 
 A pre-0.2.0 ledger (spec 1/2, molbio 1) still needs the 0.2.0-era checkout for `molbio/1-to-2` and
 `spec/1-to-2`/`2-to-3`; `docs/guides/migrating-a-legacy-ledger.md` and the step READMEs carry that
-sequence. No real ledger was migrated in this wave.
+sequence. One caveat found in the real run: a **content-only** step (`base/1-to-2`) must also be run
+from its own era tree, because every preset step vendors the repository's *current* copies and a
+newer closure can make its view-only plan reference tables it does not create.
+
+The real zsqlab10 ledger was upgraded on 2026-10-29 (`spec/3-to-4` → `base/1-to-2` → `base/2-to-3`
+→ `molbio/2-to-3` → `cell_culture/1-to-2`); evidence, deviations and restore points:
+[the upgrade record](zsqlab10-spec4-upgrade.md).
 
 ## Verification
 
@@ -77,9 +83,8 @@ sequence. No real ledger was migrated in this wave.
 
 ## Open items
 
-1. **zsqlab10 follow-up (needs the user's go-ahead)**: run the upgrade order above on a copy, compare
-   the row counts/view cross-checks as in [`zsqlab10-migration.md`](zsqlab10-migration.md), then do the
-   real run on `<ledger>` with a pre-migration backup and a restore tag.
+1. **zsqlab10 follow-up**: done on 2026-10-29 — see
+   [`zsqlab10-spec4-upgrade.md`](zsqlab10-spec4-upgrade.md).
 2. **git-bug `0a9acec`**: closed on 2026-10-29 with a comment pointing at 0.3.0 and this record.
 3. **Legacy-fixture drift guard**: rebuild `tests/data/ledgers/molbio-v1` (or teach the builder to strip
    the spec-4 keys) so the guard stops skipping — small, separate task.

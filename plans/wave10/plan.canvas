@@ -127,8 +127,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "1",
-   "text": "### T-006#B-003\nclose git-bug 0a9acec and ask about zsqlab10\n\n`blocked` · @maxim\n\nNeeds the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (propo"
+   "color": "4",
+   "text": "### T-006#B-003\nclose git-bug 0a9acec and ask about zsqlab10\n\n`done` · @maxim\n\nNeeds the user: close git-bug 0a9acec with a pointer to the release, and decide whether to run spec/3-to-4 plus molbio 2-to-3 on the real zsqlab10 ledger (propo"
   }
  ],
  "edges": [
