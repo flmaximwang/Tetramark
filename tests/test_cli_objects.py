@@ -531,13 +531,15 @@ def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory)
     assert usage.exception.exit_code == 2
     assert "--force requires --note" in str(usage.exception)
 
+    # A forced change into a status that is not in stock is allowed and
+    # recorded (the position is already absent).
     forced = json.loads(
         write(
             ledger,
             "aliquot",
             "status",
             alq,
-            "stored",
+            "missing",
             "--force",
             "--note",
             "found in the back of the shelf",
@@ -545,4 +547,191 @@ def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory)
         ).output
     )
     assert forced["forced"] is True
-    assert forced["status"] == "stored"
+    assert forced["status"] == "missing"
+
+    # An in-stock status needs a position: refused with the move hint.
+    placed = invoke(ledger, "aliquot", "status", alq, "stored")
+    assert isinstance(placed.exception, LedgerError)
+    assert placed.exception.exit_code == 1
+    assert "tm aliquot move" in str(placed.exception)
+
+    # Placing the tube restores the in-stock status through the move command.
+    box = json.loads(
+        write(ledger, "box", "add", "grid96", "BOX", "--json").output
+    )
+    moved = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "move",
+            alq,
+            "--box",
+            "BOX",
+            "--slot",
+            "A1",
+            "--json",
+        ).output
+    )
+    assert moved["status"] == "stored"
+    assert moved["old_status"] == "missing"
+    assert moved["slot"] == "A1"
+    row = ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    )[0]
+    assert row == {"status": "stored", "box_id": box["id"], "slot": "A1"}
+
+
+def test_cli_aliquot_status_clears_position(cli_env: None, ledger_factory) -> None:
+    """Acceptance through the CLI: consumed clears, the event keeps the old one."""
+    ledger = ledger_factory([BASE], name="cli-clear", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "a", "--json").output
+    )
+    box = json.loads(
+        write(ledger, "box", "add", "grid96", "G", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "1",
+            "--box",
+            "G",
+            "--slot",
+            "A1",
+            "--json",
+        ).output
+    )
+    alq = stock["aliquots"][0]
+
+    changed = json.loads(
+        write(ledger, "aliquot", "status", alq, "consumed", "--json").output
+    )
+    assert changed["status"] == "consumed"
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"box_id": None, "slot": None}]
+    event = ledger.driver.query(
+        "SELECT `event`, `from_box_id`, `from_slot`, `to_box_id`, `to_slot` "
+        "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
+        (alq,),
+    )[-1]
+    assert event == {
+        "event": "status",
+        "from_box_id": box["id"],
+        "from_slot": "A1",
+        "to_box_id": None,
+        "to_slot": None,
+    }
+
+    # ``consumed`` is final: a forced change to ``missing`` (not in stock) is
+    # recorded without a position...
+    forced = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "status",
+            alq,
+            "missing",
+            "--force",
+            "--note",
+            "tube found",
+            "--json",
+        ).output
+    )
+    assert forced["status"] == "missing"
+    # ...and restoring ``stored`` (a legal missing -> stored transition) needs
+    # the tube placed again.
+    refused = invoke(ledger, "aliquot", "status", alq, "stored")
+    assert refused.exit_code == 1
+    assert "tm aliquot move" in str(refused.exception)
+    restored = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "move",
+            alq,
+            "--box",
+            "G",
+            "--slot",
+            "A1",
+            "--json",
+        ).output
+    )
+    assert restored["status"] == "stored"
+
+
+def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
+    from tetramark.errors import LedgerError
+
+    from conftest import REPO_PRESETS
+
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "c_elegans.yaml"],
+        name="cli-move-status",
+        id_prefix="77",
+    )
+    strain = json.loads(
+        write(ledger, "entity", "add", "worm_strain", "--name", "N2", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "G")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "worm_culture",
+            "--entity",
+            strain["id"],
+            "--aliquots",
+            "1",
+            "--status",
+            "contaminated",
+            "--json",
+        ).output
+    )
+    alq = stock["aliquots"][0]
+
+    # Two in-stock statuses: the bare move lists them and asks for --status.
+    ambiguous = invoke(ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1")
+    assert isinstance(ambiguous.exception, LedgerError)
+    assert "several in-stock statuses" in str(ambiguous.exception)
+    assert "growing" in str(ambiguous.exception)
+    assert "starved" in str(ambiguous.exception)
+
+    # --status must name an in-stock status of the set.
+    bad = invoke(
+        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1",
+        "--status", "contaminated",
+    )
+    assert bad.exception.exit_code == 2
+    assert "not in stock" in str(bad.exception)
+    unknown = invoke(
+        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1",
+        "--status", "nope",
+    )
+    assert unknown.exception.exit_code == 2
+    assert "unknown status" in str(unknown.exception)
+
+    restored = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "move",
+            alq,
+            "--box",
+            "G",
+            "--slot",
+            "A1",
+            "--status",
+            "growing",
+            "--json",
+        ).output
+    )
+    assert restored["old_status"] == "contaminated"
+    assert restored["status"] == "growing"

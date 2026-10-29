@@ -18,7 +18,9 @@ enum checks.  This module adds the rules Dolt cannot express (spec §3):
 * a stock's entity kind must satisfy ``entity_kinds``;
 * placement: the slot exists, the slot's capacity is respected, no child box is
   in an aliquot's slot, and a slotless box's total capacity is respected;
-* an in-stock aliquot in a slotted box needs a slot;
+* ``box_id``/``slot`` is set exactly when the status is in stock (spec 5): placing
+  a tube restores an in-stock status, leaving stock clears the position in the
+  same write, and the event keeps the old position in ``from_*``;
 * box nesting must be acyclic and a slot holds aliquots *or* one child box;
 * an aliquot's status belongs to its stock kind's status set, creation accepts
   any status of the set and every later change follows the set's ``to:`` rules
@@ -75,6 +77,7 @@ __all__ = [
     "show_entity",
     "show_stock",
     "use_aliquot",
+    "validate_creation_placement",
 ]
 
 #: Core object types aliases can point at.
@@ -203,6 +206,97 @@ def default_aliquot_status(
     if in_stock:
         return in_stock[0]
     return status_set.names[0]
+
+
+def status_is_in_stock(status_set: StatusSet, status: str) -> bool:
+    """True when ``status`` counts as physically in stock (spec 4/5)."""
+    entry = status_set.root.get(status)
+    return bool(entry is not None and entry.in_stock)
+
+
+def _statuses_text(statuses: Sequence[str]) -> str:
+    return ", ".join(statuses) if statuses else "(none defined)"
+
+
+def validate_creation_placement(
+    ledger: Ledger,
+    stock_kind: str,
+    status: str,
+    *,
+    placed: bool,
+    aliquot_id: str | None = None,
+) -> None:
+    """Enforce "a position exactly when in stock" on a creation path (spec 5).
+
+    Creating an aliquot is not a status transition (spec 4), so any status of
+    the stock kind's set may be chosen; the position must agree with it: a
+    placed aliquot needs an in-stock status and an in-stock aliquot needs a
+    position.  The app commands and the CSV importer share this check so both
+    report the same refusal.
+    """
+    status_set = aliquot_status_set(ledger, stock_kind)
+    in_stock = status_is_in_stock(status_set, status)
+    label = "" if aliquot_id is None else f" {aliquot_id!r}"
+    if placed and not in_stock:
+        raise LedgerError(
+            f"aliquot{label} would be placed in a box with status {status!r}, "
+            f"which is not in stock; a placed aliquot must be in stock: choose "
+            f"an in-stock status ({_statuses_text(status_set.in_stock_names)}) "
+            "or omit the box"
+        )
+    if not placed and in_stock:
+        rest = [
+            name
+            for name in status_set.names
+            if not status_is_in_stock(status_set, name)
+        ]
+        hint = "choose a status that is not in stock"
+        if rest:
+            hint += f" ({', '.join(rest)})"
+        raise LedgerError(
+            f"aliquot{label} would have status {status!r}, which is in stock, "
+            "but no box position: an in-stock aliquot must be placed in a box "
+            f"(pass --box, and --slot for a slotted box) or {hint}"
+        )
+
+
+def in_stock_status_for_move(
+    ledger: Ledger, stock_kind: str, requested: str | None = None
+) -> str:
+    """The in-stock status a not-in-stock aliquot gets when it is placed.
+
+    A tube that is not in stock has no position (spec 5), so every move places
+    it and restores an in-stock status.  With exactly one in-stock status that
+    is unambiguous; with several (e.g. the ``worm`` set's ``growing`` and
+    ``starved``) the caller must choose through ``--status``.
+    """
+    status_set = aliquot_status_set(ledger, stock_kind)
+    in_stock = status_set.in_stock_names
+    if not in_stock:
+        raise LedgerError(
+            f"stock kind {stock_kind!r} has no in-stock status; an aliquot of "
+            "this kind cannot be placed in a box"
+        )
+    if requested is None:
+        if len(in_stock) > 1:
+            raise LedgerError(
+                f"aliquot is not in stock and stock kind {stock_kind!r} has "
+                f"several in-stock statuses ({_statuses_text(in_stock)}); pass "
+                "--status STATUS to choose the one to restore"
+            )
+        return in_stock[0]
+    text = str(requested).strip()
+    if not status_set.has(text):
+        raise UsageError(
+            f"unknown status {requested!r} for stock kind {stock_kind!r}; "
+            f"choose from: {_status_choice(status_set.names)}"
+        )
+    if not status_is_in_stock(status_set, text):
+        raise UsageError(
+            f"status {text!r} is not in stock; placing a tube in a box needs an "
+            f"in-stock status: {_statuses_text(in_stock)}"
+        )
+    return text
 
 
 def ensure_status_change(
@@ -1090,6 +1184,13 @@ def _insert_aliquot(
         )
     else:
         status = validate_creation_status(ledger, stock_kind, status)
+    validate_creation_placement(
+        ledger,
+        stock_kind,
+        status,
+        placed=box_row is not None,
+        aliquot_id=alq_id,
+    )
     _insert(
         session,
         "aliquot",
@@ -1395,13 +1496,47 @@ def move_aliquot(
     *,
     box: str,
     slot: str | None = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
-    """Move an aliquot to a box/slot, recording a ``move`` event."""
+    """Move an aliquot to a box/slot, recording a ``move`` event.
+
+    Position and stock membership are the same fact (spec 5): an aliquot that
+    is not in stock has no position, so moving it into a box restores the
+    stock kind's in-stock status.  A set with several in-stock statuses (e.g.
+    ``worm``) needs ``status`` to choose one; ``status`` is validated as an
+    in-stock status of the set.  An aliquot that is already in stock keeps its
+    status; ``status`` then goes through the normal transition check
+    (:func:`ensure_status_change`) and the result still has to be in stock.
+    """
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
 
     with ledger.write(alq_id, verb="move", object="aliquot") as session:
         row = _resolve_core(session, "aliquot", alq_id)
+        stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
+        assert stock_row is not None  # FK guarantees it
+        kind_name = str(stock_row["kind"])
+        status_set = aliquot_status_set(ledger, kind_name)
+        old_status = str(row.get("status"))
+        if old_status not in status_set.names:
+            raise LedgerError(
+                f"aliquot status {old_status!r} is not in the status set of "
+                f"stock kind {kind_name!r} "
+                f"({_status_choice(status_set.names)}); fix the stored data "
+                "('tm check' reports it)"
+            )
+        if status_is_in_stock(status_set, old_status):
+            if status is None:
+                new_status = old_status
+            else:
+                new_status = in_stock_status_for_move(ledger, kind_name, status)
+                if new_status != old_status:
+                    ensure_status_change(
+                        ledger, kind_name, old_status, new_status
+                    )
+        else:
+            new_status = in_stock_status_for_move(ledger, kind_name, status)
+
         box_row = _resolve_box(session, box)
         placed_slot = _check_aliquot_placement(
             session, ledger, box_row, slot, exclude_aliquot=alq_id
@@ -1410,7 +1545,11 @@ def move_aliquot(
             session,
             "aliquot",
             {"id": alq_id},
-            {"box_id": box_row["id"], "slot": placed_slot},
+            {
+                "box_id": box_row["id"],
+                "slot": placed_slot,
+                "status": new_status,
+            },
         )
         record_event(
             session,
@@ -1420,14 +1559,16 @@ def move_aliquot(
             from_slot=row.get("slot"),
             to_box_id=box_row["id"],
             to_slot=placed_slot,
-            old_status=row.get("status"),
-            new_status=row.get("status"),
+            old_status=old_status,
+            new_status=new_status,
             actor=ledger.actor,
         )
         record = _load_record(session, ledger, "aliquot", alq_id)
     # A dry run buffers the UPDATE; report the destination it would write.
     record["box_id"] = box_row["id"]
     record["slot"] = placed_slot
+    record["old_status"] = old_status
+    record["status"] = new_status
     return record
 
 
@@ -1481,6 +1622,8 @@ def use_aliquot(
                 f"only {current} left"
             )
         new_status = old_status
+        #: ``(from_box_id, from_slot)`` of a position this use clears (spec 5).
+        cleared_from: tuple[Any, Any] = (None, None)
         if remaining == 0:
             stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
             assert stock_row is not None  # FK guarantees it
@@ -1489,18 +1632,28 @@ def use_aliquot(
             if status_set.has("consumed"):
                 ensure_status_change(ledger, kind_name, old_status, "consumed")
                 new_status = "consumed"
-        _update(
-            session,
-            "aliquot",
-            {"id": alq_id},
-            {"quantity": remaining, "status": new_status},
-        )
+                # A consumed aliquot is not in stock, so it is not in a box:
+                # clear the position in the same write; the event keeps it.
+                if not status_is_in_stock(status_set, new_status):
+                    cleared_from = (row.get("box_id"), row.get("slot"))
+        updates: dict[str, Any] = {
+            "quantity": remaining,
+            "status": new_status,
+        }
+        if cleared_from != (None, None):
+            updates["box_id"] = None
+            updates["slot"] = None
+        _update(session, "aliquot", {"id": alq_id}, updates)
         record_event(
             session,
             aliquot_id=alq_id,
             event="use",
             amount=used,
             unit=unit_text,
+            from_box_id=cleared_from[0],
+            from_slot=cleared_from[1],
+            to_box_id=None,
+            to_slot=None,
             old_status=old_status,
             new_status=new_status,
             actor=ledger.actor,
@@ -1550,28 +1703,49 @@ def set_aliquot_status(
             ledger, kind_name, old_status, status, force=force
         )
         status_set = aliquot_status_set(ledger, kind_name)
-        target = status_set.root[str(status).strip()]
-        if target.in_stock and row.get("box_id") is not None:
+        target_text = str(status).strip()
+        target = status_set.root[target_text]
+        updates: dict[str, Any] = {"status": target_text}
+        if target.in_stock:
+            # In stock means physically placed (spec 5): a position is
+            # required and is kept.  The position check that used to be only
+            # "a slotted box needs a slot" is now part of this invariant.
+            if row.get("box_id") is None:
+                raise LedgerError(
+                    f"aliquot {alq_id!r} has no box position; status "
+                    f"{target_text!r} is in stock, so the tube must be placed "
+                    f"first: run 'tm aliquot move {alq_id} --box NAME --slot "
+                    "SLOT'"
+                )
             box_row = _fetch_core(session, "box", str(row["box_id"]))
             if box_row is not None:
                 geometry = _box_geometry(ledger.schema.kind(str(box_row["kind"])))
                 if geometry.is_slotted and not row.get("slot"):
                     raise LedgerError(
                         f"aliquot {alq_id!r} is in slotted box "
-                        f"{box_row['name']!r} but has no slot; move it to a slot first"
+                        f"{box_row['name']!r} but has no slot; run "
+                        f"'tm aliquot move {alq_id} --box {box_row['name']} "
+                        "--slot SLOT' to give it one"
                     )
-        _update(
-            session,
-            "aliquot",
-            {"id": alq_id},
-            {"status": str(status).strip()},
-        )
+        else:
+            # A status that is not in stock has no position: clear it in the
+            # same write; the event keeps the old position in from_*.
+            updates["box_id"] = None
+            updates["slot"] = None
+        _update(session, "aliquot", {"id": alq_id}, updates)
+        # The event records a position only when this change clears it; an
+        # unchanged position is not a move (from_* and to_* stay NULL).
+        cleared = not target.in_stock
         record_event(
             session,
             aliquot_id=alq_id,
             event="status",
+            from_box_id=row.get("box_id") if cleared else None,
+            from_slot=row.get("slot") if cleared else None,
+            to_box_id=None,
+            to_slot=None,
             old_status=old_status,
-            new_status=str(status).strip(),
+            new_status=target_text,
             forced=force,
             actor=ledger.actor,
             note=note_text,
@@ -1580,7 +1754,7 @@ def set_aliquot_status(
             "object": "aliquot",
             "id": alq_id,
             "old_status": old_status,
-            "status": str(status).strip(),
+            "status": target_text,
             "forced": force,
         }
 
@@ -2408,8 +2582,15 @@ class AliquotOps:
             status=status,
         )
 
-    def move(self, ref: str, *, box: str, slot: str | None = None) -> dict[str, Any]:
-        return move_aliquot(self.ledger, ref, box=box, slot=slot)
+    def move(
+        self,
+        ref: str,
+        *,
+        box: str,
+        slot: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        return move_aliquot(self.ledger, ref, box=box, slot=slot, status=status)
 
     def use(
         self,

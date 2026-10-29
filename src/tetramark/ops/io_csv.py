@@ -55,6 +55,7 @@ from tetramark.core.objects import (
     _require_fields,
     _update,
     default_aliquot_status,
+    validate_creation_placement,
     validate_creation_status,
 )
 from tetramark.errors import LedgerError, UsageError
@@ -1283,6 +1284,15 @@ class _Planner:
                 )
             )
             alq_id = f"{raw.id}.{index}"
+            # Same invariant as the object commands (spec 5): a position
+            # exactly when the status is in stock.
+            validate_creation_placement(
+                self.ledger,
+                kind_name,
+                aliquot_status,
+                placed=box_id is not None,
+                aliquot_id=alq_id,
+            )
             self._aliquot_ids.add(alq_id)
             self._aliquot_seqs.setdefault(raw.id, set()).add(index)
             plan.inserts.append(
@@ -1456,6 +1466,15 @@ class _Planner:
             status = default_aliquot_status(
                 self.ledger, kind_name, placed=box_id is not None
             )
+        # Same invariant as the object commands (spec 5): a position exactly
+        # when the status is in stock.
+        validate_creation_placement(
+            self.ledger,
+            kind_name,
+            status,
+            placed=box_id is not None,
+            aliquot_id=raw.id,
+        )
         label = _text(data, "label")
         if label is not None and len(label) > 255:
             raise UsageError(

@@ -392,6 +392,52 @@ def test_stock_row_can_create_and_place_aliquots(
     assert [row["unit"] for row in aliquots] == ["ul", "ul"]
 
 
+def test_import_enforces_position_follows_in_stock(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """Spec 5: an imported aliquot has a position exactly when in stock."""
+    ledger = ledger_factory([BASE], name="import-invariant")
+    item = ledger.entities.add("item", name="widget")
+    ledger.boxes.add("grid96", "BOX")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=0)
+    before = commit_count(ledger)
+
+    # A placed aliquot needs an in-stock status.
+    placed_not_in_stock = write_csv(
+        tmp_path / "placed.csv",
+        "entity,aliquots,box,slot,status,supplier\n"
+        f"{item['id']},1,BOX,A1,pending,acme\n",
+    )
+    with pytest.raises(CsvImportError) as excinfo:
+        import_csv(ledger, "lot", placed_not_in_stock)
+    message = str(excinfo.value)
+    assert "row 1" in message
+    assert "placed aliquot must be in stock" in message
+
+    # An in-stock status needs a position.
+    in_stock_unplaced = write_csv(
+        tmp_path / "unplaced.csv",
+        "entity,aliquots,status,supplier\n"
+        f"{item['id']},1,stored,acme\n",
+    )
+    with pytest.raises(CsvImportError) as excinfo:
+        import_csv(ledger, "lot", in_stock_unplaced)
+    assert "must be placed" in str(excinfo.value)
+
+    # The standalone aliquot row path enforces the same invariant.
+    bad_aliquot = write_csv(
+        tmp_path / "bad-aliquot.csv",
+        "stock,seq,status\n"
+        f"{stock['id']},1,stored\n",
+    )
+    with pytest.raises(CsvImportError) as excinfo:
+        import_csv(ledger, "aliquot", bad_aliquot, object_type="aliquot")
+    assert "must be placed" in str(excinfo.value)
+
+    assert commit_count(ledger) == before
+    assert ledger.driver.query("SELECT * FROM `aliquot`") == []
+
+
 def test_aliquot_rows_accept_id_or_stock_seq(
     ledger_factory, tmp_path: Path
 ) -> None:
@@ -450,14 +496,15 @@ def test_aliquot_label_is_imported_exported_and_round_trips(
     """``aliquot.label`` (the physical tube label) is a CSV core column."""
     source = ledger_factory([BASE], name="labelled")
     item = source.entities.add("item", name="widget")
+    source.boxes.add("grid96", "BOX")
     stock = source.stocks.add(
         "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=0
     )
 
     path = write_csv(
         tmp_path / "aliquots.csv",
-        "id,stock,seq,status,label,notes\n"
-        f"{stock['id']}.1,{stock['id']},1,stored,AA-12,tube one\n",
+        "id,stock,seq,status,box,slot,label,notes\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,BOX,A1,AA-12,tube one\n",
     )
     import_csv(source, "aliquot", path, object_type="aliquot")
 
@@ -485,14 +532,15 @@ def test_aliquot_label_over_255_characters_is_rejected(
 ) -> None:
     ledger = ledger_factory([BASE], name="long-label")
     item = ledger.entities.add("item", name="widget")
+    ledger.boxes.add("grid96", "BOX")
     stock = ledger.stocks.add(
         "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=0
     )
     long_label = "x" * 256
     path = write_csv(
         tmp_path / "aliquots.csv",
-        "id,stock,seq,status,label\n"
-        f"{stock['id']}.1,{stock['id']},1,stored,{long_label}\n",
+        "id,stock,seq,status,box,slot,label\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,BOX,A1,{long_label}\n",
     )
     with pytest.raises(CsvImportError, match="label"):
         import_csv(ledger, "aliquot", path, object_type="aliquot")

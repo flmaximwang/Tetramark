@@ -66,17 +66,30 @@ def move_aliquot_command(
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
     box: str = typer.Option(..., "--box", "-b", help="Destination box name/id/alias."),
     slot: str | None = typer.Option(None, "--slot", "-s", help="Destination slot."),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Status the tube takes when it was not in stock (default: the set's "
+            "single in-stock status; required when it has several). When the "
+            "tube is already in stock, --status must name another in-stock "
+            "status and the normal transition rule applies."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Move an aliquot to another box/slot."""
+    """Move an aliquot to another box/slot (placing it puts it back in stock)."""
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.move(ref, box=box, slot=slot)
+        result = ledger.aliquots.move(ref, box=box, slot=slot, status=status)
         location = box if slot is None else f"{box}:{slot}"
+        message = f"Moved aliquot {result['id']} to {location}"
+        if result.get("old_status") != result.get("status"):
+            message += f" (status {result['old_status']} -> {result['status']})"
         emit_write(
             ledger,
             result,
-            f"Moved aliquot {result['id']} to {location}",
+            message,
             as_json=json_output(ctx, as_json),
         )
     finally:
