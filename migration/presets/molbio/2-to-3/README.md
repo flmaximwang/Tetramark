@@ -22,7 +22,7 @@ The placed `base` v3 copy also adds the slotless `incubator` box kind
 ([base 2 → 3](../../base/2-to-3/README.md) owns that counter).
 
 `cell_culture` comes from the **frozen `cell_culture-1.yaml` next to `migrate.py`**, not from the
-repository: [ticket 28](../../../../docs/tickets/28-cellbio-bundle.md) bumps `presets/cell_culture.yaml`
+repository: ticket 28 (delivered in 0.3.0) bumps `presets/cell_culture.yaml`
 to v2, but molbio v3 shipped with cell_culture 1 and this step records exactly that counter — the
 `1 → 2` step is [`migration/presets/cell_culture/1-to-2`](../../cell_culture/1-to-2/README.md). The
 other parts are still the current repository version here; when one of them is bumped by a later

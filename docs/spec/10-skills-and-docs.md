@@ -10,5 +10,5 @@
   checklist (row counts per kind, `tm check` all PASS, spot-check `box show` vs old grid views).
 
 Documentation entry points: [the spec](../spec/README.md) (this document), [guides](../guides/),
-[records](../records/) of real migrations, open [design issues](../issues/) and open
-[tickets](../tickets/README.md).
+[records](../records/) of deliveries and real migrations, and open [design issues](../issues/) for
+planned work.

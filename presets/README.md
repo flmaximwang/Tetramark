@@ -35,7 +35,7 @@ The bundles:
 - `angenet` — `include: [base, nucleic_acids, biosamples, drosophila, c_elegans, zebrafish,
   mouse]`, version 1. `proteins` arrives through `nucleic_acids` (the constructs a line may carry);
   `biosamples` is listed because it names the organism line kinds, and only this union loads them
-  all. The four organism parts are the model of `docs/preset-parts.md` §3.
+  all. The four organism parts follow the organism model in `docs/spec/08-presets.md`.
 
 Each part's `description:` says what it covers and which bundles include it. New parts start at
 `version: 1` and grow through `migration/presets/<name>/N-to-N+1/`, never by editing a shipped
@@ -104,7 +104,7 @@ taken from a cryovial appears under that vial.
 
 ## Organisms: line, colony and aliquot (`angenet`)
 
-The model is the one in `docs/preset-parts.md` §3, and it needs no core change:
+The model is the one in `docs/spec/08-presets.md`, and it needs no core change:
 
 - a **line is an entity** (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`); its `parental`
   ref is a lineage edge;

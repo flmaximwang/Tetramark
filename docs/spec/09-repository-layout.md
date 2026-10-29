@@ -16,9 +16,8 @@ skills/tetramark/SKILL.md (+ references/)
 skills/tetramark-schema/SKILL.md (+ references/)
 docs/spec/                # this specification, one file per chapter
 docs/guides/              # how-to guides (migration, test harness)
-docs/records/             # dated records of real migrations
-docs/issues/              # open design issues
-docs/tickets/             # open work only
+docs/records/             # dated delivery records (real migrations, wave deliveries)
+docs/issues/              # open design for planned work (not yet implemented)
 migration/                # hand-run upgrade steps (scripts + their READMEs)
 tests/                    # pytest; fixtures create real dolt repos in tmp_path
 ```

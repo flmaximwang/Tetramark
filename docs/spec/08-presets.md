@@ -148,5 +148,8 @@ Preset catalogue:
   four organism line kinds, and only this union loads them (see the biosample split above). Every
   organism line is an entity, its colony a stock, and an aliquot is one animal or one housing unit's
   population; a cross is its progeny stock's `dam`/`sire` refs, and a litter is a `mouse_cohort` with
-  `genotype` NULL whose split stocks point back through `parent_stock_id`. `presets/README.md` has
-  the catalogue, the include graph and the litter recipe; `docs/preset-parts.md` §3 is the model.
+  `genotype` NULL whose split stocks point back through `parent_stock_id`. An individually counted
+  organism is one animal (quantity 1, its ear tag/tag in the core aliquot `label`, its cage as the
+  box); a group-counted one is a housing unit's population (quantity = headcount, unit `individuals`,
+  the vial/plate/tank itself the aliquot in a rack, incubator or shelf). `presets/README.md` has the
+  catalogue, the include graph and the colony/cross/litter/cryo recipes.

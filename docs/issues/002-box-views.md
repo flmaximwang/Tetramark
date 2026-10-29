@@ -1,6 +1,7 @@
-# 30 · One view per box, not per box kind (spec 5)
-Depends on: 25 (wave 10 lands first) · Issue: git-bug `20b350c` "Box View Specification" · Follow-up: git-bug
-"Box schemas (templates)" (out of scope here)
+# Issue 002 · One view per box, not per box kind (planned spec 5)
+Status: open · Filed: 2026-10-28 · Source: git-bug `20b350c` ("Box View Specification") · Follow-up:
+git-bug `d16a3bd` ("Box schemas (templates)", out of scope here) · Blocked by: nothing — wave 10
+(spec 4, release 0.3.0) has landed.
 
 Goal: every box that exists gets its own view, which shows what is physically in it. Per-kind box views
 go away; nobody looks things up by box kind. A tube that is no longer in stock is no longer in a box,
@@ -42,11 +43,11 @@ so the views never show tubes that are gone.
 - **Grid boxes hold tubes only.** `tm box add --in` / `tm box move --in` into a grid box is refused, and
   a generated `tm check` rule flags existing rows. (What other kinds may hold is decided with box
   schemas, not here.)
-- **Rename `grid96` → `grid8x12`** (rows A–H, cols 1–12) in `presets/base.yaml`, with ticket 22's rename
+- **Rename `grid96` → `grid8x12`** (rows A–H, cols 1–12) in `presets/base.yaml`, with the rename
   mechanism (`renames.yaml` → diff planner rewrites the table, constraints and `kind` values). Bump
   `base`'s `version:` and add `migration/presets/base/N-to-N+1/`.
 - **Position follows in stock.** An aliquot has `box_id` (and `slot` in a slotted box) **exactly when**
-  its status has `in_stock: true` in its stock kind's set (ticket 25). So:
+  its status has `in_stock: true` in its stock kind's set (spec 4). So:
   - changing to a status that is not in stock (`tm aliquot status`, `tm aliquot use` reaching 0, import
     updates) sets `box_id`/`slot` to NULL in the same write; the `aliquot_event` row keeps the old
     position in `from_box_id`/`from_slot`, so `tm history` still shows where it was;
@@ -77,7 +78,7 @@ so the views never show tubes that are gone.
 
 ### Versions and upgrade
 
-- Generated view shape changes → `SPEC_VERSION` 4 → 5 (ticket 25 takes 4). Step
+- Generated view shape changes → `SPEC_VERSION` 4 → 5 (spec 4 is 0.3.0). Step
   `migration/spec/4-to-5/`: drop the `v_box_<kind>` views, create one view per existing box, clear
   positions of aliquots that are not in stock (one `move` event per cleared row, old position in
   `from_box_id`/`from_slot`, `to_*` NULL, note `spec 4-to-5`; the README lists them), and refuse (listing rows) if a box name
@@ -86,7 +87,7 @@ so the views never show tubes that are gone.
   after the user's OK; never push to `origin` without the user's explicit OK. Not part of this ticket's
   work; the agent does not touch real ledgers.
 
-## Files
+## Planned files
 
 - `src/tetramark/schema/{ddl.py,diff.py,model.py,tests_gen.py}` (per-box view generation, managed-view
   detection, check rules)
@@ -106,7 +107,7 @@ so the views never show tubes that are gone.
 - Box schemas (templates in `presets/boxes/`, geometry per box, what each kind may hold) are a separate
   issue; don't start them here.
 
-## Verify
+## Acceptance
 
 - A ledger with boxes `G` (grid9x9, tubes in A1, B2), `R` (rack, `G` in slot 1) and `S` (box_slotless, 2
   tubes) and an empty freezer `F` has exactly the views `v_box_G`, `v_box_R`, `v_box_S`, `v_box_F` plus

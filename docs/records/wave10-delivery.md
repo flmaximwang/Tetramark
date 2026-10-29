@@ -1,7 +1,9 @@
 # Wave 10 delivery record (tickets 25–29, release 0.3.0)
 
 **Date**: 2026-10-29 · **Scope**: preset parts, status sets, lineage, `cellbio` and `angenet` bundles ·
-**Source issue**: git-bug `0a9acec` ("BioManager Presets") · **Design**: [`preset-parts.md`](../preset-parts.md)
+**Source issue**: git-bug `0a9acec` ("BioManager Presets", closed with this release) · **Design**: the
+wave-10 design doc, retired with the wave (its model now lives in [`spec/08-presets.md`](../spec/08-presets.md)
+and [`presets/README.md`](../../presets/README.md))
 · **Plan**: [`plans/wave10/plan.json`](../../plans/wave10/plan.json) (loomerto, three views next to it).
 
 All five tickets are merged on `main`; `spec_version` is **4**, the release is **0.3.0**.
@@ -78,8 +80,7 @@ sequence. No real ledger was migrated in this wave.
 1. **zsqlab10 follow-up (needs the user's go-ahead)**: run the upgrade order above on a copy, compare
    the row counts/view cross-checks as in [`zsqlab10-migration.md`](zsqlab10-migration.md), then do the
    real run on `<ledger>` with a pre-migration backup and a restore tag.
-2. **git-bug `0a9acec`**: close with a pointer at 0.3.0/this record once the user is happy with the
-   delivery.
+2. **git-bug `0a9acec`**: closed on 2026-10-29 with a comment pointing at 0.3.0 and this record.
 3. **Legacy-fixture drift guard**: rebuild `tests/data/ledgers/molbio-v1` (or teach the builder to strip
    the spec-4 keys) so the guard stops skipping — small, separate task.
 4. **Wave 11 (ticket 30, box views)** is unblocked: it needs spec 4 and the parts/preset model from this
