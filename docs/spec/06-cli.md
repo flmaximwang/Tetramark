@@ -41,9 +41,9 @@ tm aliquot move ALQ --box NAME [--slot S] [--status S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
 tm aliquot purge ALQ                                  # hard delete, explicit only
-tm box add KIND NAME [--in PARENT --slot S]
+tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
-tm box ls ; tm box move NAME --in PARENT --slot S
+tm box ls ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
 tm find QUERY               # id → alias → name/text match across all objects and kinds
 tm history ID               # aliquot_event + dolt_log entries touching the object
@@ -75,8 +75,9 @@ A box name must be **view-safe**, because each existing box gets a generated vie
 `v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters
 (64 − `v_box_`), and it must not differ only in case from another box's name. `tm box add` and CSV
 box import refuse such a name; there is no rename command yet. **Grid boxes hold tubes only**, so
-`tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box may sit in a named
-or slotless box.
+`tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box nests only in a
+named or slotless box — for example a freezer, `tm box move WFL-12-02 --in FR-1` — and a box never
+nests in a grid box.
 
 `tm export` reads a box from `box` joined with `box_<kind>` — the per-kind `v_box_<kind>` views are
 gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and

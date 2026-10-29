@@ -14,10 +14,13 @@ The step therefore
   over its own copy: ``presets/`` only ever holds the current version, so a
   later bump must not change what this historical step installs,
 * applies the diff plan with the explicit rename map from ``renames.yaml`` --
-  the kind table ``box_grid96`` -> ``box_grid8x12``, its constraints, the core
-  ``kind`` discriminator values, the generated per-box views and the other
-  spec-5 views; a plan with any *other* destructive step is refused before
-  anything is written,
+  the kind table ``box_grid96`` -> ``box_grid8x12``, its constraints and the
+  core ``kind`` discriminator values; the per-box views that ``spec/4-to-5``
+  built are already the spec-5 shape and read ``box``/``slot``/``aliquot``, not
+  the kind table, so they stay as they are (when the plan is empty the step
+  recreates the generated views so its commit has statements of its own).  A
+  plan with any *other* destructive step is refused before anything is
+  written,
 * bumps ``preset_versions.base`` to 4 and the fingerprint; the shared runner
   regenerates the derived ``dolt_tests`` from the same schema in that commit.
 
@@ -91,10 +94,10 @@ def _require_ready(ledger: Ledger) -> None:
     if version != TO_VERSION:
         raise LedgerError(
             f"refusing to migrate base 3 -> 4: the ledger's own base copy is "
-            f"version {version}, expected {TO_VERSION}. Copy this checkout's "
-            "presets/base.yaml into <ledger>/presets/base.yaml first (files are "
-            "not Dolt content; migration/spec/4-to-5/README.md explains the "
-            "upgrade order). Nothing was written."
+            f"version {version}, expected {TO_VERSION}. This step places the "
+            "frozen base-4.yaml next to migrate.py over <ledger>/presets/base.yaml "
+            "(files are not Dolt content; migration/spec/4-to-5/README.md "
+            "explains the upgrade order). Nothing was written."
         )
     if NEW_KIND not in ledger.schema.kinds:
         raise LedgerError(
@@ -132,8 +135,8 @@ def plan(ledger: Ledger) -> list[str]:
             "step(s) beyond the grid96 -> grid8x12 rename that would drop or "
             "change existing schema or data:\n"
             + "\n".join(lines)
-            + "\nNothing was written. This step only renames the box kind "
-            "(and recreates views); fix the ledger's local schema first."
+            + "\nNothing was written. This step only renames the box kind; "
+            "fix the ledger's local schema first."
         )
     statements = [step.sql for step in schema_plan.steps]
     if statements:
@@ -175,7 +178,12 @@ step = MigrationStep(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Place the preset copies, then run the shared one-commit step."""
+    """Place the preset copies, then run the shared one-commit step.
+
+    Every preset the ledger lists is placed from the repository; base itself
+    comes from the frozen v4 file, because that is the version this counter
+    bumps to and a later repository bump must not change it.
+    """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_BASE})

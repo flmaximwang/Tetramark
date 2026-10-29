@@ -12,12 +12,15 @@ unchanged (rows `A-H`, columns `1-12`, 96 slots) and nothing else in the preset 
 
 The step applies the diff between the ledger's live database and its own (just placed) v4 schema
 using the explicit rename map [`renames.yaml`](renames.yaml) (`box: {grid96: grid8x12}`): the
-planner renames the `box_grid96` table to `box_grid8x12`, rewrites the core `kind` values in `box`,
-translates the constraints, drops the old `v_box_grid96` view, and recreates the generated views in
-the spec-5 shape (one view per live box plus the core/entity/stock views). It refuses a plan with any
-**other** destructive step before anything is written. Then it bumps `preset_versions.base` and the
-fingerprint, and the shared runner regenerates the derived `dolt_tests` from the same schema in that
-commit.
+planner renames the `box_grid96` table to `box_grid8x12`, rewrites the core `kind` values in `box`
+and in the kind table, and translates the constraints. The per-box views that
+[`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) created are already the spec-5 shape and
+stay as they are — they read `box`/`slot`/`aliquot`, not the kind table — so the plan normally has
+no view statement; when the plan is empty (the rename was applied by hand and another step placed
+the same schema), the step recreates the generated views so the commit still has statements of its
+own. It refuses a plan with any **other** destructive step before anything is written. Then it
+bumps `preset_versions.base` and the fingerprint, and the shared runner regenerates the derived
+`dolt_tests` from the same schema in that commit.
 
 ## Preconditions
 
@@ -74,14 +77,17 @@ dolt log -n 1                                                                   
 dolt tag | grep pre-migrate-base-3
 dolt sql -q "SHOW TABLES LIKE 'box_grid8x12'"
 dolt sql -q "SHOW TABLES LIKE 'box_grid96'"                                          # empty
+dolt sql -q "SELECT DISTINCT \`kind\` FROM \`box\` ORDER BY \`kind\`"                 # grid8x12, no grid96
+dolt sql -q "SELECT DISTINCT \`kind\` FROM \`box_grid8x12\`"                          # grid8x12
 dolt sql -q "SHOW FULL TABLES WHERE Table_type = 'VIEW'"
 uv run tm -w /path/to/workspace -l <ledger> check                                    # OK: ... passed
 uv run tm -w /path/to/workspace -l <ledger> schema plan                              # no pending steps
 ```
 
-Expected: `box_grid8x12` exists and `box_grid96` is gone, `preset_versions.base` is 4, every box has
-its own `v_box_<box name>` view with no `v_box_grid96`, `tm check` prints no `FAIL`, and `tm schema
-plan` reports no pending steps.
+Expected: `box_grid8x12` exists and `box_grid96` is gone, the boxes that were `grid96` now say
+`grid8x12` (core `box.kind` and the kind table), `preset_versions.base` is 4, every box still has its
+own `v_box_<box name>` view with no `v_box_grid96`, `tm check` prints no `FAIL`, and `tm schema plan`
+reports no pending steps. A second run refuses (`preset_versions[base] 4, expected 3`).
 
 ## Failure, rollback, caveats
 

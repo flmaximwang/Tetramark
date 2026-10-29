@@ -705,7 +705,7 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
     strain = json.loads(
         write(ledger, "entity", "add", "worm_strain", "--name", "N2", "--json").output
     )
-    write(ledger, "box", "add", "grid96", "G")
+    write(ledger, "box", "add", "grid8x12", "G")
     stock = json.loads(
         write(
             ledger,

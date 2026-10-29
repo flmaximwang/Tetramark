@@ -34,7 +34,11 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   `status` with in-stock counts, `quantity_in_stock` + `unit` and a three-value
   `status`. Version 5 replaced the per-kind `v_box_<kind>` views with one
   generated view per existing box, `v_box_<box name>` (§3), and made the stored
-  position follow the in-stock status. A **v2** ledger upgrades to v3 with the
+  position follow the in-stock status (the hand-run
+  `migration/spec/4-to-5/` recreates the views and clears the stored positions
+  of not-in-stock aliquots; it refuses a view-unsafe box name, a grid box that
+  holds a child box, and an in-stock aliquot without a position). A **v2**
+  ledger upgrades to v3 with the
   hand-run `migration/spec/2-to-3/` step; a v3 ledger then runs
   `migration/spec/3-to-4/`, and a v4 ledger `migration/spec/4-to-5/`. A v1
   ledger runs `migration/spec/1-to-2` first, and a molbio-1 ledger also runs

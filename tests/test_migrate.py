@@ -2734,11 +2734,12 @@ def test_base_2_to_3_adds_the_incubator_kind(
 def test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path(
     embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
-    """Ticket 27 constraint: the ordering zsqlab10 will take, on a test copy.
+    """The real wave-11 ordering for a spec-3 molbio-v2 ledger, on a test copy.
 
-    A molbio-v2 ledger still at spec 3 is upgraded by ``spec/3-to-4`` first and
-    then by ``molbio/2-to-3``: no row is lost, every kind table survives and
-    ``tm check`` is clean afterwards.
+    ``spec/3-to-4`` -> ``spec/4-to-5`` -> the preset steps (``base/2-to-3``,
+    ``molbio/2-to-3``, ``cell_culture/1-to-2``) -> ``base/3-to-4`` last.  No row
+    is lost, every kind table survives, the box kind is renamed to ``grid8x12``,
+    the counters reach spec 5 / base 4 and ``tm check`` is clean afterwards.
     """
     ledger = molbio_v2_ledger(
         embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="zsqlab10"
@@ -2748,23 +2749,41 @@ def test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path(
     downgrade_to_spec3(ledger)
     assert ledger.meta["spec_version"] == "3"
 
-    spec = run_python(SPEC_3_TO_4, "--ledger", str(ledger.path), env=script_env)
-    assert spec.returncode == 0, spec.stdout + spec.stderr
-    assert "migrate(ledger): spec 3 -> 4" in spec.stdout
-
-    molbio = run_python(MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env)
-    assert molbio.returncode == 0, molbio.stdout + molbio.stderr
-    assert "migrate(ledger): molbio 2 -> 3" in molbio.stdout
+    steps = (
+        (SPEC_3_TO_4, "migrate(ledger): spec 3 -> 4"),
+        (SPEC_4_TO_5, "migrate(ledger): spec 4 -> 5"),
+        (BASE_2_TO_3, "migrate(ledger): base 2 -> 3"),
+        (MOLBIO_2_TO_3, "migrate(ledger): molbio 2 -> 3"),
+        (CELL_CULTURE_1_TO_2, "migrate(ledger): cell_culture 1 -> 2"),
+        (BASE_3_TO_4, "migrate(ledger): base 3 -> 4"),
+    )
+    for script, message in steps:
+        result = run_python(script, "--ledger", str(ledger.path), env=script_env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert message in result.stdout, result.stdout
 
     reopened = open_ledger(ledger.workspace, ledger.name)
     try:
-        assert reopened.meta["spec_version"] == "4"
-        assert json.loads(reopened.meta["preset_versions"]) == MOLBIO_V3_VERSIONS
+        assert reopened.meta["spec_version"] == "5"
+        expected_versions = {
+            **MOLBIO_V3_VERSIONS,
+            "base": 4,
+            "cell_culture": 2,
+        }
+        assert json.loads(reopened.meta["preset_versions"]) == expected_versions
+        assert reopened.schema.preset_versions == expected_versions
+        assert reopened.check_fingerprint(warn=False) is True
         assert molbio_row_counts(reopened) == counts_before
-        assert {"entity_oligo", "stock_oligo_stock"} <= table_names(reopened)
+        tables = table_names(reopened)
+        assert {"entity_oligo", "stock_oligo_stock"} <= tables
+        assert "box_grid8x12" in tables
+        assert "box_grid96" not in tables
         checked = tm_check(reopened)
         assert checked.exit_code == 0, checked.output
         assert "FAIL" not in checked.output
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
     finally:
         reopened.close()
 
@@ -2772,7 +2791,7 @@ def test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path(
 def test_molbio_2_to_3_refuses_a_spec3_ledger_and_writes_nothing(
     embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
-    """The bundle copy needs spec 4; a legacy ledger must run spec/3-to-4 first."""
+    """The bundle copy needs spec 5; a legacy ledger runs the spec steps first."""
     ledger = molbio_v2_ledger(
         embedded_ledger_factory, tmp_path / "molbio-v2-presets", name="legacy"
     )
@@ -3097,6 +3116,16 @@ def test_molbio_v3_ledger_upgrades_to_cellbio_era(
 # ---------------------------------------------------------------------------
 
 SPEC_4_TO_5 = ROOT / "migration" / "spec" / "4-to-5" / "migrate.py"
+
+#: The base 3 -> 4 preset step and its frozen copies.  It runs on a copy of the
+#: spec-4 fixture **after** ``spec/4-to-5``: the ledger formats at spec 5 while
+#: its own base copy is still v3 (``grid96``), then the base step renames that
+#: kind to ``grid8x12`` and bumps ``preset_versions.base``.
+BASE_3_TO_4 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "migrate.py"
+BASE4_PRESET = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-4.yaml"
+BASE3_PRESET = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-3.yaml"
+BASE4_COMMIT = "migrate(ledger): base 3 -> 4"
+BASE4_TAG = "pre-migrate-base-3"
 
 #: The checked-in spec-4 fixture, built by
 #: ``tests/data/ledgers/build_spec4_fixture.py`` from the 0.3.0 checkout
@@ -3623,6 +3652,203 @@ def test_spec_4_to_5_clears_every_positioned_not_in_stock_row_in_id_order(
             "SELECT * FROM `v_box_G` WHERE `row` = 'A'"
         )
         assert row_a["1"] is None
+    finally:
+        ledger.close()
+
+
+# ---------------------------------------------------------------------------
+# base 3 -> 4 on the spec-5 ledger (preset rename, ticket 30)
+# ---------------------------------------------------------------------------
+
+
+def open_spec5_fixture(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+    *,
+    name: str = "base-3-to-4",
+) -> Ledger:
+    """A copy of the spec-4 fixture after ``migration/spec/4-to-5``.
+
+    The base 3 -> 4 step requires spec 5 and a ledger whose own base copy is
+    still v3 (``grid96``); that is exactly the state ``spec/4-to-5`` leaves.
+    """
+    workspace = Workspace.create(
+        tmp_path / f"ws-{name}",
+        presets_dir=str(REPO_PRESETS),
+        env=dolt_env,
+    )
+    ledger_path = workspace.data_dir / "spec4-boxes"
+    copy_spec4_fixture(ledger_path)
+    applied = run_python(SPEC_4_TO_5, "--ledger", str(ledger_path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        ledger = open_ledger(workspace, "spec4-boxes")
+    return ledger
+
+
+def test_base_3_to_4_renames_the_grid_kind_on_a_spec5_ledger(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """Spec 5 + base 3 -> the box kind, counter, views, check and empty plan."""
+    ledger = open_spec5_fixture(tmp_path, dolt_env, script_env)
+    try:
+        # -- the input state: spec 5, base copy still v3, kind table grid96 ----
+        assert ledger.meta["spec_version"] == "5"
+        assert ledger.schema.preset_versions == {"base": 3}
+        assert (ledger.path / "presets" / "base.yaml").read_bytes() == (
+            BASE3_PRESET.read_bytes()
+        )
+        assert "box_grid96" in table_names(ledger)
+        assert "box_grid8x12" not in table_names(ledger)
+        views_before = spec4_view_names(ledger)
+        boxes_before = {
+            str(row["name"]): str(row["kind"])
+            for row in ledger.driver.query("SELECT `name`, `kind` FROM `box`")
+        }
+
+        head_before = head(ledger)
+        commits_before = commit_count(ledger)
+        tags_before = tags(ledger)
+        assert set(tags_before) == {SPEC4_TAG}
+
+        # -- dry run: the rename plan, the tag, the counter; no writes ---------
+        dry = run_python(
+            BASE_3_TO_4, "--ledger", str(ledger.path), "--dry-run", env=script_env
+        )
+        assert dry.returncode == 0, dry.stdout + dry.stderr
+        out = dry.stdout
+        assert "migration: base 3 -> 4" in out
+        assert f"CALL DOLT_TAG('{BASE4_TAG}'" in out
+        assert "ALTER TABLE `box_grid96` RENAME TO `box_grid8x12`" in out
+        assert "UPDATE `box` SET `kind` = 'grid8x12' WHERE `kind` = 'grid96'" in out
+        assert '"base": 4' in out
+        assert "dolt tests: replace with" in out
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        # Only the spec step's restore tag exists; the base step wrote none.
+        assert tags(ledger) == tags_before
+        # A dry run restores the preset copies it placed: still base v3.
+        assert (ledger.path / "presets" / "base.yaml").read_bytes() == (
+            BASE3_PRESET.read_bytes()
+        )
+        assert "box_grid96" in table_names(ledger)
+
+        # -- apply: one commit, the renamed kind, the frozen v4 copy ------------
+        applied = run_python(
+            BASE_3_TO_4, "--ledger", str(ledger.path), env=script_env
+        )
+        assert applied.returncode == 0, applied.stdout + applied.stderr
+        assert BASE4_COMMIT in applied.stdout
+        assert "is now at preset_versions[base] 4" in applied.stdout
+
+        reload_schema(ledger)
+        assert json.loads(ledger.meta["preset_versions"]) == {"base": 4}
+        assert ledger.schema.preset_versions == {"base": 4}
+        assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+        assert ledger.check_fingerprint(warn=False) is True
+
+        tables = table_names(ledger)
+        assert "box_grid8x12" in tables
+        assert "box_grid96" not in tables
+        assert ledger.driver.query(
+            "SELECT DISTINCT `kind` FROM `box` ORDER BY `kind`"
+        ) == [
+            {"kind": "freezer"},
+            {"kind": "grid8x12"},
+            {"kind": "grid9x9"},
+            {"kind": "rack"},
+            {"kind": "shelf"},
+        ]
+        assert ledger.driver.query(
+            "SELECT COUNT(*) AS `n` FROM `box` WHERE `kind` = 'grid96'"
+        ) == [{"n": 0}]
+        # The per-box views the spec step created are still there and unchanged
+        # in shape: the rename changes the kind table, not the box views.
+        assert spec4_view_names(ledger) == views_before
+        assert column_names(ledger, "v_box_H") == {"row"} | {
+            str(number) for number in range(1, 13)
+        }
+        assert len(ledger.driver.query("SELECT * FROM `v_box_H`")) == 8
+        assert len(ledger.driver.query("SELECT * FROM `v_box_G`")) == 9
+        assert len(ledger.driver.query("SELECT * FROM `v_box_R`")) == 10
+        assert len(ledger.driver.query("SELECT * FROM `v_box_S`")) == 2
+        assert ledger.driver.query("SELECT * FROM `v_box_F`") == []
+        # The box names are untouched; only the grid96 rows' kind changed.
+        assert {
+            str(row["name"]): str(row["kind"])
+            for row in ledger.driver.query("SELECT `name`, `kind` FROM `box`")
+        } == {
+            name: ("grid8x12" if kind == "grid96" else kind)
+            for name, kind in boxes_before.items()
+        }
+        # The ledger now carries the frozen base v4 copy it installed.
+        assert (ledger.path / "presets" / "base.yaml").read_bytes() == (
+            BASE4_PRESET.read_bytes()
+        )
+        copy = yaml.safe_load(
+            (ledger.path / "presets" / "base.yaml").read_text(encoding="utf-8")
+        )
+        assert copy["version"] == 4 and "grid8x12" in copy["kinds"]
+
+        # One commit with the contract message, tagged at the pre-step commit.
+        assert commit_count(ledger) == commits_before + 1
+        head_after = head(ledger)
+        assert head_after != head_before
+        assert commit_message(ledger, head_after) == BASE4_COMMIT
+        assert tags(ledger) == {**tags_before, BASE4_TAG: head_before}
+        assert row_count(ledger, "dolt_tests") == expected_installed_tests(ledger)
+
+        # -- validation and reconciliation -------------------------------------
+        checked = tm_check(ledger)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        assert "OK:" in checked.output
+        planned = CliRunner().invoke(app, [*base_args(ledger), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+
+        # A second run refuses: the counter is 4, not 3.
+        again = run_python(BASE_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+        assert again.returncode == 1, again.stdout + again.stderr
+        assert "preset_versions[base] 4, expected 3" in (
+            again.stdout + again.stderr
+        )
+        assert head(ledger) == head_after
+    finally:
+        ledger.close()
+
+
+def test_base_3_to_4_refuses_a_spec4_ledger(
+    tmp_path: Path,
+    dolt_env: dict[str, str],
+    script_env: dict[str, str],
+) -> None:
+    """The base step runs after spec/4-to-5; a spec-4 ledger is refused."""
+    ledger = open_spec4_fixture(tmp_path, dolt_env, name="base-before-spec5")
+    try:
+        head_before = head(ledger)
+        commits_before = commit_count(ledger)
+        copy_before = (ledger.path / "presets" / "base.yaml").read_bytes()
+        for flags in (["--dry-run"], []):
+            result = run_python(
+                BASE_3_TO_4, "--ledger", str(ledger.path), *flags, env=script_env
+            )
+            assert result.returncode == 1, result.stdout + result.stderr
+            output = result.stdout + result.stderr
+            assert "refusing to migrate base 3 -> 4" in output
+            assert "migration/spec/4-to-5" in output
+            assert "nothing was written" in output
+            # No commit, no tag, no DDL; the preset copies were restored.
+            assert head(ledger) == head_before
+            assert commit_count(ledger) == commits_before
+            assert tags(ledger) == {}
+            assert "box_grid96" in table_names(ledger)
+            assert "box_grid8x12" not in table_names(ledger)
+            assert (ledger.path / "presets" / "base.yaml").read_bytes() == copy_before
     finally:
         ledger.close()
 
