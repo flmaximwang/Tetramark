@@ -47,8 +47,8 @@
    "y": 300,
    "width": 300,
    "height": 110,
-   "color": "6",
-   "text": "### T-003#B-001\nrename grid96 to grid8x12, bump base to 4, update spec docs\n\n`review` · @w33 · 在做 @w33\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
+   "color": "4",
+   "text": "### T-003#B-001\nrename grid96 to grid8x12, bump base to 4, update spec docs\n\n`done` · @w33\n\nRead docs/issues/002-box-views.md first: every decision there is settled, do not re-open it. Read plans/wave11/PLAN.md. Work only in your own worktree .dsh/gitw"
   },
   {
    "id": "T-003#B-002",
@@ -57,8 +57,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-003#B-002\nfinalize the base 3-to-4 migration step against the spec-5 fixture\n\n`waiting` · @w33\n\nDepends on T-003#B-001, T-001#B-002, T-002#B-002 and T-004#B-002. Lead: wake w33 (same worktree) once the spec 4-to-5 step from T-004 is merged, so the base 3-t"
+   "color": "4",
+   "text": "### T-003#B-002\nfinalize the base 3-to-4 migration step against the spec-5 fixture\n\n`done` · @w33\n\nDepends on T-003#B-001, T-001#B-002, T-002#B-002 and T-004#B-002. Lead: wake w33 (same worktree) once the spec 4-to-5 step from T-004 is merged, so the base 3-t"
   },
   {
    "id": "T-003#B-003",
@@ -67,8 +67,8 @@
    "y": 40,
    "width": 300,
    "height": 110,
-   "color": "0",
-   "text": "### T-003#B-003\nreview and merge the preset rename and spec docs\n\n`waiting` · @lead\n\nLead: review the w33 branch against docs/issues/002-box-views.md, the spec tree conventions and the migration README rules; run the targeted migration/preset/do"
+   "color": "4",
+   "text": "### T-003#B-003\nreview and merge the preset rename and spec docs\n\n`done` · @lead\n\nLead: review the w33 branch against docs/issues/002-box-views.md, the spec tree conventions and the migration README rules; run the targeted migration/preset/do"
   },
   {
    "id": "T-004#B-001",
@@ -118,7 +118,7 @@
    "width": 300,
    "height": 110,
    "color": "0",
-   "text": "### T-006#B-001\nwave 11 acceptance on main\n\n`waiting` · @lead\n\nLead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository pres"
+   "text": "### T-006#B-001\nwave 11 acceptance on main\n\n`claimed` · @lead\n\nLead, on main after every merge: run the fast lane and the full suite (-n 4) and record the counts; run acceptance on a fresh workspace with the repository pres"
   },
   {
    "id": "T-006#B-002",
