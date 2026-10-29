@@ -444,7 +444,8 @@ def test_aliquot_move_placement_errors(ledger_factory) -> None:
     new_box(ledger, "GRID", "grid96")
     new_box(ledger, "TWO", "grid9x9")
     new_box(ledger, "FREE", "slotlessbox")
-    new_box(ledger, "CHILD", "rack", parent="TWO", slot="A1")
+    new_box(ledger, "NAMED", "namedbox")
+    new_box(ledger, "CHILD", "rack", parent="NAMED", slot="top")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=4)
 
     with pytest.raises(LedgerError, match="needs --slot"):
@@ -454,7 +455,7 @@ def test_aliquot_move_placement_errors(ledger_factory) -> None:
     with pytest.raises(LedgerError, match="no slots"):
         ledger.aliquots.move(stock["aliquots"][0], box="FREE", slot="A1")
     with pytest.raises(LedgerError, match="child box"):
-        ledger.aliquots.move(stock["aliquots"][0], box="TWO", slot="A1")
+        ledger.aliquots.move(stock["aliquots"][0], box="NAMED", slot="top")
     with pytest.raises(LedgerError, match="unknown box"):
         ledger.aliquots.move(stock["aliquots"][0], box="NOPE")
 
@@ -739,7 +740,7 @@ def test_purge_refuses_an_aliquot_used_as_a_source(ledger_factory) -> None:
 def test_box_add_materialises_slots_and_lists_paths(ledger_factory) -> None:
     ledger = make_full_ledger(ledger_factory)
     before = commit_count(ledger)
-    grid = ledger.boxes.add("grid9x9", "FREEZER")
+    grid = ledger.boxes.add("grid9x9", "GRID82")
     assert commit_count(ledger) == before + 1
     assert grid["slots"] == 81
 
@@ -760,37 +761,100 @@ def test_box_add_materialises_slots_and_lists_paths(ledger_factory) -> None:
     slotless = ledger.boxes.add("slotlessbox", "SHELF")
     assert slotless["slots"] == 0
 
-    child = ledger.boxes.add("grid96", "RACK-1", parent="FREEZER", slot="A1")
+    # A named box is a valid parent; a grid box is not (spec 5).
+    child = ledger.boxes.add("grid96", "RACK-1", parent="TUBES", slot="top")
     paths = {row["name"]: row["path"] for row in ledger.boxes.ls()}
-    assert paths["FREEZER"] == "FREEZER"
-    assert paths["RACK-1"] == "FREEZER/RACK-1"
-    assert child["parent_slot"] == "A1"
+    assert paths["GRID82"] == "GRID82"
+    assert paths["RACK-1"] == "TUBES/RACK-1"
+    assert child["parent_slot"] == "top"
+    with pytest.raises(LedgerError, match="grid boxes hold tubes only"):
+        ledger.boxes.add("grid96", "NESTED", parent="GRID82", slot="A1")
 
     with pytest.raises(LedgerError, match="already in use"):
-        ledger.boxes.add("grid96", "FREEZER")
+        ledger.boxes.add("grid96", "GRID82")
     with pytest.raises(UsageError, match="requires --in"):
         ledger.boxes.add("grid96", "ORPHAN", slot="A1")
+
+
+def test_box_add_creates_its_view_and_refuses_view_unsafe_names(
+    ledger_factory,
+) -> None:
+    """Spec 5: every box gets its view in the add commit; names must be safe."""
+    ledger = make_ledger(ledger_factory, name="box-names")
+    before = commit_count(ledger)
+    box = ledger.boxes.add("grid96", "WFL-10-01")
+    # The box row, its slot rows and its view are one commit.
+    assert commit_count(ledger) == before + 1
+    views = {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    assert "v_box_wfl-10-01" in views
+    assert "v_box_grid96" not in views  # kind views are gone (spec 5)
+    # The grid pivot: one row per row label (A-H), a column per column label.
+    columns = [
+        str(row["name"])
+        for row in ledger.driver.query(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() "
+            "AND table_name = 'v_box_wfl-10-01' ORDER BY ordinal_position"
+        )
+    ]
+    assert columns == ["row", *[str(number) for number in range(1, 13)]]
+    assert len(
+        ledger.driver.query("SELECT * FROM `v_box_WFL-10-01`")
+    ) == 8
+    assert ledger.driver.query(
+        "SELECT * FROM `v_box_wfl-10-01` WHERE `row` = 'A'"
+    )[0]["1"] is None
+
+    # (a) a core view collision, (b) the 58-character limit, (c) a case-only
+    # duplicate of an existing box name.
+    with pytest.raises(UsageError, match="core view"):
+        ledger.boxes.add("rack", "slots")
+    with pytest.raises(UsageError, match="58"):
+        ledger.boxes.add("rack", "x" * 59)
+    with pytest.raises(UsageError, match="differs only in case"):
+        ledger.boxes.add("rack", "wfl-10-01")
+    # An exact duplicate keeps its own (clearer) error.
+    with pytest.raises(LedgerError, match="already in use"):
+        ledger.boxes.add("rack", "WFL-10-01")
+    # A name at the limit is fine and gets its own view.
+    longest = "y" * 58
+    ledger.boxes.add("rack", longest)
+    assert f"v_box_{longest}" in {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    assert box["id"]
 
 
 def test_box_nesting_exclusivity_acyclicity_and_slotless_capacity(
     ledger_factory,
 ) -> None:
     ledger = make_full_ledger(ledger_factory)
-    ledger.boxes.add("grid9x9", "FREEZER")
-    ledger.boxes.add("grid96", "SHELF", parent="FREEZER", slot="A1")
+    ledger.boxes.add("namedbox", "TUBES")
+    ledger.boxes.add("rack", "INNER", parent="TUBES", slot="top")
+    ledger.boxes.add("grid96", "SHELF")
     ledger.boxes.add("slotlessbox", "DRAWER")
 
     with pytest.raises(LedgerError, match="already holds child box"):
-        ledger.boxes.add("grid96", "CLASH", parent="FREEZER", slot="A1")
+        ledger.boxes.add("grid96", "CLASH", parent="TUBES", slot="top")
 
     item = new_item(ledger)
     with pytest.raises(LedgerError, match="child box"):
-        ledger.stocks.add("lot", entity=item["id"], box="FREEZER", slots=["A1"])
+        ledger.stocks.add("lot", entity=item["id"], box="TUBES", slots=["top"])
 
     with pytest.raises(LedgerError, match="inside itself"):
-        ledger.boxes.move("FREEZER", parent="SHELF", slot="A1")
+        ledger.boxes.move("TUBES", parent="INNER", slot="top")
     with pytest.raises(LedgerError, match="has no slot"):
-        ledger.boxes.move("SHELF", parent="FREEZER", slot="Z99")
+        ledger.boxes.move("SHELF", parent="TUBES", slot="Z99")
     with pytest.raises(LedgerError, match="no slots"):
         ledger.boxes.move("SHELF", parent="DRAWER", slot="A1")
 
@@ -807,16 +871,20 @@ def test_box_nesting_exclusivity_acyclicity_and_slotless_capacity(
 
 def test_box_move_updates_parent_and_path(ledger_factory) -> None:
     ledger = make_full_ledger(ledger_factory)
-    ledger.boxes.add("grid9x9", "FREEZER")
-    ledger.boxes.add("grid96", "SHELF", parent="FREEZER", slot="A1")
+    ledger.boxes.add("namedbox", "TUBES")
+    ledger.boxes.add("grid9x9", "GRID")
+    ledger.boxes.add("grid96", "SHELF", parent="TUBES", slot="top")
     before = commit_count(ledger)
-    moved = ledger.boxes.move("SHELF", parent="FREEZER", slot="B2")
+    moved = ledger.boxes.move("SHELF", parent="TUBES", slot="bottom")
     assert commit_count(ledger) == before + 1
-    assert moved["parent_slot"] == "B2"
+    assert moved["parent_slot"] == "bottom"
     paths = {row["name"]: row["path"] for row in ledger.boxes.ls()}
-    assert paths["SHELF"] == "FREEZER/SHELF"
+    assert paths["SHELF"] == "TUBES/SHELF"
+    # Grid boxes hold tubes only (spec 5), so they cannot become a parent.
+    with pytest.raises(LedgerError, match="grid boxes hold tubes only"):
+        ledger.boxes.move("SHELF", parent="GRID", slot="A1")
     with pytest.raises(LedgerError, match="unknown box"):
-        ledger.boxes.move("NOPE", parent="FREEZER", slot="A1")
+        ledger.boxes.move("NOPE", parent="TUBES", slot="top")
 
 
 # ---------------------------------------------------------------------------
@@ -879,8 +947,8 @@ def test_every_command_is_exactly_one_commit(ledger_factory) -> None:
     step(lambda: ledger.entities.edit(item["id"], values={"category": "x"}))
     box = step(lambda: ledger.boxes.add("grid96", "BOX"))
     assert box["slots"] == 96
-    step(lambda: ledger.boxes.add("grid96", "FREEZER"))
-    step(lambda: ledger.boxes.move("BOX", parent="FREEZER", slot="A1"))
+    step(lambda: ledger.boxes.add("rack", "RACK"))
+    step(lambda: ledger.boxes.move("BOX", parent="RACK", slot="top"))
     stock = step(lambda: ledger.stocks.add("lot", entity=item["id"]))
     step(lambda: ledger.stocks.edit(stock["id"], values={"supplier": "s"}))
     added = step(

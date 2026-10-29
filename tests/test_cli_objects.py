@@ -100,7 +100,7 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
             ledger,
             "box",
             "add",
-            "grid96",
+            "shelf",
             "FREEZER",
             "--json",
         ).output
@@ -113,8 +113,6 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
             "BOX",
             "--in",
             "FREEZER",
-            "--slot",
-            "A1",
             "--json",
         ).output
     )
@@ -490,6 +488,34 @@ def test_cli_unknown_field_exits_usage(
 # ---------------------------------------------------------------------------
 # Status CLI: creation status, transition rules and --force (spec 4)
 # ---------------------------------------------------------------------------
+
+
+def test_cli_box_name_and_grid_rules(cli_env: None, ledger_factory) -> None:
+    """Acceptance through the CLI: unsafe names and nesting in a grid box."""
+    from tetramark.errors import LedgerError, UsageError
+
+    ledger = ledger_factory([BASE], name="cli-box-rules", id_prefix="77")
+    write(ledger, "box", "add", "grid96", "G")
+    write(ledger, "box", "add", "rack", "R")
+
+    for name, match in (
+        ("slots", "core view"),
+        ("x" * 59, "58"),
+        ("g", "differs only in case"),
+    ):
+        refused = invoke(ledger, "box", "add", "rack", name)
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert match in str(refused.exception)
+
+    # Grid boxes hold tubes only, so a box cannot be added or moved into one.
+    added_inside = invoke(ledger, "box", "add", "rack", "INNER", "--in", "G", "--slot", "A1")
+    assert isinstance(added_inside.exception, LedgerError)
+    assert added_inside.exception.exit_code == 1
+    assert "grid boxes hold tubes only" in str(added_inside.exception)
+    moved_inside = invoke(ledger, "box", "move", "R", "--in", "G", "--slot", "A1")
+    assert isinstance(moved_inside.exception, LedgerError)
+    assert "grid boxes hold tubes only" in str(moved_inside.exception)
 
 
 def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory) -> None:

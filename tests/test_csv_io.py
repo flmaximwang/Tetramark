@@ -438,6 +438,62 @@ def test_import_enforces_position_follows_in_stock(
     assert ledger.driver.query("SELECT * FROM `aliquot`") == []
 
 
+def test_import_boxes_creates_views_and_enforces_names(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """Spec 5: an imported box gets its view in the same commit and is named
+    view-safely; a box cannot be imported inside a grid box."""
+    ledger = ledger_factory([BASE], name="box-import")
+    before = commit_count(ledger)
+    path = write_csv(
+        tmp_path / "boxes.csv",
+        "id,kind,name,parent,parent_slot\n"
+        "B-1,grid96,WFL-10-01,,\n",
+    )
+    import_csv(ledger, "box", path)
+    assert commit_count(ledger) == before + 1
+    views = {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+    assert "v_box_wfl-10-01" in views
+    assert len(ledger.driver.query("SELECT * FROM `v_box_WFL-10-01`")) == 8
+
+    grid = ledger.boxes.add("grid96", "GRID")
+    # Name rules: core-view collision, 59 characters, case-only duplicate.
+    for index, name in enumerate(("slots", "z" * 59, "wfl-10-01")):
+        bad = write_csv(
+            tmp_path / f"bad{index}.csv",
+            "id,kind,name\n" f"B-{index + 2},rack,{name}\n",
+        )
+        with pytest.raises(CsvImportError) as excinfo:
+            import_csv(ledger, "box", bad)
+        message = str(excinfo.value)
+        assert "row 1" in message
+        assert (
+            "core view" in message
+            or "58" in message
+            or "differs only in case" in message
+        ), message
+    # Grid boxes hold tubes only: an imported child under one is refused.
+    nested = write_csv(
+        tmp_path / "nested.csv",
+        "id,kind,name,parent,parent_slot\n"
+        f"B-9,rack,NESTED,{grid['id']},\n",
+    )
+    with pytest.raises(CsvImportError, match="grid boxes hold tubes only"):
+        import_csv(ledger, "box", nested)
+    # Nothing was written by the refused files.
+    assert commit_count(ledger) == before + 2  # the good import + the box add
+    assert ledger.driver.query(
+        "SELECT COUNT(*) AS n FROM `box` WHERE `name` IN "
+        "('slots', 'NESTED', 'wfl-10-01')"
+    ) == [{"n": 0}]
+
+
 def test_aliquot_rows_accept_id_or_stock_seq(
     ledger_factory, tmp_path: Path
 ) -> None:

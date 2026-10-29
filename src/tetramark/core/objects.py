@@ -44,8 +44,20 @@ from typing import TYPE_CHECKING, Any
 from tetramark.core.events import purge_events, record_event
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
 from tetramark.errors import LedgerError, UsageError
-from tetramark.schema.ddl import slot_rows, table_name
-from tetramark.schema.model import Field, FieldType, Kind, StatusSet
+from tetramark.schema.ddl import (
+    CORE_COLUMNS,
+    box_view_statements,
+    slot_rows,
+    table_name,
+)
+from tetramark.schema.model import (
+    Field,
+    FieldType,
+    GeometryType,
+    Kind,
+    StatusSet,
+    box_name_problem,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
@@ -62,6 +74,8 @@ __all__ = [
     "add_box",
     "add_entity",
     "add_stock",
+    "box_kind_columns",
+    "box_kind_from",
     "edit_entity",
     "edit_stock",
     "list_entities",
@@ -740,6 +754,79 @@ def _box_geometry(kind: Kind) -> Any:
     return kind.geometry
 
 
+def box_kind_columns(kind: Kind) -> dict[str, str]:
+    """The ``v_box_<kind>`` row shape as qualified column expressions.
+
+    Spec 5 replaced the per-kind ``v_box_<kind>`` views with one view per box,
+    so every reader that needs a box + its kind fields joins the core ``box``
+    row with its ``box_<kind>`` row.  This returns the old view's columns in
+    order, mapped to the SQL expression that produces each one; a kind field
+    that reuses a core column name (``name``) wins over the core column, as it
+    did in the old view (the kind table is the domain-specific definition).
+    The expressions use the aliases :func:`box_kind_from` declares (``c`` for
+    ``box`` and ``k`` for ``box_<kind>``).
+    """
+    core = CORE_COLUMNS["box"]
+    overridden = {name for name in kind.fields if name in core}
+    columns: dict[str, str] = {}
+    for name in core:
+        if name not in overridden:
+            columns[name] = f"c.{_quote(name)}"
+    for name in kind.fields:
+        columns[name] = f"k.{_quote(name)}"
+    return columns
+
+
+def box_kind_from(kind_name: str) -> str:
+    """``FROM`` clause that reproduces a ``v_box_<kind>`` view row (spec 5)."""
+    return (
+        f"{_quote(table_name('box', kind_name))} k "
+        f"JOIN {_quote('box')} c ON c.{_quote('id')} = k.{_quote('id')}"
+    )
+
+
+def _box_alias_list_sql() -> str:
+    """The ``alias_list`` column the removed ``v_box_<kind>`` views exposed."""
+    return (
+        "(SELECT GROUP_CONCAT(`alias` ORDER BY `alias` SEPARATOR ';') "
+        "FROM `alias` WHERE `object_type` = 'box' AND `object_id` = c.`id`)"
+    )
+
+
+def _create_box_views(
+    session: Any, ledger: Ledger, boxes: Sequence[Mapping[str, Any]]
+) -> None:
+    """Create the per-box views of newly created boxes in the open write.
+
+    Called at the end of the write that created the boxes (with their
+    ``id``/``name``/``kind`` mappings), so the view and the box row land in the
+    same Dolt commit (spec 5); in a dry run the statements are only recorded.
+    """
+    for statement in box_view_statements(ledger.schema, boxes):
+        session.execute(statement.sql)
+
+
+def _check_box_name(session: Any, box_name: str) -> None:
+    """Refuse a box name that cannot name its generated view (spec 5)."""
+    existing = [
+        str(row["name"])
+        for row in session.query(f"SELECT {_quote('name')} FROM {_quote('box')}")
+    ]
+    problem = box_name_problem(box_name, existing)
+    if problem is not None:
+        raise UsageError(problem)
+
+
+def _refuse_box_inside_grid(ledger: Ledger, parent_row: Mapping[str, Any]) -> None:
+    """Grid boxes hold tubes only, so nothing may nest a box inside one."""
+    geometry = _box_geometry(ledger.schema.kind(str(parent_row["kind"])))
+    if geometry.type is GeometryType.grid:
+        raise LedgerError(
+            f"box {parent_row['name']!r} is a grid box: grid boxes hold tubes "
+            "only, so a box cannot be nested in it"
+        )
+
+
 def _check_aliquot_placement(
     session: Any,
     ledger: Ledger,
@@ -1019,6 +1106,11 @@ def _list_records(
         # rows that ignore the filter; leave it out entirely.
         if not set(filters).issubset(columns):
             continue
+        # Spec 5 dropped the per-kind box views; read the same row shape by
+        # joining the core `box` row with its `box_<kind>` row.
+        column_sql: dict[str, str] | None = (
+            box_kind_columns(kind) if object_type == "box" else None
+        )
         conditions: list[str] = []
         params: list[Any] = []
         for field, raw in filters.items():
@@ -1032,12 +1124,27 @@ def _list_records(
                 )
             else:
                 value = raw
-            conditions.append(f"{_quote(field)} = %s")
+            if column_sql is not None:
+                conditions.append(f"{column_sql[field]} = %s")
+            else:
+                conditions.append(f"{_quote(field)} = %s")
             params.append(value)
-        sql = f"SELECT * FROM {_quote(f'v_{object_type}_{name}')}"
+        if column_sql is not None:
+            select_items = [
+                f"{expression} AS {_quote(column)}"
+                for column, expression in column_sql.items()
+            ]
+            select_items.append(
+                f"{_box_alias_list_sql()} AS {_quote('alias_list')}"
+            )
+            sql = f"SELECT {', '.join(select_items)} FROM {box_kind_from(name)}"
+            order = f"c.{_quote('id')}"
+        else:
+            sql = f"SELECT * FROM {_quote(f'v_{object_type}_{name}')}"
+            order = _quote("id")
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += f" ORDER BY {_quote('id')}"
+        sql += f" ORDER BY {order}"
         for row in ledger.driver.query(sql, tuple(params)):
             record = dict(row)
             record["object"] = object_type
@@ -1791,7 +1898,7 @@ def add_box(
     slot: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    """Create a box and materialise its ``slot`` rows from the geometry."""
+    """Create a box, its ``slot`` rows and its generated view in one commit."""
     kind = _kind_for(ledger, "box", kind_name)
     box_name = str(name).strip()
     if not box_name:
@@ -1802,6 +1909,7 @@ def add_box(
     geometry = _box_geometry(kind)
 
     with ledger.write(f"{kind_name} {box_id}", verb="add", object="box") as session:
+        _check_box_name(session, box_name)
         duplicate = session.query(
             f"SELECT {_quote('id')} FROM {_quote('box')} WHERE {_quote('name')} = %s",
             (box_name,),
@@ -1811,6 +1919,7 @@ def add_box(
         parent_row = _resolve_box(session, parent) if parent is not None else None
         parent_slot: str | None = None
         if parent_row is not None:
+            _refuse_box_inside_grid(ledger, parent_row)
             parent_slot = _check_child_placement(session, ledger, parent_row, slot)
 
         payload: dict[str, Any] = {
@@ -1827,6 +1936,12 @@ def add_box(
         rows = slot_rows(box_id, geometry)
         for row in rows:
             _insert(session, "slot", row)
+        # Spec 5: every box has its own view; create it in this same write.
+        _create_box_views(
+            session,
+            ledger,
+            [{"id": box_id, "name": box_name, "kind": kind_name}],
+        )
 
     return {
         "object": "box",
@@ -1846,7 +1961,11 @@ def move_box(
     parent: str,
     slot: str | None = None,
 ) -> dict[str, Any]:
-    """Move an existing box inside ``parent`` (acyclic, exclusive slot)."""
+    """Move an existing box inside ``parent`` (acyclic, exclusive slot).
+
+    A grid box holds tubes only (spec 5), so it cannot become a parent; a box
+    that was created in a grid box by a spec-4 ledger can still be moved out.
+    """
     existing = _resolve_box(ledger.driver, ref)
     box_id = str(existing["id"])
 
@@ -1855,6 +1974,7 @@ def move_box(
         if row is None:  # pragma: no cover - just resolved
             raise LedgerError(f"unknown box {ref!r}")
         parent_row = _resolve_box(session, parent)
+        _refuse_box_inside_grid(ledger, parent_row)
         _check_acyclic(session, box_id, parent_row)
         parent_slot = _check_child_placement(
             session, ledger, parent_row, slot, exclude_box=box_id

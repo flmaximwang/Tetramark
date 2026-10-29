@@ -175,21 +175,26 @@ def seed_legacy_stock(
     for index, seq in enumerate(aliquot_seqs):
         aliquot = f"{stock_id}.{seq}"
         slot = slots[index] if index < len(slots) else None
-        placed_box = box_id if slot is not None else None
+        # Spec 5: an aliquot has a position exactly when it is in stock, so a
+        # legacy tube without a box is seeded ``pending`` (not ``stored``).
+        placed_box = box_id if slot is not None and box_id is not None else None
+        if placed_box is None:
+            slot = None
+        status = "stored" if placed_box is not None else "pending"
         statements.append(
             (
                 "INSERT INTO `aliquot` "
                 "(`id`, `stock_id`, `seq`, `status`, `box_id`, `slot`, "
                 "`quantity`, `unit`) "
-                "VALUES (%s, %s, %s, 'stored', %s, %s, 100, 'ul')",
-                (aliquot, stock_id, seq, placed_box, slot),
+                "VALUES (%s, %s, %s, %s, %s, %s, 100, 'ul')",
+                (aliquot, stock_id, seq, status, placed_box, slot),
             )
         )
         statements.append(
             (
                 "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, `new_status`) "
-                "VALUES (%s, 'create', 'stored')",
-                (aliquot,),
+                "VALUES (%s, 'create', %s)",
+                (aliquot, status),
             )
         )
         aliquot_ids.append(aliquot)
