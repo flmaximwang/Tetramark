@@ -2567,9 +2567,10 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
             "v_entity_oligo",
             "v_stock_oligo_stock",
             "box_incubator",
-            "v_box_incubator",
         ):
             assert table in tables, table
+        # Spec 5: box kinds have a table but no v_box_<kind> view.
+        assert "v_box_incubator" not in tables
         assert molbio_row_counts(reopened) == counts_before
         assert reopened.driver.query(
             "SELECT `alias` FROM `alias` WHERE `object_type` = 'stock' "
@@ -2653,7 +2654,10 @@ def test_base_2_to_3_adds_the_incubator_kind(
             "molbio": 2,
         }
         tables = table_names(reopened)
-        assert "box_incubator" in tables and "v_box_incubator" in tables
+        # Spec 5: the kind has a table but no v_box_<kind> view; each box
+        # gets its own view instead.
+        assert "box_incubator" in tables
+        assert "v_box_incubator" not in tables
         assert molbio_row_counts(reopened) == counts_before
         # Exactly one commit, with the contract message and the restore tag.
         assert commit_count(reopened) == commits_before + 1

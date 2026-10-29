@@ -1329,3 +1329,187 @@ def test_cli_schema_apply_allows_destructive_with_the_flag(
     assert "must" in column_names(ledger, "entity_sample")
     reload_schema(ledger)
     assert_clean(ledger)
+
+
+# ---------------------------------------------------------------------------
+# Spec 5: one view per existing box
+# ---------------------------------------------------------------------------
+
+
+def insert_box(
+    ledger: Ledger,
+    box_id: str,
+    name: str,
+    kind: str,
+    *,
+    parent: str | None = None,
+    parent_slot: str | None = None,
+    slots: bool = True,
+) -> None:
+    """Insert a box (and its slots) with raw SQL, bypassing ``tm box add``."""
+    from tetramark.schema.ddl import slot_rows
+
+    ledger.driver.execute(
+        "INSERT INTO `box` (`id`, `name`, `kind`, `parent_box_id`, `parent_slot`) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (box_id, name, kind, parent, parent_slot),
+    )
+    ledger.driver.execute(f"INSERT INTO `box_{kind}` (`id`) VALUES (%s)", (box_id,))
+    if not slots:
+        return
+    geometry = ledger.schema.kinds[kind].geometry
+    assert geometry is not None
+    for row in slot_rows(box_id, geometry):
+        ledger.driver.execute(
+            "INSERT INTO `slot` (`box_id`, `label`, `row_label`, `col_label`, "
+            "`ordinal`) VALUES (%s, %s, %s, %s, %s)",
+            (
+                row["box_id"],
+                row["label"],
+                row["row_label"],
+                row["col_label"],
+                row["ordinal"],
+            ),
+        )
+
+
+def view_names(ledger: Ledger) -> set[str]:
+    return {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+
+
+def test_plan_creates_one_view_per_existing_box(ledger_factory) -> None:
+    """Spec 5: build_plan derives per-box views from the live box rows."""
+    ledger = ledger_factory([PRESETS / "full"], name="box-views")
+    insert_box(ledger, "B-G", "G", "grid9x9")
+    insert_box(ledger, "B-S", "S", "slotlessbox", slots=False)
+    # The box rows are not in the committed schema yet: no view exists.
+    assert not {"v_box_g", "v_box_s"} & view_names(ledger)
+
+    current = plan(ledger)
+    assert not current.destructive
+    creates = {step.name for step in action_steps(current, "create_view")}
+    assert {"v_box_G", "v_box_S"} <= creates
+
+    apply_clean(ledger)
+    assert {"v_box_g", "v_box_s"} <= view_names(ledger)
+    # The grid view is the 9-row pivot; the empty slotless box has no rows.
+    assert len(ledger.driver.query("SELECT * FROM `v_box_G`")) == 9
+    assert ledger.driver.query("SELECT * FROM `v_box_S`") == []
+
+
+def test_plan_drops_an_orphaned_per_box_view(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"], name="box-orphan")
+    insert_box(ledger, "B-G", "G", "grid9x9")
+    apply_clean(ledger)
+    assert "v_box_g" in view_names(ledger)
+
+    ledger.driver.execute("DELETE FROM `slot` WHERE `box_id` = 'B-G'")
+    ledger.driver.execute("DELETE FROM `box_grid9x9` WHERE `id` = 'B-G'")
+    ledger.driver.execute("DELETE FROM `box` WHERE `id` = 'B-G'")
+    ledger.driver.commit("test: delete the box")
+    ledger.read_meta()
+
+    current = plan(ledger)
+    assert ("additive", "drop_view", "v_box_g") in actions(current)
+    apply_clean(ledger)
+    assert "v_box_g" not in view_names(ledger)
+
+
+def test_plan_replaces_a_hand_written_per_box_view(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"], name="box-stale")
+    insert_box(ledger, "B-G", "G", "grid9x9")
+    apply_clean(ledger)
+
+    ledger.driver.execute("DROP VIEW `v_box_G`")
+    ledger.driver.execute("CREATE VIEW `v_box_G` AS SELECT 1 AS `x`")
+    ledger.driver.commit("test: hand-written view")
+
+    current = plan(ledger)
+    assert ("additive", "drop_view", "v_box_g") in actions(current)
+    assert ("additive", "create_view", "v_box_G") in actions(current)
+    apply_clean(ledger)
+    assert len(ledger.driver.query("SELECT * FROM `v_box_G`")) == 9
+
+
+def test_plan_has_no_box_views_when_the_box_table_is_missing(ledger: Ledger) -> None:
+    """A database without the core ``box`` table has no per-box views."""
+    ledger.driver.execute(
+        "ALTER TABLE `aliquot` DROP FOREIGN KEY `fk_aliquot_box_id_slot`"
+    )
+    ledger.driver.execute("DROP TABLE `slot`")
+    ledger.driver.execute("DROP TABLE `box`")
+    ledger.driver.commit("test: drop the box core tables")
+
+    current = plan(ledger)
+    creates = {step.name for step in action_steps(current, "create_table")}
+    assert {"box", "slot"} <= creates
+    box_views = [
+        step.name
+        for step in action_steps(current, "create_view")
+        if step.name not in model.CORE_VIEW_NAMES
+    ]
+    assert box_views == []
+
+
+def test_plan_translates_box_kinds_through_a_rename_map(
+    ledger: Ledger, kinds: dict[str, Any], preset: PresetWriter
+) -> None:
+    """A box kind renamed by a migration step keeps its per-box views.
+
+    ``migration/presets/base/3-to-4`` renames ``grid96`` to ``grid8x12``: the
+    live ``box`` rows still say ``grid96`` while the loaded schema only knows
+    ``grid8x12``.  The planner translates the rows through the rename map, so
+    the (geometry-identical) view is recognised as unchanged instead of being
+    reported as an unknown kind or recreated.
+    """
+    kinds["plate"] = {
+        "object": "box",
+        "geometry": {"type": "grid", "rows": "A-B", "cols": "1-2"},
+    }
+    preset.write(kinds)
+    reload_schema(ledger)
+    apply_clean(ledger)
+
+    insert_box(ledger, "B-1", "PLATE-1", "plate")
+    apply_clean(ledger)
+    assert "v_box_plate-1" in view_names(ledger)
+
+    del kinds["plate"]
+    kinds["tray"] = {
+        "object": "box",
+        "geometry": {"type": "grid", "rows": "A-B", "cols": "1-2"},
+    }
+    preset.write(kinds)
+    reload_schema(ledger)
+
+    current = plan(ledger, renames=RenameMap(box={"plate": "tray"}))
+    assert ("additive", "rename_table", "box_tray") in actions(current)
+    # The live rows still say 'plate'; the map makes them 'tray' for the view
+    # body, which is unchanged (same geometry) — so no view step is planned.
+    assert not [
+        step for step in current.steps if step.name.lower().startswith("v_box_")
+        and step.name not in model.CORE_VIEW_NAMES
+    ]
+
+    apply(ledger, schema_plan=current)
+    assert_clean(ledger)
+    assert ledger.driver.query("SELECT `kind` FROM `box` WHERE `id` = 'B-1'") == [
+        {"kind": "tray"}
+    ]
+    assert "v_box_plate-1" in view_names(ledger)
+
+
+def test_plan_names_a_box_with_an_unknown_kind(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"], name="box-unknown-kind")
+    ledger.driver.execute(
+        "INSERT INTO `box` (`id`, `name`, `kind`) VALUES ('B-X', 'X-1', 'gone')"
+    )
+    ledger.driver.commit("test: a box of an unknown kind")
+    with pytest.raises(LedgerError, match="X-1"):
+        plan(ledger)

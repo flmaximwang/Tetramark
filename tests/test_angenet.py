@@ -496,7 +496,9 @@ def test_cli_init_preset_angenet_creates_the_ledger_and_passes_check(
         tables = table_names(ledger)
         for kind_name, kind in ledger.schema.kinds.items():
             assert f"{kind.object.value}_{kind_name}" in tables, kind_name
-            assert f"v_{kind.object.value}_{kind_name}" in tables, kind_name
+            # Spec 5: box kinds have no v_box_<kind> view; each box gets its own.
+            if kind.object.value != "box":
+                assert f"v_{kind.object.value}_{kind_name}" in tables, kind_name
         assert "aliquot_animal_biosample" not in tables  # the tube model, spec 3
         # The ledger copies the bundle and every included part, byte for byte.
         copies = ledger.path / "presets"

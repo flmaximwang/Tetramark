@@ -51,11 +51,13 @@ from tetramark.driver.base import Driver, literal
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
     CORE_TABLES,
-    CORE_VIEWS,
+    box_view_statements,
     core_statements,
     field_sql_type,
+    is_managed_view,
     schema_statements,
     table_name,
+    view_body,
     view_statements,
 )
 from tetramark.schema.model import (
@@ -87,7 +89,6 @@ ADDITIVE = "additive"
 DESTRUCTIVE = "destructive"
 
 _KIND_PREFIXES = ("entity_", "stock_", "box_")
-_VIEW_RE = re.compile(r"^v_(?:entity|stock|box)_[a-z][a-z0-9_]*$")
 _STRING_LITERAL_RE = re.compile(r"'((?:[^'\\]|\\.|'')*)'")
 _IN_RE = re.compile(r"\bIN\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)
 _COLUMN_REF_RE = re.compile(r"`([^`]+)`")
@@ -532,12 +533,78 @@ def _desired_foreign_keys(schema: EffectiveSchema) -> list[_DesiredForeignKey]:
     return keys
 
 
-def _desired_views(schema: EffectiveSchema) -> dict[str, str]:
+def _desired_views(
+    schema: EffectiveSchema,
+    boxes: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, str]:
+    """Every generated view body the ledger should have, by view name.
+
+    The schema-derived views (core, ``v_entity_<kind>``, ``v_stock_<kind>``)
+    come from :func:`~tetramark.schema.ddl.view_statements`; spec 5 adds one
+    view per **existing box** from the live ``box`` rows.  The body is the
+    comparable unit: Dolt keeps it verbatim in ``information_schema.views``
+    while storing the view name in lowercase.
+    """
     views: dict[str, str] = {}
     for statement in view_statements(schema):
-        head, separator, body = statement.sql.partition(" AS\n")
-        views[statement.name] = body if separator else statement.sql
+        views[statement.name] = view_body(statement)
+    for statement in box_view_statements(schema, boxes):
+        views[statement.name] = view_body(statement)
     return views
+
+
+def _box_kind_translation(
+    schema: EffectiveSchema, renames: RenameMap | None
+) -> dict[str, str]:
+    """Live box kind → schema box kind, from ``renamed_from`` or the map.
+
+    A preset rename (e.g. base 3→4's ``grid96`` → ``grid8x12``) renames the kind
+    table and rewrites the ``box.kind`` values in the same plan, but the rows
+    still carry the old kind when the plan is built.  The per-box views are
+    generated from the *new* kind's geometry, so the old values are translated
+    here; an unknown kind after translation is an error in :func:`_live_boxes`.
+    """
+    translation: dict[str, str] = {}
+    for object_name, old_kind, new_kind, _explicit in _kind_rename_pairs(
+        schema, renames
+    ):
+        if object_name == ObjectType.box.value:
+            translation[old_kind] = new_kind
+    return translation
+
+
+def _live_boxes(
+    driver: Driver,
+    live: _LiveState,
+    schema: EffectiveSchema,
+    renames: RenameMap | None,
+) -> list[dict[str, Any]]:
+    """The live ``box`` rows (``id``, ``name``, ``kind``) for view generation.
+
+    Ordered by name so the plan is deterministic.  A row whose kind the loaded
+    schema does not define (even after a planned kind rename) is a
+    :class:`~tetramark.errors.LedgerError` naming the box: guessing the view
+    shape would produce a view that does not match the box.
+    """
+    if "box" not in live.columns:
+        return []
+    translation = _box_kind_translation(schema, renames)
+    boxes: list[dict[str, Any]] = []
+    for row in driver.query(
+        "SELECT `id`, `name`, `kind` FROM `box` ORDER BY `name`"
+    ):
+        name = str(row["name"])
+        kind = str(row["kind"])
+        resolved = translation.get(kind, kind)
+        kind_object = schema.kinds.get(resolved)
+        if kind_object is None or kind_object.object is not ObjectType.box:
+            raise LedgerError(
+                f"box {name!r} has kind {kind!r}, which the loaded schema does "
+                "not define as a box kind; load the schema that defines it or "
+                "fix the box row"
+            )
+        boxes.append({"id": str(row["id"]), "name": name, "kind": resolved})
+    return boxes
 
 
 # ---------------------------------------------------------------------------
@@ -957,9 +1024,14 @@ def build_plan(
     rename_map = _as_rename_map(renames)
     desired = _desired_tables(schema)
     desired_fks = _desired_foreign_keys(schema)
-    desired_views = _desired_views(schema)
 
     live = _introspect(driver)
+    # Spec 5: one view per existing box, reconciled from the live ``box`` rows
+    # in addition to the schema-derived views.  A ledger whose ``box`` table
+    # does not exist yet (a brand-new database) has no box views.
+    boxes = _live_boxes(driver, live, schema, rename_map)
+    desired_views = _desired_views(schema, boxes)
+
     plan = SchemaPlan(
         ledger=ledger_name,
         live_fingerprint=live.meta.get(META_FINGERPRINT),
@@ -1988,24 +2060,30 @@ def _diff_views(
     desired: dict[str, str],
     live: dict[str, str],
 ) -> None:
-    for name, definition in live.items():
-        if not _managed_view(name):
-            continue
-        wanted = desired.get(name)
-        if wanted is None:
-            buckets.view_drops.append(_view_drop(name))
-        elif wanted != definition:
-            buckets.view_drops.append(_view_drop(name))
-            buckets.view_creates.append(_view_create(name, wanted))
+    """Plan view creates/drops/replaces.
 
-    for name, definition in desired.items():
-        if name in live:
+    Comparison is **case-insensitive**: Dolt stores view names in lowercase
+    (MySQL behaviour), so the desired ``v_box_WFL-10-01`` and the live
+    ``v_box_wfl-10-01`` are the same view.  The plan keeps the desired spelling
+    for ``CREATE VIEW`` and uses the live spelling for ``DROP VIEW``.
+    """
+    desired_by_key = {name.lower(): (name, body) for name, body in desired.items()}
+    live_by_key = {name.lower(): (name, definition) for name, definition in live.items()}
+
+    for key, (live_name, definition) in live_by_key.items():
+        if not is_managed_view(live_name):
+            continue
+        wanted = desired_by_key.get(key)
+        if wanted is None:
+            buckets.view_drops.append(_view_drop(live_name))
+        elif wanted[1] != definition:
+            buckets.view_drops.append(_view_drop(live_name))
+            buckets.view_creates.append(_view_create(wanted[0], wanted[1]))
+
+    for key, (name, definition) in desired_by_key.items():
+        if key in live_by_key:
             continue
         buckets.view_creates.append(_view_create(name, definition))
-
-
-def _managed_view(name: str) -> bool:
-    return name in CORE_VIEWS or bool(_VIEW_RE.match(name))
 
 
 def _view_drop(name: str) -> PlanStep:
