@@ -20,7 +20,7 @@ presets/
 | `item` | entity | Generic reagent, consumable or part. Mixin `named_fields` (`name` required/unique, `description`); field `category`. |
 | `lot` | stock | Purchase/delivery lot of an `item`. `supplier` required; `catalog_no`, `received_on`, `expires_on`. `entity_kinds: [item]`. |
 | `grid9x9` | box | Rows `A-J` excluding `I`, columns `1-9` → 81 slots. The old WFL-08 9×9 tubes. |
-| `grid96` | box | Rows `A-H`, columns `1-12` → 96 slots. |
+| `grid8x12` | box | Rows `A-H`, columns `1-12` → 96 slots (named `grid96` before base v4; spec 5 renamed it). |
 | `rack` | box | Named slots `1` … `10`. |
 | `shelf` | box | Slotless, capacity 12. |
 | `freezer` | box | Slotless, capacity 6. |

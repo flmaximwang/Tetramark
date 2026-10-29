@@ -10,23 +10,34 @@ cell-culture material all sit in one. Base preset version 3 is otherwise version
 `tube`/`cryo`/`animal`, the `item`/`lot` kinds and the existing box geometries).
 
 The step applies the **additive** diff between the ledger's live database and its own (just placed)
-v3 schema: the new `box_incubator` table, its `v_box_incubator` view, and whatever generated object
-the new kind implies. It refuses a destructive plan (it never drops or rewrites an existing column)
+v3 schema: the new `box_incubator` table and the generated views in their current (spec 5) shape —
+box kinds have no `v_box_<kind>` view any more; each existing box gets a `v_box_<box name>` view. It
+refuses a destructive plan (it never drops or rewrites an existing column)
 before anything is written. Then it bumps `preset_versions.base` + the fingerprint, and the shared
 runner regenerates the derived `dolt_tests` from the same schema in that commit.
 
+Since spec 5 (ticket 30) the repository's `presets/base.yaml` is **version 4** (the `grid96` →
+`grid8x12` rename). This step therefore installs the **frozen [`base-3.yaml`](base-3.yaml)** shipped
+next to `migrate.py`, not the repository copy: it must place the v3 content whose counter it bumps.
+That is the retrofit rule in [`migration/README.md`](../../../README.md) — a later bump freezes the
+old target copy into every earlier step that places the whole preset closure.
+
 ## Preconditions
 
-- `ledger_meta.spec_version = 4`. Run [`migration/spec/3-to-4`](../../../spec/3-to-4/README.md) first
-  (the step refuses a spec-3 ledger).
+- `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
+  (the step refuses a spec-4 ledger). The wave-11 order is `spec/4-to-5`, then the preset steps, then
+  [`migration/presets/base/3-to-4`](../3-to-4/README.md) last.
 - `ledger_meta.preset_versions.base = 2` (a second run refuses; the shared runner checks it).
 - A clean working set.
 - Files, not Dolt content: the step places **every preset copy the ledger lists** from this checkout
-  before it opens the ledger (the spec-4 loader needs current copies for every stock kind's
-  `statuses:`). A ledger that lists `molbio` therefore also gets molbio v3 and its four parts; its
-  counter is bumped by [`migration/presets/molbio/2-to-3`](../../molbio/2-to-3/README.md). The order
-  of the two steps does not matter: whichever runs first may already create the other's new tables
-  (`box_incubator`, the oligo tables), and the second then finds only its counter to bump.
+  before it opens the ledger (the spec-5 loader needs current copies for every stock kind's
+  `statuses:`), with **two frozen exceptions**: `base` is held at
+  [`base-3.yaml`](base-3.yaml) (the repository copy is v4 since spec 5) and `cell_culture` at
+  `cell_culture-1.yaml` (ticket 28 bumped the repository copy to v2). A ledger that lists `molbio`
+  therefore also gets molbio v3 and its four parts; its counter is bumped by
+  [`migration/presets/molbio/2-to-3`](../../molbio/2-to-3/README.md). The order of the two steps does
+  not matter: whichever runs first may already create the other's new tables (`box_incubator`, the
+  oligo tables), and the second then finds only its counter to bump.
 - `cell_culture` is held at the **frozen `cell_culture-1.yaml` next to `migrate.py`**: ticket 28
   bumps the repository copy to v2, and this step must not install a later preset version behind its
   own counter's back (the ledger would then load v2 content while `preset_versions.cell_culture`
@@ -68,8 +79,8 @@ dolt sql -q "SHOW TABLES LIKE 'box_incubator'"
 uv run tm -w /path/to/workspace -l <ledger> check                                    # OK: ... passed
 ```
 
-Expected: `box_incubator`/`v_box_incubator` exist, no `FAIL`, and `tm schema plan` reports no
-pending steps.
+Expected: `box_incubator` exists (no `v_box_incubator` since spec 5; every existing box has its own
+`v_box_<box name>` view instead), no `FAIL`, and `tm schema plan` reports no pending steps.
 
 ## Failure, rollback, caveats
 
@@ -79,5 +90,8 @@ pending steps.
   stay in the working set; the script makes **no** commit and prints the last good commit plus
   `dolt reset --hard <last-good-commit>`. The pre-migration tag stays as the restore point.
 - **Rollback after success:** `dolt reset --hard pre-migrate-base-2` and copy the previous
-  `base.yaml` (version 2) back into `<ledger>/presets/`; preset copies are files, not Dolt content.
-  This step's own `cell_culture-1.yaml` is the cell_culture copy it kept, if that needs restoring too.
+  `base.yaml` (version 2, shipped as
+  [`base-2.yaml`](../1-to-2/base-2.yaml) in the base 1 → 2 step) back into `<ledger>/presets/`;
+  preset copies are files, not Dolt content. This step's own [`base-3.yaml`](base-3.yaml) is the
+  base copy it placed and `cell_culture-1.yaml` the cell_culture copy it kept, if those need
+  restoring too.

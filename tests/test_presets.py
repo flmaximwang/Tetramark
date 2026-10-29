@@ -68,12 +68,12 @@ PARTS = (
 #: The parts whose ``include:`` closure loads without any organism part.
 LOADABLE_PARTS = tuple(part for part in PARTS if part != "biosamples")
 
-#: Current preset versions: base 3 (the incubator box kind, ticket 27),
+#: Current preset versions: base 4 (the grid96 -> grid8x12 rename, ticket 30),
 #: molbio 3 (a bundle of parts, ticket 27), cellbio 1 (ticket 28),
 #: cell_culture 2 (cell_vial extras and cell_biosample, ticket 28), the other
 #: parts at 1 and library 2 (spec 4 status sets, ticket 25).
 EXPECTED_VERSIONS = {
-    "base": 3,
+    "base": 4,
     "molbio": 3,
     "library": 2,
     "cellbio": 1,
@@ -91,12 +91,12 @@ EXPECTED_VERSIONS = {
     "angenet": 1,
 }
 
-#: The kinds ``base`` owns (v3 adds the slotless ``incubator``).
+#: The kinds ``base`` owns (v4 renames ``grid96`` to ``grid8x12``).
 BASE_KINDS = {
     "item",
     "lot",
     "grid9x9",
-    "grid96",
+    "grid8x12",
     "rack",
     "shelf",
     "freezer",
@@ -182,7 +182,7 @@ PART_KINDS = {
 
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
 MOLBIO_VERSIONS = {
-    "base": 3,
+    "base": 4,
     "proteins": 1,
     "nucleic_acids": 1,
     "bacteria": 1,
@@ -192,7 +192,7 @@ MOLBIO_VERSIONS = {
 
 #: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
 CELLBIO_VERSIONS = {
-    "base": 3,
+    "base": 4,
     "proteins": 1,
     "nucleic_acids": 1,
     "cell_culture": 2,
@@ -321,7 +321,7 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
     # A bundle owns no kinds, rules or status sets of its own; its parts do.
     if name != "base":
-        assert schema.preset_versions["base"] == 3
+        assert schema.preset_versions["base"] == 4
     if name in ("molbio", "cellbio", "angenet"):
         document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
         for key in ("kinds", "mixins", "rules", "status_sets"):
@@ -366,7 +366,7 @@ def test_part_loads_with_its_kinds_version_and_owner_rules(name: str) -> None:
 
     assert set(schema.kinds) == PART_KINDS[name]
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
-    assert schema.preset_versions["base"] == 3
+    assert schema.preset_versions["base"] == 4
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
     # Each part's description says what it covers and which bundles include it.
     document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
@@ -476,9 +476,9 @@ def test_base_geometry_and_fields() -> None:
     assert len(grid9.labels) == 81
     assert grid9.labels[0] == "A1" and grid9.labels[-1] == "J9"
 
-    grid96 = schema.kinds["grid96"].geometry
-    assert grid96 is not None and len(grid96.labels) == 96
-    assert grid96.labels[0] == "A1" and grid96.labels[-1] == "H12"
+    grid8x12 = schema.kinds["grid8x12"].geometry
+    assert grid8x12 is not None and len(grid8x12.labels) == 96
+    assert grid8x12.labels[0] == "A1" and grid8x12.labels[-1] == "H12"
 
     rack = schema.kinds["rack"].geometry
     assert rack is not None and rack.type is GeometryType.named
@@ -825,7 +825,7 @@ def test_molbio_cell_line_parental_self_reference_is_usable(
 
 def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
     ledger = ledger_factory(["library"], name="library_e2e")
-    geometry = ledger.schema.kind("grid96").geometry
+    geometry = ledger.schema.kind("grid8x12").geometry
     assert geometry is not None
     before = commit_count(ledger)
 
@@ -860,7 +860,7 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
         )
         session.execute(
             "INSERT INTO `box` (`id`, `name`, `kind`) VALUES (%s, %s, %s)",
-            ("box-0001", "LIB-01", "grid96"),
+            ("box-0001", "LIB-01", "grid8x12"),
         )
         for row in slot_rows("box-0001", geometry):
             session.execute(
@@ -1063,7 +1063,7 @@ kinds:
     reopened = open_ledger(workspace, "customled")
     try:
         assert reopened.fingerprint == fingerprint
-        assert reopened.schema.preset_versions == {"base": 3, "custom": 1}
+        assert reopened.schema.preset_versions == {"base": 4, "custom": 1}
     finally:
         reopened.close()
 

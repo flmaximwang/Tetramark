@@ -22,10 +22,13 @@ bundle (ticket 28's option (a), see `presets/README.md`). The sample's origin is
 
 The step
 
-1. places the whole current preset closure the ledger lists (`base` v3, the parts, the bundle)
-   **before** the runner opens the ledger — files are not Dolt content, and the spec-4 loader needs
-   every stock kind's `statuses:` — then puts the **frozen `cell_culture-2.yaml` shipped next to
-   `migrate.py`** over its own copy (the repository's `presets/` only holds the current version);
+1. places the whole current preset closure the ledger lists (the parts and the bundle)
+   **before** the runner opens the ledger — files are not Dolt content, and the spec-5 loader needs
+   every stock kind's `statuses:` — then puts the **frozen copies** shipped next to `migrate.py` over
+   their repository versions: **`cell_culture-2.yaml`** (the repository's `presets/` only holds the
+   current version) and **`base-3.yaml`** (the repository copy is v4 since spec 5's `grid96` →
+   `grid8x12` rename; this wave-10 step must keep installing the base content of its era, per the
+   retrofit rule in [`migration/README.md`](../../../README.md));
 2. applies the **additive** diff plan (three `stock_cell_vial` columns, the `stock_cell_biosample`
    table, their constraints and the regenerated views); a destructive plan is refused before
    anything is written;
@@ -36,8 +39,11 @@ The step
 
 ## Preconditions
 
-- `ledger_meta.spec_version = 4`. Run [`migration/spec/3-to-4`](../../../spec/3-to-4/README.md)
-  first when the ledger is still spec 3 (the step refuses an older spec).
+- `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
+  (the step refuses a spec-4 ledger). On a wave-11 upgrade the order is `spec/4-to-5`, then the
+  preset steps (`base/2-to-3`, `molbio/2-to-3`, this step), then
+  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) **last** — it renames the base v3
+  copy this step keeps, so do not run it before this step.
 - `ledger_meta.preset_versions.cell_culture = 1` (a second run refuses).
 - A clean working set.
 - The ledger already loads `cell_culture`, i.e. it lists `molbio` v3 (ticket 27) or `cellbio`. A

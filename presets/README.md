@@ -14,7 +14,7 @@ stay one global namespace.
 
 | part | kinds | molbio | cellbio | angenet |
 |---|---|:-:|:-:|:-:|
-| `base` | item, lot; boxes grid9x9, grid96, rack, shelf, freezer, drawer, incubator; status sets `tube`, `cryo`, `animal` | ✓ | ✓ | ✓ |
+| `base` | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator; status sets `tube`, `cryo`, `animal` | ✓ | ✓ | ✓ |
 | `nucleic_acids` | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
 | `bacteria` | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
 | `proteins` | protein_construct, protein_prep | ✓ | ✓ | ✓ |
@@ -41,6 +41,15 @@ Each part's `description:` says what it covers and which bundles include it. New
 `version: 1` and grow through `migration/presets/<name>/N-to-N+1/`, never by editing a shipped
 version in place. Every part that adds kinds adapted from [BioManager](https://github.com/gaspolymerase/biomanager)
 (MIT) ends its description with "Adapted from BioManager (MIT)." and its new kinds do the same.
+
+`base` is at **version 4**: v4 renames the `grid96` box kind to `grid8x12` (same A–H × 1–12
+geometry), because spec 5 drops the per-kind `v_box_<kind>` views and names one generated view after
+each box instead, so the kind name no longer has to be a view name (`v_box_grid96` was one).
+A base-3 ledger moves to 4 with
+`migration/presets/base/3-to-4/`; that step runs **after** `migration/spec/4-to-5/` and after the
+older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) — it renames the base
+v3 copies those steps install, so it must be the last preset step. A spec-4/base-2 ledger (e.g.
+molbio-2) follows: `spec/4-to-5`, then `base/2-to-3` and `molbio/2-to-3`, then `base/3-to-4`.
 
 ## The include graph
 

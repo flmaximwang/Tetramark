@@ -109,7 +109,10 @@ again:
   knows* by shipping a frozen copy too, or it would install the newer file
   behind that preset's own counter and the newer step could then not run. Ticket
   28's `cell_culture` 2 is the worked example: `base/2-to-3` and `molbio/2-to-3`
-  both ship and place `cell_culture-1.yaml`.
+  both ship and place `cell_culture-1.yaml`. Ticket 30's **base 4** (`grid96` →
+  `grid8x12`, spec 5) is the current example: `base/2-to-3`, `molbio/2-to-3`,
+  `cell_culture/1-to-2` and `library/1-to-2` all ship and place `base-3.yaml`,
+  and `base/3-to-4` must run last because it renames that content.
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.
@@ -175,8 +178,10 @@ constraints/views — no hand-written SQL, no data loss.
 | [`spec/1-to-2`](spec/1-to-2/README.md) | `spec_version` 1 → 2 | Recreates the generated views in the spec-2 shape (`alias_list`/`occupant_alias_list`). |
 | [`spec/2-to-3`](spec/2-to-3/README.md) | `spec_version` 2 → 3 | Drops the empty `aliquot_<stockkind>` extension tables (refusing if one still holds values), recreates the views with the stock entity/aliquot/quantity/status columns, and regenerates `dolt_tests`. |
 | [`spec/3-to-4`](spec/3-to-4/README.md) | `spec_version` 3 → 4 | Drops the global `aliquot.status` CHECK, adds `aliquot_event.forced`, recreates the in-stock views, removes the default `statuses:` list from `ledger.yaml`/`ledger_meta` (refusing a custom list), and regenerates `dolt_tests` including the two status rules. |
+| [`spec/4-to-5`](spec/4-to-5/README.md) | `spec_version` 4 → 5 | Drops the per-box-kind `v_box_<kind>` views and creates one view per existing box, clears the positions of not-in-stock aliquots (one `move` event each), rebuilds the derived views/`dolt_tests`; refuses a view-unsafe box name, a grid box holding a child box, and an in-stock aliquot without a position. Run before `presets/base/3-to-4`. |
 | [`presets/base/1-to-2`](presets/base/1-to-2/README.md) | `preset_versions.base` 1 → 2 | Places the frozen v2 base copy (status sets `tube`/`cryo`/`animal`, `lot` uses `tube`), recreates the generated views; no table changes. |
-| [`presets/base/2-to-3`](presets/base/2-to-3/README.md) | `preset_versions.base` 2 → 3 | Places base v3 and applies its additive diff: the slotless `incubator` box kind (`box_incubator` + its view); refuses a destructive plan. |
+| [`presets/base/2-to-3`](presets/base/2-to-3/README.md) | `preset_versions.base` 2 → 3 | Places the frozen base v3 copy and applies its additive diff: the slotless `incubator` box kind (`box_incubator` table); refuses a destructive plan. |
+| [`presets/base/3-to-4`](presets/base/3-to-4/README.md) | `preset_versions.base` 3 → 4 | Places the frozen v4 base copy and applies the explicit rename map (`renames.yaml`): box kind `grid96` → `grid8x12` (table, constraints, core `kind` values); the per-box views spec 4-to-5 built stay as they are. Refuses any other destructive step. Run after `spec/4-to-5` and last among the preset steps. |
 | [`presets/library/1-to-2`](presets/library/1-to-2/README.md) | `preset_versions.library` 1 → 2 | Places the v2 library copy (`copy` uses the base `tube` set), recreates the generated views; no table changes. |
 | [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the frozen v2 preset copy. |
 | [`presets/molbio/2-to-3`](presets/molbio/2-to-3/README.md) | `preset_versions.molbio` 2 → 3 | Turns molbio into a bundle of parts, adds `entity_oligo`/`stock_oligo_stock` (and base v3's `box_incubator`), places every part copy (cell_culture frozen at v1 by ticket 28) and records a `preset_versions` key per part at 1. |

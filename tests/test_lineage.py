@@ -132,7 +132,7 @@ def fixture(ledger) -> dict:
         "--set",
         "sequence=ATGCATGCATGC",
     )
-    ok(ledger, "box", "add", "grid96", "BOX-1")
+    ok(ledger, "box", "add", "grid8x12", "BOX-1")
     glycerol = ok_json(
         ledger,
         "stock",
@@ -509,7 +509,7 @@ def test_lineage_errors_are_usage_and_missing_object(
 ) -> None:
     ledger = ledger_factory([MOLBIO], name="lineage-errors")
     ids = fixture(ledger)
-    ok(ledger, "box", "add", "grid96", "BOX-9")
+    ok(ledger, "box", "add", "grid8x12", "BOX-9")
 
     box, box_err = cli_exit(monkeypatch, capsys, ledger, "lineage", "BOX-9")
     assert box == 2

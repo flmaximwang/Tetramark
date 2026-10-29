@@ -278,7 +278,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
     assert "slot" in named_text and "occupants" in named_text
 
     ledger.boxes.add("shelf", "SHELF")
-    ledger.boxes.add("grid96", "INNER")
+    ledger.boxes.add("grid8x12", "INNER")
     ledger.boxes.move("INNER", parent="SHELF")
     shelf_stock = add_lot(
         ledger, item["id"], box="SHELF", quantity="7"
@@ -305,7 +305,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
 
 def test_box_show_resolves_name_id_and_alias(ledger_factory) -> None:
     ledger = ledger_factory([BUNDLED_BASE], name="render-resolve")
-    created = ledger.boxes.add("grid96", "NAMED")
+    created = ledger.boxes.add("grid8x12", "NAMED")
     ledger.aliases.add("box", created["id"], "NAMED-ALIAS")
     assert ledger.boxes.show("NAMED")["box"] == "NAMED"
     assert ledger.boxes.show(created["id"])["box"] == "NAMED"
@@ -314,7 +314,7 @@ def test_box_show_resolves_name_id_and_alias(ledger_factory) -> None:
 
 def test_box_show_exposes_sorted_aliases(ledger_factory) -> None:
     ledger = ledger_factory([BUNDLED_BASE], name="render-aliases")
-    created = ledger.boxes.add("grid96", "ALIASED")
+    created = ledger.boxes.add("grid8x12", "ALIASED")
     ledger.aliases.add("box", created["id"], "legacy-box")
     ledger.aliases.add("box", created["id"], "AAA-box")
 
@@ -323,7 +323,7 @@ def test_box_show_exposes_sorted_aliases(ledger_factory) -> None:
     text = render_box_text(view)
     assert "aliases: AAA-box, legacy-box" in text
 
-    ledger.boxes.add("grid96", "PLAIN")
+    ledger.boxes.add("grid8x12", "PLAIN")
     plain = ledger.boxes.show("PLAIN")
     assert plain["aliases"] == []
     assert "aliases:" not in render_box_text(plain)

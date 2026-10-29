@@ -12,18 +12,25 @@ No table changes: the preset content only feeds the generated views and
 config into the preset.  The step therefore
 
 * places the repository preset copies the ledger lists (files are not Dolt
-  content — the spec-4 loader refuses a stock kind without ``statuses:``, so
-  the copy has to be current before the ledger can be opened),
+  content — the spec-5 loader refuses a stock kind without ``statuses:``, so
+  the copy has to be current before the ledger can be opened), then puts the
+  **frozen base v3** shipped next to this file over its own copy: the
+  repository's ``presets/base.yaml`` is v4 since spec 5's ``grid96`` ->
+  ``grid8x12`` rename, and this wave-10 step must keep installing the base
+  content its era reads.  ``migration/README.md`` requires the retrofit,
 * re-creates the generated views from the ledger's own (now v2) schema,
 * bumps ``preset_versions.library`` to 2 and the fingerprint; the shared runner
   regenerates the derived ``dolt_tests`` from the same schema in that commit.
 
-Run it by hand, **after** ``migration/spec/3-to-4``::
+Run it by hand under the wave-11 tool **after** ``migration/spec/4-to-5`` (the
+ledger formats at spec 5 first) and **before**
+``migration/presets/base/3-to-4`` (that step renames the base v3 copy this step
+keeps)::
 
     uv run migration/presets/library/1-to-2/migrate.py --ledger PATH [--branch B] [--dry-run]
 
 A ledger that lists other presets whose copies are still pre-wave-10 (e.g.
-molbio) cannot be opened by the spec-4 loader at all; copy every changed preset
+molbio) cannot be opened by the spec-5 loader at all; copy every changed preset
 copy first (the step's own placement helper does that for every bundled preset
 the ledger lists, and the matching preset steps bump their counters).
 """
@@ -41,6 +48,7 @@ from tetramark.migrate import (
     preset_args,
     restore_files,
     run,
+    vendor_preset_files,
     vendor_repo_presets,
 )
 from tetramark.schema.ddl import view_statements
@@ -54,9 +62,15 @@ REPO_PRESETS = REPO_ROOT / "presets"
 PRESET = "library"
 TO_VERSION = 2
 
+#: The frozen base v3 this step installs over the repository copy: spec 5
+#: (ticket 30) bumps the repository's ``presets/base.yaml`` to v4 (``grid96``
+#: renamed to ``grid8x12``), and this wave-10 step must keep installing the base
+#: content its era reads.  ``migration/README.md`` requires the retrofit.
+FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
+
 
 def _require_ready(ledger: Ledger) -> None:
-    """The ledger must be spec 4 and carry the v2 base copy this step bumps to."""
+    """The ledger must be spec 5 and carry the v2 base copy this step bumps to."""
     raw = ledger.meta.get(META_SPEC_VERSION)
     try:
         current = int(str(raw).strip())
@@ -66,16 +80,16 @@ def _require_ready(ledger: Ledger) -> None:
         raise LedgerError(
             f"refusing to migrate library 1 -> 2: ledger {ledger.name!r} is at "
             f"spec_version {current}, but status sets are spec {SPEC_VERSION}. "
-            "Run migration/spec/3-to-4/migrate.py first; nothing was written."
+            "Run migration/spec/4-to-5/migrate.py first; nothing was written."
         )
     version = ledger.schema.preset_versions.get(PRESET)
     if version != TO_VERSION:
         raise LedgerError(
             f"refusing to migrate library 1 -> 2: the ledger's own library copy is "
-            f"version {version}, expected {TO_VERSION}. Copy this checkout's "
-            "presets/library.yaml into <ledger>/presets/library.yaml first (files are "
-            "not Dolt content; migration/spec/3-to-4/README.md explains the "
-            "upgrade order). Nothing was written."
+            f"version {version}, expected {TO_VERSION}. This step places the "
+            "repository library copy (and the frozen base-3.yaml) over "
+            "<ledger>/presets/ first (files are not Dolt content), and it must "
+            "run before migration/presets/base/3-to-4. Nothing was written."
         )
 
 
@@ -84,8 +98,8 @@ def plan(ledger: Ledger) -> list[str]:
     _require_ready(ledger)
     # No table changes: the preset only changes the status sets that feed the
     # generated views/rules.  Recreating every view makes the step's commit the
-    # one that installs the spec-4 view shape for this preset; the runner adds
-    # the counter/fingerprint bump and the regenerated dolt_tests.
+    # one that installs the current (spec 5) view shape for this preset; the
+    # runner adds the counter/fingerprint bump and the regenerated dolt_tests.
     views = view_statements(ledger.schema)
     return [f"DROP VIEW IF EXISTS `{statement.name}`" for statement in views] + [
         statement.sql for statement in views
@@ -119,9 +133,15 @@ step = MigrationStep(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Place the preset copies, then run the shared one-commit step."""
+    """Place the preset copies, then run the shared one-commit step.
+
+    The library copy comes from the repository (it is still v2); base comes
+    from the frozen v3 file, because the repository copy is v4 since spec 5 and
+    this wave-10 step must not install the newer content.
+    """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
+    saved += vendor_preset_files(arguments.ledger, {"base": FROZEN_BASE})
     try:
         run(
             step,

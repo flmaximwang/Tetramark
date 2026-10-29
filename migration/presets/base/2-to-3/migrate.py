@@ -4,17 +4,21 @@ Base preset version 3 (ticket 27, design §3) adds the box kind ``incubator``:
 fly, worm and cell-culture material all sit in one, so a single slotless kind in
 ``base`` serves every organism part instead of each part defining its own.
 
-The change has one table: the new box kind materialises ``box_incubator`` plus
-its ``v_box_incubator`` view, and every kind gains the generated DDL the
-planner derives from the ledger's own (now v3) schema.  The step therefore
+The change has one table: the new box kind materialises ``box_incubator`` and
+the generated views in their current (spec 5) shape (a box kind has no
+``v_box_<kind>`` view any more; each existing box gets a ``v_box_<box name>``
+view), and every kind gains the generated DDL the planner derives from the
+ledger's own (now v3) schema.  The step therefore
 
 * places the repository preset copies the ledger lists (files are not Dolt
-  content, and the spec-4 loader needs a current copy for every stock kind's
-  ``statuses:``), then puts the **frozen cell_culture v1** shipped next to this
-  file over its own copy: ticket 28 bumps the repository's
-  ``presets/cell_culture.yaml`` to v2, and this step must not install a later
-  preset's content (it would make the cell_culture counter and the file the
-  ledger loads disagree, and the cell_culture step could then not restore it),
+  content, and the spec-5 loader needs a current copy for every stock kind's
+  ``statuses:``), then puts the two **frozen copies** shipped next to this file
+  over their repository versions: **base v3** (the repository copy is v4 since
+  spec 5's ``grid96`` -> ``grid8x12`` rename, and this wave-10 step must keep
+  installing the content whose counter it bumps) and **cell_culture v1**
+  (ticket 28 bumps the repository copy to v2, and this step must not install a
+  later preset's content).  Retrofitting the old target copy into every earlier
+  step that places the whole closure is the rule in ``migration/README.md``,
 * applies the **additive** diff plan for the new kind (a destructive step is
   refused before anything is written),
 * bumps ``preset_versions.base`` to 3 and the fingerprint; the shared runner
@@ -23,12 +27,18 @@ planner derives from the ledger's own (now v3) schema.  The step therefore
   and placed the same v3 schema), recreates the generated views so the commit
   still has its own statements.
 
-Run it by hand, **after** ``migration/spec/3-to-4``::
+Run it by hand, **after** ``migration/spec/4-to-5``: the wave-11 tool formats
+the ledger at spec 5, and this step keeps the base-3 content that
+``migration/presets/base/3-to-4`` later renames to base 4::
 
     uv run migration/presets/base/2-to-3/migrate.py --ledger PATH [--branch B] [--dry-run]
 
+On a wave-11 upgrade the order is ``migration/spec/4-to-5`` first, then the
+preset steps (``base/2-to-3``, ``molbio/2-to-3``), and
+``migration/presets/base/3-to-4`` last.
+
 A ledger that lists other presets also has their current copies placed before
-it opens; that is how the wave-10 helper keeps the spec-4 loader happy.  Their
+it opens; that is how the wave-10 helper keeps the spec-5 loader happy.  Their
 own counters are bumped by their own steps (``molbio/2-to-3`` here), and each
 step is idempotent: whichever runs first may already create the other's new
 tables, and the second one then finds nothing to do but bumps its counter.
@@ -62,6 +72,12 @@ REPO_PRESETS = REPO_ROOT / "presets"
 PRESET = "base"
 TO_VERSION = 3
 
+#: The frozen base v3 this step installs over the repository copy: since spec 5
+#: (ticket 30) the repository's ``presets/base.yaml`` is v4 (``grid96`` renamed
+#: to ``grid8x12``), and this step must keep placing the v3 content whose
+#: counter it bumps.  ``migration/README.md`` requires the retrofit.
+FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
+
 #: The frozen cell_culture v1 this step keeps over the repository copy: ticket
 #: 28 bumped ``presets/cell_culture.yaml`` to v2, whose counter is bumped by
 #: ``migration/presets/cell_culture/1-to-2``.  Placing the v2 content here would
@@ -70,7 +86,7 @@ FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-1.yaml")
 
 
 def _require_ready(ledger: Ledger) -> None:
-    """The ledger must be spec 4 and carry the v3 base copy this step bumps to."""
+    """The ledger must be spec 5 and carry the v3 base copy this step bumps to."""
     raw = ledger.meta.get(META_SPEC_VERSION)
     try:
         current = int(str(raw).strip())
@@ -80,16 +96,17 @@ def _require_ready(ledger: Ledger) -> None:
         raise LedgerError(
             f"refusing to migrate base 2 -> 3: ledger {ledger.name!r} is at "
             f"spec_version {current}, but the v3 preset needs spec {SPEC_VERSION}. "
-            "Run migration/spec/3-to-4/migrate.py first; nothing was written."
+            "Run migration/spec/4-to-5/migrate.py first; nothing was written."
         )
     version = ledger.schema.preset_versions.get(PRESET)
     if version != TO_VERSION:
         raise LedgerError(
             f"refusing to migrate base 2 -> 3: the ledger's own base copy is "
-            f"version {version}, expected {TO_VERSION}. Copy this checkout's "
-            "presets/base.yaml into <ledger>/presets/base.yaml first (files are "
-            "not Dolt content; migration/spec/3-to-4/README.md explains the "
-            "upgrade order). Nothing was written."
+            f"version {version}, expected {TO_VERSION}. This step places the "
+            "frozen base-3.yaml next to migrate.py over <ledger>/presets/base.yaml "
+            "(the repository copy is v4 since spec 5; files are not Dolt content; "
+            "migration/spec/4-to-5/README.md explains the upgrade order). "
+            "Nothing was written."
         )
     if "incubator" not in ledger.schema.kinds:
         raise LedgerError(
@@ -158,14 +175,16 @@ step = MigrationStep(
 def main(argv: list[str] | None = None) -> None:
     """Place the preset copies, then run the shared one-commit step.
 
-    Presets the ledger lists are placed from the repository; cell_culture is
-    held at the frozen v1, because the repository's copy is v2 since ticket 28
-    and its own step bumps that counter.
+    Presets the ledger lists are placed from the repository; base is held at
+    the frozen v3 (the repository copy is v4 since spec 5) and cell_culture at
+    the frozen v1 (the repository copy is v2 since ticket 28), because each
+    older step installs the content whose counter it bumps.
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(
-        arguments.ledger, {"cell_culture": FROZEN_CELL_CULTURE}
+        arguments.ledger,
+        {"base": FROZEN_BASE, "cell_culture": FROZEN_CELL_CULTURE},
     )
     try:
         run(

@@ -1,5 +1,5 @@
 preset: base
-version: 3
+version: 4
 description: >-
   Domain-neutral inventory: a generic item, a purchase lot, the status sets
   every stock kind names, and the box geometries used by the sample-oriented
@@ -82,7 +82,7 @@ kinds:
       rows: "A-J!I"
       cols: "1-9"
 
-  grid96:
+  grid8x12:
     object: box
     description: Standard 96-well box or plate (rows A-H, columns 1-12).
     geometry:

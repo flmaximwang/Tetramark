@@ -18,8 +18,13 @@ The only new objects are the `nucleic_acids` additions:
 | `stock_oligo_stock` | a tube of resuspended oligo: `concentration_um`, `solvent`, `statuses: tube` |
 | `v_entity_oligo`, `v_stock_oligo_stock` | the generated kind views |
 
-The placed `base` v3 copy also adds the slotless `incubator` box kind
-([base 2 → 3](../../base/2-to-3/README.md) owns that counter).
+The placed `base` copy also adds the slotless `incubator` box kind
+([base 2 → 3](../../base/2-to-3/README.md) owns that counter). Since spec 5 (ticket 30) the
+repository's `presets/base.yaml` is **version 4** (the `grid96` → `grid8x12` rename), so this step
+installs the **frozen [`base-3.yaml`](base-3.yaml)** next to `migrate.py`: molbio v3 shipped on base
+v3 and this step must place the content its era reads. Freezing the old target copy into every
+earlier step that places the whole closure is the retrofit rule in
+[`migration/README.md`](../../../README.md).
 
 `cell_culture` comes from the **frozen `cell_culture-1.yaml` next to `migrate.py`**, not from the
 repository: ticket 28 (delivered in 0.3.0) bumps `presets/cell_culture.yaml`
@@ -30,10 +35,11 @@ ticket, freeze its v1 copy next to this `migrate.py` the same way.
 
 The step
 
-1. places the whole current preset closure the ledger lists (`base` v3, the four parts, `molbio`
-   v3) **before** the runner opens the ledger — files are not Dolt content, and the spec-4 loader
-   needs every stock kind's `statuses:` — then puts the frozen cell_culture v1 over its own copy
-   (files are not Dolt content, so this is the version the ledger now reads);
+1. places the whole current preset closure the ledger lists (the four parts, `molbio` v3, and
+   `base`) **before** the runner opens the ledger — files are not Dolt content, and the spec-5
+   loader needs every stock kind's `statuses:` — then puts the frozen `base-3.yaml` and
+   `cell_culture-1.yaml` over their copies (files are not Dolt content, so those are the versions
+   the ledger now reads);
 2. applies the **additive** diff plan (oligo tables, the base box kind and their views); a
    destructive plan is refused before anything is written, because this step never drops a molbio
    table or column;
@@ -47,8 +53,11 @@ counter to `migration/presets/base/1-to-2`. `preset_versions.cell_culture` stays
 
 ## Preconditions
 
-- `ledger_meta.spec_version = 4`. Run [`migration/spec/3-to-4`](../../../spec/3-to-4/README.md) first
-  when the ledger is still spec 3 (the step refuses an older spec).
+- `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
+  (the step refuses a spec-4 ledger). On a wave-11 upgrade the order is `spec/4-to-5`, then
+  `base/2-to-3` and this step (either order), then
+  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) **last** — the frozen base v3 copy
+  placed here is what that final step renames to v4; do not run it before this step.
 - `ledger_meta.preset_versions.molbio = 2` (a second run refuses).
 - A clean working set.
 - The ledger lists `molbio` (and may list other presets; their current copies are placed too, and
@@ -112,5 +121,5 @@ pending steps.
 - **Rollback after success:** `dolt reset --hard pre-migrate-molbio-2` and copy the v2
   `molbio.yaml`/`base.yaml` back into `<ledger>/presets/` (the frozen copies in
   [`migration/presets/molbio/1-to-2`](../1-to-2/README.md) are that version); preset copies are
-  files, not Dolt content. This step's own `cell_culture-1.yaml` is the cell_culture copy it placed,
-  if that one needs restoring too.
+  files, not Dolt content. This step's own [`base-3.yaml`](base-3.yaml) and `cell_culture-1.yaml` are
+  the base and cell_culture copies it placed, if those need restoring too.

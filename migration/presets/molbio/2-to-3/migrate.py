@@ -15,14 +15,18 @@ molbio ledger stays exactly as it was; the only new tables are the
 
 The step therefore
 
-* places the whole current preset closure the ledger lists — ``base`` v3
-  (slotless ``incubator`` box kind) and the four parts — **before** the runner
-  opens the ledger (files are not Dolt content; the spec-4 loader needs the
-  parts and every stock kind's ``statuses:``), then puts the **frozen
-  cell_culture v1** shipped next to this file over its own copy: ticket 28
-  bumps the repository's ``presets/cell_culture.yaml`` to v2, which this
-  historical step must not install (its counter stops at 1 and
-  ``migration/presets/cell_culture/1-to-2`` owns the bump),
+* places the whole current preset closure the ledger lists — the four parts and
+  ``base`` — **before** the runner opens the ledger (files are not Dolt content;
+  the spec-5 loader needs the parts and every stock kind's ``statuses:``), then
+  puts the **frozen copies** shipped next to this file over their repository
+  versions: **cell_culture v1** (ticket 28 bumps the repository copy to v2, which
+  this historical step must not install: its counter stops at 1 and
+  ``migration/presets/cell_culture/1-to-2`` owns the bump) and **base v3** (the
+  repository copy is v4 since spec 5's ``grid96`` -> ``grid8x12`` rename, and
+  this step must keep installing the base whose counter
+  ``migration/presets/base/2-to-3`` bumps).  Freezing the old target copy into
+  an earlier step that places the whole closure is the rule in
+  ``migration/README.md``,
 * applies the **additive** diff plan (oligo tables, the base box kind and their
   views); a destructive step is refused before anything is written,
 * bumps ``preset_versions.molbio`` to 3 and records every part at version 1 in
@@ -34,10 +38,15 @@ The step therefore
 
 ``base``'s own counter stays at 2 here: ``migration/presets/base/2-to-3`` bumps
 it, exactly as the molbio 1 -> 2 step leaves base's counter to the base step.
-Run this step by hand, **after** ``migration/spec/3-to-4`` where the ledger was
-still pre-spec-4::
+Run this step by hand under the wave-11 tool **after**
+``migration/spec/4-to-5`` (the ledger formats at spec 5 first)::
 
     uv run migration/presets/molbio/2-to-3/migrate.py --ledger PATH [--branch B] [--dry-run]
+
+On a wave-11 upgrade the order is ``migration/spec/4-to-5``, then
+``base/2-to-3`` and this step (either order), then
+``migration/presets/base/3-to-4`` last: the base v3 copy placed here is what that
+final step renames to v4.
 
 No table or kind is renamed, so this step ships no ``renames.yaml``.
 """
@@ -86,12 +95,19 @@ FROZEN_PART_FILES = {
     "cell_culture": Path(__file__).with_name("cell_culture-1.yaml"),
 }
 
+#: The frozen base v3 this step installs over the repository copy: spec 5
+#: (ticket 30) bumps the repository's ``presets/base.yaml`` to v4 (``grid96``
+#: renamed to ``grid8x12``), and molbio v3 ships on the base v3 content whose
+#: counter ``migration/presets/base/2-to-3`` bumps.  ``migration/README.md``
+#: requires the retrofit.
+FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
+
 #: The tooling facts the v3 bundle needs in the ledger's own copy.
 REQUIRED_KINDS = ("oligo", "oligo_stock")
 
 
 def _require_ready(ledger: Ledger) -> None:
-    """The ledger must be spec 4 and carry the v3 bundle this step bumps to."""
+    """The ledger must be spec 5 and carry the v3 bundle this step bumps to."""
     raw = ledger.meta.get(META_SPEC_VERSION)
     try:
         current = int(str(raw).strip())
@@ -101,18 +117,18 @@ def _require_ready(ledger: Ledger) -> None:
         raise LedgerError(
             f"refusing to migrate molbio 2 -> 3: ledger {ledger.name!r} is at "
             f"spec_version {current}, but the v3 bundle needs spec {SPEC_VERSION}. "
-            "Run migration/spec/3-to-4/migrate.py first; nothing was written."
+            "Run migration/spec/4-to-5/migrate.py first; nothing was written."
         )
     versions = ledger.schema.preset_versions
     version = versions.get(PRESET)
     if version != TO_VERSION:
         raise LedgerError(
             f"refusing to migrate molbio 2 -> 3: the ledger's own molbio copy is "
-            f"version {version}, expected {TO_VERSION}. Copy this checkout's "
-            "presets/molbio.yaml and every file it includes into "
-            "<ledger>/presets/ first (files are not Dolt content; "
-            "migration/spec/3-to-4/README.md explains the upgrade order). "
-            "Nothing was written."
+            f"version {version}, expected {TO_VERSION}. This step places the "
+            "current molbio bundle/parts plus the frozen base-3.yaml and "
+            "cell_culture-1.yaml over <ledger>/presets/ (files are not Dolt "
+            "content; migration/spec/4-to-5/README.md explains the upgrade "
+            "order). Nothing was written."
         )
     for part in PARTS:
         if versions.get(part) != PRESET_VERSIONS_EXTRA[part]:
@@ -182,9 +198,9 @@ step = MigrationStep(
     reopened_schema=reopened_schema,
     preset_versions_extra=PRESET_VERSIONS_EXTRA,
     description=(
-        "place the molbio v3 bundle and its parts, add the oligo/oligo_stock "
-        "tables (and the base incubator kind), and bump preset_versions.molbio "
-        "plus a key per part"
+        "place the molbio v3 bundle and its parts (with the frozen base v3 and "
+        "cell_culture v1 copies), add the oligo/oligo_stock tables (and the base "
+        "incubator kind), and bump preset_versions.molbio plus a key per part"
     ),
 )
 
@@ -192,13 +208,14 @@ step = MigrationStep(
 def main(argv: list[str] | None = None) -> None:
     """Place the preset copies, then run the shared one-commit step.
 
-    Every preset the ledger lists is placed from the repository (the spec-4
-    loader needs current copies), except the parts this step froze at the
-    version whose counter it records.
+    Every preset the ledger lists is placed from the repository (the spec-5
+    loader needs current copies), except ``base`` and ``cell_culture``: each is
+    frozen at the version whose counter this step's own era records.
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(arguments.ledger, FROZEN_PART_FILES)
+    saved += vendor_preset_files(arguments.ledger, {"base": FROZEN_BASE})
     try:
         run(
             step,
