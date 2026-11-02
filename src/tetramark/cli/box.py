@@ -47,28 +47,6 @@ def add_box_command(
         ledger.close()
 
 
-@box_app.command("move")
-def move_box_command(
-    ctx: typer.Context,
-    ref: str = typer.Argument(..., help="Box name, id or alias."),
-    parent: str = typer.Option(..., "--in", "-i", help="New parent box."),
-    slot: str | None = typer.Option(None, "--slot", "-s", help="Slot in the parent."),
-    as_json: bool = typer.Option(False, "--json", help="Print the changed box as JSON."),
-) -> None:
-    """Move a box inside another box (nesting must stay acyclic)."""
-    ledger = resolve_ledger(ctx)
-    try:
-        result = ledger.boxes.move(ref, parent=parent, slot=slot)
-        emit_write(
-            ledger,
-            result,
-            f"Moved box {result['name']} into {parent}",
-            as_json=json_output(ctx, as_json),
-        )
-    finally:
-        ledger.close()
-
-
 @box_app.command("show")
 def show_box_command(
     ctx: typer.Context,
@@ -111,6 +89,28 @@ def list_boxes_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=["name", "kind", "path"],
+        )
+    finally:
+        ledger.close()
+
+
+@box_app.command("move")
+def move_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    parent: str = typer.Option(..., "--in", "-i", help="New parent box."),
+    slot: str | None = typer.Option(None, "--slot", "-s", help="Slot in the parent."),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed box as JSON."),
+) -> None:
+    """Move a box inside another box (nesting must stay acyclic)."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.boxes.move(ref, parent=parent, slot=slot)
+        emit_write(
+            ledger,
+            result,
+            f"Moved box {result['name']} into {parent}",
+            as_json=json_output(ctx, as_json),
         )
     finally:
         ledger.close()

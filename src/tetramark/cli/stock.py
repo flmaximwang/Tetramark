@@ -87,29 +87,6 @@ def add_stock_command(
         ledger.close()
 
 
-@stock_app.command("edit")
-def edit_stock_command(
-    ctx: typer.Context,
-    ref: str = typer.Argument(..., help="Stock id or alias."),
-    set_values: list[str] = typer.Option(
-        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
-    ),
-    as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
-) -> None:
-    """Update fields of an existing stock."""
-    ledger = resolve_ledger(ctx)
-    try:
-        result = ledger.stocks.edit(ref, values=set_values)
-        emit_write(
-            ledger,
-            result,
-            f"Edited stock {result['kind']} {result['id']}",
-            as_json=json_output(ctx, as_json),
-        )
-    finally:
-        ledger.close()
-
-
 @stock_app.command("show")
 def show_stock_command(
     ctx: typer.Context,
@@ -143,6 +120,29 @@ def list_stocks_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=["id", "kind", "entity_id"],
+        )
+    finally:
+        ledger.close()
+
+
+@stock_app.command("edit")
+def edit_stock_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Stock id or alias."),
+    set_values: list[str] = typer.Option(
+        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
+) -> None:
+    """Update fields of an existing stock."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.stocks.edit(ref, values=set_values)
+        emit_write(
+            ledger,
+            result,
+            f"Edited stock {result['kind']} {result['id']}",
+            as_json=json_output(ctx, as_json),
         )
     finally:
         ledger.close()
