@@ -3,8 +3,13 @@
 Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$TETRAMARK_WORKSPACE`),
 `--ledger NAME` (default from workspace), `-b/--branch BRANCH` (session branch, see below),
 `--format table|json|csv` on reads, `--json` shorthand,
-`--dry-run` (print SQL, no write) and `--no-commit` on writes. Exit codes: 0 ok, 1 business/validation
-error, 2 usage error, 3 database unreachable.
+`--dry-run` (print SQL, no write) and `--no-commit` on writes. Exit codes: 0 ok (help included),
+1 business/validation error, 2 usage error, 3 database unreachable.
+
+Help: `-h` and `--help` print the same text on every command and every command group, and exit 0; a
+bare `tm`, or a bare group such as `tm box`, prints its help and also exits 0. Asking for help is not
+a usage error, so the exit code is 0 even where the command would otherwise need arguments. Misuse —
+an unknown option, an unknown command, a missing argument — still exits 2.
 
 Branch selection (`-b/--branch`, placed before the subcommand like `-w`/`-l`): every read, write and
 commit of that command happens on BRANCH. The default is `branch:` in `ledger.yaml`, else the branch

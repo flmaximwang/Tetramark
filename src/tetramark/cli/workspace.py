@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from tetramark.cli.options import GlobalOptions
+from tetramark.cli.options import GlobalOptions, group
 from tetramark.driver.workspace import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -15,14 +15,10 @@ from tetramark.driver.workspace import (
 )
 from tetramark.errors import UsageError
 
-workspace_app = typer.Typer(
-    help="Create and inspect a workspace (a data directory holding ledgers).",
-    no_args_is_help=True,
+workspace_app = group(
+    "Create and inspect a workspace (a data directory holding ledgers)."
 )
-server_app = typer.Typer(
-    help="Start, stop and inspect the workspace's Dolt SQL server.",
-    no_args_is_help=True,
-)
+server_app = group("Start, stop and inspect the workspace's Dolt SQL server.")
 
 
 def resolve_workspace(ctx: typer.Context) -> Workspace:

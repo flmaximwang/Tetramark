@@ -5,13 +5,10 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger
 from tetramark.cli.output import emit_read, output_format
 
-entity_app = typer.Typer(
-    help="Entities: the abstract thing a stock is a batch of.",
-    no_args_is_help=True,
-)
+entity_app = group("Entities: the abstract thing a stock is a batch of.")
 
 
 @entity_app.command("add")

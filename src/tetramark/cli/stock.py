@@ -10,15 +10,13 @@ import typer
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import (
     echo_dry_run_sql,
+    group,
     json_output,
     resolve_ledger,
 )
 from tetramark.cli.output import emit_read, output_format
 
-stock_app = typer.Typer(
-    help="Stocks: logical batches/preparations of one entity.",
-    no_args_is_help=True,
-)
+stock_app = group("Stocks: logical batches/preparations of one entity.")
 
 
 @stock_app.command("add")

@@ -5,12 +5,9 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger
 
-aliquot_app = typer.Typer(
-    help="Aliquots: the physical tubes that occupy box slots.",
-    no_args_is_help=True,
-)
+aliquot_app = group("Aliquots: the physical tubes that occupy box slots.")
 
 
 @aliquot_app.command("add")
