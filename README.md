@@ -123,6 +123,21 @@ More flows: register a design and its glycerol stock, aliquot a bacterial pellet
 audit, import/export, back up. See `skills/tetramark/references/recipes.md`. Legacy stock ids can be
 repaired in place with `tm stock renumber OLD --auto`; the old ids stay findable as aliases.
 
+## Command overview
+
+`tm --help` groups the commands into five panels, in workflow order:
+
+| Panel | Commands |
+|---|---|
+| **Setup** | `workspace`, `server`, `presets`, `init`, `schema`, `config` |
+| **Inventory** | `entity`, `stock`, `aliquot`, `box` |
+| **Lookup** | `find`, `alias`, `history`, `lineage` |
+| **Data** | `import`, `export`, `check` |
+| **Versioning** | `branch`, `remote`, `backup` |
+
+Each group has its own subcommands — `tm <group> --help` lists them. The full command reference is
+in [`docs/spec/06-cli.md`](docs/spec/06-cli.md).
+
 ## Versioning, branches and adopting an existing database
 
 Every ledger records its format version and tool provenance in `ledger_meta`:
