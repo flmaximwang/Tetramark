@@ -3,13 +3,20 @@
 Command groups are registered here as their tickets land; the core objects
 (entity/stock/aliquot/box) live in sibling modules and only depend on
 :class:`GlobalOptions` for the resolved workspace and ledger.
+
+The root help is grouped into five Rich panels -- Setup, Inventory, Lookup,
+Data and Versioning -- that follow the order of a real session: set the
+workspace up, work with the objects in it, look things up, move data in and
+out, then version it.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
+from typer.core import TyperGroup
 
 from tetramark import __version__
 from tetramark.cli.alias import alias_app
@@ -35,6 +42,86 @@ from tetramark.cli.stock import stock_app
 from tetramark.cli.workspace import server_app, workspace_app
 from tetramark.errors import EXIT_OK, LedgerError
 
+#: Names of the Rich help panels of the root command tree.  They are defined
+#: once here so that the CLI and its tests always agree on one spelling.
+PANEL_SETUP = "Setup"
+PANEL_INVENTORY = "Inventory"
+PANEL_LOOKUP = "Lookup"
+PANEL_DATA = "Data"
+PANEL_VERSIONING = "Versioning"
+
+#: The panels of the root help, in the order they are shown.
+ROOT_PANELS: tuple[str, ...] = (
+    PANEL_SETUP,
+    PANEL_INVENTORY,
+    PANEL_LOOKUP,
+    PANEL_DATA,
+    PANEL_VERSIONING,
+)
+
+#: Every root command and command group, in the order the root help lists
+#: them.  This tuple is the single source of truth for the order of the
+#: panels and of the commands inside them.
+ROOT_COMMAND_ORDER: tuple[str, ...] = (
+    # Setup
+    "workspace",
+    "server",
+    "presets",
+    "init",
+    "schema",
+    "config",
+    # Inventory
+    "entity",
+    "stock",
+    "aliquot",
+    "box",
+    # Lookup
+    "find",
+    "alias",
+    "history",
+    "lineage",
+    # Data
+    "import",
+    "export",
+    "check",
+    # Versioning
+    "branch",
+    "remote",
+    "backup",
+)
+
+
+class _RootGroup(TyperGroup):
+    """The root command group, listing its commands in the workflow order.
+
+    Typer builds a group from two lists: every standalone command first and
+    every command group afterwards, whatever order the ``app.command()`` and
+    ``app.add_typer()`` calls appear in.  The root help would therefore list
+    all commands before all groups, and the panels would follow that order
+    too.  Reordering ``self.commands`` here fixes both at once:
+    ``TyperGroup.list_commands`` returns the names in insertion order and the
+    Rich help walks them in that order, printing one panel per panel name.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        ordered = {
+            name: self.commands[name]
+            for name in ROOT_COMMAND_ORDER
+            if name in self.commands
+        }
+        # A command that is not named in ROOT_COMMAND_ORDER keeps its own
+        # place at the end, so nothing ever disappears from the help.
+        ordered.update(
+            {
+                name: command
+                for name, command in self.commands.items()
+                if name not in ordered
+            }
+        )
+        self.commands = ordered
+
+
 app = typer.Typer(
     name="tm",
     help="A version-controlled inventory ledger on Dolt.",
@@ -42,6 +129,7 @@ app = typer.Typer(
     invoke_without_command=True,
     context_settings=HELP_CONTEXT_SETTINGS,
     add_completion=False,
+    cls=_RootGroup,
 )
 
 
@@ -128,26 +216,35 @@ def root(
     help_on_no_command(ctx)
 
 
-app.add_typer(workspace_app, name="workspace")
-app.add_typer(server_app, name="server")
-app.add_typer(presets_app, name="presets")
-app.add_typer(schema_app, name="schema")
-app.add_typer(entity_app, name="entity")
-app.add_typer(stock_app, name="stock")
-app.add_typer(aliquot_app, name="aliquot")
-app.add_typer(box_app, name="box")
-app.add_typer(alias_app, name="alias")
-app.command("init")(init_command)
-app.command("check")(check_command)
-app.command("import")(import_command)
-app.command("export")(export_command)
-app.add_typer(remote_app, name="remote")
-app.add_typer(config_app, name="config")
-app.add_typer(branch_app, name="branch")
-app.command("backup")(backup_command)
-app.command("find")(find_command)
-app.command("history")(history_command)
-app.command("lineage")(lineage_command)
+# -- Setup -------------------------------------------------------------------
+app.add_typer(workspace_app, name="workspace", rich_help_panel=PANEL_SETUP)
+app.add_typer(server_app, name="server", rich_help_panel=PANEL_SETUP)
+app.add_typer(presets_app, name="presets", rich_help_panel=PANEL_SETUP)
+app.command("init", rich_help_panel=PANEL_SETUP)(init_command)
+app.add_typer(schema_app, name="schema", rich_help_panel=PANEL_SETUP)
+app.add_typer(config_app, name="config", rich_help_panel=PANEL_SETUP)
+
+# -- Inventory ---------------------------------------------------------------
+app.add_typer(entity_app, name="entity", rich_help_panel=PANEL_INVENTORY)
+app.add_typer(stock_app, name="stock", rich_help_panel=PANEL_INVENTORY)
+app.add_typer(aliquot_app, name="aliquot", rich_help_panel=PANEL_INVENTORY)
+app.add_typer(box_app, name="box", rich_help_panel=PANEL_INVENTORY)
+
+# -- Lookup ------------------------------------------------------------------
+app.command("find", rich_help_panel=PANEL_LOOKUP)(find_command)
+app.add_typer(alias_app, name="alias", rich_help_panel=PANEL_LOOKUP)
+app.command("history", rich_help_panel=PANEL_LOOKUP)(history_command)
+app.command("lineage", rich_help_panel=PANEL_LOOKUP)(lineage_command)
+
+# -- Data --------------------------------------------------------------------
+app.command("import", rich_help_panel=PANEL_DATA)(import_command)
+app.command("export", rich_help_panel=PANEL_DATA)(export_command)
+app.command("check", rich_help_panel=PANEL_DATA)(check_command)
+
+# -- Versioning --------------------------------------------------------------
+app.add_typer(branch_app, name="branch", rich_help_panel=PANEL_VERSIONING)
+app.add_typer(remote_app, name="remote", rich_help_panel=PANEL_VERSIONING)
+app.command("backup", rich_help_panel=PANEL_VERSIONING)(backup_command)
 
 
 def main() -> None:

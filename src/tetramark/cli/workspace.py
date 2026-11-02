@@ -97,6 +97,13 @@ def server_start(
         workspace.start(daemon=False)
 
 
+@server_app.command("status")
+def server_status(ctx: typer.Context) -> None:
+    """Show whether the server runs, its endpoint, and the ledgers it serves."""
+    workspace = resolve_workspace(ctx)
+    _print_status(workspace.status())
+
+
 @server_app.command("stop")
 def server_stop(ctx: typer.Context) -> None:
     """Stop the workspace's Dolt SQL server."""
@@ -105,13 +112,6 @@ def server_stop(ctx: typer.Context) -> None:
         typer.echo(f"Stopped the Dolt server (data_dir: {workspace.data_dir})")
     else:
         typer.echo(f"No Dolt server running (data_dir: {workspace.data_dir})")
-
-
-@server_app.command("status")
-def server_status(ctx: typer.Context) -> None:
-    """Show whether the server runs, its endpoint, and the ledgers it serves."""
-    workspace = resolve_workspace(ctx)
-    _print_status(workspace.status())
 
 
 def _print_status(status: ServerStatus) -> None:

@@ -25,20 +25,26 @@ Every successful write = exactly one Dolt commit. Message is ASCII: `<verb>(<obj
 non-ASCII user text is kept in the event/notes, never in the commit message (known Dolt byte-truncation bug).
 Author from `ledger.yaml` → `workspace.yaml` → git config.
 
+The root help groups the commands into five panels — Setup, Inventory, Lookup, Data and Versioning —
+in workflow order; the listing below follows the same order.
+
 ```
+# Setup: workspace, server, presets, init, schema, config
 tm workspace init [PATH] [--port 13308]
-tm server start [-d] | stop | status
+tm server start [-d] | status | stop
+tm presets [list|show NAME]
 tm init NAME --preset base --preset molbio [--id-prefix 12]
 tm init NAME --adopt --preset molbio [--id-prefix 12] [--force-config]   # §3.1
-tm presets [list|show NAME]
 tm schema show [KIND] | plan | apply [--allow-destructive]
+tm config get KEY ; tm config set KEY VALUE   # KEY: author | presets_dir
 
+# Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
-tm entity show ID|ALIAS ; tm entity edit ID --set f=v ; tm entity ls [KIND] [--where f=v]
+tm entity show ID|ALIAS ; tm entity ls [KIND] [--where f=v] ; tm entity edit ID --set f=v
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|edit|ls ...
+tm stock show|ls|edit ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
@@ -49,16 +55,23 @@ tm aliquot purge ALQ                                  # hard delete, explicit on
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
 tm box ls ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
-tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
+
+# Lookup: find, alias, history, lineage
 tm find QUERY               # id → alias → name/text match across all objects and kinds
+tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
-tm check [-v] [--group G]
+
+# Data: import, export, check
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
                                 # a 'status' column is a creation status (any set status)
 tm export KIND|all [--out DIR]
-tm remote add NAME URL | push | pull ; tm backup [DIR]
+tm check [-v] [--group G]
+
+# Versioning: branch, remote, backup
 tm branch ls | create NAME [--from REF] | delete NAME
+tm remote add NAME URL | push | pull
+tm backup [DIR]
 ```
 
 Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
