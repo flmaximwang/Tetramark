@@ -49,17 +49,6 @@ def remote_ls(ctx: typer.Context) -> None:
         typer.echo(f"{entry.name}\t{entry.url}")
 
 
-@remote_app.command("rm")
-def remote_rm(
-    ctx: typer.Context,
-    name: str = typer.Argument(..., help="Remote to remove."),
-) -> None:
-    """Remove a configured remote."""
-    ledger = resolve_ledger(ctx)
-    options: GlobalOptions = ctx.obj
-    _echo_result(remotes.remove_remote(ledger, name, dry_run=options.dry_run))
-
-
 @remote_app.command("push")
 def remote_push(
     ctx: typer.Context,
@@ -104,6 +93,17 @@ def remote_pull(
     _echo_result(
         remotes.pull(ledger, name, branch=branch, dry_run=options.dry_run)
     )
+
+
+@remote_app.command("rm")
+def remote_rm(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Remote to remove."),
+) -> None:
+    """Remove a configured remote."""
+    ledger = resolve_ledger(ctx)
+    options: GlobalOptions = ctx.obj
+    _echo_result(remotes.remove_remote(ledger, name, dry_run=options.dry_run))
 
 
 def backup_command(

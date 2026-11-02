@@ -47,29 +47,6 @@ def add_entity_command(
         ledger.close()
 
 
-@entity_app.command("edit")
-def edit_entity_command(
-    ctx: typer.Context,
-    ref: str = typer.Argument(..., help="Entity id or alias."),
-    set_values: list[str] = typer.Option(
-        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
-    ),
-    as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
-) -> None:
-    """Update fields of an existing entity."""
-    ledger = resolve_ledger(ctx)
-    try:
-        result = ledger.entities.edit(ref, values=set_values)
-        emit_write(
-            ledger,
-            result,
-            f"Edited entity {result['kind']} {result['id']}",
-            as_json=json_output(ctx, as_json),
-        )
-    finally:
-        ledger.close()
-
-
 @entity_app.command("show")
 def show_entity_command(
     ctx: typer.Context,
@@ -103,6 +80,29 @@ def list_entities_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=["id", "kind", "name"],
+        )
+    finally:
+        ledger.close()
+
+
+@entity_app.command("edit")
+def edit_entity_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Entity id or alias."),
+    set_values: list[str] = typer.Option(
+        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
+) -> None:
+    """Update fields of an existing entity."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.entities.edit(ref, values=set_values)
+        emit_write(
+            ledger,
+            result,
+            f"Edited entity {result['kind']} {result['id']}",
+            as_json=json_output(ctx, as_json),
         )
     finally:
         ledger.close()
