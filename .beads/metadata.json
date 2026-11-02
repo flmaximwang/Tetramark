@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "Tetramark",
+  "project_id": "9ea6796d-3006-47c2-a80e-de161f3f7ac7"
+}
