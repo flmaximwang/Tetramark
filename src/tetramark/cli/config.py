@@ -14,14 +14,11 @@ from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, resolve_ledger
+from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, group, resolve_ledger
 from tetramark.cli.workspace import resolve_workspace
 from tetramark.errors import UsageError
 
-config_app = typer.Typer(
-    help="Read and write the ledger configuration.",
-    no_args_is_help=True,
-)
+config_app = group("Read and write the ledger configuration.")
 
 #: The settings this command exposes.
 _KEYS = ("author", "presets_dir")

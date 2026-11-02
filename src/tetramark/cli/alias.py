@@ -5,12 +5,9 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger
 
-alias_app = typer.Typer(
-    help="Aliases: short human names for any entity/stock/aliquot/box.",
-    no_args_is_help=True,
-)
+alias_app = group("Aliases: short human names for any entity/stock/aliquot/box.")
 
 
 @alias_app.command("add")

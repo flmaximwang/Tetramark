@@ -6,14 +6,11 @@ import typer
 from rich.console import Console
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger
 from tetramark.cli.output import emit_payload, emit_read, output_format
 from tetramark.ops.render import box_csv_rows, render_box
 
-box_app = typer.Typer(
-    help="Boxes: containers with a geometry; they nest inside each other.",
-    no_args_is_help=True,
-)
+box_app = group("Boxes: containers with a geometry; they nest inside each other.")
 
 
 @box_app.command("add")

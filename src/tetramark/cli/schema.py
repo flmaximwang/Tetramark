@@ -11,6 +11,7 @@ import yaml
 
 from tetramark.cli.options import (
     echo_dry_run_sql,
+    group,
     resolve_ledger,
     target_branch,
 )
@@ -27,10 +28,7 @@ from tetramark.schema.diff import (
 )
 from tetramark.schema.model import EffectiveSchema, Kind, Rule
 
-schema_app = typer.Typer(
-    help="Inspect, plan and apply the effective schema of a ledger.",
-    no_args_is_help=True,
-)
+schema_app = group("Inspect, plan and apply the effective schema of a ledger.")
 
 
 @schema_app.command("show")

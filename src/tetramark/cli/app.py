@@ -24,7 +24,11 @@ from tetramark.cli.find import find_command
 from tetramark.cli.history import history_command
 from tetramark.cli.ledger import init_command, presets_app
 from tetramark.cli.lineage import lineage_command
-from tetramark.cli.options import GlobalOptions
+from tetramark.cli.options import (
+    HELP_CONTEXT_SETTINGS,
+    GlobalOptions,
+    help_on_no_command,
+)
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
 from tetramark.cli.stock import stock_app
@@ -34,7 +38,9 @@ from tetramark.errors import EXIT_OK, LedgerError
 app = typer.Typer(
     name="tm",
     help="A version-controlled inventory ledger on Dolt.",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
+    context_settings=HELP_CONTEXT_SETTINGS,
     add_completion=False,
 )
 
@@ -119,6 +125,7 @@ def root(
         json=as_json,
         format=None if output_format is None else output_format.lower(),
     )
+    help_on_no_command(ctx)
 
 
 app.add_typer(workspace_app, name="workspace")

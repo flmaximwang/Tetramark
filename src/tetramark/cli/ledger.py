@@ -7,7 +7,7 @@ from typing import Any
 import typer
 import yaml
 
-from tetramark.cli.options import GlobalOptions
+from tetramark.cli.options import GlobalOptions, group
 from tetramark.cli.workspace import resolve_workspace
 from tetramark.core.ledger import (
     META_ADOPTED_FROM_COMMIT,
@@ -26,10 +26,7 @@ from tetramark.schema.loader import (
 )
 from tetramark.schema.model import EffectiveSchema, Kind, ObjectType, Preset, Rule
 
-presets_app = typer.Typer(
-    help="List and inspect the presets available to this workspace.",
-    no_args_is_help=True,
-)
+presets_app = group("List and inspect the presets available to this workspace.")
 
 
 def init_command(

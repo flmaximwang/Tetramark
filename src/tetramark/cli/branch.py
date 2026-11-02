@@ -12,16 +12,13 @@ import json
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, json_output, resolve_ledger
+from tetramark.cli.options import GlobalOptions, group, json_output, resolve_ledger
 from tetramark.driver.base import render_sql
 from tetramark.errors import UsageError
 
-branch_app = typer.Typer(
-    help=(
-        "List, create and delete branches. Merging is deliberately not part of "
-        "tm; cut over with Dolt's own CALL DOLT_MERGE(branch, '--ff-only')."
-    ),
-    no_args_is_help=True,
+branch_app = group(
+    "List, create and delete branches. Merging is deliberately not part of "
+    "tm; cut over with Dolt's own CALL DOLT_MERGE(branch, '--ff-only')."
 )
 
 __all__ = ["branch_app"]

@@ -11,14 +11,11 @@ from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, resolve_ledger
+from tetramark.cli.options import GlobalOptions, group, resolve_ledger
 from tetramark.errors import UsageError
 from tetramark.ops import remote as remotes
 
-remote_app = typer.Typer(
-    help="Configure remotes and push/pull the ledger's Dolt history.",
-    no_args_is_help=True,
-)
+remote_app = group("Configure remotes and push/pull the ledger's Dolt history.")
 
 
 def _echo_result(result: remotes.Result) -> None:
