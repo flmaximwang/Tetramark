@@ -48,9 +48,8 @@ def test_find_searches_in_one_batched_read(ledger_factory, invoke_log: list[str]
 def test_find_without_hits_skips_the_csv_run(
     ledger_factory, invoke_log: list[str]
 ) -> None:
-    """A no-match search has no rows, so there is no column list to recover."""
+    """An empty ledger has no row to recover column names for: JSON only."""
     ledger = ledger_factory()
-    ledger.entities.add("item", name="alpha")
     invoke_log.clear()
 
     assert ledger.find("nothing-like-this") == []
