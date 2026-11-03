@@ -7,8 +7,11 @@ pid/port management and no driver choice. A ledger needs only the `dolt` binary 
 long-lived process, no data directory, no server to start before the first command.
 
 The `Driver` abstract base class (`driver/base.py`) is deliberately **kept**: `query(sql, params) ->
-list[dict]`, `execute(sql, params)`, a `transaction()` context, `commit(message, author)` and a
-`database` property. A future server mode is a separate plan (R4, not promised for 0.5.0) and can add
+list[dict]`, `query_many(statements) -> list[list[dict]]`, `execute(sql, params)`, a `transaction()`
+context, `commit(message, author)` and a `database` property. `query_many` runs independent read-only
+statements in **one** `dolt sql` process (one JSON run for the rows plus at most one CSV run for the
+column headers JSON omits); `tm find` uses it so a search costs one round trip instead of one process
+per kind and per hit. A future server mode is a separate plan (R4, not promised for 0.5.0) and can add
 a second implementation without touching the core; today `EmbeddedDriver` is the only one.
 
 Branch selection uses Dolt's **revision database** `` `db/branch` ``. Each `dolt sql` invocation is
