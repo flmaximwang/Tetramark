@@ -33,6 +33,7 @@ from typer.testing import CliRunner
 from tetramark.cli.app import app, main
 from tetramark.core.ledger import adopt_ledger, init_ledger, open as open_ledger
 from tetramark.errors import EXIT_USAGE, UsageError
+from tetramark.ops.portability import absolute_file_urls
 from tetramark.schema.loader import load_ledger_schema, resolve_local_dir
 
 from conftest import FACTORY_AUTHOR
@@ -202,6 +203,85 @@ def test_a_ledger_with_relative_local_dirs_still_loads(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P12: the portability rule of tm check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fast
+def test_an_ssh_remote_is_not_a_portability_problem(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    write_repo_state(
+        ledger,
+        {"remotes": {"origin": {"name": "origin", "url": "ssh://git@example.com/x"}}},
+    )
+    assert absolute_file_urls(ledger) == []
+
+
+@pytest.mark.fast
+def test_an_https_remote_is_not_a_portability_problem(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    write_repo_state(
+        ledger,
+        {"remotes": {"origin": {"name": "origin", "url": "https://example.com/x"}}},
+    )
+    assert absolute_file_urls(ledger) == []
+
+
+@pytest.mark.fast
+def test_a_relative_backup_path_is_not_a_portability_problem(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    write_repo_state(ledger, {"backups": {"b": {"name": "b", "url": "backups/b"}}})
+    assert absolute_file_urls(ledger) == []
+
+
+@pytest.mark.fast
+def test_a_file_url_inside_the_ledger_is_not_a_portability_problem(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    (ledger / "backups").mkdir()
+    inside = ledger / "backups" / "b"
+    write_repo_state(
+        ledger,
+        {"backups": {"b": {"name": "b", "url": f"file://{inside}"}}},
+    )
+    assert absolute_file_urls(ledger) == []
+
+
+@pytest.mark.fast
+def test_an_absolute_file_url_outside_the_ledger_is_reported(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    outside = tmp_path / "elsewhere" / "backup"
+    write_repo_state(
+        ledger, {"backups": {"b": {"name": "b", "url": f"file://{outside}"}}}
+    )
+    assert absolute_file_urls(ledger) == [
+        {
+            "kind": "backup",
+            "name": "b",
+            "url": f"file://{outside}",
+            "path": str(outside),
+        }
+    ]
+
+
+@pytest.mark.fast
+def test_a_missing_or_broken_repo_state_is_not_a_portability_problem(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger"
+    (ledger / ".dolt").mkdir(parents=True)
+    assert absolute_file_urls(ledger) == []
+    (ledger / ".dolt" / "repo_state.json").write_text("{not json", encoding="utf-8")
+    assert absolute_file_urls(ledger) == []
+
+
+# ---------------------------------------------------------------------------
 # The open path (CLI and Python API)
 # ---------------------------------------------------------------------------
 
@@ -282,3 +362,78 @@ def test_adopt_writes_no_absolute_local_dirs(tmp_path, dolt_env, make_ledger) ->
     for key in ("kinds_dir", "rules_dir"):
         value = payload.get(key)
         assert value is None or not Path(str(value)).is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# tm check: the portability rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.embedded
+def test_tm_check_does_not_report_the_rule_on_a_clean_ledger(ledger_factory) -> None:
+    ledger = ledger_factory(name="clean")
+    result = runner.invoke(app, ["--ledger", str(ledger.path), "check", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["info_failed"] == 0
+    assert not [
+        test for test in payload["tests"] if test["group"].startswith("portability")
+    ]
+
+
+@pytest.mark.embedded
+def test_tm_check_reports_the_rule_on_a_moved_ledger(ledger_factory, tmp_path) -> None:
+    """A copied ledger whose repo state still points at the old path."""
+    ledger = ledger_factory(name="portable")
+    state = repo_state(ledger.path)
+    state.setdefault("backups", {})["old"] = {
+        "name": "old",
+        "url": f"file://{ledger.path / 'backup'}",
+    }
+    write_repo_state(ledger.path, state)
+
+    # in place the URL points inside the ledger: nothing to report
+    assert absolute_file_urls(ledger.path) == []
+
+    moved = tmp_path / "moved"
+    shutil.copytree(ledger.path, moved)
+    write_repo_state(moved, state)
+
+    result = runner.invoke(app, ["--ledger", str(moved), "check", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["info_failed"] == 1
+    portability = [
+        test for test in payload["tests"] if test["group"] == "portability:info"
+    ]
+    assert len(portability) == 1
+    assert portability[0]["name"] == "portability_absolute_file_urls"
+    assert portability[0]["details"][0]["name"] == "old"
+
+
+@pytest.mark.embedded
+def test_the_python_api_reports_the_same_rule(ledger_factory, tmp_path) -> None:
+    ledger = ledger_factory(name="api-portable")
+    state = repo_state(ledger.path)
+    state.setdefault("backups", {})["old"] = {
+        "name": "old",
+        "url": f"file://{ledger.path / 'backup'}",
+    }
+    write_repo_state(ledger.path, state)
+    moved = tmp_path / "moved-api"
+    shutil.copytree(ledger.path, moved)
+    write_repo_state(moved, state)
+
+    opened = open_ledger(moved)
+    try:
+        report = opened.check()
+    finally:
+        opened.close()
+    findings = [
+        result for result in report.results if result.group == "portability:info"
+    ]
+    assert len(findings) == 1
+    assert findings[0].is_info
+    assert report.passed is True
+    assert len(report.info_failures) == 1

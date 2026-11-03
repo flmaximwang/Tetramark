@@ -47,7 +47,11 @@ def check_command(
     ledger = resolve_ledger(ctx)
     try:
         report = run_check(
-            ledger.driver, ledger.schema, group=group, verbose=verbose
+            ledger.driver,
+            ledger.schema,
+            group=group,
+            verbose=verbose,
+            ledger_dir=ledger.path,
         )
     finally:
         ledger.close()

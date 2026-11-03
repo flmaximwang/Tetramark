@@ -1331,8 +1331,18 @@ class Ledger:
     def check(
         self, *, group: str | None = None, verbose: bool = False
     ) -> CheckReport:
-        """Run the generated ``dolt_tests`` (spec §4)."""
-        return run_check(self.driver, self.schema, group=group, verbose=verbose)
+        """Run the generated ``dolt_tests`` (spec §4).
+
+        The portability rule of P12/P13 needs the ledger directory, so it is
+        checked as well (as an informational result).
+        """
+        return run_check(
+            self.driver,
+            self.schema,
+            group=group,
+            verbose=verbose,
+            ledger_dir=self.path,
+        )
 
     # -- reads ------------------------------------------------------------
     def find(self, query: str) -> list[dict[str, Any]]:
