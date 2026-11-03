@@ -21,7 +21,7 @@ import json
 import re
 import shutil
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -116,6 +116,48 @@ class EmbeddedDriver(Driver):
             return self._with_columns(self._query_json(batch), rendered)
         return self._with_columns(self._query_json(rendered), rendered)
 
+    def query_many(
+        self, statements: Sequence[tuple[str, Params]]
+    ) -> list[list[dict[str, Any]]]:
+        """Run a whole read batch in one ``dolt sql`` process (plus one CSV run).
+
+        ``-r json`` emits one line per statement (``{}`` when a statement has no
+        rows), so the batch stays aligned.  JSON omits a column whose value is
+        ``NULL``, so one ``-r csv`` run then supplies every statement's column
+        list (CSV prints one header even for zero rows) and the columns are
+        filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
+        be aligned (an unexpected Dolt output shape), the statements fall back to
+        individual :meth:`query` calls: the batching only changes speed, never
+        the result.
+        """
+        ordered = list(statements)
+        if not ordered:
+            return []
+        if self._pending:
+            # Inside the deferred transaction there is no session to batch in;
+            # the per-statement path replays the buffer and previews the state.
+            return [self.query(sql, params) for sql, params in ordered]
+        rendered = [render_sql(sql, params) for sql, params in ordered]
+        # A newline before the separator keeps a query that ends in a
+        # ``--`` line comment from swallowing the next statement.
+        batch = "\n;\n".join(rendered)
+        result_sets = _parse_result_sets(self._invoke(batch, "json"), keep_empty=True)
+        if len(result_sets) != len(rendered):
+            return [self.query(sql, params) for sql, params in ordered]
+        if not any(result_sets):
+            return result_sets
+        columns = self._batch_columns(batch, [len(rows) for rows in result_sets])
+        if columns is None:  # pragma: no cover - defensive: unexpected Dolt output
+            return [
+                self._with_columns(rows, sql)
+                for rows, sql in zip(result_sets, rendered)
+            ]
+        for rows, names in zip(result_sets, columns):
+            for row in rows:
+                for name in names:
+                    row.setdefault(name, None)
+        return result_sets
+
     def execute(self, sql: str, params: Params = None) -> None:
         rendered = render_sql(sql, params)
         if self._pending is not None:
@@ -208,6 +250,32 @@ class EmbeddedDriver(Driver):
         except StopIteration:  # pragma: no cover - guarded by the strip above
             return []
 
+    def _batch_columns(
+        self, batch: str, row_counts: Sequence[int]
+    ) -> list[list[str]] | None:
+        """Column names per statement from one ``-r csv`` run, or ``None``.
+
+        CSV has no result-set separator: every statement contributes its header
+        record followed by exactly as many data records as the JSON run reported
+        rows (a zero-row statement prints only its header, an all-``NULL`` row is
+        an empty record).  ``None`` means the output shape did not match the
+        expectation (e.g. an old Dolt version), and the caller must fall back.
+        """
+        stdout = self._invoke(batch, "csv")
+        if not stdout.strip():
+            return None
+        records = list(csv.reader(io.StringIO(stdout)))
+        headers: list[list[str]] = []
+        index = 0
+        for count in row_counts:
+            if index + 1 + count > len(records):
+                return None
+            headers.append(records[index])
+            index += 1 + count
+        if index != len(records):
+            return None
+        return headers
+
     def _run(self, sql: str) -> list[list[dict[str, Any]]]:
         return _parse_result_sets(self._invoke(sql, "json"))
 
@@ -249,8 +317,17 @@ def _check_output(
         raise LedgerError(message or f"dolt sql failed with exit code {returncode}")
 
 
-def _parse_result_sets(stdout: str) -> list[list[dict[str, Any]]]:
-    """Turn one ``dolt sql -r json`` invocation into its result sets."""
+def _parse_result_sets(
+    stdout: str, *, keep_empty: bool = False
+) -> list[list[dict[str, Any]]]:
+    """Turn one ``dolt sql -r json`` invocation into its result sets.
+
+    By default a statement that returned no rows prints ``{}`` and is dropped,
+    matching the historical one-result-set-per-call behaviour (``_run`` returns
+    only result-bearing statements).  ``keep_empty=True`` keeps one ``[]`` per
+    statement instead, which is what a multi-statement batch needs to stay
+    aligned with its statements.
+    """
     result_sets: list[list[dict[str, Any]]] = []
     for line in stdout.splitlines():
         line = line.strip()
@@ -263,6 +340,8 @@ def _parse_result_sets(stdout: str) -> list[list[dict[str, Any]]]:
         if not isinstance(payload, dict):
             raise LedgerError(f"unexpected output from dolt sql: {line}")
         if payload == {}:
+            if keep_empty:
+                result_sets.append([])
             continue
         rows = payload.get("rows")
         if not isinstance(rows, list):

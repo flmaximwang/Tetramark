@@ -208,52 +208,47 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
             "match": match,
         }
 
+    # Every read below is independent, so the whole search runs as one
+    # driver.query_many batch: the command must not pay one dolt process per
+    # kind, per field or per hit.  Result-dependent lookups (an alias hit's
+    # kind/name, an aliquot's stock and status, an object's name and location)
+    # are answered from fixed statements in the same batch.
+    batch: list[tuple[str, tuple[Any, ...]]] = []
+    positions: dict[str, int] = {}
+
+    def add(key: str, sql: str, params: tuple[Any, ...] = ()) -> None:
+        positions[key] = len(batch)
+        batch.append((sql, params))
+
     # 1. Exact core ids (aliquot ids live on the aliquot table; their kind
     #    comes from the stock, not from the aliquot row).
     for object_type in ("entity", "stock", "aliquot", "box"):
         if object_type == "aliquot":
-            rows = ledger.driver.query(
+            add(
+                f"id:{object_type}",
                 "SELECT a.`id` AS `id`, s.`kind` AS `kind` "
                 "FROM `aliquot` a JOIN `stock` s ON s.`id` = a.`stock_id` "
                 "WHERE a.`id` = %s",
                 (text,),
             )
         else:
-            rows = ledger.driver.query(
+            add(
+                f"id:{object_type}",
                 f"SELECT `id`, `kind` FROM {_quote(object_type)} WHERE `id` = %s",
                 (text,),
             )
-        for row in rows:
-            offer(
-                object_type,
-                str(row["id"]),
-                kind=str(row["kind"]),
-                score=RANKS["id"],
-                match="id",
-            )
 
     # 2. Exact aliases.
-    for row in ledger.driver.query(
+    add(
+        "alias",
         f"SELECT {_quote('object_type')}, {_quote('object_id')} "
         f"FROM {_quote('alias')} WHERE LOWER({_quote('alias')}) = LOWER(%s) "
         f"ORDER BY {_quote('object_type')}",
         (text,),
-    ):
-        object_type = str(row["object_type"])
-        object_id = str(row["object_id"])
-        identity = _identity(ledger, object_type, object_id)
-        if identity is None:
-            continue
-        offer(
-            object_type,
-            object_id,
-            kind=identity[0],
-            name=identity[1],
-            score=RANKS["alias"],
-            match="alias",
-        )
+    )
 
     # 3. Name and kind string/text fields, one view per kind.
+    scans: list[tuple[str, list[str], list[str], int]] = []
     for object_type in ("entity", "stock", "box"):
         kinds = ledger.schema.kinds_for(object_type)
         for kind_name in sorted(kinds):
@@ -294,39 +289,120 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
                 + f" FROM {from_sql} WHERE "
                 + " OR ".join(clauses)
             )
-            for row in ledger.driver.query(sql, tuple(params)):
-                score, match = _score_row(
-                    row, needle, name_columns=name_columns, text_columns=text_columns
-                )
-                if score is None:
-                    continue
-                name = _first_text(row, name_columns)
-                offer(
-                    object_type,
-                    str(row["id"]),
-                    kind=str(row["kind"]),
-                    name=name,
-                    score=score,
-                    match=match,
-                )
+            scans.append((object_type, name_columns, text_columns, len(batch)))
+            add(f"scan:{object_type}:{kind_name}", sql, tuple(params))
+
+    # 4. Fixed enrichment and identity maps.  Fetching the whole entity/stock/
+    #    box/aliquot identity up front is what lets an alias hit be resolved
+    #    without a follow-up query.
+    add(
+        "aliases",
+        f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
+        f"FROM {_quote('alias')} ORDER BY {_quote('object_type')}, {_quote('alias')}",
+    )
+    add(
+        "locations",
+        "SELECT l.`aliquot_id` AS `aliquot_id`, l.`stock_id` AS `stock_id`, "
+        "s.`entity_id` AS `entity_id`, l.`location` AS `location` "
+        "FROM `v_aliquot_location` l JOIN `stock` s ON s.`id` = l.`stock_id`",
+    )
+    add("entities", "SELECT `id`, `name`, `kind` FROM `entity`")
+    add("stocks", "SELECT `id`, `entity_id`, `kind` FROM `stock`")
+    add("boxes", "SELECT `id`, `name`, `parent_box_id`, `kind` FROM `box`")
+    add("aliquots", "SELECT `id`, `stock_id`, `status` FROM `aliquot`")
+
+    fetched = ledger.driver.query_many(batch)
+
+    entity_rows = fetched[positions["entities"]]
+    entity_names = {str(row["id"]): row.get("name") for row in entity_rows}
+    entity_kinds = {str(row["id"]): str(row["kind"]) for row in entity_rows}
+    stock_rows = fetched[positions["stocks"]]
+    stock_entities = {
+        str(row["id"]): str(row["entity_id"]) for row in stock_rows
+    }
+    stock_kinds = {str(row["id"]): str(row["kind"]) for row in stock_rows}
+    box_rows = fetched[positions["boxes"]]
+    box_names = {str(row["id"]): row.get("name") for row in box_rows}
+    box_kinds = {str(row["id"]): str(row["kind"]) for row in box_rows}
+    aliquot_rows = fetched[positions["aliquots"]]
+    aliquot_stocks = {str(row["id"]): str(row["stock_id"]) for row in aliquot_rows}
+    aliquot_statuses = {str(row["id"]): row.get("status") for row in aliquot_rows}
+
+    def identity(
+        object_type: str, object_id: str
+    ) -> tuple[str, str | None] | None:
+        """``(kind, name)`` of one object from the batch (no follow-up query)."""
+        if object_type == "entity":
+            if object_id not in entity_kinds:
+                return None
+            return entity_kinds[object_id], entity_names.get(object_id)
+        if object_type == "stock":
+            if object_id not in stock_kinds:
+                return None
+            return stock_kinds[object_id], None
+        if object_type == "box":
+            if object_id not in box_kinds:
+                return None
+            return box_kinds[object_id], box_names.get(object_id)
+        if object_type == "aliquot":
+            if object_id not in aliquot_stocks:
+                return None
+            return stock_kinds.get(aliquot_stocks[object_id], ""), None
+        return _identity(ledger, object_type, object_id)  # pragma: no cover
+
+    for object_type in ("entity", "stock", "aliquot", "box"):
+        for row in fetched[positions[f"id:{object_type}"]]:
+            offer(
+                object_type,
+                str(row["id"]),
+                kind=str(row["kind"]),
+                score=RANKS["id"],
+                match="id",
+            )
+
+    # 2. Exact aliases.
+    for row in fetched[positions["alias"]]:
+        object_type = str(row["object_type"])
+        object_id = str(row["object_id"])
+        found = identity(object_type, object_id)
+        if found is None:
+            continue
+        offer(
+            object_type,
+            object_id,
+            kind=found[0],
+            name=found[1],
+            score=RANKS["alias"],
+            match="alias",
+        )
+
+    # 3. Name and kind string/text fields, one view per kind.
+    for object_type, name_columns, text_columns, index in scans:
+        for row in fetched[index]:
+            score, match = _score_row(
+                row, needle, name_columns=name_columns, text_columns=text_columns
+            )
+            if score is None:
+                continue
+            name = _first_text(row, name_columns)
+            offer(
+                object_type,
+                str(row["id"]),
+                kind=str(row["kind"]),
+                name=name,
+                score=score,
+                match=match,
+            )
 
     if not candidates:
         return []
 
-    # Enrich with aliases, locations and missing names/kinds.
-    aliases = _alias_map(ledger)
-    entity_locations, stock_locations, aliquot_locations = _locations(ledger)
-    entity_names = {
-        str(row["id"]): row.get("name")
-        for row in ledger.driver.query("SELECT `id`, `name` FROM `entity`")
-    }
-    stock_entities = {
-        str(row["id"]): str(row["entity_id"])
-        for row in ledger.driver.query("SELECT `id`, `entity_id` FROM `stock`")
-    }
-    paths = _box_paths(
-        ledger.driver.query("SELECT `id`, `name`, `parent_box_id` FROM `box`")
+    # Enrich with aliases, locations and missing names/kinds (all fetched).
+    aliases = _alias_map(fetched[positions["aliases"]])
+    entity_locations, stock_locations, aliquot_locations = _locations(
+        fetched[positions["locations"]]
     )
+    paths = _box_paths(box_rows)
 
     results: list[dict[str, Any]] = []
     for key, candidate in candidates.items():
@@ -335,11 +411,11 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
         kind_name = candidate["kind"]
         name = candidate["name"]
         if kind_name is None or (name is None and object_type in ("entity", "box")):
-            identity = _identity(ledger, object_type, object_id)
-            if identity is not None:
-                kind_name = kind_name or identity[0]
+            found = identity(object_type, object_id)
+            if found is not None:
+                kind_name = kind_name or found[0]
                 if name is None:
-                    name = identity[1]
+                    name = found[1]
         kind_name = kind_name or ""
 
         entity_id: str | None = None
@@ -348,12 +424,12 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
         if object_type == "stock":
             entity_id = stock_entities.get(object_id)
         elif object_type == "aliquot":
-            stock_id = _aliquot_stock(ledger, object_id)
+            stock_id = aliquot_stocks.get(object_id)
             entity_id = stock_entities.get(stock_id or "")
-            status = _aliquot_status(ledger, object_id)
+            status = aliquot_statuses.get(object_id)
 
         if object_type == "box":
-            kind_name = kind_name or _box_kind(ledger, object_id)
+            kind_name = kind_name or box_kinds.get(object_id, "")
             location = paths.get(object_id, name or object_id)
         elif object_type == "aliquot":
             location = aliquot_locations.get(object_id, "")
@@ -456,27 +532,6 @@ def _identity(
     return str(row["kind"]), None if name is None else str(name)
 
 
-def _box_kind(ledger: Ledger, object_id: str) -> str:
-    rows = ledger.driver.query(
-        "SELECT `kind` FROM `box` WHERE `id` = %s", (object_id,)
-    )
-    return str(rows[0]["kind"]) if rows else ""
-
-
-def _aliquot_stock(ledger: Ledger, object_id: str) -> str | None:
-    rows = ledger.driver.query(
-        "SELECT `stock_id` FROM `aliquot` WHERE `id` = %s", (object_id,)
-    )
-    return str(rows[0]["stock_id"]) if rows else None
-
-
-def _aliquot_status(ledger: Ledger, object_id: str) -> str | None:
-    rows = ledger.driver.query(
-        "SELECT `status` FROM `aliquot` WHERE `id` = %s", (object_id,)
-    )
-    return None if not rows else rows[0].get("status")
-
-
 def _summary(
     object_type: str,
     kind_name: str,
@@ -500,29 +555,25 @@ def _summary(
     return f"aliquot {object_id} of stock {stock_id or '?'}{suffix}"
 
 
-def _alias_map(ledger: Ledger) -> dict[tuple[str, str], list[str]]:
+def _alias_map(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, str], list[str]]:
+    """Aliases per ``(object_type, object_id)`` from the fetched alias rows."""
     aliases: dict[tuple[str, str], list[str]] = {}
-    for row in ledger.driver.query(
-        f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
-        f"FROM {_quote('alias')} ORDER BY {_quote('object_type')}, {_quote('alias')}"
-    ):
+    for row in rows:
         key = (str(row["object_type"]), str(row["object_id"]))
         aliases.setdefault(key, []).append(str(row["alias"]))
     return aliases
 
 
 def _locations(
-    ledger: Ledger,
+    rows: list[dict[str, Any]],
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]:
-    """Locations grouped by entity, by stock, and by aliquot."""
+    """Locations grouped by entity, by stock, and by aliquot (fetched rows)."""
     by_entity: dict[str, list[str]] = {}
     by_stock: dict[str, list[str]] = {}
     by_aliquot: dict[str, str] = {}
-    for row in ledger.driver.query(
-        "SELECT l.`aliquot_id` AS `aliquot_id`, l.`stock_id` AS `stock_id`, "
-        "s.`entity_id` AS `entity_id`, l.`location` AS `location` "
-        "FROM `v_aliquot_location` l JOIN `stock` s ON s.`id` = l.`stock_id`"
-    ):
+    for row in rows:
         location = row.get("location")
         if not location:
             continue

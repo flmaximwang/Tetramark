@@ -67,8 +67,9 @@ uv run tm --help
 
 ### Testing
 
-The suite runs against a real `dolt` binary (no mocks of Dolt) and is **embedded-only**: every
-statement is a `dolt sql` subprocess in the ledger directory. There is no server harness. A ledger
+The suite runs against a real `dolt` binary (no mocks of Dolt) and is **embedded-only**: SQL runs
+through `dolt sql` subprocesses in the ledger directory, and independent read batches (such as
+`tm find`) share one process. There is no server harness. A ledger
 fixture builds each standard shape once per session and hands out directory copies, so a fresh test
 ledger costs a copy rather than a full init.
 
