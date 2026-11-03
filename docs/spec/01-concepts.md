@@ -40,3 +40,19 @@ ids:
   entity: {strategy: uuid}
 rules_dir: rules/                # optional custom validation rules (YAML)
 ```
+
+### 1.2 Sharing and portability
+
+A ledger is one self-contained directory, so **sharing a ledger means copying that directory** —
+`cp -a`, `rsync`, `dolt clone` or `dolt backup` — exactly like a git repository. Two machines writing
+one ledger over a network share is **not supported**: the embedded driver reads and writes through
+separate `dolt sql` processes, so a shared directory has no single writer.
+
+Two rules keep a copied ledger working:
+
+- `kinds_dir` and `rules_dir` must be **relative paths inside the ledger directory**. An absolute
+  path, a `..` escape or a symlink that leaves the ledger is refused with a usage error when the
+  ledger is opened.
+- A Dolt remote or backup stored as an absolute `file://` URL keeps pointing at the machine it was
+  configured on. `tm check` reports such URLs as an **informational** rule — it never fails the
+  command — so a moved ledger says what to re-configure.
