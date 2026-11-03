@@ -254,6 +254,9 @@ portability     no warnings
   day prefix (configurable `reuse: false` → max+1). Example: prefix `08`, 2026-06-24 → `0826FP01`.
 - `sequence` — `<prefix><NNNNN>` monotonic.
 - Explicit IDs are always accepted (back-filling / migration) if unique and well-formed (pattern from the strategy).
+- An **incomplete ID** is accepted wherever a command takes an `ID|ALIAS` reference when its prefix
+  matches exactly one object; a full ID or an exact alias always wins first. A prefix that matches
+  several objects is a usage error (exit 2) that names the candidates, so nothing is picked silently.
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
 
 ### 6.3 The interactive form — `tm <object> add-form`

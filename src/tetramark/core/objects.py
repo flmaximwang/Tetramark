@@ -697,7 +697,14 @@ def _object_aliases(
 
 
 def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
-    """Find a core row by ID, then by alias (ID wins, as ``find`` does)."""
+    """Find a core row by ID, exact alias, or unique ID prefix (ID wins first).
+
+    A complete ID or an exact alias always beats an incomplete ID, as ``find``
+    ranks an exact hit above a partial one.  An incomplete ID is accepted only
+    when exactly one object matches; a prefix that hits several objects is a
+    usage error that names the candidates, so a mistyped or ambiguous reference
+    never silently picks one (the git rule for abbreviated hashes).
+    """
     row = _fetch_core(session, object_type, ref)
     if row is not None:
         return row
@@ -710,6 +717,25 @@ def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
         row = _fetch_core(session, object_type, str(alias_row["object_id"]))
         if row is not None:
             return row
+
+    text = str(ref)
+    if text:
+        matches = session.query(
+            f"SELECT * FROM {_quote(object_type)} "
+            f"WHERE LEFT({_quote('id')}, %s) = %s "
+            f"ORDER BY {_quote('id')}",
+            (len(text), text),
+        )
+        if len(matches) == 1:
+            return dict(matches[0])
+        if len(matches) > 1:
+            shown = ", ".join(str(match["id"]) for match in matches[:10])
+            more = f" and {len(matches) - 10} more" if len(matches) > 10 else ""
+            raise UsageError(
+                f"{object_type} id {ref!r} is ambiguous: it prefixes "
+                f"{len(matches)} objects ({shown}{more}); use a longer prefix "
+                "or the full id"
+            )
     raise LedgerError(f"unknown {object_type} {ref!r}")
 
 
