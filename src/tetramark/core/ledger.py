@@ -1072,8 +1072,8 @@ def adopt_ledger(
 
 def open(
     path: str | Path | None = None,
-    *,
     branch: str | None = None,
+    *,
     dry_run: bool = False,
     no_commit: bool = False,
     allow_legacy_statuses: bool = False,

@@ -151,9 +151,10 @@ def root(
         None,
         "--ledger",
         "-l",
+        metavar="PATH",
         help=(
-            "Ledger directory: the one holding .dolt/ and ledger.yaml (default: "
-            "search upward from the current directory)."
+            "Path to the ledger directory -- the one holding .dolt/ and "
+            "ledger.yaml. Omit it to search upward from the current directory."
         ),
     ),
     branch: str | None = typer.Option(

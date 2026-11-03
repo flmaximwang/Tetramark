@@ -77,6 +77,47 @@ def test_unknown_command_is_still_a_usage_error() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+# ---------------------------------------------------------------------------
+# The 0.5.0 root options: -l/--ledger PATH, and no workspace option
+# ---------------------------------------------------------------------------
+
+
+def _root_parameters() -> dict[str, Any]:
+    """The root command's options, by parameter name."""
+    root = typer.main.get_command(app)
+    return {parameter.name: parameter for parameter in root.params}
+
+
+def test_the_ledger_option_takes_a_path() -> None:
+    """``-l/--ledger`` names a directory (P3/P15), not a ledger name."""
+    parameters = _root_parameters()
+    assert "ledger" in parameters
+    ledger = parameters["ledger"]
+    assert "--ledger" in ledger.opts and "-l" in ledger.opts
+    assert ledger.type.name == "path"
+    help_text = (ledger.help or "").lower()
+    assert "ledger.yaml" in help_text
+    assert "upward" in help_text
+
+
+def test_the_workspace_option_is_gone() -> None:
+    """0.5.0 has no ``-w/--workspace``: a ledger is one directory (P3)."""
+    parameters = _root_parameters()
+    assert "workspace" not in parameters
+    for parameter in parameters.values():
+        assert "--workspace" not in parameter.opts
+        assert "-w" not in parameter.opts
+
+
+def test_the_root_help_shows_the_ledger_path_and_no_workspace() -> None:
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == EXIT_OK
+    compact = " ".join(result.output.split())
+    assert "--ledger -l PATH" in compact
+    assert "--workspace" not in result.output
+    assert "workspace.yaml" not in result.output
+
+
 def test_missing_argument_is_still_a_usage_error() -> None:
     result = runner.invoke(app, ["init"])
     assert result.exit_code == EXIT_USAGE
