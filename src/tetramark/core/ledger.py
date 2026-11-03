@@ -225,13 +225,13 @@ def resolve_author(
 def _dolt_identity(
     author: str | None, *, cwd: Path, env: Mapping[str, str] | None
 ) -> tuple[str, str]:
-    """Name and email for ``dolt init``, filling gaps from Git config."""
+    """Name and email for the init/adopt commit, filling gaps from Git config."""
     name, email = split_author(author)
     name = name or _git_config("user.name", cwd, env)
     email = email or _git_config("user.email", cwd, env)
     if not name or not email:
         raise UsageError(
-            "cannot initialise a ledger without an author: pass --author "
+            "cannot determine the commit author: pass --author "
             "\"Name <email>\" or configure git user.name/user.email"
         )
     return name, email

@@ -224,18 +224,12 @@ def _workspace_message(workspace: Path) -> str:
 
 
 def _example_ledger(workspace: Path) -> Path | None:
-    """A ledger directory to suggest: ``default_ledger``, else the first one."""
-    payload: object = {}
-    with suppress(OSError, yaml.YAMLError):
-        payload = yaml.safe_load(
-            (workspace / WORKSPACE_FILE).read_text(encoding="utf-8")
-        )
-    if isinstance(payload, dict):
-        default = payload.get("default_ledger")
-        if isinstance(default, str) and default.strip():
-            candidate = workspace / default.strip()
-            if is_ledger_dir(candidate):
-                return candidate.resolve()
+    """A ledger directory to suggest: the first one below the old workspace.
+
+    ``workspace.yaml`` is never parsed: its settings were removed in 0.5.0
+    (P7). The file only marks a legacy layout, so the suggestion is a
+    convenience for the ``cd`` hint.
+    """
     with suppress(OSError):
         ledgers = sorted(
             entry for entry in workspace.iterdir() if is_ledger_dir(entry)

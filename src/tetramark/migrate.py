@@ -313,10 +313,11 @@ def open_target(
 
     ``path`` is the ledger directory (the Dolt database plus its
     ``ledger.yaml``), e.g. ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.
-    A ledger is self-contained in 0.5.0: no workspace layer is consulted, and a
-    parent ``workspace.yaml`` is ignored.  The ledger is opened through the
-    embedded driver (``dolt sql`` in the ledger directory), so a user-run
-    ``dolt sql-server`` is auto-routed by ``dolt sql``, not managed here.
+    A ledger is self-contained in 0.5.0, so the path is opened directly: no
+    parent directory is searched and ``workspace.yaml`` is never read.  The
+    ledger is opened through the embedded driver (``dolt sql`` in the ledger
+    directory), so a user-run ``dolt sql-server`` is auto-routed by ``dolt
+    sql``, not managed here.
 
     ``allow_legacy_statuses`` defaults to true: a migration step must read the
     old shape it is about to change (a spec-3 ``ledger.yaml`` still carries the
@@ -899,7 +900,7 @@ def main(step: MigrationStep, argv: Sequence[str] | None = None) -> None:
         "--ledger",
         required=True,
         metavar="PATH",
-        help="ledger directory (the Dolt database, not the workspace directory)",
+        help="ledger directory (the directory holding .dolt/ and ledger.yaml)",
     )
     parser.add_argument(
         "--branch",
