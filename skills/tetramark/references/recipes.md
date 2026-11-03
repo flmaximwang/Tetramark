@@ -1,7 +1,26 @@
 # Recipes
 
-All examples assume a workspace and a default ledger; otherwise prefix `--ledger NAME`. Placeholders
-such as `$STOCK` mean "the ID printed by the previous command".
+All examples assume you are **inside the ledger directory** (the one holding `.dolt/` and
+`ledger.yaml`); from anywhere else prefix `-l/--ledger PATH`. Placeholders such as `$STOCK` mean "the
+ID printed by the previous command".
+
+## 0. Create, adopt or inspect a ledger
+
+A ledger is one directory; there is no workspace and no server.
+
+```sh
+mkdir -p ~/lab && cd ~/lab
+tm init lab101 --preset molbio --id-prefix 12 --author "Name <you@example.com>"
+cd lab101                     # every later command runs inside the ledger (or use -l PATH)
+tm status                     # path/name/branch/spec_version/presets/author/lock/warnings
+
+# Format an existing bare 0.4 Dolt database in place, history kept:
+tm adopt ~/lab/legacy_db --preset molbio --author "Name <you@example.com>"
+```
+
+`tm status --json` prints the fixed machine-readable shape. A stale 0.4 `workspace.yaml` is not read:
+if the upward search meets one before a ledger, `tm` exits 2 telling you to `cd` into the ledger
+directory (or pass `--ledger PATH`).
 
 ## 1. Register a new plasmid and its glycerol stock in a box
 
@@ -154,9 +173,10 @@ optional extra column.
 ## 8. Back up and push
 
 ```sh
-tm backup                      # <data_dir>/backups/<ledger>, then sync on later runs
-tm backup --ls
-tm backup /path/to/archive/lab101
+tm backup /path/to/archive/lab101   # required: there is no default directory (P10)
+tm backup --ls                      # list configured backups
+tm backup                           # later runs sync the configured ledger-named backup
+tm backup --name pre-spec4          # sync a configured backup with another name
 
 tm remote add origin /path/to/archive/lab101.git
 tm remote push
@@ -164,8 +184,9 @@ tm remote pull               # on the other machine, after adding the same remot
 ```
 
 `backup` copies the Dolt database, history included; restoring is a normal `dolt backup restore` (or
-copy the directory back while no server runs). A push needs a reachable Dolt/git remote; use the same
-remote name on both sides.
+copy the directory back while no writer runs). A backup next to the ledger is not a backup — it
+shares the disk and is lost with it — hence the explicit directory (or a configured destination). A
+push needs a reachable Dolt/git remote; use the same remote name on both sides.
 
 ## 9. Change the schema
 

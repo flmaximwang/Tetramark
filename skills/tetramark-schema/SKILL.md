@@ -11,19 +11,22 @@ generates the DDL, views, foreign keys and `dolt_tests`. Never add or edit those
 ## Where schemas live
 
 - **Presets** live in the repository's `presets/` directory (one file per preset, e.g.
-  `presets/molbio.yaml`); the wheel does not ship them. `tm init --preset NAME` resolves `NAME` in
-  the workspace's `presets_dir` (`workspace.yaml`), and `--preset PATH` uses a file or a directory
-  containing `preset.yaml` with optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the name,
-  `version:` an integer, `include:` a list of preset names.
+  `presets/molbio.yaml`) and ship with the tool as package data (`tetramark/presets/` in the wheel).
+  `tm init --preset NAME` (and `tm adopt --preset NAME`) resolves a bare `NAME` through
+  `$TETRAMARK_PRESETS_DIR` when set, then the bundled copies; `--preset PATH` uses a file or a
+  directory containing `preset.yaml` with optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the
+  name, `version:` an integer, `include:` a list of preset names.
 - **A ledger keeps its own copy**: `tm init` copies the selected preset and its include closure into
   `<ledger>/presets/` and every later command reads only that copy. Change a ledger's schema by
   editing `<ledger>/presets/*.yaml`; editing the checkout's `presets/` is how you change the
   *template* for new ledgers, not an existing ledger.
 - **Ledger-local** additions: `ledger.yaml` points at `kinds_dir:` and `rules_dir:`; each `.yaml` in
-  those directories is a document with a `kinds:` or `rules:` mapping. Relative paths resolve against
-  the ledger directory.
-- **`ledger.yaml`** also holds `presets`, `author`, `ids`, `statuses`. Use `tm init` to create it;
-  edit it afterwards to select presets or local dirs.
+  those directories is a document with a `kinds:` or `rules:` mapping. The paths must stay **relative
+  inside the ledger directory** (P13): an absolute path, a `..` escape or a symlink leaving the
+  ledger is refused when the ledger opens, so a copied ledger keeps working.
+- **`ledger.yaml`** also holds `presets`, `author`, `ids` and `branch`. Use `tm init` to create it;
+  edit it afterwards to select presets or local dirs. Status sets live on stock kinds (spec 4), not
+  in `ledger.yaml`.
 
 Name collisions between presets, includes and local files are errors. Includes are merged
 parent-first (included documents first), then local files.
@@ -142,9 +145,9 @@ without a default, new UNIQUE, removing an enum value. Renames are declared as
 preserved) instead of drop+add. Generated columns and dependent FKs are dropped and rebuilt
 automatically.
 
-Safe sequence for tightening an existing table: back up (`tm backup`), add the field nullable,
-backfill through `tm export`/`import` or the app, then make it `required` and apply with
-`--allow-destructive`. Always run `tm check` after apply.
+Safe sequence for tightening an existing table: back up (`tm backup /path/to/archive/NAME` or a
+configured backup), add the field nullable, backfill through `tm export`/`import` or the app, then
+make it `required` and apply with `--allow-destructive`. Always run `tm check` after apply.
 
 ## Worked examples
 

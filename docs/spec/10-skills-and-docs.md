@@ -8,6 +8,10 @@
   explicit IDs (or aliases when they don't fit), `box/row/col` → box name + slot label, `status` 三态 →
   status vocab, pellet aliquots → aliquots with quantity, export old tables to CSV → `tm import`,
   checklist (row counts per kind, `tm check` all PASS, spot-check `box show` vs old grid views).
+- [Upgrading 0.4.2 → 0.5.0](../guides/upgrading-0.4-to-0.5.md) — the workspace removal in practice:
+  `cd` into the ledger directory, the P4 stale-`workspace.yaml` pointer, author and backup changes.
+- [Test harness](../guides/test-harness.md) — embedded-only cost model, session ledger templates, the
+  fast/full lanes and the wall-time budget enforced by [`scripts/test-lanes.sh`](../../scripts/test-lanes.sh).
 
 Documentation entry points: [the spec](../spec/README.md) (this document), [guides](../guides/),
 [records](../records/) of deliveries and real migrations, and open [design issues](../issues/) for
