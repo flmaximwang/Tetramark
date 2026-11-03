@@ -4,6 +4,10 @@ Tetramark-43x: ``tm --help`` shows the panels Setup, Inventory, Lookup, Data
 and Versioning, and every command and command group sits in the panel it
 belongs to, in the order a real session uses them.
 
+0.5.1 spells every subcommand out in full: ``ls`` is ``list`` and ``rm`` is
+``remove``, with no compatibility aliases.  The abbreviations of 0.5.0 are
+unknown commands now, so they exit 2.
+
 The expectations below are hardcoded on purpose -- they are the oracle.  A
 reordered, re-panelled or new root command must fail loudly instead of
 drifting silently, so the test never derives an expectation from the CLI
@@ -45,13 +49,13 @@ EXPECTED_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "presets": ("list", "show"),
     "schema": ("show", "plan", "apply"),
     "config": ("get", "set"),
-    "entity": ("add", "show", "ls", "edit"),
-    "stock": ("add", "show", "ls", "edit", "renumber"),
+    "entity": ("add", "show", "list", "edit"),
+    "stock": ("add", "show", "list", "edit", "renumber"),
     "aliquot": ("add", "move", "use", "status", "purge"),
-    "box": ("add", "show", "ls", "move"),
-    "alias": ("add", "rm"),
-    "branch": ("ls", "create", "delete"),
-    "remote": ("add", "ls", "push", "pull", "rm"),
+    "box": ("add", "show", "list", "move"),
+    "alias": ("add", "remove"),
+    "branch": ("list", "create", "delete"),
+    "remote": ("add", "list", "push", "pull", "remove"),
 }
 
 #: The root commands, in the order the help lists them: the panels of
@@ -62,6 +66,24 @@ EXPECTED_ROOT_ORDER: tuple[str, ...] = tuple(
 
 #: The panel names the CLI is allowed to use.
 KNOWN_PANELS: tuple[str, ...] = tuple(EXPECTED_PANELS)
+
+#: Abbreviated subcommand names 0.5.1 removed: every command is spelled out.
+FORBIDDEN_SUBCOMMAND_NAMES: frozenset[str] = frozenset({"ls", "rm"})
+
+#: A subcommand shorter than this is an abbreviation, not a word.
+MIN_SUBCOMMAND_LENGTH = 3
+
+#: The abbreviated 0.5.0 spellings and the argv that used to reach them.
+OLD_ABBREVIATED_SPELLINGS: tuple[tuple[str, ...], ...] = (
+    ("entity", "ls"),
+    ("stock", "ls"),
+    ("box", "ls"),
+    ("branch", "ls"),
+    ("remote", "ls"),
+    ("alias", "rm"),
+    ("remote", "rm"),
+    ("backup", "--ls"),
+)
 
 
 @pytest.fixture(scope="module")
@@ -183,6 +205,30 @@ def test_the_subcommands_of_a_group_are_in_the_expected_order(
     """Every group lists its subcommands in the epic's order."""
     group = _root_command(root, group_name)
     assert list(group.commands) == list(EXPECTED_SUBCOMMANDS[group_name])
+
+
+def test_no_group_exposes_an_abbreviated_subcommand(root: TyperGroup) -> None:
+    """Every subcommand is spelled out in full: no ``ls``/``rm``, no stub."""
+    for group_name in EXPECTED_SUBCOMMANDS:
+        group = _root_command(root, group_name)
+        abbreviated = [
+            name
+            for name in group.commands
+            if name in FORBIDDEN_SUBCOMMAND_NAMES
+            or len(name) < MIN_SUBCOMMAND_LENGTH
+        ]
+        assert not abbreviated, f"tm {group_name} exposes {abbreviated}"
+
+
+@pytest.mark.parametrize(
+    "argv", OLD_ABBREVIATED_SPELLINGS, ids=lambda argv: " ".join(argv)
+)
+def test_the_old_abbreviated_spellings_are_unknown_commands(
+    argv: tuple[str, ...],
+) -> None:
+    """The 0.5.1 rename is a hard break: every old spelling exits 2."""
+    result = CliRunner().invoke(app, list(argv))
+    assert result.exit_code == 2, result.output
 
 
 def test_the_help_renders_the_panels_in_order() -> None:

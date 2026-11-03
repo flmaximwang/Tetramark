@@ -417,7 +417,7 @@ def test_cli_remote_push_and_backup_workflow(
     assert "origin" in added.output
     assert remote_dir.resolve().as_uri() in added.output
 
-    listed = runner.invoke(app, [*prefix, "remote", "ls"])
+    listed = runner.invoke(app, [*prefix, "remote", "list"])
     assert listed.exit_code == 0, listed.output
     assert "origin" in listed.output
     assert remote_dir.resolve().as_uri() in listed.output
@@ -427,10 +427,10 @@ def test_cli_remote_push_and_backup_workflow(
     assert "main" in pushed.output
     assert remote_dir.exists()
 
-    empty = runner.invoke(app, [*prefix, "backup", "ls"])
+    empty = runner.invoke(app, [*prefix, "backup", "list"])
     assert empty.exit_code == 0, empty.output
     assert "no backups configured" in empty.output
-    listed_option = runner.invoke(app, [*prefix, "backup", "--ls"])
+    listed_option = runner.invoke(app, [*prefix, "backup", "--list"])
     assert listed_option.exit_code == 0, listed_option.output
     assert "no backups configured" in listed_option.output
 
@@ -448,7 +448,7 @@ def test_cli_remote_push_and_backup_workflow(
     assert backed_up.exit_code == 0, backed_up.output
     assert target.is_dir()
 
-    backups = runner.invoke(app, [*prefix, "backup", "ls"])
+    backups = runner.invoke(app, [*prefix, "backup", "list"])
     assert backups.exit_code == 0, backups.output
     assert "cli" in backups.output
     assert target.resolve().as_uri() in backups.output
@@ -469,10 +469,10 @@ def test_cli_remote_push_and_backup_workflow(
     assert synced_named.exit_code == 0, synced_named.output
     assert "archive" in synced_named.output
 
-    # A real directory called 'ls' still works when written as ./ls.
-    local_ls = runner.invoke(app, [*prefix, "backup", "./ls"])
-    assert local_ls.exit_code == 0, local_ls.output
-    assert (tmp_path / "ls").is_dir()
+    # A real directory called 'list' still works when written as ./list.
+    local_list = runner.invoke(app, [*prefix, "backup", "./list"])
+    assert local_list.exit_code == 0, local_list.output
+    assert (tmp_path / "list").is_dir()
 
 
 def test_cli_config_get_and_set_author(

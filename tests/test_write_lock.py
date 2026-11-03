@@ -474,7 +474,7 @@ WRITE_COMMANDS = [
     remote.remote_add,
     remote.remote_push,
     remote.remote_pull,
-    remote.remote_rm,
+    remote.remote_remove,
 ]
 
 READ_COMMANDS = [
@@ -488,8 +488,8 @@ READ_COMMANDS = [
     schema_cli.show_schema,
     schema_cli.plan_schema,
     csv_io.export_command,
-    branch.branch_ls,
-    remote.remote_ls,
+    branch.branch_list,
+    remote.remote_list,
     remote.backup_command,  # mixed: locks only its sync half, see remote.py
 ]
 
@@ -664,9 +664,9 @@ def test_cli_reads_and_dry_run_ignore_the_write_lock(
     ledger = ledger_factory([BASE], name="lock-cli-reads")
 
     # Reads never create the lock file.
-    assert invoke(ledger, "entity", "ls").exit_code == 0
+    assert invoke(ledger, "entity", "list").exit_code == 0
     assert invoke(ledger, "config", "get", "author").exit_code == 0
-    assert invoke(ledger, "backup", "--ls").exit_code == 0
+    assert invoke(ledger, "backup", "--list").exit_code == 0
     assert not lock_path(ledger.path).exists()
 
     holder = WriteLock(ledger.path, command="tm stock add")
@@ -684,9 +684,9 @@ def test_cli_reads_and_dry_run_ignore_the_write_lock(
         assert entity_count(ledger) == 0
 
         # Read commands do not wait either.
-        assert invoke(ledger, "entity", "ls").exit_code == 0
+        assert invoke(ledger, "entity", "list").exit_code == 0
         assert invoke(ledger, "config", "get", "author").exit_code == 0
-        assert invoke(ledger, "backup", "--ls").exit_code == 0
+        assert invoke(ledger, "backup", "--list").exit_code == 0
     finally:
         holder.release()
 

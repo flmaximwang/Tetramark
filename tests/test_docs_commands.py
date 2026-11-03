@@ -191,7 +191,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert "kind: item" in one_kind.output
     assert "schema is up to date" in run("schema", "plan").output
 
-    # Entities: add/show/edit/ls, with --set, --name, --alias and --json.
+    # Entities: add/show/edit/list, with --set, --name, --alias and --json.
     item = run_json(
         "entity", "add", "item", "--name", "Reagent", "--set", "category=chemical",
         "--alias", "rea",
@@ -201,9 +201,9 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert shown["id"] == item_id and shown["category"] == "chemical"
     edited = run_json("entity", "edit", "rea", "--set", "category=reagent")
     assert edited["category"] == "reagent"
-    listed = run_json("entity", "ls", "item", "--where", "category=reagent")
+    listed = run_json("entity", "list", "item", "--where", "category=reagent")
     assert [row["id"] for row in listed] == [item_id]
-    assert [row["id"] for row in run_json("entity", "ls") if row["kind"] == "item"] == [
+    assert [row["id"] for row in run_json("entity", "list") if row["kind"] == "item"] == [
         item_id
     ]
 
@@ -216,7 +216,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     # Spec 5: grid boxes hold tubes only, so a box nests in a slotless freezer
     # (a grid box can no longer be a parent).  The doc reference matches.
     run("box", "move", "BOX-2", "--in", "FR-1")
-    boxes = run("box", "ls", "--kind", "grid8x12")
+    boxes = run("box", "list", "--kind", "grid8x12")
     assert "BOX-1" in boxes.output
     box_path = run_json("box", "show", "BOX-2")
     assert "BOX-2" in json.dumps(box_path)
@@ -225,7 +225,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     grid_csv = run("--format", "csv", "box", "show", "BOX-2")
     assert grid_csv.output.splitlines()[0] == "slot,row,col,occupants"
 
-    # Stocks: add/show/edit/ls, aliquots, placement.
+    # Stocks: add/show/edit/list, aliquots, placement.
     construct = run_json(
         "entity", "add", "protein_construct", "--name", "C1",
         "--set", "sequence=atgc", "--alias", "c1",
@@ -243,10 +243,10 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert len(stock_shown["aliquots"]) == 2
     run("stock", "edit", stock_id, "--set", "buffer=TE")
     assert "buffer" in run("stock", "show", stock_id).output
-    filtered = run_json("stock", "ls", "protein_prep", "--where", "buffer=TE")
+    filtered = run_json("stock", "list", "protein_prep", "--where", "buffer=TE")
     assert [row["id"] for row in filtered] == [stock_id]
     assert any(
-        row["id"] == stock_id for row in run_json("stock", "ls")
+        row["id"] == stock_id for row in run_json("stock", "list")
     )
 
     # Aliquot add/move/use/status/purge and per-tube events.
@@ -272,9 +272,9 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     run("alias", "add", "stock", stock_id, "protein-c1")
     alias_found = run("find", "protein-c1")
     assert stock_id in alias_found.output and "alias" in alias_found.output
-    run("alias", "rm", "protein-c1")
+    run("alias", "remove", "protein-c1")
     run("alias", "add", "entity", item_id, "reagent-1")
-    run("alias", "rm", "entity", "reagent-1")
+    run("alias", "remove", "entity", "reagent-1")
     found_entity = run("find", "reagent")
     assert "Reagent" in found_entity.output
     by_id = run("find", item_id)
@@ -297,10 +297,10 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert run_json("check")["ok"] is True
 
     # Global output formats and dry run.
-    assert run("--format", "csv", "entity", "ls", "item").output.startswith("id,kind,name")
+    assert run("--format", "csv", "entity", "list", "item").output.startswith("id,kind,name")
     dry = run("--dry-run", "entity", "add", "item", "--name", "dry-run-only")
     assert "INSERT INTO" in dry.output
-    names = [row["name"] for row in run_json("entity", "ls", "item")]
+    names = [row["name"] for row in run_json("entity", "list", "item")]
     assert "dry-run-only" not in names
     run("--no-commit", "entity", "add", "item", "--name", "no-commit-item")
 
@@ -310,7 +310,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert (single / "item.csv").is_file()
     new_ledger("itemcopy", id_prefix="77")
     run("import", "item", str(single / "item.csv"))
-    copied_items = run_json("entity", "ls", "item")
+    copied_items = run_json("entity", "list", "item")
     assert {row["name"] for row in copied_items} >= {"Reagent", "no-commit-item"}
     use_ledger(ledger)
 
@@ -323,15 +323,15 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     # Remotes and backups.
     remote_dir = Path.cwd() / "remote"
     run("remote", "add", "origin", str(remote_dir))
-    assert str(remote_dir) in run("remote", "ls").output
+    assert str(remote_dir) in run("remote", "list").output
     run("remote", "push")
     run("remote", "pull")
-    run("remote", "rm", "origin")
+    run("remote", "remove", "origin")
     backup_dir = Path.cwd() / "backup"
     run("backup", str(backup_dir))
-    backups = run("backup", "--ls")
+    backups = run("backup", "--list")
     assert "lab101" in backups.output
-    assert "lab101" in run("backup", "ls").output
+    assert "lab101" in run("backup", "list").output
 
 
 # ---------------------------------------------------------------------------
@@ -499,18 +499,18 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
 
     # Row counts per kind (header included in CSV).
     construct_count = len(
-        run("--format", "csv", "entity", "ls", "protein_construct")
+        run("--format", "csv", "entity", "list", "protein_construct")
         .output.splitlines()
     )
     plasmid_count = len(
-        run("--format", "csv", "entity", "ls", "plasmid").output.splitlines()
+        run("--format", "csv", "entity", "list", "plasmid").output.splitlines()
     )
     bacterial_count = len(
-        run("--format", "csv", "stock", "ls", "bacterial_glycerol")
+        run("--format", "csv", "stock", "list", "bacterial_glycerol")
         .output.splitlines()
     )
     prep_count = len(
-        run("--format", "csv", "stock", "ls", "plasmid_prep").output.splitlines()
+        run("--format", "csv", "stock", "list", "plasmid_prep").output.splitlines()
     )
     assert (construct_count, plasmid_count, bacterial_count, prep_count) == (2, 2, 2, 2)
 
