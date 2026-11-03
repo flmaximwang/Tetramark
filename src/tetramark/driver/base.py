@@ -365,3 +365,27 @@ class Driver(abc.ABC):
     @abc.abstractmethod
     def commit(self, message: str, author: str | None = None) -> str | None:
         """Create one Dolt commit; return its hash, or ``None`` if nothing changed."""
+
+    def commit_pending(
+        self,
+        transaction: AbstractContextManager[Driver],
+        message: str,
+        author: str | None = None,
+    ) -> str | None:
+        """End the entered write transaction and create the Dolt commit.
+
+        ``transaction`` is the already-entered context manager returned by
+        :meth:`transaction`; this call closes it exactly once, so a
+        :class:`~tetramark.core.ledger.WriteSession` uses this instead of
+        ``transaction.__exit__`` followed by :meth:`commit`.  The default
+        implementation is exactly that pair (two round trips); a backend that
+        defers its writes may flush them and commit in one round trip as long
+        as the contract is kept:
+
+        * the transaction is closed on success *and* on failure;
+        * the return value is the same as :meth:`commit` would return (the
+          commit hash, or ``None`` when there was nothing to commit);
+        * a failure still surfaces as :class:`~tetramark.errors.LedgerError`.
+        """
+        transaction.__exit__(None, None, None)
+        return self.commit(message, author)

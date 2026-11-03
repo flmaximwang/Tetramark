@@ -1710,6 +1710,12 @@ class WriteSession:
     :meth:`query` (a read must see the statements before it) and when the
     session closes.  If the body raises, the deferred DDL was never applied and
     is dropped, like the DML the transaction rolls back.
+
+    On success the buffered DML is flushed and the one Dolt commit is made
+    through :meth:`~tetramark.driver.base.Driver.commit_pending`: the embedded
+    driver runs both in one ``dolt sql`` process, while the base class keeps the
+    historical close-then-commit pair.  Either way a command makes exactly one
+    commit, with the same message, author and lock-release timing.
     """
 
     def __init__(
@@ -1838,13 +1844,18 @@ class WriteSession:
                 # The body failed: DDL that was deferred never ran, so it is
                 # dropped together with the DML the transaction rolls back.
                 self._ddl_batch = []
-            transaction.__exit__(exc_type, exc, traceback)
             if exc_type is not None:
+                transaction.__exit__(exc_type, exc, traceback)
                 return False
             if self.statements and not self.no_commit:
-                self.commit_hash = self.ledger.driver.commit(
-                    self.message, self.ledger.author
+                # One process for the buffered DML *and* the Dolt commit where
+                # the backend supports it (the base class closes the
+                # transaction and then commits, exactly as before).
+                self.commit_hash = self.ledger.driver.commit_pending(
+                    transaction, self.message, self.ledger.author
                 )
+            else:
+                transaction.__exit__(None, None, None)
             return False
         finally:
             # Released after the transaction closed and the commit was made --
