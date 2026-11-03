@@ -31,6 +31,8 @@ Public entry points
     Resolve a config into an :class:`EffectiveSchema`.
 ``load_ledger_schema(ledger_dir)``
     Both of the above for a ledger directory, presets from its own copy.
+``resolve_local_dir(value, key=..., ledger_dir=...)``
+    Resolve ``kinds_dir`` / ``rules_dir`` inside the ledger (P13).
 ``resolve_preset_spec(spec, presets_dir=...)``
     One ``--preset`` argument (a name or a path) to a concrete preset.
 ``expand_presets(sources)``
@@ -1315,6 +1317,46 @@ def list_presets(directory: str | Path) -> list[str]:
     return sorted(names)
 
 
+def resolve_local_dir(value: str, *, key: str, ledger_dir: str | Path) -> Path:
+    """Resolve a local schema directory (``kinds_dir`` / ``rules_dir``).
+
+    A ledger is one self-contained directory (P13): its local kinds and rules
+    live *inside* it, so the ledger keeps working when the directory is copied
+    somewhere else.  The value is therefore resolved against the ledger
+    directory and refused when it leaves the ledger -- an absolute path, a
+    ``..`` escape, or a symlink that points outside.
+
+    The error is a :class:`~tetramark.errors.UsageError` (exit code 2): the
+    configuration is wrong, not the data.
+    """
+    ledger = Path(ledger_dir).expanduser()
+    root = ledger.resolve()
+    raw = str(value).strip()
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        raise UsageError(
+            _local_dir_message(key, raw, ledger, "it is an absolute path")
+        )
+    resolved = (root / candidate).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise UsageError(
+            _local_dir_message(
+                key, raw, ledger, "it points outside the ledger directory"
+            )
+        )
+    return resolved
+
+
+def _local_dir_message(key: str, value: str, ledger: Path, reason: str) -> str:
+    """The refusal for a ``kinds_dir`` / ``rules_dir`` that leaves the ledger."""
+    return (
+        f"invalid {key} {value!r} in {ledger / 'ledger.yaml'}: {reason}. "
+        f"{key} must be a relative path inside the ledger directory, so the "
+        "ledger stays self-contained when it is copied (P13); use a relative "
+        "path such as 'kinds' or 'rules'"
+    )
+
+
 def load_schema(
     config: LedgerConfig,
     *,
@@ -1343,16 +1385,16 @@ def load_schema(
             collector.add(doc, display)
 
     if config.kinds_dir:
-        directory = Path(config.kinds_dir).expanduser()
-        if not directory.is_absolute():
-            directory = root / directory
+        directory = resolve_local_dir(
+            config.kinds_dir, key="kinds_dir", ledger_dir=root
+        )
         for display, doc in _load_local_dir(directory, config.kinds_dir, rules=False):
             collector.add(doc, display, source="local")
 
     if config.rules_dir:
-        directory = Path(config.rules_dir).expanduser()
-        if not directory.is_absolute():
-            directory = root / directory
+        directory = resolve_local_dir(
+            config.rules_dir, key="rules_dir", ledger_dir=root
+        )
         for display, doc in _load_local_dir(directory, config.rules_dir, rules=True):
             collector.add(doc, display, source="local")
 
