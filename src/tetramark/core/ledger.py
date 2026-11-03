@@ -80,7 +80,7 @@ from tetramark.driver.base import (
     looks_like_error,
     render_sql,
 )
-from tetramark.driver.embedded import EmbeddedDriver
+from tetramark.driver import driver_for
 from tetramark.driver.resolution import (
     DOLT_DIR,
     LEDGER_FILE,
@@ -813,6 +813,7 @@ def init_ledger(
     # together with its parents.
     pre_existed = target.exists()
     target.mkdir(parents=True, exist_ok=pre_existed)
+    driver: Driver | None = None
     try:
         identity_name, identity_email = split_author(plan.author)
         assert identity_name and identity_email  # _dolt_identity checked this
@@ -823,7 +824,7 @@ def init_ledger(
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
         _verify_preset_copy(target, plan.schema)
 
-        driver = EmbeddedDriver(target, env=plan.env)
+        driver = driver_for(target, env=plan.env)
         with driver.transaction():
             # The generated DDL is one batch: one ``dolt sql`` process for the
             # whole schema instead of one per statement (Dolt applies DDL
@@ -836,6 +837,10 @@ def init_ledger(
         driver.commit(f"init(ledger): {plan.name}", author=plan.author)
     except BaseException:
         # A half-initialised ledger is worse than none: never leave one behind.
+        # Close the driver first: a server backend may own a process in a
+        # directory we are about to delete.
+        if driver is not None:
+            _close_driver(driver, discard=True)
         # A pre-existing empty directory stays, minus the artifacts this attempt
         # wrote (anything else in it appeared concurrently and is not ours).
         if pre_existed:
@@ -1030,7 +1035,7 @@ def _rollback_adopt(
     failed: list[str] = []
     driver: Driver | None = None
     try:
-        driver = EmbeddedDriver(path, branch=branch, env=env)
+        driver = driver_for(path, branch=branch, env=env)
     except Exception as error:  # pragma: no cover - only if the database vanished
         failed.append(f"could not reconnect: {error}")
     if driver is not None:
@@ -1051,7 +1056,7 @@ def _rollback_adopt(
             failed.append(f"reset failed: {error}")
         finally:
             with suppress(Exception):
-                _close_driver(driver)
+                _close_driver(driver, discard=True)
     try:
         if previous_config is None:
             config_path.unlink(missing_ok=True)
@@ -1119,7 +1124,7 @@ def adopt_ledger(
     )
     target = plan.path
 
-    driver = EmbeddedDriver(target, branch=branch, env=plan.env)
+    driver = driver_for(target, branch=branch, env=plan.env)
     try:
         # One batch for the five precondition reads (branch/HEAD included):
         # one ``dolt sql`` process instead of one per read.
@@ -1129,11 +1134,11 @@ def adopt_ledger(
         # hash of the adoption commit.
         pre_head = _head_hash(head_rows)
     except BaseException:
-        _close_driver(driver)
+        _close_driver(driver, discard=True)
         raise
 
     if dry_run:
-        _close_driver(driver)
+        _close_driver(driver, discard=True)
         return AdoptPlan(
             path=plan.path,
             name=plan.name,
@@ -1179,7 +1184,10 @@ def adopt_ledger(
         driver.commit(f"adopt(ledger): {plan.name}", author=plan.author)
     except BaseException:
         # Never rmtree here: this is the production database.  Drop what this
-        # attempt created and reset the branch to where it was.
+        # attempt created and reset the branch to where it was.  Close this
+        # attempt's driver first, so the rollback driver owns a clean server
+        # and no half-open connection survives the failure.
+        _close_driver(driver, discard=True)
         _rollback_adopt(
             plan.path,
             plan.name,
@@ -1260,8 +1268,8 @@ def _open_read_state(
     except LedgerError:
         if selected is None:
             return driver, {}
-        _close_driver(driver)
-        validated = EmbeddedDriver(ledger_path, branch=selected, env=env)
+        _close_driver(driver, discard=True)
+        validated = driver_for(ledger_path, branch=selected, env=env)
         try:
             rows = validated.query(_META_SQL, fill_columns=False)
         except LedgerError:
@@ -1322,7 +1330,7 @@ def open(
     selected = branch if branch is not None else (config.branch or None)
     # No eager branch query: ``_open_read_state`` batches the existence check
     # with the ledger_meta read, so a successful open is one process.
-    driver = EmbeddedDriver(
+    driver = driver_for(
         ledger_path, branch=selected, env=env, validate_branch=False
     )
     try:
@@ -1343,12 +1351,27 @@ def open(
         )
         result.check_fingerprint()
     except BaseException:
-        _close_driver(driver)
+        _close_driver(driver, discard=True)
         raise
     return result
 
 
-def _close_driver(driver: Driver) -> None:
+def _close_driver(driver: Driver, *, discard: bool = False) -> None:
+    """Close a driver, optionally stopping the server a backend may cache.
+
+    The embedded driver has no resources beyond one process per call, so both
+    forms are the same for it.  The opt-in server driver keeps its
+    ``dolt sql-server`` alive between commands by default (that cache is what
+    makes repeated CLI commands cheap); ``discard=True`` is for lifecycle paths
+    that will not reuse it -- a failed operation, a dry run, a template about to
+    be copied -- and also stops the cached server so a plain ``dolt sql`` there
+    keeps its byte-identical embedded output.
+    """
+    if discard:
+        discard_driver = getattr(driver, "discard", None)
+        if callable(discard_driver):
+            discard_driver()
+            return
     close = getattr(driver, "close", None)
     if callable(close):
         close()
