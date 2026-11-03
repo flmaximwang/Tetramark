@@ -15,6 +15,11 @@ import pytest
 
 from tetramark.driver.embedded import EmbeddedDriver
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 
 @pytest.fixture
 def invoke_log(monkeypatch: pytest.MonkeyPatch) -> list[str]:

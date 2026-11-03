@@ -19,6 +19,11 @@ import pytest
 from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 # -- fixtures -------------------------------------------------------------
 
 

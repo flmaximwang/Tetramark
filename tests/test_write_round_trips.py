@@ -25,6 +25,11 @@ from tetramark.errors import LedgerError
 
 from conftest import FACTORY_AUTHOR, PRESETS
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 
 class Invocations:
     """Every ``dolt sql`` process the embedded driver starts, in order."""
