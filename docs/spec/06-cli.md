@@ -50,7 +50,7 @@ Selection is session-scoped and never moves the branch other sessions (or a user
 sql-server`) see (see §7). `--dry-run` prints the target branch with the SQL. It also selects the
 branch that `tm adopt` formats (§3.1). `tm remote push/pull -b` is a different option with the same
 letter: it names the branch on the **remote**, while the global `-b` selects the local session
-branch. `tm branch ls|create NAME [--from REF]|delete NAME` manage branches; merging is not part of
+branch. `tm branch list|create NAME [--from REF]|delete NAME` manage branches; merging is not part of
 `tm` (cut over with Dolt's native `CALL DOLT_MERGE(branch, '--ff-only')`).
 
 Every successful write = exactly one Dolt commit. Message is ASCII: `<verb>(<object>): <summary>`;
@@ -80,11 +80,11 @@ tm status [--json]                        # one ledger at a glance (6.1)
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
-tm entity show ID|ALIAS ; tm entity ls [KIND] [--where f=v] ; tm entity edit ID --set f=v
+tm entity show ID|ALIAS ; tm entity list [KIND] [--where f=v] ; tm entity edit ID --set f=v
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|ls|edit ...
+tm stock show|list|edit ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
@@ -94,11 +94,11 @@ tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock k
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
-tm box ls ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
+tm box list ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 
 # Lookup: find, alias, history, lineage
 tm find QUERY               # id → alias → name/text match across all objects and kinds
-tm alias add OBJ_TYPE ID ALIAS ; tm alias rm ...
+tm alias add OBJ_TYPE ID ALIAS ; tm alias remove ...
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 
@@ -109,11 +109,15 @@ tm import all DIRECTORY ; tm export KIND|all [--out DIR]
 tm check [-v] [--group G] [--format table|json|csv]
 
 # Versioning: branch, remote, backup
-tm branch ls | create NAME [--from REF] | delete NAME
-tm remote add NAME URL | ls | push [NAME] [--branch B] | pull [NAME] [--branch B] | rm NAME
+tm branch list | create NAME [--from REF] | delete NAME
+tm remote add NAME URL | list | push [NAME] [--branch B] | pull [NAME] [--branch B] | remove NAME
 tm backup [DIR] [--name NAME]     # DIR required unless a backup is already configured
-tm backup --ls                    # same as: tm backup ls
+tm backup --list                  # same as: tm backup list
 ```
+
+**Subcommand names are full words.** `ls` and `rm` are not abbreviations of any command: a listing
+subcommand is `list` and a removal subcommand is `remove`, and neither has a short spelling. A new
+subcommand is named with its full word from the start.
 
 `tm init PATH` creates a ledger **directory** at PATH (relative to the cwd or absolute). It creates
 `.dolt/`, `ledger.yaml` and `presets/`; missing parents are created and an existing **empty**
@@ -126,8 +130,9 @@ take a repeatable `--preset` (bare name or path, §8) and refuse a nested target
 `tm backup` has **no default directory** (P10): a backup next to the ledger shares its disk and is
 lost with it. Pass a directory (`tm backup DIR`; `--name` sets the backup name, default the ledger
 name), or sync a backup already configured on the ledger (`tm backup` = the ledger-named configured
-backup, `tm backup --name NAME` for another, `tm backup --ls` to list). A missing directory /
-configured backup is a usage error; nothing is created implicitly.
+backup, `tm backup --name NAME` for another, `tm backup --list` to list). A missing directory /
+configured backup is a usage error; nothing is created implicitly. A directory literally named
+`list` must be passed as `./list`, so it is not read as a subcommand.
 
 Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
 column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
@@ -157,7 +162,7 @@ gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applie
 grid rules above, in the same commit as the rows.
 
 `tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
-`aliases` list in JSON output and print an `aliases` row or line in table output; `ls` output stays
+`aliases` list in JSON output and print an `aliases` row or line in table output; `list` output stays
 narrow and unchanged. The generated views expose the same data as `alias_list` /
 `occupant_alias_list` (§3).
 

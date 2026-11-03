@@ -496,11 +496,11 @@ def test_cli_history_json_and_csv(cli_env: None, ledger_factory) -> None:
     assert "event" in csv_result.output.splitlines()[1]
 
 
-def test_cli_format_applies_to_ls_and_show(cli_env: None, ledger_factory) -> None:
+def test_cli_format_applies_to_list_and_show(cli_env: None, ledger_factory) -> None:
     ledger = ledger_factory([BUNDLED_BASE], name="cli-format")
     first = add_item(ledger, "csvitem")
 
-    csv_result = invoke(ledger, "--format", "csv", "entity", "ls")
+    csv_result = invoke(ledger, "--format", "csv", "entity", "list")
     assert csv_result.exit_code == 0, csv_result.output
     lines = csv_result.output.splitlines()
     assert lines[0] == "id,kind,name"
@@ -516,5 +516,5 @@ def test_cli_format_applies_to_ls_and_show(cli_env: None, ledger_factory) -> Non
     assert override.exit_code == 0, override.output
     assert json.loads(override.output)["name"] == "csvitem"
 
-    bad = invoke(ledger, "--format", "yaml", "entity", "ls")
+    bad = invoke(ledger, "--format", "yaml", "entity", "list")
     assert bad.exit_code == 2

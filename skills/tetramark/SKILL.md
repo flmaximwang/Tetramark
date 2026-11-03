@@ -14,10 +14,10 @@ one Dolt commit; every read is a normal `tm` command.
 1. Find the ledger: `tm status` inside the ledger directory (the one holding `.dolt/` and
    `ledger.yaml`). From anywhere else pass `-l/--ledger PATH` **before** the subcommand; there is no
    workspace and no default ledger when several exist.
-2. Inspect before writing: `tm schema show`, `tm box ls`, `tm find QUERY`.
+2. Inspect before writing: `tm schema show`, `tm box list`, `tm find QUERY`.
 3. Prefer an alias/ID from `find` over a guessed ID.
 4. Global flags (`-l/--ledger PATH`, `-b/--branch`, `--dry-run`, `--no-commit`, `--json`,
-   `--format`) go before the command: `tm -l ~/lab/lab101 --json entity ls plasmid`.
+   `--format`) go before the command: `tm -l ~/lab/lab101 --json entity list plasmid`.
 5. Every command uses the embedded driver (one `dolt sql` process per statement); there is no server
    to start or stop. Writes are serialized by a per-ledger lock: a second writer waits ~10 s, then
    exits with a typed `ledger busy` error (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never

@@ -41,6 +41,7 @@ here is versioned by Dolt. The CLI is `tm`.
 - [`docs/spec/`](docs/spec/README.md) — the specification (one file per chapter).
 - [`docs/guides/migrating-a-legacy-ledger.md`](docs/guides/migrating-a-legacy-ledger.md) — moving an old zsqlab ledger onto Tetramark.
 - [`docs/guides/upgrading-0.4-to-0.5.md`](docs/guides/upgrading-0.4-to-0.5.md) — the 0.4.2 → 0.5.0 upgrade note.
+- [`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md) — the 0.5.0 → 0.5.1 upgrade note (full-word subcommands).
 - `skills/tetramark/SKILL.md` — day-to-day operating manual for agents and humans.
 - `skills/tetramark-schema/SKILL.md` — writing presets, kinds, fields, geometry and rules.
 
@@ -157,6 +158,11 @@ upgrade is CLI/API only:
 The full note, including what to do with each 0.4 layout, is
 [`docs/guides/upgrading-0.4-to-0.5.md`](docs/guides/upgrading-0.4-to-0.5.md).
 
+0.5.1 is CLI-only as well: subcommands are spelled out in full (`list`/`remove`, not
+`ls`/`rm`), the old short subcommands are unknown commands that exit 2, and ledgers and data
+stay as they are — see
+[`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md).
+
 ## Command overview
 
 `tm --help` groups the commands into five panels, in workflow order:
@@ -200,7 +206,7 @@ Dolt branches are first-class: `tm -b BRANCH <command>` runs every read, write a
 command on BRANCH, without moving the branch other sessions see — it selects a Dolt revision
 database (`` `db/branch` ``) for the session. The default is `branch:` in `ledger.yaml`, else the
 checked-out branch; a branch that does not exist is a usage error (it is never created implicitly).
-Manage branches with `tm branch ls`, `tm branch create NAME [--from REF]` and
+Manage branches with `tm branch list`, `tm branch create NAME [--from REF]` and
 `tm branch delete NAME`. Merging is deliberately not part of `tm`: cut over with Dolt's own
 `CALL DOLT_MERGE('<branch>', '--ff-only')`.
 

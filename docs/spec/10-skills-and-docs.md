@@ -10,6 +10,8 @@
   checklist (row counts per kind, `tm check` all PASS, spot-check `box show` vs old grid views).
 - [Upgrading 0.4.2 → 0.5.0](../guides/upgrading-0.4-to-0.5.md) — the workspace removal in practice:
   `cd` into the ledger directory, the P4 stale-`workspace.yaml` pointer, author and backup changes.
+- [Upgrading 0.5.0 → 0.5.1](../guides/upgrading-0.5.0-to-0.5.1.md) — the full-word subcommands: `ls` → `list`,
+  `rm` → `remove`, `tm backup --ls` → `tm backup --list`. A hard break, CLI-only, no ledger step.
 - [Test harness](../guides/test-harness.md) — embedded-only cost model, session ledger templates, the
   fast/full lanes and the wall-time budget enforced by [`scripts/test-lanes.sh`](../../scripts/test-lanes.sh).
 

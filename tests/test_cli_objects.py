@@ -78,10 +78,10 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
     )
     assert edited["category"] == "lab"
 
-    listed = json.loads(read(ledger, "entity", "ls", "item", "--json").output)
+    listed = json.loads(read(ledger, "entity", "list", "item", "--json").output)
     assert [row["id"] for row in listed] == [entity_id]
     filtered = json.loads(
-        read(ledger, "entity", "ls", "item", "--where", "category=lab", "--json").output
+        read(ledger, "entity", "list", "item", "--where", "category=lab", "--json").output
     )
     assert [row["id"] for row in filtered] == [entity_id]
 
@@ -109,7 +109,7 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
         ).output
     )
     assert moved_box["parent_box_id"] == shelves["id"]
-    boxes = json.loads(read(ledger, "box", "ls", "--json").output)
+    boxes = json.loads(read(ledger, "box", "list", "--json").output)
     paths = {row["name"]: row["path"] for row in boxes}
     assert paths["BOX"] == "FREEZER/BOX"
 
@@ -185,7 +185,7 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
     )
     assert alias["alias"] == "E1"
     assert json.loads(read(ledger, "entity", "show", "E1", "--json").output)["id"] == entity_id
-    write(ledger, "alias", "rm", "entity", "E1")
+    write(ledger, "alias", "remove", "entity", "E1")
 
     purged = json.loads(
         write(ledger, "aliquot", "purge", second, "--json").output
@@ -305,7 +305,7 @@ def test_cli_global_json_flag_applies_to_writes_and_reads(
         invoke(ledger, "--json", "entity", "add", "item", "--name", "gamma").output
     )
     assert created["name"] == "gamma"
-    listed = json.loads(invoke(ledger, "--json", "entity", "ls", "item").output)
+    listed = json.loads(invoke(ledger, "--json", "entity", "list", "item").output)
     assert [row["id"] for row in listed] == [created["id"]]
 
 
@@ -381,12 +381,12 @@ def test_cli_branch_dry_run_names_the_target_branch(
     assert "INSERT INTO `entity`" in payload["sql"]
 
 
-def test_cli_branch_ls_create_and_delete_roundtrip(
+def test_cli_branch_list_create_and_delete_roundtrip(
     cli_env: None, ledger_factory
 ) -> None:
     ledger = ledger_factory([BASE], name="cli-branch-cmd", id_prefix="77")
 
-    listed = invoke(ledger, "branch", "ls")
+    listed = invoke(ledger, "branch", "list")
     assert listed.exit_code == 0, listed.output
     assert "main" in listed.output and "* main" in listed.output
 
@@ -394,7 +394,7 @@ def test_cli_branch_ls_create_and_delete_roundtrip(
     assert created.exit_code == 0, created.output
     names = [
         entry["name"]
-        for entry in json.loads(invoke(ledger, "--json", "branch", "ls").output)
+        for entry in json.loads(invoke(ledger, "--json", "branch", "list").output)
     ]
     assert {"main", "feature"} <= set(names)
 
@@ -402,7 +402,7 @@ def test_cli_branch_ls_create_and_delete_roundtrip(
     assert deleted.exit_code == 0, deleted.output
     names = [
         entry["name"]
-        for entry in json.loads(invoke(ledger, "--json", "branch", "ls").output)
+        for entry in json.loads(invoke(ledger, "--json", "branch", "list").output)
     ]
     assert "feature" not in names
 

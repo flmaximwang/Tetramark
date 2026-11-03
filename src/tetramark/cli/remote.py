@@ -1,10 +1,10 @@
 """``tm remote ...`` and ``tm backup`` commands (spec §6).
 
 ``backup`` is deliberately a single command rather than a group: the spec uses
-``tm backup [DIR]`` and ``tm backup ls``.  Click would treat a group's
+``tm backup [DIR]`` and ``tm backup list``.  Click would treat a group's
 positional argument as the subcommand, so the first argument is interpreted
-here (``ls`` lists instead of syncing; a real directory called ``ls`` can
-always be passed as ``./ls``).
+here (``list`` lists instead of syncing; a real directory called ``list`` can
+always be passed as ``./list``).
 
 ``DIR`` is optional only when the ledger already has a configured backup: a
 standalone ledger gets no default destination next to it, because that backup
@@ -47,8 +47,8 @@ def remote_add(
     _echo_result(remotes.add_remote(ledger, name, url, dry_run=options.dry_run))
 
 
-@remote_app.command("ls")
-def remote_ls(ctx: typer.Context) -> None:
+@remote_app.command("list")
+def remote_list(ctx: typer.Context) -> None:
     """List configured remotes."""
     ledger = resolve_ledger(ctx)
     entries = remotes.list_remotes(ledger)
@@ -107,9 +107,9 @@ def remote_pull(
     )
 
 
-@remote_app.command("rm")
+@remote_app.command("remove")
 @write_command
-def remote_rm(
+def remote_remove(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Remote to remove."),
 ) -> None:
@@ -123,10 +123,10 @@ def backup_command(
     ctx: typer.Context,
     path: str | None = typer.Argument(
         None,
-        help="Backup directory, or 'ls' to list configured backups.",
+        help="Backup directory, or 'list' to list configured backups.",
     ),
     list_only: bool = typer.Option(
-        False, "--ls", help="List configured backups instead of syncing."
+        False, "--list", help="List configured backups instead of syncing."
     ),
     name: str | None = typer.Option(
         None,
@@ -142,10 +142,10 @@ def backup_command(
     DIR is required unless this ledger already has a configured backup: then
     that backup is synced.  There is no default directory, because a backup
     next to the ledger shares its disk and is lost with it.  Use
-    ``tm backup ls`` to see the backups already configured for this ledger.
+    ``tm backup list`` to see the backups already configured for this ledger.
     """
     options: GlobalOptions = ctx.obj
-    if list_only or (path is not None and path.strip().lower() == "ls"):
+    if list_only or (path is not None and path.strip().lower() == "list"):
         ledger = resolve_ledger(ctx)
         entries = remotes.list_backups(ledger)
         if not entries:
@@ -160,7 +160,7 @@ def backup_command(
     ledger = resolve_ledger(ctx)
     directory: str | None = path
     # ``tm backup`` reads the ledger and writes a copy: one writer per ledger
-    # (P11), but only for the sync -- ``tm backup ls`` above is a read and the
+    # (P11), but only for the sync -- ``tm backup list`` above is a read and the
     # dry run writes nothing.
     if options.dry_run:
         _echo_result(remotes.backup(ledger, directory, name=name, dry_run=True))

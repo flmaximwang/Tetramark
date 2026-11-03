@@ -105,7 +105,7 @@ def show_stock_command(
         ledger.close()
 
 
-@stock_app.command("ls")
+@stock_app.command("list")
 def list_stocks_command(
     ctx: typer.Context,
     kind: str | None = typer.Argument(None, help="Only this stock kind."),
