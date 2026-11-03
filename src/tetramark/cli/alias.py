@@ -17,7 +17,13 @@ def add_alias_command(
     object_type: str = typer.Argument(
         ..., help="entity, stock, aliquot or box."
     ),
-    object_id: str = typer.Argument(..., help="ID of the object."),
+    object_id: str = typer.Argument(
+        ...,
+        help=(
+            "ID of the object (an incomplete ID is accepted when it prefixes "
+            "exactly one object)."
+        ),
+    ),
     alias: str = typer.Argument(..., help="Alias text (unique per object type)."),
     as_json: bool = typer.Option(False, "--json", help="Print the alias as JSON."),
 ) -> None:

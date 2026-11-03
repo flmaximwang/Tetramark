@@ -194,6 +194,76 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
     assert dirty(ledger) == []
 
 
+def test_cli_alias_add_accepts_a_unique_incomplete_id(
+    cli_env: None, ledger_factory
+) -> None:
+    """``tm alias add entity <short-id> <alias>`` works when the prefix is unique."""
+    ledger = ledger_factory([BASE], name="cli-prefix", id_prefix="77")
+    first = json.loads(
+        write(
+            ledger,
+            "entity",
+            "add",
+            "item",
+            "--name",
+            "first",
+            "--id",
+            "aaaaaaaa-1111-4111-8111-111111111111",
+            "--json",
+        ).output
+    )
+    second = json.loads(
+        write(
+            ledger,
+            "entity",
+            "add",
+            "item",
+            "--name",
+            "second",
+            "--id",
+            "aaaaaaaa-1111-4111-8111-222222222222",
+            "--json",
+        ).output
+    )
+
+    added = json.loads(
+        write(
+            ledger,
+            "alias",
+            "add",
+            "entity",
+            second["id"][:30],
+            "second-old",
+            "--json",
+        ).output
+    )
+    assert added["object_id"] == second["id"]
+    assert (
+        json.loads(read(ledger, "entity", "show", first["id"][:26], "--json").output)["id"]
+        == first["id"]
+    )
+
+    # An ambiguous prefix is a usage error (main() exits 2), names its
+    # candidates and commits nothing.
+    from tetramark.errors import UsageError
+
+    before = commit_count(ledger)
+    ambiguous = invoke(ledger, "alias", "add", "entity", "aaaaaaaa", "clash")
+    assert isinstance(ambiguous.exception, UsageError)
+    assert ambiguous.exception.exit_code == 2
+    message = str(ambiguous.exception)
+    assert first["id"] in message and second["id"] in message
+    assert "ambiguous" in message
+    assert commit_count(ledger) == before
+
+    # An exact alias still wins over that same text as an id prefix.
+    write(ledger, "alias", "add", "entity", first["id"], "aaaaaaaa")
+    assert (
+        json.loads(read(ledger, "entity", "show", "aaaaaaaa", "--json").output)["id"]
+        == first["id"]
+    )
+
+
 def test_cli_show_prints_sorted_aliases_in_json_and_table(
     cli_env: None, ledger_factory
 ) -> None:

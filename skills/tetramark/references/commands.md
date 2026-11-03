@@ -235,6 +235,9 @@ tm history ID|ALIAS|BOX [--json]
 
 `OBJECT_TYPE` is `entity`, `stock`, `aliquot` or `box`; aliases are unique per object type.
 `alias remove ALIAS` removes that alias everywhere, `alias remove stock ALIAS` only from stocks.
+An incomplete object id is accepted wherever a command takes an `ID|ALIAS`: when its prefix matches
+exactly one object it resolves, and a prefix that matches several is a usage error (exit 2) naming
+the candidates — a full id or exact alias always wins first.
 `find` matches ids exactly and aliases, names and kind string/text fields by exact, prefix or
 substring text (case-insensitive, literal), ranks exact id → exact alias → exact name → name prefix
 → alias prefix → name substring → alias substring → fields, and shows summary and location. `history` merges aliquot events and the Dolt commits that touched the object.
