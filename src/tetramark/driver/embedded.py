@@ -138,7 +138,9 @@ class EmbeddedDriver(Driver):
             # the per-statement path replays the buffer and previews the state.
             return [self.query(sql, params) for sql, params in ordered]
         rendered = [render_sql(sql, params) for sql, params in ordered]
-        batch = ";\n".join(rendered)
+        # A newline before the separator keeps a query that ends in a
+        # ``--`` line comment from swallowing the next statement.
+        batch = "\n;\n".join(rendered)
         result_sets = _parse_result_sets(self._invoke(batch, "json"), keep_empty=True)
         if len(result_sets) != len(rendered):
             return [self.query(sql, params) for sql, params in ordered]
