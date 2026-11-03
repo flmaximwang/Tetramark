@@ -164,6 +164,70 @@ def test_bad_sql_raises_ledger_error(driver: Driver) -> None:
         driver.query("SELECT * FROM definitely_missing_table")
 
 
+# -- batched reads --------------------------------------------------------
+
+
+def test_query_many_keeps_one_result_per_statement(driver: Driver) -> None:
+    table = table_name()
+    driver.execute(
+        f"CREATE TABLE {table} (id BIGINT PRIMARY KEY, label VARCHAR(255))"
+    )
+    driver.execute(f"INSERT INTO {table} VALUES (%s, %s)", (1, "one"))
+    driver.execute(f"INSERT INTO {table} VALUES (%s, %s)", (2, None))
+
+    results = driver.query_many(
+        [
+            (f"SELECT id, label FROM {table} ORDER BY id", None),
+            ("SELECT 1 AS n WHERE 1 = 0", None),
+            (f"SELECT COUNT(*) AS n FROM {table}", None),
+            ("SELECT NULL AS only_null", None),
+        ]
+    )
+    assert len(results) == 4
+    # The NULL-only column is restored even though JSON omitted it, and the
+    # zero-row statement still owns an (empty) entry at its position.
+    assert results[0] == [{"id": 1, "label": "one"}, {"id": 2, "label": None}]
+    assert results[1] == []
+    assert results[2] == [{"n": 2}]
+    assert results[3] == [{"only_null": None}]
+
+
+def test_query_many_propagates_errors(driver: Driver) -> None:
+    with pytest.raises(LedgerError, match="(?i)not found"):
+        driver.query_many(
+            [
+                ("SELECT 1 AS ok", None),
+                ("SELECT * FROM definitely_missing_table", None),
+            ]
+        )
+
+
+def test_embedded_query_many_runs_json_and_csv_once(
+    dolt_repo: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = EmbeddedDriver(dolt_repo, env=dolt_env)
+    calls: list[str] = []
+    original = EmbeddedDriver._invoke
+
+    def counting(
+        self: EmbeddedDriver, sql: str, result_format: str
+    ) -> str:
+        calls.append(result_format)
+        return original(self, sql, result_format)
+
+    monkeypatch.setattr(EmbeddedDriver, "_invoke", counting)
+    results = driver.query_many(
+        [
+            ("SELECT 1 AS a, NULL AS b", None),
+            ("SELECT 2 AS c WHERE 1 = 0", None),
+            ("SELECT 3 AS d", None),
+        ]
+    )
+    assert results == [[{"a": 1, "b": None}], [], [{"d": 3}]]
+    # One JSON batch for the rows, one CSV batch for the column headers.
+    assert calls == ["json", "csv"]
+
+
 # -- backend specifics ----------------------------------------------------
 
 
@@ -263,6 +327,22 @@ def test_two_sessions_read_in_parallel_without_crossing(
     assert pair.base.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 2}]
     assert pair.branch.query(f"SELECT COUNT(*) AS n FROM {table}") == [{"n": 2}]
     assert pair.base.query("SELECT active_branch() AS `b`") == [{"b": "main"}]
+
+
+def test_query_many_reads_the_session_branch(branch_pair: BranchPair) -> None:
+    pair = branch_pair
+    pair.branch.execute(f"INSERT INTO {pair.table} VALUES (%s)", (2,))
+    assert pair.branch.commit("branch batch row") is not None
+
+    results = pair.branch.query_many(
+        [
+            (f"SELECT COUNT(*) AS n FROM {pair.table}", None),
+            ("SELECT active_branch() AS `b`", None),
+        ]
+    )
+    assert results == [[{"n": 2}], [{"b": pair.name}]]
+    # The checked-out branch is still untouched by the batch read.
+    assert pair.base.query(f"SELECT COUNT(*) AS n FROM {pair.table}") == [{"n": 1}]
 
 
 def test_missing_branch_is_a_usage_error(
