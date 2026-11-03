@@ -145,16 +145,17 @@ def fail_first_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the next ``query_many`` fail, as one missing table in a batch does.
 
     The planner then re-reads one query at a time *and* keeps reference
-    resolution on the live queries, which is the historical path.
+    resolution on the live queries, which is the historical path.  The caller
+    opens the ledger first: the planner's snapshot is the first batch after it.
     """
     original = EmbeddedDriver.query_many
     state = {"failed": False}
 
-    def failing(self: EmbeddedDriver, statements: Any) -> Any:
+    def failing(self: EmbeddedDriver, statements: Any, **kwargs: Any) -> Any:
         if not state["failed"]:
             state["failed"] = True
             raise LedgerError("simulated: one read in the batch failed")
-        return original(self, statements)
+        return original(self, statements, **kwargs)
 
     monkeypatch.setattr(EmbeddedDriver, "query_many", failing)
 
@@ -391,9 +392,10 @@ def test_a_failing_batch_falls_back_to_the_per_query_reads(
     batched = ledger_factory(FULL, name="fallback-batched")
     import_csv(batched, "all", exported.directory)
 
+    # Open the target first: the planner's snapshot is then the first batch.
+    fallback = ledger_factory(FULL, name="fallback-per-query")
     with monkeypatch.context() as patched:
         fail_first_batch(patched)
-        fallback = ledger_factory(FULL, name="fallback-per-query")
         import_csv(fallback, "all", exported.directory)
 
     for table in CORE_TABLES:
