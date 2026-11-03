@@ -69,16 +69,17 @@ LOADABLE_PARTS = tuple(part for part in PARTS if part != "biosamples")
 
 #: Current preset versions: base 4 (the grid96 -> grid8x12 rename, ticket 30),
 #: molbio 3 (a bundle of parts, ticket 27), cellbio 1 (ticket 28),
-#: cell_culture 2 (cell_vial extras and cell_biosample, ticket 28), the other
-#: parts at 1 and library 2 (spec 4 status sets, ticket 25).
+#: cell_culture 2 (cell_vial extras and cell_biosample, ticket 28), proteins 2
+#: and nucleic_acids 2 (IUPAC sequence patterns, ticket rq9), the other parts
+#: at 1 and library 2 (spec 4 status sets, ticket 25).
 EXPECTED_VERSIONS = {
     "base": 4,
     "molbio": 3,
     "library": 2,
     "cellbio": 1,
-    "nucleic_acids": 1,
+    "nucleic_acids": 2,
     "bacteria": 1,
-    "proteins": 1,
+    "proteins": 2,
     "cell_culture": 2,
     "immuno": 1,
     "viral_vectors": 1,
@@ -182,8 +183,8 @@ PART_KINDS = {
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
 MOLBIO_VERSIONS = {
     "base": 4,
-    "proteins": 1,
-    "nucleic_acids": 1,
+    "proteins": 2,
+    "nucleic_acids": 2,
     "bacteria": 1,
     "cell_culture": 2,
     "molbio": 3,
@@ -192,8 +193,8 @@ MOLBIO_VERSIONS = {
 #: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
 CELLBIO_VERSIONS = {
     "base": 4,
-    "proteins": 1,
-    "nucleic_acids": 1,
+    "proteins": 2,
+    "nucleic_acids": 2,
     "cell_culture": 2,
     "immuno": 1,
     "viral_vectors": 1,
@@ -418,6 +419,76 @@ def test_oligo_and_oligo_stock_follow_the_design() -> None:
     ]
     assert set(stock.fields) == {"concentration_um", "solvent"}
     assert stock.description.strip().endswith("Adapted from BioManager (MIT).")
+
+
+#: Ticket rq9: the bundled sequence fields validate their IUPAC alphabet.
+NUCLEOTIDE_PATTERN = "[ACGTURYKMSWBDHVN]+"
+AMINO_ACID_PATTERN = "[ACDEFGHIKLMNPQRSTVWYXBZUO*]+"
+
+
+def test_bundled_sequence_fields_carry_the_iupac_patterns() -> None:
+    """The three shipped sequence fields name exactly the bead's regexes."""
+    proteins = load_repo_preset("proteins")
+    nucleic = load_repo_preset("nucleic_acids")
+
+    construct = proteins.kinds["protein_construct"]
+    assert construct.fields["sequence"].pattern == NUCLEOTIDE_PATTERN
+    assert construct.fields["mature_sequence"].pattern == AMINO_ACID_PATTERN
+    # ``sequence_fields`` is the mixin both construct kinds share.
+    assert "sequence_fields" in yaml.safe_load(
+        repo_preset("proteins").read_text(encoding="utf-8")
+    )["mixins"]
+    assert nucleic.kinds["plasmid"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
+    assert nucleic.kinds["oligo"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
+    assert proteins.preset_versions["proteins"] == 2
+    assert nucleic.preset_versions["nucleic_acids"] == 2
+
+
+def test_iupac_patterns_validate_rows_in_a_new_ledger(ledger_factory) -> None:
+    """Valid IUPAC codes pass the API; a non-alphabet letter is a UsageError."""
+    ledger = ledger_factory(["molbio"], name="iupac")
+    construct = ledger.entities.add(
+        "protein_construct",
+        name="c-iupac",
+        values={
+            "sequence": "ACGTURYKMSWBDHVN",
+            "mature_sequence": "ACDEFGHIKLMNPQRSTVWYXBZUO*",
+            "molecular_weight_da": 12345.67,
+        },
+    )
+    ledger.entities.add(
+        "plasmid",
+        name="p-iupac",
+        values={"sequence": "acgtn", "construct": construct["id"]},
+    )
+    oligo = ledger.entities.add(
+        "oligo", name="o-iupac", values={"sequence": "acgtur ykms"}
+    )
+    # The app normalises before it checks the pattern: lowercase/whitespace is
+    # stripped and uppercased, then matched in full.
+    assert ledger.driver.query(
+        "SELECT `sequence` FROM `entity_oligo` WHERE `id` = %s", (oligo["id"],)
+    ) == [{"sequence": "ACGTURYKMS"}]
+    assert ledger.check().passed
+
+    with pytest.raises(UsageError, match="does not match the pattern"):
+        ledger.entities.add(
+            "protein_construct", name="c-bad", values={"sequence": "ACGTZ"}
+        )
+    with pytest.raises(UsageError, match="does not match the pattern"):
+        ledger.entities.add(
+            "oligo", name="o-bad", values={"sequence": "ZACGT"}
+        )
+    with pytest.raises(UsageError, match="does not match the pattern"):
+        ledger.entities.add(
+            "protein_construct",
+            name="c-bad-mature",
+            values={"sequence": "ACGT", "mature_sequence": "MKW."},
+        )
+    with pytest.raises(UsageError, match="does not match the pattern"):
+        ledger.entities.add(
+            "plasmid", name="p-bad", values={"sequence": "ACGT1"}
+        )
 
 
 def test_molbio_rules_moved_to_the_part_owning_their_tables() -> None:

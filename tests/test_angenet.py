@@ -57,8 +57,8 @@ ORGANISM_PARTS = ("drosophila", "c_elegans", "zebrafish", "mouse")
 #: parts come before the bundle that lists them, depth first).
 ANGENET_VERSIONS = {
     "base": 4,
-    "proteins": 1,
-    "nucleic_acids": 1,
+    "proteins": 2,
+    "nucleic_acids": 2,
     "biosamples": 1,
     "drosophila": 1,
     "c_elegans": 1,
