@@ -310,10 +310,12 @@ def test_batched_export_writes_the_per_query_bytes(
     prep_rows = list(csv.DictReader(io.StringIO(prep_csv)))
     assert prep_rows and all(row["aliquots"] == "0" for row in prep_rows)
     boxes_csv = (batched / "boxes.csv").read_text(encoding="utf-8")
-    shelf_rows = [row for row in csv.DictReader(io.StringIO(boxes_csv)) if row["name"] == "SHELF"]
+    box_rows = list(csv.DictReader(io.StringIO(boxes_csv)))
+    shelf_rows = [row for row in box_rows if row["name"] == "SHELF"]
     assert shelf_rows and shelf_rows[0]["alias"] == "S"
-    plate_rows = [row for row in csv.DictReader(io.StringIO(boxes_csv)) if row["name"] == "PLATE"]
-    assert plate_rows and plate_rows[0]["parent"] == "SHELF"
+    plate_rows = [row for row in box_rows if row["name"] == "PLATE"]
+    # ``parent`` carries the parent box's id (the export writes the FK value).
+    assert plate_rows and plate_rows[0]["parent"] == shelf_rows[0]["id"]
 
 
 def test_batched_import_leaves_the_per_query_state(
