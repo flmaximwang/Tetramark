@@ -16,6 +16,7 @@ import csv
 import datetime as dt
 import io
 import json
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +25,7 @@ from rich.console import Console
 from rich.table import Table
 
 from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, target_branch
+from tetramark.core.ids import UuidIds
 from tetramark.errors import UsageError
 
 __all__ = [
@@ -31,11 +33,20 @@ __all__ = [
     "emit_payload",
     "emit_read",
     "emit_write",
+    "is_uuid4",
     "json_default",
     "output_format",
+    "short_uuid_ids",
 ]
 
 FORMATS: tuple[str, ...] = ("table", "json", "csv")
+
+#: The ledger's own uuid id strategy defines what a uuid id is (36-char
+#: 8-4-4-4-12, case-insensitive) — reuse it rather than keeping a second regex.
+_UUID_IDS = UuidIds()
+
+#: Shortest uuid prefix shown by :func:`short_uuid_ids` (git-style short hash).
+SHORT_UUID_LENGTH = 8
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +86,59 @@ def json_default(value: Any) -> Any:
     if isinstance(value, (dt.datetime, dt.date)):
         return value.isoformat()
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Short uuid ids (table output only, like git's short hashes)
+# ---------------------------------------------------------------------------
+
+
+def is_uuid4(value: Any) -> bool:
+    """Whether ``value`` is a canonical uuid id (8-4-4-4-12, case-insensitive).
+
+    The shape is the ledger's uuid id strategy (:class:`~tetramark.core.ids.UuidIds`),
+    so datecode, sequence and aliquot ids are never shortened.
+    """
+    return _UUID_IDS.validate(value)
+
+
+def short_uuid_ids(
+    values: Sequence[Any], *, min_length: int = SHORT_UUID_LENGTH
+) -> list[Any]:
+    """Shorten uuid ids to prefixes that are unique within ``values``.
+
+    Every canonical uuid id becomes its shortest prefix of at least
+    ``min_length`` characters that no other uuid id in ``values`` shares
+    (compared case-insensitively); colliding prefixes grow together until they
+    differ.  Non-uuid values pass through unchanged, and the result is aligned
+    with ``values`` and deterministic.
+    """
+    uuids = [value for value in values if is_uuid4(value)]
+    prefixes: dict[str, str] = {}
+    for value in uuids:
+        folded = value.lower()
+        width = min_length
+        while width < len(folded) and any(
+            other.lower()[:width] == folded[:width]
+            for other in uuids
+            if other != value
+        ):
+            width += 1
+        prefixes[value] = value[:width]
+    return [
+        prefixes[value] if isinstance(value, str) and value in prefixes else value
+        for value in values
+    ]
+
+
+def _shorten_uuid_columns(
+    rows: list[dict[str, Any]], columns: Sequence[str]
+) -> None:
+    """Replace uuid values in ``columns`` with unique short prefixes, in place."""
+    for column in columns:
+        shortened = short_uuid_ids([row.get(column) for row in rows])
+        for row, value in zip(rows, shortened, strict=True):
+            row[column] = value
 
 
 def _cell(value: Any) -> str:
@@ -122,8 +186,14 @@ def emit_read(
     fmt: str,
     columns: list[str] | None = None,
     empty: str = "(none)",
+    short_uuid_columns: Sequence[str] = (),
 ) -> None:
-    """Print one record or a list of records in the requested format."""
+    """Print one record or a list of records in the requested format.
+
+    ``short_uuid_columns`` names list-table columns whose uuid ids are shown as
+    unique short prefixes; JSON and CSV always keep the full ids (they are the
+    machine formats, like git plumbing).
+    """
     if fmt == "json":
         _dump(data)
         return
@@ -136,6 +206,7 @@ def emit_read(
     if fmt == "csv":
         typer.echo(_csv(rows, columns=columns))
         return
+    _shorten_uuid_columns(rows, short_uuid_columns)
     typer.echo(_table(rows, columns=columns, empty=empty))
 
 

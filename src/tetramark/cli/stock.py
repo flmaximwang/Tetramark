@@ -132,6 +132,7 @@ def list_stocks_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=["id", "kind", "entity_id"],
+            short_uuid_columns=("id", "entity_id"),
         )
     finally:
         ledger.close()
