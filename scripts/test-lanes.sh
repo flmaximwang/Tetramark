@@ -10,12 +10,13 @@
 # point before a merge/release. It fails (exit 1) when
 #   * a lane fails, or
 #   * the fast lane exceeds FAST_LANE_BUDGET_SECONDS (default 10 s), or
-#   * the full lane exceeds the recorded 0.5.0 baseline +20 %.
+#   * the full lane exceeds FULL_LANE_BUDGET_SECONDS (default 300 s = five
+#     minutes).
 #
-# FULL_LANE_BASELINE_SECONDS defaults to the measured 0.5.0 baseline (1643 s,
-# measured on the 10-CPU developer machine via ticket .11 with `-n auto`;
-# override it on other machines). Set it to an empty value to measure the full
-# lane without gating it -- the script then says so.
+# The 0.5.0 baseline was 1643 s.  Batching the per-statement dolt processes
+# (Tetramark-0i8.x) and running xdist with --dist worksteal brought the suite
+# under five minutes.  Set FULL_LANE_BUDGET_SECONDS to an empty value to
+# measure without gating it -- the script then says so.
 #
 # Eligible environments: `uv run pytest` when uv is installed, otherwise
 # $PYTEST (default `python3 -m pytest`). In sandboxes where `uv run` does not
@@ -29,10 +30,9 @@ cd "$ROOT" || exit 1
 
 LANE=${1:-all}
 FAST_LANE_BUDGET_SECONDS=${FAST_LANE_BUDGET_SECONDS:-10}
-# Measured 0.5.0 baseline (ticket .11, `-n auto`, 10 workers); override on
-# other machines. An explicitly empty value disables the gate.
-FULL_LANE_BASELINE_SECONDS=${FULL_LANE_BASELINE_SECONDS-1643}
-FULL_LANE_FACTOR_PERCENT=120
+# Hard ceiling: the real-Dolt full suite must stay under five minutes.
+# An explicitly empty value disables the gate.
+FULL_LANE_BUDGET_SECONDS=${FULL_LANE_BUDGET_SECONDS-300}
 DURATIONS=${DURATIONS:-25}
 
 if [ -n "${PYTEST:-}" ]; then
@@ -83,16 +83,12 @@ fi
 
 if [ "$LANE" = all ] || [ "$LANE" = full ]; then
     run_lane full -q --durations="$DURATIONS"
-    if [ -z "$FULL_LANE_BASELINE_SECONDS" ]; then
-        echo "== full lane budget not enforced: set FULL_LANE_BASELINE_SECONDS to the" \
-             "measured 0.5.0 baseline (see docs/guides/test-harness.md)"
-    else
-        allowed=$((FULL_LANE_BASELINE_SECONDS * FULL_LANE_FACTOR_PERCENT / 100))
-        if [ "$full_seconds" -gt "$allowed" ]; then
-            echo "!! full lane took ${full_seconds}s > ${allowed}s" \
-                 "(baseline ${FULL_LANE_BASELINE_SECONDS}s +20 %)" >&2
-            failures=$((failures + 1))
-        fi
+    if [ -z "$FULL_LANE_BUDGET_SECONDS" ]; then
+        echo "== full lane budget not enforced: set FULL_LANE_BUDGET_SECONDS to a" \
+             "number (300 = the five-minute ceiling, see docs/guides/test-harness.md)"
+    elif [ "$full_seconds" -gt "$FULL_LANE_BUDGET_SECONDS" ]; then
+        echo "!! full lane took ${full_seconds}s > ${FULL_LANE_BUDGET_SECONDS}s budget" >&2
+        failures=$((failures + 1))
     fi
 fi
 
