@@ -95,6 +95,7 @@ tm aliquot purge ALQ                                  # hard delete, explicit on
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
 tm box list ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
+tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
 tm find QUERY               # id → alias → name/text match across all objects and kinds
@@ -254,3 +255,63 @@ portability     no warnings
 - `sequence` — `<prefix><NNNNN>` monotonic.
 - Explicit IDs are always accepted (back-filling / migration) if unique and well-formed (pattern from the strategy).
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
+
+### 6.3 The interactive form — `tm <object> add-form`
+
+`tm entity add-form`, `tm stock add-form`, `tm aliquot add-form` and `tm box add-form` open an
+interactive form that asks for what a person does not know by heart: the kind, the fields, the box,
+the slots. The form takes **no positional argument and no flags** — every question comes from the
+ledger's own schema. It is the human counterpart of `tm <object> add`; **agents keep using `add`**,
+which is scriptable, never blocks and writes exactly the same row.
+
+Without a terminal (stdin is not a TTY) the command refuses with a usage error (exit 2) that points
+at `tm <object> add`. Nothing is written, and no lock is taken.
+
+**The steps.** The first step is always the **numbered list of kinds** of that object, built from
+the ledger's effective schema. It is shown even when there is only one kind, and Enter accepts the
+only entry. For an aliquot the list shows the **stock** kinds: an aliquot has no kind of its own.
+Then come the **fields of the chosen kind in schema order**, each with its description and a `*`
+when it is required. **Computed** fields are never asked; **sequence** fields are.
+
+**Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
+
+| type | what the form accepts |
+|---|---|
+| `enum` | the value itself, or its number in the list |
+| `bool` | `y` / `n` |
+| `date`, `datetime` | ISO (`2026-11-03`, `2026-11-03T09:30`); `today` / `now` are accepted |
+| `int`, `decimal` | parsed as a number |
+| `string` with `pattern:` | the pattern is checked as you type |
+| `ref` | resolved immediately, and the target's name is shown back; `?term` searches the way `tm find` does and you pick a result by number |
+| multi-value (`aliases`, `slots`) | one value per line or comma-separated; an empty line ends the list |
+
+**Long fields** — the fields marked `long: true` in the preset (§2) — are never shown in full but in
+a short form: `[pasted 5,432 chars · 12 lines · ATGCGTACGT…TTAGCCGGAA]`. A bracketed paste is
+accepted as it is, pasting again **replaces** the value, and Backspace on the placeholder clears
+it. A short typed value is shown inline. A value the schema rejects shows the error and leaves you
+on the step.
+
+**Keys.** A footer lists them:
+
+| key | effect |
+|---|---|
+| `Enter` | next step: an optional field may be skipped and a default accepted; a required field left empty keeps the step and says `required` |
+| `Shift+Tab` | previous step, with its value pre-filled |
+| `Alt+Enter` / `Ctrl+J` | newline |
+| `Tab` | completes enum values and ref ids/aliases |
+| `Ctrl+E` | edit the current field in `$VISUAL` → `$EDITOR` → `vi`; it works on every field. The field name, its description and its pattern are put below a git-style scissors line and removed from what you edit, while `#` lines are kept |
+| `Ctrl+C` | abort: nothing is written |
+
+**The stock form** is the worked example of the steps a form needs beyond the fields, in this order:
+the **entity** (a ref, with search), the **kind's fields**, the **aliquot count**, the **box** (`?`
+lists the boxes) and the **slots** (the next free slots are filled in by default; `?` shows the free
+slots). The other forms ask for what their `add` command needs, in the same way.
+
+**The review screen** lists every value, numbered, with long values in short form. Typing a number
+jumps back to that step, `y` writes, `q` cancels.
+
+**The write** is the same `ledger.<objects>.add(...)` call that `add` makes, with no separate
+validation or write logic: the same message is printed, `--dry-run`, `--no-commit` and `--json`
+behave as they do for `add`, and **the write lock is taken only when `y` confirms**. If the core
+rejects the entry, the error is shown and the form goes back to the field that failed. There is no
+"add another": the form ends after one write.

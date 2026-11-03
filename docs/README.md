@@ -3,7 +3,7 @@
 | Where | What it is |
 |---|---|
 | [`spec/`](spec/README.md) | **The specification** — how Tetramark works, one file per chapter (§1…§10). Start here. |
-| [`guides/`](guides/) | How-to guides: [migrating a legacy ledger](guides/migrating-a-legacy-ledger.md), [upgrading 0.4.2 → 0.5.0](guides/upgrading-0.4-to-0.5.md), [upgrading 0.5.0 → 0.5.1](guides/upgrading-0.5.0-to-0.5.1.md), [releasing](guides/releasing.md), [the test harness](guides/test-harness.md). |
+| [`guides/`](guides/) | How-to guides: [migrating a legacy ledger](guides/migrating-a-legacy-ledger.md), [upgrading 0.4.2 → 0.5.0](guides/upgrading-0.4-to-0.5.md), [upgrading 0.5.0 → 0.5.1](guides/upgrading-0.5.0-to-0.5.1.md), [upgrading 0.5.1 → 0.6.0](guides/upgrading-0.5.1-to-0.6.0.md), [releasing](guides/releasing.md), [the test harness](guides/test-harness.md). |
 | [`releases/`](releases/) | Per-release notes, one `v<version>.md` per tag: the first heading becomes the release title and the tag message, the body becomes the release body. |
 | [`records/`](records/) | Dated delivery records: [the zsqlab10 migration](records/zsqlab10-migration.md), [wave 10 (spec 4, 0.3.0)](records/wave10-delivery.md), [the zsqlab10 spec-4 upgrade](records/zsqlab10-spec4-upgrade.md), [wave 11 (spec 5, 0.4.0)](records/wave11-delivery.md). |
 | [`issues/`](issues/) | Open design for planned work: [`001-tm-upgrade`](issues/001-tm-upgrade.md). Box views (the old issue 002) shipped in 0.4.0 — see the [wave 11 record](records/wave11-delivery.md). |

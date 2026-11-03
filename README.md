@@ -42,6 +42,7 @@ here is versioned by Dolt. The CLI is `tm`.
 - [`docs/guides/migrating-a-legacy-ledger.md`](docs/guides/migrating-a-legacy-ledger.md) — moving an old zsqlab ledger onto Tetramark.
 - [`docs/guides/upgrading-0.4-to-0.5.md`](docs/guides/upgrading-0.4-to-0.5.md) — the 0.4.2 → 0.5.0 upgrade note.
 - [`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md) — the 0.5.0 → 0.5.1 upgrade note (full-word subcommands).
+- [`docs/guides/upgrading-0.5.1-to-0.6.0.md`](docs/guides/upgrading-0.5.1-to-0.6.0.md) — the 0.5.1 → 0.6.0 upgrade note (the interactive form).
 - `skills/tetramark/SKILL.md` — day-to-day operating manual for agents and humans.
 - `skills/tetramark-schema/SKILL.md` — writing presets, kinds, fields, geometry and rules.
 
@@ -139,6 +140,26 @@ move boxes, audit, import/export, back up. See `skills/tetramark/references/reci
 stock ids can be repaired in place with `tm stock renumber OLD --auto`; the old ids stay findable as
 aliases.
 
+### For people: the interactive form
+
+Those commands are the machine-facing ones: they need field names and flag syntax. A person at a
+terminal can fill the same data in through a **form** instead:
+
+```sh
+tm entity add-form
+tm stock add-form
+tm aliquot add-form
+tm box add-form
+```
+
+The form asks for the kind, the fields (with their descriptions), the box and the slots, driven by
+the ledger's own schema, and checks every value as it is typed. It writes the same row
+`tm <object> add` writes. `Enter` moves on, `Shift+Tab` goes back to the previous step, `Tab`
+completes, `Ctrl+E` opens your editor on the current field, `Ctrl+C` aborts, and a footer lists the
+keys; a last screen shows every value and writes it when you confirm with `y`. Without a terminal
+the form refuses (exit 2) and points at `tm <object> add`, so scripts and agents keep using the
+flags.
+
 ## Upgrading from 0.4.2
 
 0.4.2 ledgers open unchanged (format, `spec_version` and the preset copies are untouched). The
@@ -162,6 +183,10 @@ The full note, including what to do with each 0.4 layout, is
 `ls`/`rm`), the old short subcommands are unknown commands that exit 2, and ledgers and data
 stay as they are — see
 [`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md).
+
+0.6.0 is additive too: it adds the interactive form (`tm <object> add-form`) and the read-only
+`long:` preset key, while ledgers, schema and data stay as they are — see
+[`docs/guides/upgrading-0.5.1-to-0.6.0.md`](docs/guides/upgrading-0.5.1-to-0.6.0.md).
 
 ## Command overview
 
