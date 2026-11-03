@@ -1,10 +1,21 @@
 # 7. Driver layer
 
-0.5.0 is **embedded-only** (P14). Every SQL statement runs through
+0.5.0 is **embedded by default** (P14). Every SQL statement runs through
 :class:`~tetramark.driver.embedded.EmbeddedDriver`, which executes `dolt sql -r json -q` as a
-subprocess in the ledger directory. There is no `ServerDriver`, no `tm server start|stop|status`, no
-pid/port management and no driver choice. A ledger needs only the `dolt` binary next to it — no
+subprocess in the ledger directory. There is no `tm server start|stop|status`, no pid/port
+management and no user-facing driver choice. A ledger needs only the `dolt` binary next to it — no
 long-lived process, no data directory, no server to start before the first command.
+
+**Opt-in server backend (Tetramark-0i8.8).** `driver/server.py` adds
+:class:`~tetramark.driver.server.ServerDriver`, a second `Driver` implementation that starts one
+real `dolt sql-server` per ledger and speaks MySQL through PyMySQL. It is selected **only** when the
+effective environment sets `TETRAMARK_DRIVER=server`; the default installation and every `tm`
+command keep using the embedded driver, and an install without `pymysql` never imports the module.
+The server backend exists for the test lane: the same real-Dolt tests run through it so the full
+suite fits under five minutes without mocking Dolt. `scripts/test-lanes.sh full` is that lane and
+`scripts/test-lanes.sh embedded` is the default-backend regression run; see
+`docs/guides/test-harness.md`. Server sessions still make exactly one `DOLT_COMMIT` per write
+command, and DDL keeps Dolt's implicit-commit semantics.
 
 The `Driver` abstract base class (`driver/base.py`) is deliberately **kept**: `query(sql, params) ->
 list[dict]`, `query_many(statements) -> list[list[dict]]`, `execute(sql, params)`,
@@ -16,8 +27,8 @@ per kind and per hit. `execute_many` is the write-side counterpart: it runs a ba
 statements in order in **one** `dolt sql` process, so a schema change (init, adopt, a migration step,
 `tm schema apply`) costs one process instead of one per DDL statement; the batch keeps the statement
 order, and a failing statement is named in the error without re-running the DDL that already ran. A
-future server mode is a separate plan (R4, not promised for 0.5.0) and can add
-a second implementation without touching the core; today `EmbeddedDriver` is the only one.
+server mode is opt-in (`TETRAMARK_DRIVER=server`, above) and adds a second
+implementation without touching the core; the default remains `EmbeddedDriver`.
 
 Branch selection uses Dolt's **revision database** `` `db/branch` ``. Each `dolt sql` invocation is
 its own process, i.e. its own session, so the driver prefixes every statement batch with

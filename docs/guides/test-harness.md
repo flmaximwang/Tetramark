@@ -55,7 +55,7 @@ Server lifecycle details that matter when debugging:
 |---|---|---|---|
 | **fast** | `pytest -q -m fast` | **seconds** (0.5.0 baseline 2.38 s) | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
 | **full** | `TETRAMARK_DRIVER=server pytest` (`scripts/test-lanes.sh full`) | **≤ 300 s** hard ceiling: the real-Dolt suite through `dolt sql-server` | everything, including every real-Dolt integration flow |
-| **embedded** | `TETRAMARK_DRIVER= pytest` (`scripts/test-lanes.sh embedded`) | measured, ~13 min; optional gate via `EMBEDDED_LANE_BUDGET_SECONDS` | the same tests through the default one-process-per-batch backend; run before a release to prove the default path |
+| **embedded** | `TETRAMARK_DRIVER= pytest` (`scripts/test-lanes.sh embedded`) | measured 732 s (12:11) on the reference machine; optional gate via `EMBEDDED_LANE_BUDGET_SECONDS` | the same tests through the default one-process-per-batch backend; run before a release to prove the default path |
 | **release** | fast + full + embedded + the heavy migration/lab subset | green, no new failures | `tests/test_migrate.py`, the read-only 0.4.2 lab-ledger check when `.dsh/tm-l8g/lab-snapshot` exists, docs flows, and `scripts/test-lanes.sh` |
 
 Rules:
@@ -63,8 +63,10 @@ Rules:
 - **Never put a database test on the fast lane.** If it opens a `Ledger`, calls `init_ledger`/`open`,
   or shells out to `dolt`, it is not `fast`.
 - **The default `full` lane is the server lane.** It is still real Dolt and still exercises every
-  flow; it is the lane the five-minute requirement talks about. The embedded lane is the same test
-  content on the slower backend.
+  flow; it is the lane the five-minute requirement talks about. Measured on the reference machine
+  after Tetramark-0i8.8: **144 s** server lane (1219 passed, 89 embedded-budget skips, 424 server
+  starts, 0 leftovers) and **732 s** embedded lane (1307 passed). The embedded lane is the same test
+  content on the slower default backend.
 - **`-n auto`, not `-n 4`.** The suite is dominated by independent ledger directories and processes;
   `-n auto --dist worksteal` is the configured default (`addopts`). Measure on the target machine
   instead of copying a worker count from another one.
