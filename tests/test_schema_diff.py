@@ -14,7 +14,7 @@ import sys
 import warnings
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pytest
 import yaml
@@ -174,6 +174,25 @@ def column_names(ledger: Ledger, table: str) -> set[str]:
     return {str(row["name"]) for row in rows}
 
 
+def columns_by_table(ledger: Ledger, tables: Iterable[str]) -> dict[str, set[str]]:
+    """Column names for many tables from one batched read (one dolt process)."""
+    names = list(tables)
+    results = ledger.driver.query_many(
+        [
+            (
+                "SELECT column_name AS name FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = %s",
+                (table,),
+            )
+            for table in names
+        ]
+    )
+    return {
+        table: {str(row["name"]) for row in rows}
+        for table, rows in zip(names, results)
+    }
+
+
 def table_names(ledger: Ledger) -> set[str]:
     rows = ledger.driver.query(
         "SELECT table_name AS name FROM information_schema.tables "
@@ -306,11 +325,14 @@ def v1_view_sql(statement_sql: str) -> str:
 
 def downgrade_views_to_v1(ledger: Ledger) -> list[str]:
     """Rewrite every generated view in the pre-TM-07 (spec v1) shape."""
+    statements: list[str | tuple[str, Any]] = []
     names: list[str] = []
     for statement in view_statements(ledger.schema):
-        ledger.driver.execute(f"DROP VIEW `{statement.name}`")
-        ledger.driver.execute(v1_view_sql(statement.sql))
+        statements.append(f"DROP VIEW `{statement.name}`")
+        statements.append(v1_view_sql(statement.sql))
         names.append(statement.name)
+    # One dolt process for the whole downgrade instead of one per view DDL.
+    ledger.driver.execute_many(statements)
     return names
 
 
@@ -369,14 +391,16 @@ def test_upgrade_from_spec_v1_adds_alias_columns_and_refreshes_meta(
     # ``tm schema apply`` refreshes the meta to the tool's current format.
     assert ledger.meta["spec_version"] == str(model.SPEC_VERSION)
     assert ledger.meta["tetramark_version"] == __version__
-    for name, column in (
+    expected_columns = (
         ("v_entity_sample", "alias_list"),
         ("v_stock_bacterial", "alias_list"),
         ("v_stock_status", "alias_list"),
         ("v_aliquot_location", "alias_list"),
         ("v_box_slots", "occupant_alias_list"),
-    ):
-        assert column in column_names(ledger, name), name
+    )
+    columns = columns_by_table(ledger, [name for name, _column in expected_columns])
+    for name, column in expected_columns:
+        assert column in columns[name], name
     assert_clean(ledger)
 
 
