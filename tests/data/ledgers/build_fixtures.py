@@ -182,6 +182,29 @@ def _which(name: str) -> str:
     return binary
 
 
+def _legacy_env(dolt_root: Path) -> dict[str, str]:
+    """The environment a legacy checkout's own interpreter must run with.
+
+    The test runner exports ``PYTHONPATH`` pointing at the current worktree's
+    ``src``.  The fixture build runs the *pinned legacy checkout's* code (its
+    ``init_ledger_on_server``), so an inherited ``PYTHONPATH`` would import the
+    current 0.5.0 package instead and fail with an ImportError.  Strip every
+    Python/legacy-tetramark injection so the checkout's own virtualenv is used.
+    """
+    env = {**os.environ}
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "TETRAMARK_WORKSPACE",
+        "TETRAMARK_LEDGER",
+        "TETRAMARK_PRESETS_DIR",
+    ):
+        env.pop(name, None)
+    env["DOLT_ROOT_PATH"] = str(dolt_root)
+    return env
+
+
 def _git_env() -> dict[str, str]:
     """An environment that cannot pick up the developer's git identity."""
     env = {**os.environ}
@@ -351,9 +374,7 @@ def _init_ledger_with_legacy_tool(
 
     snippet = tmp_root / "init_on_server.py"
     snippet.write_text(_INIT_SNIPPET, encoding="utf-8")
-    env = {**os.environ}
-    env.pop("TETRAMARK_WORKSPACE", None)
-    env["DOLT_ROOT_PATH"] = str(tmp_root / "dolt-root")
+    env = _legacy_env(tmp_root / "dolt-root")
     _run(
         [
             str(legacy / ".venv" / "bin" / "python"),

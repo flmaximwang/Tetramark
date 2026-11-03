@@ -122,7 +122,10 @@ def kinds() -> dict[str, Any]:
 
 @pytest.fixture
 def preset(tmp_path: Path, kinds: dict[str, Any]) -> PresetWriter:
-    writer = PresetWriter(tmp_path / "evolving")
+    # The preset source keeps its own directory: a ledger is one directory now,
+    # so the old ``tmp_path/<ledger>`` target would collide with this source
+    # (in 0.4 they lived under separate workspace/data directories).
+    writer = PresetWriter(tmp_path / "evolving-preset")
     writer.write(kinds)
     return writer
 
@@ -1112,7 +1115,6 @@ def cli_isolated(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 

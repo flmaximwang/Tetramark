@@ -168,7 +168,6 @@ def cli_args(ledger) -> list[str]:
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 # ---------------------------------------------------------------------------
