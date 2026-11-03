@@ -369,9 +369,13 @@ def _batch_error(error: LedgerError, rendered: Sequence[str]) -> LedgerError:
             statement = statement[:157] + "..."
         context = f"statement {failing} of {total} failed: {statement}"
     else:
-        # Dolt failed before the first statement produced its marker (e.g. the
-        # session's revision database could not be selected); nothing ran.
-        context = f"a batch of {total} statement(s) failed before the first one ran"
+        # Dolt failed before the first statement's marker was printed (e.g. the
+        # session's revision database could not be selected, or the output was
+        # lost): the batch failed as a whole and the statement is not named.
+        context = (
+            f"a batch of {total} statement(s) failed; the failing statement "
+            "could not be identified"
+        )
     return LedgerError(f"{context}\n{cleaned}" if cleaned else context)
 
 
