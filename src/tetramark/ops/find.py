@@ -3,14 +3,14 @@
 Search precedence follows the zsqlab ``find_entity.sh`` reference:
 
 1. an exact core id (entity, stock, aliquot or box);
-2. an exact alias (per object type, so one alias text may hit several);
+2. an alias (per object type, so one alias text may hit several);
 3. a name or a ``string``/``text`` field of a kind table, case-insensitively.
 
 Every hit carries the object type, kind, id, a human summary, its location
 (``Freezer/Shelf/Box:A1`` for aliquots and everything above them) and the way
-it matched.  The result list is ranked: exact ids before aliases before name
-matches before field matches, exact before prefix before substring.  Ties are
-broken by object type and id so output is stable.
+it matched.  The result list is ranked: exact id, exact alias, exact name, then
+name prefix, alias prefix, name substring, alias substring, and field matches
+last.  Ties are broken by object type and id so output is stable.
 
 The search is deliberately literal: ``%`` and ``_`` are ordinary characters
 (LOCATE, not LIKE), matching the reference script.  Whitespace in the query is
@@ -56,7 +56,9 @@ RANKS: dict[str, int] = {
     "alias": 900,
     "name_exact": 800,
     "name_prefix": 700,
+    "alias_prefix": 690,
     "name_contains": 600,
+    "alias_contains": 590,
     "field_exact": 500,
     "field_contains": 400,
 }
@@ -232,15 +234,23 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
                 match="id",
             )
 
-    # 2. Exact aliases.
+    # 2. Aliases: an exact alias is its own tier; a prefix or substring of an
+    #    alias ranks just below the matching name tier.
     for row in ledger.driver.query(
-        f"SELECT {_quote('object_type')}, {_quote('object_id')} "
-        f"FROM {_quote('alias')} WHERE LOWER({_quote('alias')}) = LOWER(%s) "
+        f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
+        f"FROM {_quote('alias')} WHERE LOCATE(LOWER(%s), LOWER({_quote('alias')})) > 0 "
         f"ORDER BY {_quote('object_type')}",
-        (text,),
+        (needle,),
     ):
         object_type = str(row["object_type"])
         object_id = str(row["object_id"])
+        alias = str(row["alias"]).lower()
+        if alias == needle:
+            score = RANKS["alias"]
+        elif alias.startswith(needle):
+            score = RANKS["alias_prefix"]
+        else:
+            score = RANKS["alias_contains"]
         identity = _identity(ledger, object_type, object_id)
         if identity is None:
             continue
@@ -249,7 +259,7 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
             object_id,
             kind=identity[0],
             name=identity[1],
-            score=RANKS["alias"],
+            score=score,
             match="alias",
         )
 
