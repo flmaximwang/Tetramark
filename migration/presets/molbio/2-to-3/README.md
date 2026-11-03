@@ -29,17 +29,20 @@ earlier step that places the whole closure is the retrofit rule in
 `cell_culture` comes from the **frozen `cell_culture-1.yaml` next to `migrate.py`**, not from the
 repository: ticket 28 (delivered in 0.3.0) bumps `presets/cell_culture.yaml`
 to v2, but molbio v3 shipped with cell_culture 1 and this step records exactly that counter — the
-`1 → 2` step is [`migration/presets/cell_culture/1-to-2`](../../cell_culture/1-to-2/README.md). The
-other parts are still the current repository version here; when one of them is bumped by a later
-ticket, freeze its v1 copy next to this `migrate.py` the same way.
+`1 → 2` step is [`migration/presets/cell_culture/1-to-2`](../../cell_culture/1-to-2/README.md). Ticket
+rq9 does the same for `proteins` and `nucleic_acids`: their repository copies are v2 now, so this step
+ships and places the frozen [`proteins-1.yaml`](proteins-1.yaml) /
+[`nucleic_acids-1.yaml`](nucleic_acids-1.yaml) — the counters their own steps
+([proteins](../../proteins/1-to-2/README.md), [nucleic_acids](../../nucleic_acids/1-to-2/README.md))
+bump.
 
 The step
 
 1. places the whole current preset closure the ledger lists (the four parts, `molbio` v3, and
    `base`) **before** the runner opens the ledger — files are not Dolt content, and the spec-5
-   loader needs every stock kind's `statuses:` — then puts the frozen `base-3.yaml` and
-   `cell_culture-1.yaml` over their copies (files are not Dolt content, so those are the versions
-   the ledger now reads);
+   loader needs every stock kind's `statuses:` — then puts the frozen `base-3.yaml`,
+   `cell_culture-1.yaml`, `proteins-1.yaml` and `nucleic_acids-1.yaml` over their copies (files are
+   not Dolt content, so those are the versions the ledger now reads);
 2. applies the **additive** diff plan (oligo tables, the base box kind and their views); a
    destructive plan is refused before anything is written, because this step never drops a molbio
    table or column;
@@ -56,8 +59,9 @@ counter to `migration/presets/base/1-to-2`. `preset_versions.cell_culture` stays
 - `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
   (the step refuses a spec-4 ledger). On a wave-11 upgrade the order is `spec/4-to-5`, then
   `base/2-to-3` and this step (either order), then
-  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) **last** — the frozen base v3 copy
-  placed here is what that final step renames to v4; do not run it before this step.
+  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) after them — the frozen base v3 copy
+  placed here is what that step renames to v4; do not run it before this step. Ticket rq9's
+  `proteins`/`nucleic_acids` steps run after `base/3-to-4`.
 - `ledger_meta.preset_versions.molbio = 2` (a second run refuses).
 - A clean working set.
 - The ledger lists `molbio` (and may list other presets; their current copies are placed too, and

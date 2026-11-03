@@ -17,8 +17,10 @@ ledger's own (now v3) schema.  The step therefore
   spec 5's ``grid96`` -> ``grid8x12`` rename, and this wave-10 step must keep
   installing the content whose counter it bumps) and **cell_culture v1**
   (ticket 28 bumps the repository copy to v2, and this step must not install a
-  later preset's content).  Retrofitting the old target copy into every earlier
-  step that places the whole closure is the rule in ``migration/README.md``,
+  later preset's content).  Ticket rq9 bumps ``proteins`` and
+  ``nucleic_acids`` to v2, so the step also keeps their **frozen v1 copies**
+  the same way.  Retrofitting the old target copy into every earlier step that
+  places the whole closure is the rule in ``migration/README.md``,
 * applies the **additive** diff plan for the new kind (a destructive step is
   refused before anything is written),
 * bumps ``preset_versions.base`` to 3 and the fingerprint; the shared runner
@@ -68,6 +70,14 @@ from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
 #: The repository root: this file is ``migration/presets/base/2-to-3/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 REPO_PRESETS = REPO_ROOT / "presets"
+
+#: The frozen proteins v1 and nucleic_acids v1 this step keeps over the
+#: repository copies: ticket rq9 bumps both parts to v2, and an earlier step
+#: that places the whole current closure must not install that content behind
+#: the parts' own counters (``migration/presets/proteins/1-to-2`` and
+#: ``migration/presets/nucleic_acids/1-to-2`` own the bumps).
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-1.yaml")
+FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
 PRESET = "base"
 TO_VERSION = 3
@@ -185,6 +195,10 @@ def main(argv: list[str] | None = None) -> None:
     saved += vendor_preset_files(
         arguments.ledger,
         {"base": FROZEN_BASE, "cell_culture": FROZEN_CELL_CULTURE},
+    )
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},
     )
     try:
         run(

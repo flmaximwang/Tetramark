@@ -12,7 +12,10 @@ The step therefore
   content; the spec-5 loader needs a current copy for every stock kind's
   ``statuses:``), then puts the **frozen base v4** shipped next to this file
   over its own copy: ``presets/`` only ever holds the current version, so a
-  later bump must not change what this historical step installs,
+  later bump must not change what this historical step installs.  Ticket rq9
+  bumps ``proteins`` and ``nucleic_acids`` to v2, so this step also keeps their
+  **frozen v1 copies**; a ledger must reach those parts' counters through their
+  own steps, not behind them,
 * applies the diff plan with the explicit rename map from ``renames.yaml`` --
   the kind table ``box_grid96`` -> ``box_grid8x12``, its constraints and the
   core ``kind`` discriminator values; the per-box views that ``spec/4-to-5``
@@ -60,6 +63,14 @@ from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
 #: The repository root: this file is ``migration/presets/base/3-to-4/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 REPO_PRESETS = REPO_ROOT / "presets"
+
+#: The frozen proteins v1 and nucleic_acids v1 this step keeps over the
+#: repository copies: ticket rq9 bumps both parts to v2, and an earlier step
+#: that places the whole current closure must not install that content behind
+#: the parts' own counters (``migration/presets/proteins/1-to-2`` and
+#: ``migration/presets/nucleic_acids/1-to-2`` own the bumps).
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-1.yaml")
+FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
 PRESET = "base"
 TO_VERSION = 4
@@ -187,6 +198,10 @@ def main(argv: list[str] | None = None) -> None:
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_BASE})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},
+    )
     try:
         run(
             step,

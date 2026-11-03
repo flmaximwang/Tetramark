@@ -49,8 +49,11 @@ alias(object_type, object_id, alias, PK(object_type, alias))
   gains the oligo kinds), a base-2 ledger to 3 with
   `migration/presets/base/2-to-3/` (the slotless `incubator` box kind), and a
   base-3 ledger to 4 with `migration/presets/base/3-to-4/` (the `grid96` →
-  `grid8x12` rename); a bundle step also records the counters of the parts it
-  introduces. On a spec-4/base-3 ledger, run `migration/spec/4-to-5/` **before**
+  `grid8x12` rename), and its proteins/nucleic_acids to 2 with
+  `migration/presets/proteins/1-to-2/` then
+  `migration/presets/nucleic_acids/1-to-2/` (IUPAC sequence patterns, after
+  base 4 and with no DDL); a bundle step also records the counters of the
+  parts it introduces. On a spec-4/base-3 ledger, run `migration/spec/4-to-5/` **before**
   `migration/presets/base/3-to-4/`: the spec step keeps the ledger's own base-3
   copy (and so its `grid96` kind) while it creates the per-box views, then the
   preset step replaces that copy and renames the kind. See

@@ -30,9 +30,14 @@ offending row and writing nothing — three shapes: a box name that cannot becom
 lists the cleared rows, the upgrade order and the rollback). A spec-4 ledger still at base 2 — a
 molbio-2 ledger, for example — follows the same shape one counter lower: `migration/spec/4-to-5/`
 first, then `migration/presets/base/2-to-3/` and `migration/presets/molbio/2-to-3/` (and the
-`cell_culture`/`library` steps the ledger still needs), with
-`migration/presets/base/3-to-4/` **last**: the base v3 copies those steps install are what it
-renames, and it must not run before them. The spec step's README states the preconditions, the
+`cell_culture`/`library` steps the ledger still needs), and
+`migration/presets/base/3-to-4/` after them: the base v3 copies those steps install are what it
+renames, and it must not run before them. Ticket rq9's pattern steps
+(`migration/presets/proteins/1-to-2/`, then `migration/presets/nucleic_acids/1-to-2/`) run after
+`base/3-to-4`: they install the repository base v4 copy and refuse a ledger below it, and the
+nucleic step requires proteins already at 2. Like every preset step they add no DDL here — a
+`pattern` is validation metadata — but their one commit records the new fingerprint and regenerates
+the `dolt_tests` that now reject rows outside the sequence alphabet. The spec step's README states the preconditions, the
 upgrade order, verification and rollback; the preset step's README covers the rename. Run both with
 `--dry-run` first; on a real ledger write on a Dolt branch and merge only after review. The rule:
 whoever bumps a counter adds exactly one folder in the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH [--branch B] [--dry-run]`

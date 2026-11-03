@@ -22,7 +22,8 @@ The step therefore
   ``presets/`` only holds the current version) and **base v3** (the repository
   copy is v4 since spec 5's ``grid96`` -> ``grid8x12`` rename; this wave-10
   step must keep installing the base content of its era, per the retrofit rule
-  in ``migration/README.md``),
+  in ``migration/README.md``).  Ticket rq9 bumps ``proteins`` and
+  ``nucleic_acids`` to v2, so the step also keeps their **frozen v1 copies**,
 * applies the **additive** diff plan (three ``stock_cell_vial`` columns, the
   ``stock_cell_biosample`` table and the regenerated views); a destructive plan
   is refused before anything is written,
@@ -70,6 +71,14 @@ from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
 #: The repository root: this file is ``migration/presets/cell_culture/1-to-2/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 REPO_PRESETS = REPO_ROOT / "presets"
+
+#: The frozen proteins v1 and nucleic_acids v1 this step keeps over the
+#: repository copies: ticket rq9 bumps both parts to v2, and an earlier step
+#: that places the whole current closure must not install that content behind
+#: the parts' own counters (``migration/presets/proteins/1-to-2`` and
+#: ``migration/presets/nucleic_acids/1-to-2`` own the bumps).
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-1.yaml")
+FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
 PRESET = "cell_culture"
 TO_VERSION = 2
@@ -208,6 +217,10 @@ def main(argv: list[str] | None = None) -> None:
     saved += vendor_preset_files(
         arguments.ledger,
         {PRESET: FROZEN_CELL_CULTURE, "base": FROZEN_BASE},
+    )
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},
     )
     try:
         run(

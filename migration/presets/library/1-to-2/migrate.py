@@ -17,7 +17,9 @@ config into the preset.  The step therefore
   **frozen base v3** shipped next to this file over its own copy: the
   repository's ``presets/base.yaml`` is v4 since spec 5's ``grid96`` ->
   ``grid8x12`` rename, and this wave-10 step must keep installing the base
-  content its era reads.  ``migration/README.md`` requires the retrofit,
+  content its era reads.  Ticket rq9 bumps ``proteins`` and ``nucleic_acids``
+  to v2, so the step also keeps their **frozen v1 copies**.
+  ``migration/README.md`` requires the retrofit,
 * re-creates the generated views from the ledger's own (now v2) schema,
 * bumps ``preset_versions.library`` to 2 and the fingerprint; the shared runner
   regenerates the derived ``dolt_tests`` from the same schema in that commit.
@@ -58,6 +60,14 @@ from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
 #: The repository root: this file is ``migration/presets/library/1-to-2/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 REPO_PRESETS = REPO_ROOT / "presets"
+
+#: The frozen proteins v1 and nucleic_acids v1 this step keeps over the
+#: repository copies: ticket rq9 bumps both parts to v2, and an earlier step
+#: that places the whole current closure must not install that content behind
+#: the parts' own counters (``migration/presets/proteins/1-to-2`` and
+#: ``migration/presets/nucleic_acids/1-to-2`` own the bumps).
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-1.yaml")
+FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
 PRESET = "library"
 TO_VERSION = 2
@@ -142,6 +152,10 @@ def main(argv: list[str] | None = None) -> None:
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(arguments.ledger, {"base": FROZEN_BASE})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},
+    )
     try:
         run(
             step,

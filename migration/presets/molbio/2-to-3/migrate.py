@@ -24,7 +24,9 @@ The step therefore
   ``migration/presets/cell_culture/1-to-2`` owns the bump) and **base v3** (the
   repository copy is v4 since spec 5's ``grid96`` -> ``grid8x12`` rename, and
   this step must keep installing the base whose counter
-  ``migration/presets/base/2-to-3`` bumps).  Freezing the old target copy into
+  ``migration/presets/base/2-to-3`` bumps).  Ticket rq9 bumps ``proteins``
+  and ``nucleic_acids`` to v2, so the step also keeps their **frozen v1
+  copies** (their own steps own the bumps).  Freezing the old target copy into
   an earlier step that places the whole closure is the rule in
   ``migration/README.md``,
 * applies the **additive** diff plan (oligo tables, the base box kind and their
@@ -75,6 +77,14 @@ from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
 #: The repository root: this file is ``migration/presets/molbio/2-to-3/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 REPO_PRESETS = REPO_ROOT / "presets"
+
+#: The frozen proteins v1 and nucleic_acids v1 this step keeps over the
+#: repository copies: ticket rq9 bumps both parts to v2, and an earlier step
+#: that places the whole current closure must not install that content behind
+#: the parts' own counters (``migration/presets/proteins/1-to-2`` and
+#: ``migration/presets/nucleic_acids/1-to-2`` own the bumps).
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-1.yaml")
+FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
 PRESET = "molbio"
 TO_VERSION = 3
@@ -216,6 +226,10 @@ def main(argv: list[str] | None = None) -> None:
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(arguments.ledger, FROZEN_PART_FILES)
     saved += vendor_preset_files(arguments.ledger, {"base": FROZEN_BASE})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},
+    )
     try:
         run(
             step,
