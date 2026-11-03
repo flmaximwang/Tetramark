@@ -595,10 +595,8 @@ def test_cli_check_exit_codes_formats_and_verbose(ledger_factory, cli_env) -> No
 
     ledger = ledger_factory([FULL], name="cli-check")
     base = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        "cli-check",
+        str(ledger.path),
         "check",
     ]
     runner = CliRunner()
@@ -649,10 +647,8 @@ def test_cli_info_failure_does_not_change_the_exit_code(ledger_factory, cli_env)
     result = runner.invoke(
         app,
         [
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            "cli-info",
+            str(ledger.path),
             "check",
             "--json",
         ],
@@ -817,10 +813,8 @@ def test_hand_dropped_box_view_fails_check_and_schema_apply_recreates_it(
     applied = runner.invoke(
         app,
         [
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            "view-drift",
+            str(ledger.path),
             "schema",
             "apply",
         ],

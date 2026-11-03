@@ -28,7 +28,6 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 from tetramark.core.ledger import open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.schema.loader import list_presets, load_schema
 from tetramark.schema.model import (
     FieldType,
@@ -143,7 +142,7 @@ def load_repo_preset(name: str):
 
 
 def base_args(ledger) -> list[str]:
-    return ["--workspace", str(ledger.workspace.data_dir), "--ledger", ledger.name]
+    return ["--ledger", str(ledger.path)]
 
 
 def run(ledger, *args: str):
@@ -468,13 +467,9 @@ def test_cli_init_preset_angenet_creates_the_ledger_and_passes_check(
     cli_isolated: None, tmp_path: Path
 ) -> None:
     """Verify bullet 1: ``tm init --preset angenet`` builds and validates."""
-    data = tmp_path / "data"
-    workspace = Workspace.create(data, presets_dir=str(REPO_PRESETS))
     result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
             "init",
             "angenetled",
             "--preset",
@@ -489,7 +484,7 @@ def test_cli_init_preset_angenet_creates_the_ledger_and_passes_check(
     assert "Created ledger angenetled" in result.output
     assert "30 kinds" in result.output
 
-    ledger = open_ledger(workspace, "angenetled")
+    ledger = open_ledger(tmp_path / "angenetled")
     try:
         assert set(ledger.schema.kinds) == ANGENET_KINDS
         assert ledger.schema.preset_versions == ANGENET_VERSIONS
@@ -524,7 +519,7 @@ def test_cli_init_preset_angenet_creates_the_ledger_and_passes_check(
         ledger.close()
 
 
-def test_angenet_parts_are_listed_by_the_workspace_catalogue() -> None:
+def test_angenet_parts_are_listed_by_the_preset_catalogue() -> None:
     assert set(ORGANISM_PARTS) | {"angenet"} <= set(list_presets(REPO_PRESETS))
 
 

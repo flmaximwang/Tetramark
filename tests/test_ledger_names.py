@@ -1,7 +1,9 @@
 """Ledger names may contain dots (TM-02 / SPEC A2).
 
 Everything runs against the real ``dolt`` binary through the embedded driver
-(``dolt sql`` in the ledger directory).
+(``dolt sql`` in the ledger directory).  A ledger is one self-contained
+directory, so the dotted name is the directory basename *and* the identity in
+``ledger.yaml``.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ import pytest
 
 from tetramark.core.ledger import init_ledger
 from tetramark.core.ledger import open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import UsageError
 from tetramark.ops import remote
 from tetramark.ops.io_csv import export_csv
@@ -47,7 +48,7 @@ def _exercise(ledger, tmp_path: Path) -> None:
     assert (export_dir / "item.csv").is_file()
 
     result = remote.backup(ledger)
-    expected_dir = ledger.workspace.data_dir / "backups" / ledger.name
+    expected_dir = ledger.path.parent / "backups" / ledger.name
     assert result.dry_run is False
     assert remote.default_backup_dir(ledger) == expected_dir
     assert expected_dir.is_dir()
@@ -56,23 +57,23 @@ def _exercise(ledger, tmp_path: Path) -> None:
     ]
 
 
-@pytest.fixture
-def workspace(tmp_path: Path, dolt_env: dict[str, str]) -> Workspace:
-    return Workspace.create(tmp_path / "data", env=dolt_env)
-
-
 @pytest.mark.parametrize("name", VALID_NAMES)
 def test_dotted_name_end_to_end_embedded(
-    workspace: Workspace, tmp_path: Path, name: str
+    tmp_path: Path, dolt_env: dict[str, str], name: str
 ) -> None:
+    target = tmp_path / "data" / name
     ledger = init_ledger(
-        workspace, name, [PRESETS / "base"], id_prefix="77", author=FACTORY_AUTHOR
+        target,
+        name,
+        [PRESETS / "base"],
+        id_prefix="77",
+        author=FACTORY_AUTHOR,
+        env=dolt_env,
     )
     try:
         assert ledger.name == name
         assert ledger.database == name
-        assert workspace.ledger_path(name).is_dir()
-        assert name in workspace.list_ledgers()
+        assert target.is_dir()
         latest = ledger.driver.query(
             "SELECT `message` FROM `dolt_log` "
             "ORDER BY `date` DESC, `commit_order` DESC LIMIT 1"
@@ -83,24 +84,22 @@ def test_dotted_name_end_to_end_embedded(
         ledger.close()
 
     # The ledger reopens from its dotted directory name and config.
-    reopened = open_ledger(workspace, name)
+    reopened = open_ledger(target, env=dolt_env)
     try:
         assert reopened.config.name == name
+        assert reopened.path == target.resolve()
     finally:
         reopened.close()
 
 
 @pytest.mark.parametrize("name", INVALID_NAMES)
 def test_init_rejects_invalid_names_without_touching_disk(
-    workspace: Workspace, name: str
+    tmp_path: Path, dolt_env: dict[str, str], name: str
 ) -> None:
+    data = tmp_path / "data"
     with pytest.raises(UsageError, match="invalid ledger name"):
-        init_ledger(workspace, name, [PRESETS / "base"], author=FACTORY_AUTHOR)
-    # Only workspace.yaml exists: no ledger directory (and no ../escape) was made.
-    assert {entry.name for entry in workspace.data_dir.iterdir()} == {"workspace.yaml"}
-
-
-@pytest.mark.parametrize("name", INVALID_NAMES)
-def test_open_rejects_invalid_names(workspace: Workspace, name: str) -> None:
-    with pytest.raises(UsageError, match="invalid ledger name"):
-        open_ledger(workspace, name)
+        init_ledger(
+            data / name, name, [PRESETS / "base"], author=FACTORY_AUTHOR, env=dolt_env
+        )
+    # No ledger directory (and no ../escape) was made.
+    assert not data.exists() or list(data.iterdir()) == []

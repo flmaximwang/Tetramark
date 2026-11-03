@@ -99,7 +99,6 @@ from tetramark.core.ledger import (
     open as open_ledger,
 )
 from tetramark.driver.base import ensure_ascii, literal
-from tetramark.driver.workspace import WORKSPACE_FILE, Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.diff import RenameMap
 from tetramark.schema.model import EffectiveSchema
@@ -310,14 +309,13 @@ def open_target(
     dry_run: bool = False,
     allow_legacy_statuses: bool = True,
 ) -> Ledger:
-    """Open the ledger at ``path`` through its workspace, if it has one.
+    """Open the standalone ledger at ``path``.
 
-    ``path`` is the ledger directory (the Dolt database), e.g.
-    ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.  When the parent
-    directory has a ``workspace.yaml`` the workspace supplies the environment
-    and presets directory; the ledger itself is always opened through the
-    embedded driver (``dolt sql`` in the ledger directory), so the same step
-    works for a lab workspace and a bare checkout.  A user-run
+    ``path`` is the ledger directory (the Dolt database plus its
+    ``ledger.yaml``), e.g. ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.
+    A ledger is self-contained in 0.5.0: no workspace layer is consulted, and a
+    parent ``workspace.yaml`` is ignored.  The ledger is opened through the
+    embedded driver (``dolt sql`` in the ledger directory), so a user-run
     ``dolt sql-server`` is auto-routed by ``dolt sql``, not managed here.
 
     ``allow_legacy_statuses`` defaults to true: a migration step must read the
@@ -331,18 +329,10 @@ def open_target(
     if not (target / ".dolt").is_dir() or not (target / LEDGER_FILE).is_file():
         raise UsageError(
             f"{target} is not a Tetramark ledger (it needs .dolt and "
-            f"{LEDGER_FILE}): pass the ledger directory itself, not the "
-            "workspace data directory"
+            f"{LEDGER_FILE}): pass the ledger directory itself"
         )
-    if (target.parent / WORKSPACE_FILE).is_file():
-        workspace = Workspace.load(target.parent)
-    else:
-        workspace = Workspace(target.parent)
-    if target.name not in workspace.list_ledgers():
-        raise UsageError(f"{target} is not a ledger of {workspace.data_dir}")
     return open_ledger(
-        workspace,
-        target.name,
+        target,
         branch=branch,
         dry_run=dry_run,
         allow_legacy_statuses=allow_legacy_statuses,

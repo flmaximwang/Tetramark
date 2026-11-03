@@ -347,10 +347,8 @@ def test_upgrade_from_spec_v1_adds_alias_columns_and_refreshes_meta(
     # plus the meta refresh.
     runner = CliRunner()
     base = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -1132,10 +1130,8 @@ def test_cli_schema_plan_text_and_json(
     preset.write(kinds)
     runner = CliRunner()
     common = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        "evolving",
+        str(ledger.path),
         "schema",
         "plan",
     ]
@@ -1171,10 +1167,8 @@ def test_cli_schema_plan_reports_meta_refresh_for_missing_version(
     )
     runner = CliRunner()
     common = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        "evolving",
+        str(ledger.path),
         "schema",
     ]
     # An older ledger without the key still opens; plan reports a refresh, not
@@ -1207,10 +1201,8 @@ def test_cli_schema_apply_refuses_destructive(
         "argv",
         [
             "tm",
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            "evolving",
+            str(ledger.path),
             "schema",
             "apply",
         ],
@@ -1239,10 +1231,8 @@ def test_cli_schema_apply_commits_and_plan_becomes_empty(
     preset.write(kinds)
     runner = CliRunner()
     common = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        "evolving",
+        str(ledger.path),
     ]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -1277,10 +1267,8 @@ def test_cli_schema_apply_honours_dry_run(
         result = runner.invoke(
             app,
             [
-                "--workspace",
-                str(ledger.workspace.data_dir),
                 "--ledger",
-                "evolving",
+                str(ledger.path),
                 "--dry-run",
                 "schema",
                 "apply",
@@ -1311,10 +1299,8 @@ def test_cli_schema_apply_allows_destructive_with_the_flag(
         result = runner.invoke(
             app,
             [
-                "--workspace",
-                str(ledger.workspace.data_dir),
                 "--ledger",
-                "evolving",
+                str(ledger.path),
                 "schema",
                 "apply",
                 "--allow-destructive",

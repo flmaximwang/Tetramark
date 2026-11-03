@@ -12,12 +12,14 @@ Two lanes:
 * ``uv run pytest -q -n 4`` — the full suite, every integration test against a
   real database. Run this before merging or releasing.
 
-The full suite is still real-Dolt end to end: ``ledger_factory`` and
-``embedded_ledger_factory`` hand out layouts of a *session template* (one real
-``init_ledger`` per standard shape, then copies) so a fresh ledger costs a
-directory copy instead of a full ``tm init``. Anything that changes what
-``init`` produces — a custom preset, several presets, another
-``id_prefix``/``author`` — keeps the real init path; see
+A ledger is one self-contained directory in 0.5.0: ``.dolt/`` plus
+``ledger.yaml``, created in ``tmp_path/<name>``.  There is no workspace layer
+and no server.  The full suite is still real-Dolt end to end:
+``ledger_factory`` and ``embedded_ledger_factory`` hand out layouts of a
+*session template* (one real ``init_ledger`` per standard shape, then copies)
+so a fresh ledger costs a directory copy instead of a full ``tm init``.
+Anything that changes what ``init`` produces — a custom preset, several
+presets, another ``id_prefix``/``author`` — keeps the real init path; see
 :data:`TEMPLATE_SHAPES`.
 """
 
@@ -39,17 +41,16 @@ from tetramark.core.ledger import (
     init_ledger,
     open as open_ledger,
 )
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError
-from tetramark.schema.loader import resolve_preset_spec
+from tetramark.schema.loader import default_presets_dir, resolve_preset_spec
 
 DOLT_BINARY = shutil.which("dolt")
 
 #: The presets from ticket 03's test data (directory presets, path-style).
 PRESETS = Path(__file__).parent / "data" / "presets"
 
-#: The repository's own presets; workspaces point `presets_dir` at it so
-#: ``tm init --preset NAME`` works (ticket 20: presets are not package data).
+#: The repository's own presets; bare preset names resolve here when
+#: ``$TETRAMARK_PRESETS_DIR`` is unset (the checkout keeps ``presets/``).
 REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 #: Author used by :func:`ledger_factory` so tests never read a global identity.
@@ -61,7 +62,11 @@ RunDolt = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def isolated_env(root: Path, home: Path) -> dict[str, str]:
-    """An environment whose global Dolt/Git config lives under ``root``/``home``."""
+    """An environment whose global Dolt/Git config lives under ``root``/``home``.
+
+    No ledger-selection environment variable exists in 0.5.0 (P3); the legacy
+    ones are removed so a developer's shell cannot influence a test.
+    """
     root.mkdir(parents=True, exist_ok=True)
     home.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -71,7 +76,8 @@ def isolated_env(root: Path, home: Path) -> dict[str, str]:
     env["GIT_CONFIG_GLOBAL"] = str(home / ".gitconfig")
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env.pop("GIT_CONFIG_NOSYSTEM", None)
-    env.pop("TETRAMARK_WORKSPACE", None)
+    for legacy in ("TETRAMARK_LEDGER", "TETRAMARK_WORKSPACE", "TETRAMARK_PRESETS_DIR"):
+        env.pop(legacy, None)
     return env
 
 
@@ -151,11 +157,13 @@ def embedded_ledger_factory(
     tmp_path: Path,
     template_ledgers: LedgerTemplates,
 ) -> Iterator[Callable[..., Ledger]]:
-    """Create real ledgers in a ``tmp_path`` workspace (embedded driver).
+    """Create real standalone ledgers in ``tmp_path`` (embedded driver).
 
     ``embedded_ledger_factory(presets=[...], id_prefix="77")`` returns the
-    opened :class:`~tetramark.core.ledger.Ledger`.  The workspace is created
-    once and reused; every call gets a fresh ledger name unless one is given.
+    opened :class:`~tetramark.core.ledger.Ledger`.  One call creates one ledger
+    directory, ``tmp_path/<name>``; every call gets a fresh name unless one is
+    given.  Several ledgers can live next to each other, but nothing couples
+    them: each directory is complete on its own.
 
     A standard shape with the default options (see :data:`TEMPLATE_SHAPES`,
     :func:`template_matches_options`) is copied from the session template; any
@@ -173,30 +181,27 @@ def embedded_ledger_factory(
         author: str | None = FACTORY_AUTHOR,
         real_init: bool = False,
     ) -> Ledger:
-        workspace_dir = tmp_path / "workspace"
-        if (workspace_dir / "workspace.yaml").is_file():
-            workspace = Workspace.load(workspace_dir, env=dolt_env)
-        else:
-            workspace = Workspace.create(
-                workspace_dir, presets_dir=str(REPO_PRESETS), env=dolt_env
-            )
         ledger_name = name or f"ledger{next(counter)}"
+        target = tmp_path / ledger_name
         sources = list(presets) if presets else [PRESETS / "base"]
         key = None
         if not real_init and template_matches_options(
             id_prefix=id_prefix, author=author
         ):
-            key = template_key(sources, workspace)
+            key = template_key(sources)
         if key is None:
             ledger = init_ledger(
-                workspace,
+                target,
                 ledger_name,
                 sources,
                 id_prefix=id_prefix,
                 author=author,
+                env=dolt_env,
             )
         else:
-            ledger = template_ledgers.install(key, workspace, ledger_name)
+            ledger = template_ledgers.install(
+                key, target, ledger_name, env=dolt_env
+            )
         assert isinstance(ledger, Ledger)
         created.append(ledger)
         return ledger
@@ -236,22 +241,20 @@ TEMPLATE_SHAPES: dict[str, tuple[str, ...]] = {
 }
 
 
-def template_key(
-    presets: Sequence[str | Path], workspace: Workspace
-) -> str | None:
+def template_key(presets: Sequence[str | Path]) -> str | None:
     """The template covering this preset list, or ``None`` when init must run.
 
     Resolution goes through :func:`~tetramark.schema.loader.resolve_preset_spec`
-    with the workspace's ``presets_dir``, exactly like init does.  A bad preset
-    returns ``None`` (never raises) so the real ``init_ledger`` stays the one
-    that reports the error.
+    with the same preset directory init uses (P8), exactly like init does.  A
+    bad preset returns ``None`` (never raises) so the real ``init_ledger`` stays
+    the one that reports the error.
     """
     resolved: list[str] = []
     for preset in presets:
         try:
             found = resolve_preset_spec(
                 str(preset),
-                presets_dir=workspace.presets_dir_path,
+                presets_dir=default_presets_dir(),
                 base_dir=Path.cwd(),
             )
         except Exception:  # noqa: BLE001 - init must raise the real error
@@ -288,14 +291,11 @@ def _rewrite_ledger_name(ledger_dir: Path, name: str) -> None:
 class LedgerTemplates:
     """One real ``init_ledger`` per standard shape, then copies of it.
 
-    A template is built lazily in its own isolated workspace and is never
-    written to again: :meth:`install` copies the closed database directory into
-    the test's workspace (the ledgers are otherwise identical to a fresh init —
-    same schema, ``ledger_meta``, generated ``dolt_tests``, same two commits).
-
-    The templates are copies of real ``init_ledger`` runs, so the schema,
-    history, ``ledger_meta`` and generated ``dolt_tests`` are exactly what
-    ``tm init`` produces.
+    A template is built lazily in its own directory under the session root and
+    is never written to again: :meth:`install` copies the closed ledger
+    directory to the test's target path (the ledgers are otherwise identical to
+    a fresh init — same schema, ``ledger_meta``, generated ``dolt_tests``, same
+    two commits).  A ledger is one directory, so the copy needs no workspace.
     """
 
     def __init__(self, root: Path, env: dict[str, str]) -> None:
@@ -306,28 +306,32 @@ class LedgerTemplates:
     def ledger(self, key: str) -> Path:
         """The template ledger directory for ``key``, built on first use."""
         if key not in self._ledgers:
-            workspace = Workspace.create(
-                self._root / key, presets_dir=str(REPO_PRESETS), env=self._env
-            )
-            ledger = init_ledger(
-                workspace,
+            target = self._root / f"{key}-template"
+            init_ledger(
+                target,
                 TEMPLATE_LEDGER_NAME,
                 list(TEMPLATE_SHAPES[key]),
                 id_prefix=TEMPLATE_ID_PREFIX,
                 author=FACTORY_AUTHOR,
+                env=self._env,
             )
-            ledger.close()
-            self._ledgers[key] = workspace.ledger_path(TEMPLATE_LEDGER_NAME)
+            self._ledgers[key] = target
         return self._ledgers[key]
 
-    def install(self, key: str, workspace: Workspace, name: str) -> Ledger:
-        """Copy the template into ``workspace`` as ``name`` and open it."""
-        target = workspace.ledger_path(name)
+    def install(
+        self,
+        key: str,
+        target: Path,
+        name: str,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Ledger:
+        """Copy the template to ``target`` as ``name`` and open it."""
         if target.exists():
             raise LedgerError(f"ledger {name!r} already exists at {target}")
         shutil.copytree(self.ledger(key), target)
         _rewrite_ledger_name(target, name)
-        return open_ledger(workspace, name)
+        return open_ledger(target, env=env)
 
 
 @pytest.fixture(scope="session")

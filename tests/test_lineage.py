@@ -63,7 +63,7 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
 
 
 def base_args(ledger) -> list[str]:
-    return ["--workspace", str(ledger.workspace.data_dir), "--ledger", ledger.name]
+    return ["--ledger", str(ledger.path)]
 
 
 def invoke(ledger, *args: str):

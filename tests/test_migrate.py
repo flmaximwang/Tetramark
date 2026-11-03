@@ -36,7 +36,6 @@ from typer.testing import CliRunner
 from tetramark import __version__
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies, open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.migrate import (
     SPEC4_ONLY_TESTS,

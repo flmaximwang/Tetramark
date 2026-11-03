@@ -159,10 +159,8 @@ def make_source(ledger):
 
 def cli_args(ledger) -> list[str]:
     return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
 
 

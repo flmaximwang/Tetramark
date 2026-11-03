@@ -29,10 +29,8 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
 
 def base_args(ledger) -> list[str]:
     return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
 
 

@@ -51,8 +51,8 @@ def group(help: str, *, name: str | None = None) -> typer.Typer:
 class GlobalOptions:
     """Values of the global options, passed to subcommands via ``ctx.obj``."""
 
-    workspace: Path | None = None
-    ledger: str | None = None
+    #: ``-l/--ledger PATH``: the ledger directory; ``None`` = discover upward.
+    ledger: Path | None = None
     branch: str | None = None
     dry_run: bool = False
     no_commit: bool = False
@@ -67,12 +67,11 @@ def json_output(ctx: typer.Context, local: bool = False) -> bool:
 
 
 def resolve_ledger(ctx: typer.Context) -> Ledger:
-    """Open the ledger selected by the global options."""
+    """Open the ledger selected by ``-l/--ledger`` or discovered from the cwd."""
     options = ctx.obj
     if not isinstance(options, GlobalOptions):
         raise RuntimeError("the CLI root callback did not set GlobalOptions")
     return open_ledger(
-        options.workspace,
         options.ledger,
         branch=options.branch,
         dry_run=options.dry_run,

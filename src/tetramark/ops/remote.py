@@ -302,8 +302,8 @@ def pull(
 
 
 def default_backup_dir(ledger: Ledger) -> Path:
-    """``<data_dir>/backups/<ledger>`` (spec: ``tm backup`` default)."""
-    return Path(ledger.workspace.data_dir) / "backups" / ledger.name
+    """``<parent>/backups/<ledger>`` (spec: ``tm backup`` default)."""
+    return Path(ledger.path).parent / "backups" / ledger.name
 
 
 #: Dolt backup names reject ``.``, which ledger names allow.
