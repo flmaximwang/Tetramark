@@ -109,11 +109,15 @@ check_leftover_servers() {
         echo "== leftover dolt sql-server check disabled (LEFTOVER_CHECK=$LEFTOVER_CHECK)"
         return
     fi
-    if ! command -v pgrep >/dev/null 2>&1; then
-        echo "== leftover dolt sql-server check skipped (pgrep not available)"
-        return
-    fi
-    leftover=$(pgrep -f 'dolt sql-server' | wc -l | tr -d ' ')
+    # Match only an actual `dolt sql-server` process: argv[0] must be the dolt
+    # binary and argv[1] the sql-server subcommand.  A plain
+    # `pgrep -f 'dolt sql-server'` also matches every shell whose command line
+    # merely mentions the words (monitoring commands, this script's own
+    # documentation), which is a false positive.
+    leftover=$(ps -axo command= 2>/dev/null | awk '
+        $1 ~ /(^|\/)dolt$/ && $2 == "sql-server" { count += 1 }
+        END { print count + 0 }
+    ')
     printf '== leftover dolt sql-server processes: %s\n' "$leftover"
     if [ "$leftover" -ne 0 ]; then
         echo "!! the server lane left ${leftover} dolt sql-server process(es) behind" >&2
