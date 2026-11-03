@@ -21,11 +21,6 @@ FULL = PRESETS / "full"
 BASE = PRESETS / "base"
 
 
-@pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

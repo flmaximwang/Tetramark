@@ -27,9 +27,10 @@ declares the counter, the tag name and its SQL:
 
 Everything goes through the :class:`~tetramark.driver.base.Driver` interface
 (:class:`~tetramark.core.ledger.Ledger` + its write session), never through a
-hand-written ``dolt`` command, so a step runs identically against an embedded
-ledger (``dolt sql`` subprocess) and one served by ``dolt sql-server`` — the
-latter is how ticket 24 migrates the real zsqlab10 ledger.
+hand-written ``dolt`` command, so a step runs against the ledger directory via
+the embedded driver (``dolt sql`` subprocess).  A user-run ``dolt sql-server``
+on the directory is auto-routed by ``dolt sql`` itself; Tetramark does not
+manage one.
 
 A preset step may ship ``renames.yaml`` next to its ``migrate.py``; load it with
 :func:`load_renames` and pass it to
@@ -313,10 +314,11 @@ def open_target(
 
     ``path`` is the ledger directory (the Dolt database), e.g.
     ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.  When the parent
-    directory has a ``workspace.yaml`` the workspace decides the driver — a
-    running ``dolt sql-server`` is used, otherwise the embedded driver — so the
-    same step works for a lab workspace and a bare checkout.  A bare Dolt
-    directory (no ``workspace.yaml``) is always opened embedded.
+    directory has a ``workspace.yaml`` the workspace supplies the environment
+    and presets directory; the ledger itself is always opened through the
+    embedded driver (``dolt sql`` in the ledger directory), so the same step
+    works for a lab workspace and a bare checkout.  A user-run
+    ``dolt sql-server`` is auto-routed by ``dolt sql``, not managed here.
 
     ``allow_legacy_statuses`` defaults to true: a migration step must read the
     old shape it is about to change (a spec-3 ``ledger.yaml`` still carries the
@@ -888,8 +890,6 @@ def _report_failure(
         "Dolt DDL is not transactional, so the statements above may have run "
         "partially. Discard the partial DDL with:\n"
         f"  dolt reset --hard {last_good}\n"
-        "  # or, while the workspace server is running:\n"
-        f"  CALL DOLT_RESET('--hard', {literal(last_good)})\n"
         f"restore-point tag (unchanged): {step.tag}\n"
     )
 

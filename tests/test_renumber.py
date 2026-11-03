@@ -35,19 +35,9 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
-@pytest.fixture(params=["embedded", "server"], ids=["embedded", "server"])
-def driver_factory(request: pytest.FixtureRequest):
-    """The same real ledger through the embedded and the server driver."""
-    fixture = (
-        "embedded_ledger_factory"
-        if request.param == "embedded"
-        else "server_ledger_factory"
-    )
-    return request.getfixturevalue(fixture)
+def driver_factory(embedded_ledger_factory):
+    """The same real ledger through the embedded driver."""
+    return embedded_ledger_factory
 
 
 @pytest.fixture

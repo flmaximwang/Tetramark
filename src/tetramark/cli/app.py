@@ -39,7 +39,7 @@ from tetramark.cli.options import (
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
 from tetramark.cli.stock import stock_app
-from tetramark.cli.workspace import server_app, workspace_app
+from tetramark.cli.workspace import workspace_app
 from tetramark.errors import EXIT_OK, LedgerError
 
 #: Names of the Rich help panels of the root command tree.  They are defined
@@ -65,7 +65,6 @@ ROOT_PANELS: tuple[str, ...] = (
 ROOT_COMMAND_ORDER: tuple[str, ...] = (
     # Setup
     "workspace",
-    "server",
     "presets",
     "init",
     "schema",
@@ -218,7 +217,6 @@ def root(
 
 # -- Setup -------------------------------------------------------------------
 app.add_typer(workspace_app, name="workspace", rich_help_panel=PANEL_SETUP)
-app.add_typer(server_app, name="server", rich_help_panel=PANEL_SETUP)
 app.add_typer(presets_app, name="presets", rich_help_panel=PANEL_SETUP)
 app.command("init", rich_help_panel=PANEL_SETUP)(init_command)
 app.add_typer(schema_app, name="schema", rich_help_panel=PANEL_SETUP)

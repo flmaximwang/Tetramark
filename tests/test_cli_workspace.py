@@ -1,24 +1,23 @@
-"""``tm workspace init`` and ``tm server ...`` through the CLI."""
+"""``tm workspace init`` through the CLI."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
-from tetramark.cli.app import app, main
+from tetramark.cli.app import app
 from tetramark.driver.workspace import Workspace
-from tetramark.errors import EXIT_USAGE, LedgerError
+from tetramark.errors import LedgerError
 
 runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
 def _isolated_process(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str], tmp_path: Path) -> None:
-    """Point the CLI (and the server it starts) at the isolated config."""
+    """Point the CLI at the isolated Dolt/Git config."""
     for key in (
         "DOLT_ROOT_PATH",
         "HOME",
@@ -102,65 +101,6 @@ def test_workspace_init_twice_fails(tmp_path: Path) -> None:
     data = tmp_path / "data"
     assert runner.invoke(app, ["workspace", "init", str(data)]).exit_code == 0
     result = runner.invoke(app, ["workspace", "init", str(data)])
-    assert result.exit_code == 1
-    assert isinstance(result.exception, LedgerError)
-
-
-def test_server_status_without_workspace_exits_2(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(sys, "argv", ["tm", "server", "status"])
-    with pytest.raises(SystemExit) as excinfo:
-        main()
-    assert excinfo.value.code == EXIT_USAGE
-    assert "no workspace found" in capsys.readouterr().err
-
-
-def test_server_start_without_ledgers_exits_1(tmp_path: Path) -> None:
-    data = tmp_path / "data"
-    assert runner.invoke(app, ["workspace", "init", str(data)]).exit_code == 0
-    result = runner.invoke(app, ["--workspace", str(data), "server", "start", "-d"])
-    assert result.exit_code == 1
-    assert isinstance(result.exception, LedgerError)
-
-
-def test_server_status_shows_ledgers(tmp_path: Path, make_ledger) -> None:
-    data = tmp_path / "data"
-    assert runner.invoke(app, ["workspace", "init", str(data)]).exit_code == 0
-    make_ledger(data / "led1")
-    result = runner.invoke(app, ["--workspace", str(data), "server", "status"])
-    assert result.exit_code == 0, result.output
-    assert "not running" in result.output
-    assert "led1" in result.output
-
-
-@pytest.mark.server
-def test_server_lifecycle_via_cli(tmp_path: Path, make_ledger, port: int) -> None:
-    data = tmp_path / "data"
-    result = runner.invoke(app, ["workspace", "init", str(data), "--port", str(port)])
-    assert result.exit_code == 0, result.output
-    make_ledger(data / "led1")
-
-    result = runner.invoke(app, ["--workspace", str(data), "server", "start", "-d"])
-    assert result.exit_code == 0, result.output
-    assert "Started Dolt server" in result.output
-    try:
-        result = runner.invoke(app, ["--workspace", str(data), "server", "status"])
-        assert result.exit_code == 0
-        assert "running: pid" in result.output
-        assert "led1" in result.output
-    finally:
-        result = runner.invoke(app, ["--workspace", str(data), "server", "stop"])
-    assert result.exit_code == 0, result.output
-    assert "Stopped the Dolt server" in result.output
-
-    result = runner.invoke(app, ["--workspace", str(data), "server", "stop"])
-    assert result.exit_code == 0
-    assert "No Dolt server running" in result.output
-
-
-def test_global_workspace_must_exist(tmp_path: Path) -> None:
-    result = runner.invoke(
-        app, ["--workspace", str(tmp_path / "missing"), "server", "status"]
-    )
     assert result.exit_code == 1
     assert isinstance(result.exception, LedgerError)
 

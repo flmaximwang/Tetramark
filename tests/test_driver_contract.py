@@ -1,13 +1,12 @@
-"""The driver contract, run against both real backends (never a mock).
+"""The driver contract, run against the real embedded backend (never a mock).
 
-The embedded parameters run in a fresh ``dolt init`` repository per test.  The
-server parameters share one workspace whose ``dolt sql-server`` runs on a random
-free port; each test uses its own table name.
+Each test runs in a fresh ``dolt init`` repository (or a session copy of one)
+and uses its own table name.  The contract is the :class:`Driver` ABC, so a
+future server driver can be held to the same tests.
 """
 
 from __future__ import annotations
 
-import subprocess
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -17,51 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from tetramark.driver import Driver, EmbeddedDriver, ServerDriver
-from tetramark.driver.workspace import Workspace
+from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 
-from conftest import free_port, isolated_env
-
 # -- fixtures -------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def server_workspace(tmp_path_factory: pytest.TempPathFactory, dolt_binary: str) -> Iterator[Workspace]:
-    """A workspace with one ledger and a running server on a random free port."""
-    base = tmp_path_factory.mktemp("server-workspace")
-    env = isolated_env(base / "dolt-root", base / "home")
-    for key, value in (
-        ("user.name", "Tetramark Tests"),
-        ("user.email", "tests@tetramark.invalid"),
-    ):
-        subprocess.run(
-            [dolt_binary, "config", "--global", "--add", key, value],
-            env=env,
-            capture_output=True,
-            check=True,
-        )
-    ledger = base / "data" / "led1"
-    ledger.mkdir(parents=True)
-    subprocess.run(
-        [dolt_binary, "init"], cwd=ledger, env=env, capture_output=True, check=True
-    )
-    workspace = Workspace.create(base / "data", port=free_port(), default_ledger="led1", env=env)
-    workspace.start(daemon=True)
-    try:
-        yield workspace
-    finally:
-        workspace.stop()
-
-
-@pytest.fixture(scope="session")
-def server_db(server_workspace: Workspace) -> Iterator[ServerDriver]:
-    driver = server_workspace.driver_for("led1")
-    assert isinstance(driver, ServerDriver)
-    try:
-        yield driver
-    finally:
-        driver.close()
 
 
 @pytest.fixture
@@ -69,12 +27,10 @@ def embedded_driver(dolt_repo: Path, dolt_env: dict[str, str]) -> EmbeddedDriver
     return EmbeddedDriver(dolt_repo, env=dolt_env)
 
 
-@pytest.fixture(params=["embedded", pytest.param("server", marks=pytest.mark.server)])
-def driver(request: pytest.FixtureRequest) -> Driver:
-    """Each contract test runs once per backend."""
-    if request.param == "embedded":
-        return request.getfixturevalue("embedded_driver")
-    return request.getfixturevalue("server_db")
+@pytest.fixture
+def driver(embedded_driver: EmbeddedDriver) -> Driver:
+    """The embedded driver; the contract is backend-agnostic."""
+    return embedded_driver
 
 
 def table_name() -> str:
@@ -223,23 +179,7 @@ def test_embedded_reports_dolt_errors(dolt_repo: Path, dolt_env: dict[str, str])
         driver.query("SELECT * FROM nope")
 
 
-def test_server_driver_reports_unreachable_port(port: int) -> None:
-    with pytest.raises(UnreachableError):
-        ServerDriver("127.0.0.1", port, "led1", connect_timeout=1)
-
-
-@pytest.mark.server
-def test_server_driver_reports_missing_database(server_workspace: Workspace) -> None:
-    with pytest.raises(LedgerError, match="(?i)database not found|unknown database"):
-        ServerDriver(
-            server_workspace.config.host,
-            server_workspace.config.port,
-            "no_such_ledger",
-            connect_timeout=2,
-        )
-
-
-# -- branch selection (revision database), both backends ------------------
+# -- branch selection (revision database) ---------------------------------
 
 
 @dataclass
@@ -252,40 +192,20 @@ class BranchPair:
     table: str
 
 
-@pytest.fixture(params=["embedded", "server"])
+@pytest.fixture
 def branch_pair(
-    request: pytest.FixtureRequest,
-    embedded_driver: EmbeddedDriver,
-    server_workspace: Workspace,
-    server_db: ServerDriver,
-    dolt_env: dict[str, str],
+    embedded_driver: EmbeddedDriver, dolt_env: dict[str, str]
 ) -> Iterator[BranchPair]:
     """A branch created from HEAD, with one committed row on the checked-out branch."""
     table = table_name()
-    base: Driver
-    if request.param == "embedded":
-        base = embedded_driver
-    else:
-        base = server_db
+    base: Driver = embedded_driver
     base.execute(f"CREATE TABLE {table} (v BIGINT)")
     base.execute(f"INSERT INTO {table} VALUES (%s)", (1,))
     assert base.commit(f"branch fixture {table}") is not None
 
     name = f"feat_{uuid.uuid4().hex[:8]}"
     base.execute("CALL DOLT_BRANCH(%s)", (name,))
-
-    branch: Driver
-    if request.param == "embedded":
-        branch = EmbeddedDriver(
-            embedded_driver.path, branch=name, env=dolt_env
-        )
-    else:
-        branch = ServerDriver(
-            server_workspace.config.host,
-            server_workspace.config.port,
-            "led1",
-            branch=name,
-        )
+    branch: Driver = EmbeddedDriver(embedded_driver.path, branch=name, env=dolt_env)
     try:
         yield BranchPair(base=base, branch=branch, name=name, table=table)
     finally:
@@ -345,19 +265,12 @@ def test_two_sessions_read_in_parallel_without_crossing(
     assert pair.base.query("SELECT active_branch() AS `b`") == [{"b": "main"}]
 
 
-def test_missing_branch_is_a_usage_error_for_both_drivers(
-    embedded_driver: EmbeddedDriver, server_workspace: Workspace
+def test_missing_branch_is_a_usage_error(
+    embedded_driver: EmbeddedDriver,
 ) -> None:
     missing = f"absent_{uuid.uuid4().hex[:8]}"
     with pytest.raises(UsageError, match="does not exist"):
         EmbeddedDriver(embedded_driver.path, branch=missing)
-    with pytest.raises(UsageError, match="does not exist"):
-        ServerDriver(
-            server_workspace.config.host,
-            server_workspace.config.port,
-            "led1",
-            branch=missing,
-        )
     # A missing branch is never created implicitly.
     assert embedded_driver.query(
         "SELECT 1 AS `found` FROM dolt_branches WHERE `name` = %s", (missing,)

@@ -2,9 +2,8 @@
 
 Every test uses a **real** Dolt database (no mocks): the spec/1-to-2 and
 presets/molbio/1-to-2 steps, the rename-map hook and the runner's
-target-schema / post-commit-file hooks are exercised end to end, either
-embedded or through a worker's ``dolt sql-server`` (the driver the ticket-24
-migration will use).
+target-schema / post-commit-file hooks are exercised end to end through the
+embedded driver (``dolt sql`` in the ledger directory).
 
 The spec-1 fixture is built from the current tool (init, then downgrade the
 generated views to their pre-``861faae`` shape and stamp ``spec_version=1``
@@ -59,7 +58,7 @@ from tetramark.schema.loader import load_ledger_schema, load_schema
 
 import tetramark.schema.model as model
 
-from conftest import PRESETS, REPO_PRESETS, free_port, isolated_env
+from conftest import PRESETS, REPO_PRESETS, isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
@@ -98,19 +97,6 @@ def base_args(ledger: Ledger) -> list[str]:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("embedded", id="embedded"),
-        pytest.param("server", id="server", marks=pytest.mark.server),
-    ]
-)
-def ledger_factory(request):
-    """Both driver backends: the step must be driver-agnostic."""
-    if request.param == "server":
-        return request.getfixturevalue("server_ledger_factory")
-    return request.getfixturevalue("embedded_ledger_factory")
 
 
 @pytest.fixture
@@ -428,12 +414,11 @@ def test_spec_1_to_2_dry_run_prints_sql_and_writes_nothing(
     assert "alias_list" not in column_names(ledger, "v_entity_item")
 
 
-@pytest.mark.server
 def test_failed_step_prints_last_good_commit_and_restore_command(
-    server_ledger_factory, script_env: dict[str, str], tmp_path: Path
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     """Verify contract 5: DDL is not transactional, no commit, report printed."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     head_before = head(ledger)
     commits_before = commit_count(ledger)
@@ -465,12 +450,11 @@ def test_failed_step_prints_last_good_commit_and_restore_command(
     assert "t21_partial" in table_names(ledger)
 
 
-@pytest.mark.server
 def test_preset_step_bumps_preset_versions_counter(
-    server_ledger_factory, script_env: dict[str, str], tmp_path: Path
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     """The helper's preset branch (ticket 22 will use it): counter + message."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     ledger.driver.execute(
         "UPDATE `ledger_meta` SET `value` = '{\"base\": 1}' "
         "WHERE `key` = 'preset_versions'"
@@ -504,12 +488,11 @@ def test_preset_step_bumps_preset_versions_counter(
     assert "preset_versions[base] 2, expected 1" in again.stdout + again.stderr
 
 
-@pytest.mark.server
 def test_migration_can_run_on_a_branch(
-    server_ledger_factory, script_env: dict[str, str]
+    ledger_factory, script_env: dict[str, str]
 ) -> None:
     """``--branch``: the commit lands on the branch, the checkout stays put."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("upgrade",))
     main_head = head(ledger)
@@ -542,12 +525,11 @@ def test_migration_can_run_on_a_branch(
         branch.close()
 
 
-@pytest.mark.server
 def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
-    server_ledger_factory,
+    ledger_factory,
 ) -> None:
     """The documented fact: no spec guard, a fingerprint warning, writes allowed."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     spec1_head = head(ledger)
 
@@ -732,17 +714,16 @@ def renamed_from_kinds() -> dict[str, Any]:
     return kinds
 
 
-@pytest.mark.server
 def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
-    server_ledger_factory, tmp_path: Path
+    ledger_factory, tmp_path: Path
 ) -> None:
     """Verify bullet 2: map-driven rename == ``renamed_from``, rows preserved."""
     preset_map = tmp_path / "preset_map"
     preset_rf = tmp_path / "preset_renamed_from"
     write_preset(preset_map, OLD_PRESET["kinds"], version=1)
     write_preset(preset_rf, OLD_PRESET["kinds"], version=1)
-    ledger_map = server_ledger_factory([preset_map], name="rename-map")
-    ledger_rf = server_ledger_factory([preset_rf], name="rename-renamed-from")
+    ledger_map = ledger_factory([preset_map], name="rename-map")
+    ledger_rf = ledger_factory([preset_rf], name="rename-renamed-from")
     for ledger in (ledger_map, ledger_rf):
         seed_rename_data(ledger)
 
@@ -860,21 +841,19 @@ def test_load_renames_reads_the_step_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.server
 def test_open_target_rejects_a_workspace_directory(
-    server_ledger_factory,
+    ledger_factory,
 ) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     with pytest.raises(UsageError):
         open_target(ledger.workspace.data_dir)
 
 
-@pytest.mark.server
 def test_run_refuses_a_dirty_working_set(
-    server_ledger_factory, script_env: dict[str, str]
+    ledger_factory, script_env: dict[str, str]
 ) -> None:
     """A migration commit must be the only change in its commit."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     head_before = head(ledger)
     ledger.driver.execute("CREATE TABLE t21_dirty (i INT)")
@@ -892,11 +871,10 @@ def test_run_refuses_a_dirty_working_set(
         ledger.driver.execute("DROP TABLE `t21_dirty`")
 
 
-@pytest.mark.server
 def test_counter_reads_spec_and_preset_counters(
-    server_ledger_factory,
+    ledger_factory,
 ) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     spec_step = MigrationStep(
         kind="spec", from_version=1, plan=lambda opened: ["SELECT 1"]
     )
@@ -984,53 +962,6 @@ def molbio_v1_ledger(
         ledger.close()
 
 
-@pytest.fixture
-def _molbio_v1_on_server(
-    tmp_path: Path, dolt_binary: str
-) -> Iterator[Ledger]:
-    """The same fixture served by its own fresh ``dolt sql-server``.
-
-    A running server does not notice a database directory copied into its data
-    dir afterwards, so the fixture is copied in **before** the server starts.
-    The worker's session-scoped server cannot be reused for that without
-    stopping and restarting it mid-suite.
-    """
-    base = tmp_path / "server-workspace"
-    data_dir = base / "data"
-    copy_molbio_v1(data_dir / "molbio-v1")
-    workspace = Workspace.create(
-        data_dir,
-        port=free_port(),
-        presets_dir=str(REPO_PRESETS),
-        env=isolated_env(base / "dolt-root", base / "home"),
-    )
-    try:
-        workspace.start(daemon=True)
-    except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
-        pytest.skip(f"dolt sql-server unavailable ({workspace.data_dir}): {error}")
-    try:
-        ledger = open_copied_molbio_v1(workspace)
-        try:
-            yield ledger
-        finally:
-            ledger.close()
-    finally:
-        workspace.stop()
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("embedded", id="embedded"),
-        pytest.param("server", id="server", marks=pytest.mark.server),
-    ]
-)
-def molbio_v1_ledger_any_driver(request) -> Ledger:
-    """Both driver backends: the step must be driver-agnostic."""
-    if request.param == "server":
-        return request.getfixturevalue("_molbio_v1_on_server")
-    return request.getfixturevalue("molbio_v1_ledger")
-
-
 #: Every old molbio kind, a bacterial stock with two agreeing aliquots (S1), a
 #: second bacterial stock with a different value (S2), and one row of each other
 #: stock kind.  S1/S2 differ from each other on purpose: the value is per stock.
@@ -1097,10 +1028,10 @@ def seed_molbio_v1(ledger: Ledger) -> None:
 
 
 def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
-    molbio_v1_ledger_any_driver, script_env: dict[str, str]
+    molbio_v1_ledger, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 2, both drivers: renames, data move, metadata, files, check."""
-    ledger = molbio_v1_ledger_any_driver
+    ledger = molbio_v1_ledger
     seed_molbio_v1(ledger)
     preset_copy = ledger.path / "presets" / "molbio.yaml"
     preset_before = preset_copy.read_bytes()

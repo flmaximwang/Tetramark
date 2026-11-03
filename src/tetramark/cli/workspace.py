@@ -1,4 +1,4 @@
-"""``tm workspace`` and ``tm server`` commands."""
+"""``tm workspace`` commands."""
 
 from __future__ import annotations
 
@@ -7,18 +7,12 @@ from pathlib import Path
 import typer
 
 from tetramark.cli.options import GlobalOptions, group
-from tetramark.driver.workspace import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    ServerStatus,
-    Workspace,
-)
+from tetramark.driver.workspace import DEFAULT_HOST, DEFAULT_PORT, Workspace
 from tetramark.errors import UsageError
 
 workspace_app = group(
     "Create and inspect a workspace (a data directory holding ledgers)."
 )
-server_app = group("Start, stop and inspect the workspace's Dolt SQL server.")
 
 
 def resolve_workspace(ctx: typer.Context) -> Workspace:
@@ -71,60 +65,3 @@ def workspace_init(
     typer.echo(f"  server : {workspace.config.host}:{workspace.config.port}")
     if workspace.presets_dir_path is not None:
         typer.echo(f"  presets: {workspace.presets_dir_path}")
-
-
-@server_app.command("start")
-def server_start(
-    ctx: typer.Context,
-    daemon: bool = typer.Option(
-        False, "--daemon", "-d", help="Run in the background (log and pid in the data_dir)."
-    ),
-) -> None:
-    """Start the workspace's ``dolt sql-server``."""
-    workspace = resolve_workspace(ctx)
-    if daemon:
-        pid = workspace.start(daemon=True)
-        typer.echo(
-            f"Started Dolt server pid {pid} on "
-            f"{workspace.config.host}:{workspace.config.port}"
-        )
-        _print_status(workspace.status())
-    else:
-        typer.echo(
-            f"Starting Dolt server on {workspace.config.host}:{workspace.config.port} "
-            "(Ctrl-C to stop) ..."
-        )
-        workspace.start(daemon=False)
-
-
-@server_app.command("status")
-def server_status(ctx: typer.Context) -> None:
-    """Show whether the server runs, its endpoint, and the ledgers it serves."""
-    workspace = resolve_workspace(ctx)
-    _print_status(workspace.status())
-
-
-@server_app.command("stop")
-def server_stop(ctx: typer.Context) -> None:
-    """Stop the workspace's Dolt SQL server."""
-    workspace = resolve_workspace(ctx)
-    if workspace.stop():
-        typer.echo(f"Stopped the Dolt server (data_dir: {workspace.data_dir})")
-    else:
-        typer.echo(f"No Dolt server running (data_dir: {workspace.data_dir})")
-
-
-def _print_status(status: ServerStatus) -> None:
-    if status.running:
-        typer.echo(f"running: pid {status.pid}")
-        typer.echo(f"  data_dir : {status.data_dir}")
-        typer.echo(f"  ledgers  : {' '.join(status.ledgers) or '(none)'}")
-        typer.echo(f"  endpoint : {status.endpoint(status.default_ledger)}")
-        typer.echo(f"  log      : {status.log_file}")
-    else:
-        typer.echo(f"not running (data_dir: {status.data_dir})")
-        typer.echo(f"  ledgers  : {' '.join(status.ledgers) or '(none)'}")
-        if status.port_busy:
-            typer.echo(
-                f"  note     : port {status.port} is used by another process"
-            )

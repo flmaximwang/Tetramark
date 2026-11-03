@@ -43,6 +43,6 @@ class UsageError(LedgerError):
 
 
 class UnreachableError(LedgerError):
-    """The Dolt database or workspace server cannot be reached. Exit code 3."""
+    """The Dolt database (or the dolt binary) cannot be reached. Exit code 3."""
 
     exit_code = EXIT_UNREACHABLE
