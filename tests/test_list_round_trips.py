@@ -25,6 +25,11 @@ from tetramark.core.ledger import Ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import LedgerError
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 #: ``full`` includes ``chain`` includes ``base``: three entity kinds, three
 #: stock kinds and nine box kinds.  The old per-kind path paid two dolt
 #: processes per kind, so this shape makes the fan-out obvious.

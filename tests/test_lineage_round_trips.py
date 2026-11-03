@@ -31,6 +31,11 @@ from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.ops.history import history, history_rows, render_history_text
 from tetramark.ops.lineage import lineage, render_dot, render_text
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 #: A minimal status set for the custom preset's stock kind (spec 4 requires
 #: one): the bundled ``tube`` set, trimmed to the four statuses these tests use.
 TUBE_SET = {

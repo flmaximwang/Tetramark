@@ -37,6 +37,11 @@ from tetramark.schema.diff import plan
 from tetramark.schema.loader import load_ledger_schema
 from tetramark.schema.model import CORE_VIEW_NAMES
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 #: ``full`` extends base with every field type and geometry (a dozen kinds), so
 #: the old per-table ``SHOW CREATE TABLE`` fan-out dominated the plan.
 MANY_KINDS = [str(PRESETS / "full")]

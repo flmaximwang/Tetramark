@@ -32,6 +32,11 @@ from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError
 from tetramark.ops.io_csv import CsvImportError, export_csv, import_csv
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+pytestmark = pytest.mark.embedded_driver
+
 #: ``full`` has every field type and every geometry, so the export fans out
 #: over a dozen views and the import over a dozen unique-field reads: the shape
 #: that made the old per-read fan-out dominate.
