@@ -485,10 +485,27 @@ def _borrow_server(path: Path, database: str) -> _Server | None:
     )
 
 
+class _PortInUse(RuntimeError):
+    """A parallel worker claimed the free port between probing and binding."""
+
+
 def _start_server(
     path: Path, binary: str, env: Mapping[str, str] | None, fingerprint: str
 ) -> _Server:
-    """Start one ``dolt sql-server`` and wait until it answers."""
+    """Start one ``dolt sql-server``, retrying a lost free-port race."""
+    last_error: _PortInUse | None = None
+    for attempt in range(3):
+        try:
+            return _spawn_server(path, binary, env, fingerprint)
+        except _PortInUse as error:
+            last_error = error
+            time.sleep(0.05 * (attempt + 1))
+    raise UnreachableError(str(last_error))
+
+
+def _spawn_server(
+    path: Path, binary: str, env: Mapping[str, str] | None, fingerprint: str
+) -> _Server:
     if pymysql is None:  # pragma: no cover - optional dependency
         raise UnreachableError(
             "TETRAMARK_DRIVER=server needs PyMySQL: install the 'pymysql' "
@@ -540,10 +557,13 @@ def _start_server(
         if process.poll() is not None:
             output = server.stderr_tail()
             server._close_stderr()
-            raise UnreachableError(
+            message = (
                 f"'dolt sql-server' exited with code {process.returncode} in "
                 f"{path}" + (f":\n{output}" if output else "")
             )
+            if "already in use" in output.lower():
+                raise _PortInUse(message)
+            raise UnreachableError(message)
         if _check_serves(port, path.name):
             _write_sidecar(server)
             return server
