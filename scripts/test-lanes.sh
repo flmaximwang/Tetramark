@@ -11,14 +11,17 @@
 #   * a lane fails, or
 #   * the fast lane exceeds FAST_LANE_BUDGET_SECONDS (default 10 s), or
 #   * the full lane exceeds the recorded 0.5.0 baseline +20 %.
-# Set FULL_LANE_BASELINE_SECONDS to the measured full-lane wall time on this
-# machine (ticket .11's report records the 0.5.0 baseline; see
-# docs/guides/test-harness.md). Without it the full lane is measured but not
-# gated, and the script tells you so.
+#
+# FULL_LANE_BASELINE_SECONDS defaults to the measured 0.5.0 baseline (1643 s,
+# measured on the 10-CPU developer machine via ticket .11 with `-n auto`;
+# override it on other machines). Set it to an empty value to measure the full
+# lane without gating it -- the script then says so.
 #
 # Eligible environments: `uv run pytest` when uv is installed, otherwise
-# $PYTEST (default `python3 -m pytest`). Override $PYTEST for a bare venv, e.g.
+# $PYTEST (default `python3 -m pytest`). In sandboxes where `uv run` does not
+# work, point $PYTEST at a venv pytest:
 #   PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh fast
+#   PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh full
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
@@ -26,7 +29,9 @@ cd "$ROOT" || exit 1
 
 LANE=${1:-all}
 FAST_LANE_BUDGET_SECONDS=${FAST_LANE_BUDGET_SECONDS:-10}
-FULL_LANE_BASELINE_SECONDS=${FULL_LANE_BASELINE_SECONDS:-}
+# Measured 0.5.0 baseline (ticket .11, `-n auto`, 10 workers); override on
+# other machines. An explicitly empty value disables the gate.
+FULL_LANE_BASELINE_SECONDS=${FULL_LANE_BASELINE_SECONDS-1643}
 FULL_LANE_FACTOR_PERCENT=120
 DURATIONS=${DURATIONS:-25}
 

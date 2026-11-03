@@ -42,8 +42,8 @@ Two lanes, plus a release acceptance run:
 
 | Lane | Command | Budget | What belongs there |
 |---|---|---|---|
-| **fast** | `pytest -q -m fast` | **seconds** — currently ~2–3 s on an idle machine; keep it that way | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
-| **full** | `pytest` (addopts: `-n auto --dist loadfile`) | measured 0.5.0 baseline **+20 %** on the same machine with `-n auto` | everything, including every real-Dolt integration flow |
+| **fast** | `pytest -q -m fast` | **seconds** — 0.5.0 baseline **597 passed in 2.38 s**; keep it that way | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
+| **full** | `pytest` (addopts: `-n auto --dist loadfile`) | **≤ ~33 min** on this 10-CPU machine (0.5.0 baseline 1643.22 s = 27:23, +20 %) | everything, including every real-Dolt integration flow |
 | **release** | full lane + the heavy migration/lab subset | green, no new failures | `tests/test_migrate.py`, the read-only 0.4.2 lab-ledger check when `.dsh/tm-l8g/lab-snapshot` exists, docs flows, and `scripts/test-lanes.sh` |
 
 Rules:
@@ -54,16 +54,28 @@ Rules:
   subprocesses; on the developer machine `-n 4` is measurably **slower** than `-n auto`, so the
   addopts default stays `-n auto --dist loadfile`. Measure on the target machine rather than copying
   a worker count from another one.
-- **Full-lane budget: ≤ measured baseline +20 %.** The 0.5.0 baseline is recorded in ticket .11's
-  report (`tm-l8g.11.md`: tests/skips/wall time with `-n auto`) and is filled into
-  `scripts/test-lanes.sh` as `FULL_LANE_BASELINE_SECONDS`. New real-Dolt tests are allowed only if
-  they reuse the session templates and their cost is justified in the ticket report; prefer extending
-  an existing flow over adding another init.
+- **Full-lane budget: ≤ measured baseline +20 %.** The 0.5.0 baseline is **1091 passed, 0 failed,
+  0 skipped in 1643.22 s (27:23) with `-n auto` on 10 workers** (ticket .11's report,
+  `.dsh/tm-l8g/reports/tm-l8g.11.md`); the budget is therefore **≤ ~33 min** on this machine.
+  `scripts/test-lanes.sh` carries that baseline as `FULL_LANE_BASELINE_SECONDS` (1643) and fails
+  above 1.2 × baseline; re-measure with the script on another machine and override the variable.
+  New real-Dolt tests are allowed only if they reuse the session templates and their cost is
+  justified in the ticket report; prefer extending an existing flow over adding another init.
 - **`scripts/test-lanes.sh` is the enforcement point.** The repository has no CI, so this script —
   run before a merge and before a release — is what turns the budgets into a failing exit code. It
   runs both lanes with `--durations`, prints their wall times and fails when the full lane exceeds
   the baseline by more than 20 % (override the baseline for a different machine with
-  `FULL_LANE_BASELINE_SECONDS`).
+  `FULL_LANE_BASELINE_SECONDS`; setting it to an empty value measures without gating).
+  Script defaults: fast-lane budget **10 s** (measured: 2.38 s for 597 tests), full-lane baseline
+  **1643 s** (the measured 0.5.0 value, gate at 1.2 ×). In sandboxes where `uv run` does not work,
+  point the script at a venv pytest:
+  `PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh fast` (or `full`).
+- **The wall time is content-bound, not worker-bound.** The same suite run with `-n 4` took
+  1637 s / 27:17 — the same ~27 min. The five heaviest modules are `test_migrate.py` (~872 s
+  single-process), `test_schema_diff.py` (~580 s), `test_docs_commands.py` (~508 s of call time,
+  ~322 s standalone), `test_presets.py` (~386 s) and `test_ledger_init.py` (~180 s). A single test
+  can take 300 s because `--dist loadfile` gives one file to one worker. Optimise the content, not
+  the worker count.
 
 The **server-harness numbers are historical**: the 758 s → 154.83 s result and the “≤180 s” goal
 belong to the 0.2.0 server design that P14 removed. They are context for how the suite used to be
