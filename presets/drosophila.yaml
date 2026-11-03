@@ -35,6 +35,7 @@ kinds:
     fields:
       balancers:
         type: text
+        long: true
         description: Balancer chromosomes carried by the line (e.g. CyO, TM3, TM6B).
       stock_centre:
         type: string

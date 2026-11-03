@@ -27,7 +27,7 @@ from tetramark.schema.diff import (
     apply as apply_schema_plan,
     plan as schema_plan,
 )
-from tetramark.schema.model import EffectiveSchema, Kind, Rule
+from tetramark.schema.model import EffectiveSchema, Field, Kind, Rule
 
 schema_app = group("Inspect, plan and apply the effective schema of a ledger.")
 
@@ -194,12 +194,25 @@ def _kind_payload(kind: Kind) -> dict[str, Any]:
     if status_set is not None:
         payload["statuses"] = status_set.normalised()
     payload["fields"] = {
-        field_name: field.normalised() for field_name, field in kind.fields.items()
+        field_name: _field_payload(field)
+        for field_name, field in kind.fields.items()
     }
     if kind.geometry is not None:
         payload["geometry"] = kind.geometry.normalised()
     if kind.object.value == "box":
         payload["slot_capacity"] = kind.slot_capacity
+    return payload
+
+
+def _field_payload(field: Field) -> dict[str, Any]:
+    """A field as shown by ``tm schema show``.
+
+    ``long`` is read-only form metadata, so it is added here (when set) rather
+    than in :meth:`Field.normalised`, which must keep the fingerprint stable.
+    """
+    payload = field.normalised()
+    if field.long:
+        payload["long"] = True
     return payload
 
 

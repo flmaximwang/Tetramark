@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from tetramark.schema.model import (
@@ -64,6 +66,40 @@ def test_every_field_type_validates(payload: dict, type_: FieldType) -> None:
     assert field.type is type_
     assert field.normalised()["type"] == type_.value
     assert str(field.type) == type_.value
+
+
+def test_long_defaults_to_false_and_is_never_normalised() -> None:
+    field = Field(type="text")
+    assert field.long is False
+    assert "long" not in field.normalised()
+
+
+@pytest.mark.parametrize("type_", ["string", "text", "sequence"])
+def test_long_is_valid_on_string_text_and_sequence(type_: str) -> None:
+    field = Field(type=type_, long=True)
+    assert field.long is True
+    # Read-only form metadata: never part of the fingerprint input.
+    assert "long" not in field.normalised()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "int"},
+        {"type": "decimal"},
+        {"type": "bool"},
+        {"type": "date"},
+        {"type": "datetime"},
+        {"type": "enum", "values": ["a", "b"]},
+        {"type": "ref", "to": "entity"},
+        {"type": "computed", "expr": "1", "sql_type": "int"},
+    ],
+)
+def test_long_is_rejected_on_other_field_types(payload: dict) -> None:
+    with pytest.raises(
+        ValidationError, match="'long' is only valid for string, text and sequence"
+    ):
+        Field(**payload, long=True)
 
 
 def test_field_modifiers_and_resolved_defaults() -> None:
@@ -504,6 +540,14 @@ def test_fingerprint_ignores_descriptions_mixins_and_preset_versions() -> None:
     assert a.fingerprint() == b.fingerprint()
 
 
+def test_fingerprint_ignores_the_long_field_flag() -> None:
+    plain = _schema(fields={"notes": Field(type="text")})
+    marked = _schema(fields={"notes": Field(type="text", long=True)})
+    assert plain.kinds["thing"].fields["notes"].long is False
+    assert marked.kinds["thing"].fields["notes"].long is True
+    assert plain.fingerprint() == marked.fingerprint()
+
+
 def test_fingerprint_ignores_enum_value_order() -> None:
     a = _schema(fields={"color": Field(type="enum", values=["red", "blue"])})
     b = _schema(fields={"color": Field(type="enum", values=["blue", "red"])})
@@ -653,3 +697,45 @@ def test_box_name_problem_refuses_a_case_only_duplicate() -> None:
     assert box_name_problem("wfl-10-01", ["WFL-10-01"]) is not None
     # ... but a genuinely different name is fine.
     assert box_name_problem("Tube-2", ["TUBE-1"]) is None
+
+
+# ---------------------------------------------------------------------------
+# long: true — display in tm schema show, intent in the bundled presets
+# ---------------------------------------------------------------------------
+
+REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
+
+
+def test_schema_show_payload_adds_long_only_when_set() -> None:
+    from tetramark.cli.schema import _kind_payload
+
+    kind = Kind(
+        object="entity",
+        fields={
+            "notes": Field(type="text", long=True),
+            "name": Field(type="string"),
+        },
+    )
+    payload = _kind_payload(kind)
+    assert payload["fields"]["notes"]["long"] is True
+    assert "long" not in payload["fields"]["name"]
+    # The payload addition must not leak into the fingerprint input.
+    assert "long" not in kind.fields["notes"].normalised()
+
+
+def test_bundled_presets_mark_every_text_and_sequence_field_long() -> None:
+    missing: list[str] = []
+    for path in sorted(REPO_PRESETS.glob("*.yaml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        field_groups = list((document.get("mixins") or {}).values())
+        field_groups += [
+            kind.get("fields") or {}
+            for kind in (document.get("kinds") or {}).values()
+        ]
+        for fields in field_groups:
+            for field_name, spec in fields.items():
+                if spec.get("type") not in ("text", "sequence"):
+                    continue
+                if spec.get("long") is not True:
+                    missing.append(f"{path.name}:{field_name}")
+    assert missing == []

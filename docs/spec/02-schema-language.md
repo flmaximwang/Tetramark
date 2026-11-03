@@ -64,7 +64,13 @@ includes it — `sequence_fields` lives in `proteins` because that is the deepes
 | `computed` | generated column `STORED` | `expr:` SQL over same-row columns, `sql_type:` required |
 
 Modifiers: `required` (NOT NULL), `unique`, `default`, `pattern` (regex, enforced by app and by a
-generated Dolt test — Dolt CHECK has no REGEXP guarantee), `description`, `length`.
+generated Dolt test — Dolt CHECK has no REGEXP guarantee), `description`, `length`, `long`.
+
+`long: true` marks a `string`, `text` or `sequence` field whose value can be large (a sequence, a
+free-text note), so interactive forms show it in short form instead of in full. It is valid only on
+those three types; it changes no DDL and is read-only form metadata, excluded from the schema
+fingerprint like `description`, and it appears in `tm schema show`. Adding or removing it needs no
+`version:` bump and no migration step (§5).
 
 `lineage: true` marks a **`ref`** field as a descent edge for `tm lineage` (§6): `plasmid.construct` (in
 `nucleic_acids`) and `cell_line.parental` (in `cell_culture`) are the bundled examples. It is valid only on `type: ref`, on entity and stock

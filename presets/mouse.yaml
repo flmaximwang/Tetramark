@@ -64,6 +64,7 @@ kinds:
         description: Sex of the mice in the cohort (female, male or unknown/untyped).
       genotype:
         type: text
+        long: true
         description: Genotype / modifications of the cohort; NULL means untyped (e.g. a litter before genotyping).
       dam:
         type: ref

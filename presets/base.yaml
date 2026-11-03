@@ -39,6 +39,7 @@ mixins:
       description: Human-readable unique name used in lists and searches.
     description:
       type: text
+      long: true
       description: Free-text notes about the object; shown in show/find output.
 
 kinds:
