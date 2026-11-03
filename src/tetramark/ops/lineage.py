@@ -23,8 +23,11 @@ one; it then has one upstream edge to the stock that owns it, carrying the same
 ``via`` as the relation that named it, so a ``source_aliquot`` path reads
 child stock → source aliquot → that aliquot's stock.
 
-The graph is built eagerly from the core tables plus one query per
-``lineage: true`` field (only rows where the field is set).  Traversal is
+The graph is built eagerly from the core tables plus one query for every kind
+that has a ``lineage: true`` field (only rows where the field is set).  Those
+reads are independent, so they all run in **one** ``driver.query_many`` batch
+together with the rows root resolution needs; the aliquot ownership and stock
+count reads (which depend on the graph) share a second batch.  Traversal is
 lazy: it walks only the requested directions, stops at ``--depth`` and never
 visits a node twice, so a cycle in hand-written data (a ``cell_line.parental``
 loop) terminates instead of hanging.
@@ -36,8 +39,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
-from tetramark.errors import UsageError
-from tetramark.ops.find import resolve_any
+from tetramark.core.objects import OBJECT_TYPES
+from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import table_name
 from tetramark.schema.model import EffectiveSchema, Field, FieldType, Kind, ObjectType
 
@@ -201,32 +204,204 @@ def _target_object(schema: EffectiveSchema, target: str) -> str:
     return target if kind is None else kind.object.value
 
 
-def _aliquot_stocks(ledger: Ledger, aliquot_ids: Sequence[str]) -> dict[str, str]:
-    """``{aliquot id: stock id}`` for the given aliquots (one query per chunk)."""
-    owners: dict[str, str] = {}
+def _aliquot_owner_queries(
+    aliquot_ids: Sequence[str],
+) -> list[tuple[str, tuple[str, ...]]]:
+    """``{aliquot id: stock id}`` queries, one per 500-id chunk."""
     ids = list(dict.fromkeys(str(aliquot_id) for aliquot_id in aliquot_ids))
+    queries: list[tuple[str, tuple[str, ...]]] = []
     for start in range(0, len(ids), _CHUNK):
         chunk = ids[start : start + _CHUNK]
-        rows = ledger.driver.query(
-            f"SELECT {_quote('id')}, {_quote('stock_id')} FROM {_quote('aliquot')} "
-            f"WHERE {_quote('id')} IN ({_placeholders(len(chunk))})",
-            tuple(chunk),
+        queries.append(
+            (
+                f"SELECT {_quote('id')}, {_quote('stock_id')} FROM {_quote('aliquot')} "
+                f"WHERE {_quote('id')} IN ({_placeholders(len(chunk))})",
+                tuple(chunk),
+            )
         )
-        for row in rows:
-            owners[str(row["id"])] = str(row["stock_id"])
-    return owners
+    return queries
 
 
-def _build(ledger: Ledger) -> _Graph:
-    """Every entity, stock, referenced aliquot and their descent edges."""
-    graph = _Graph()
+def _collect_owners(
+    rows: Iterable[dict[str, Any]], owners: dict[str, str]
+) -> None:
+    for row in rows:
+        owners[str(row["id"])] = str(row["stock_id"])
+
+
+# ---------------------------------------------------------------------------
+# One read batch: the graph rows and everything root resolution needs
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """The rows the graph-building batch returned, position-mapped by :func:`_load`."""
+
+    entity_rows: list[dict[str, Any]]
+    stock_rows: list[dict[str, Any]]
+    #: ``(kind name, lineage fields, rows)`` in sorted kind order; the rows are
+    #: what the per-kind ``lineage: true`` query returns.
+    lineage: list[tuple[str, dict[str, Field], list[dict[str, Any]]]]
+    #: Rows of the box table matching the ref by id or by name.
+    box_rows: list[dict[str, Any]]
+    #: ``id``/``stock_id`` when the ref is an aliquot id (empty otherwise).
+    aliquot_rows: list[dict[str, Any]]
+    #: Alias rows of the ref that name an existing object, ordered by type.
+    alias_rows: list[dict[str, Any]]
+
+
+def _lineage_queries(
+    schema: EffectiveSchema,
+) -> list[tuple[str, dict[str, Field], str]]:
+    """One SELECT per kind with ``lineage: true`` refs, in sorted kind order."""
+    queries: list[tuple[str, dict[str, Field], str]] = []
+    for kind_name in sorted(schema.kinds):
+        kind = schema.kinds[kind_name]
+        if kind.object is ObjectType.box:
+            continue
+        fields = _lineage_fields(kind)
+        if not fields:
+            continue
+        table = table_name(kind.object, kind_name)
+        select = ", ".join(_quote(name) for name in fields)
+        where = " OR ".join(f"{_quote(name)} IS NOT NULL" for name in fields)
+        queries.append(
+            (
+                kind_name,
+                fields,
+                f"SELECT {_quote('id')}, {select} FROM {_quote(table)} WHERE {where}",
+            )
+        )
+    return queries
+
+
+def _alias_identification_sql() -> str:
+    """The ref's alias rows that name an existing object, ordered by type.
+
+    ``resolve_any`` ignores an alias row whose object does not exist, so the
+    existence check is part of the batch; ``object_type`` order is what its
+    ambiguity message uses.
+    """
+    exists = " OR ".join(
+        f"(al.{_quote('object_type')} = %s AND EXISTS ("
+        f"SELECT 1 FROM {_quote(object_type)} alias_target "
+        f"WHERE alias_target.{_quote('id')} = al.{_quote('object_id')}))"
+        for object_type in OBJECT_TYPES
+    )
+    return (
+        f"SELECT al.{_quote('object_type')}, al.{_quote('object_id')} "
+        f"FROM {_quote('alias')} al "
+        f"WHERE LOWER(al.{_quote('alias')}) = LOWER(%s) AND ({exists}) "
+        f"ORDER BY al.{_quote('object_type')}"
+    )
+
+
+def _load(ledger: Ledger, ref: str) -> _Snapshot:
+    """Run every graph/root-resolution read as ONE ``query_many`` batch."""
     schema = ledger.schema
+    statements: list[tuple[str, Any]] = []
+    positions: dict[str, int] = {}
+
+    def add(key: str, sql: str, params: tuple[Any, ...] = ()) -> None:
+        positions[key] = len(statements)
+        statements.append((sql, params))
+
+    add(
+        "entity",
+        f"SELECT {_quote('id')}, {_quote('kind')}, {_quote('name')} "
+        f"FROM {_quote('entity')}",
+    )
+    add(
+        "stock",
+        f"SELECT {_quote('id')}, {_quote('kind')}, {_quote('entity_id')}, "
+        f"{_quote('parent_stock_id')}, {_quote('source_aliquot_id')} "
+        f"FROM {_quote('stock')}",
+    )
+    lineage_queries = _lineage_queries(schema)
+    for index, (_kind_name, _fields, sql) in enumerate(lineage_queries):
+        add(f"lineage:{index}", sql)
+    text = str(ref).strip()
+    add(
+        "box",
+        f"SELECT {_quote('id')}, {_quote('name')}, {_quote('kind')} "
+        f"FROM {_quote('box')} WHERE {_quote('id')} = %s OR {_quote('name')} = %s",
+        (text, text),
+    )
+    add(
+        "aliquot",
+        f"SELECT {_quote('id')}, {_quote('stock_id')} FROM {_quote('aliquot')} "
+        f"WHERE {_quote('id')} = %s",
+        (text,),
+    )
+    add(
+        "alias",
+        _alias_identification_sql(),
+        (text, *OBJECT_TYPES),
+    )
+    fetched = ledger.driver.query_many(statements)
+    return _Snapshot(
+        entity_rows=fetched[positions["entity"]],
+        stock_rows=fetched[positions["stock"]],
+        lineage=[
+            (kind_name, fields, fetched[positions[f"lineage:{index}"]])
+            for index, (kind_name, fields, _sql) in enumerate(lineage_queries)
+        ],
+        box_rows=fetched[positions["box"]],
+        aliquot_rows=fetched[positions["aliquot"]],
+        alias_rows=fetched[positions["alias"]],
+    )
+
+
+def _resolve_ref(snapshot: _Snapshot, ref: str) -> tuple[str, str]:
+    """Resolve ``ref`` like ``tm find``'s ``resolve_any``: id, box name, alias.
+
+    The id order is :data:`OBJECT_TYPES` (entity, stock, aliquot, box); a box
+    name wins over an alias, and an alias naming several existing objects is
+    ambiguous.  The error text is the one ``resolve_any`` raises.
+    """
+    text = str(ref).strip()
+    if not text:
+        raise UsageError("an object id or alias must not be empty")
+
+    entity_ids = {str(row["id"]) for row in snapshot.entity_rows}
+    stock_ids = {str(row["id"]) for row in snapshot.stock_rows}
+    aliquot_ids = {str(row["id"]) for row in snapshot.aliquot_rows}
+    box_ids = {str(row["id"]) for row in snapshot.box_rows}
+    if text in entity_ids:
+        return "entity", text
+    if text in stock_ids:
+        return "stock", text
+    if text in aliquot_ids:
+        return "aliquot", text
+    if text in box_ids:
+        return "box", text
+    for row in snapshot.box_rows:
+        if str(row["name"]) == text:
+            return "box", str(row["id"])
+    candidates: dict[tuple[str, str], None] = {}
+    for row in snapshot.alias_rows:
+        candidates.setdefault((str(row["object_type"]), str(row["object_id"])), None)
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    if len(candidates) > 1:
+        kinds = ", ".join(
+            f"{object_type} {object_id}" for object_type, object_id in candidates
+        )
+        raise UsageError(
+            f"alias {text!r} is ambiguous: it names {kinds}; pass the object id"
+        )
+    raise LedgerError(f"unknown object {text!r} (no such id, box name or alias)")
+
+
+def _build(
+    snapshot: _Snapshot, schema: EffectiveSchema
+) -> tuple[_Graph, list[tuple[str, str, str]]]:
+    """Every entity, stock and descent edge; returns the graph and its tube links."""
+    graph = _Graph()
 
     entity_names: dict[str, Any] = {}
-    for row in ledger.driver.query(
-        f"SELECT {_quote('id')}, {_quote('kind')}, {_quote('name')} "
-        f"FROM {_quote('entity')}"
-    ):
+    for row in snapshot.entity_rows:
         entity_id = str(row["id"])
         name = row.get("name")
         entity_names[entity_id] = name
@@ -239,14 +414,7 @@ def _build(ledger: Ledger) -> _Graph:
             )
         )
 
-    stock_rows = [
-        dict(row)
-        for row in ledger.driver.query(
-            f"SELECT {_quote('id')}, {_quote('kind')}, {_quote('entity_id')}, "
-            f"{_quote('parent_stock_id')}, {_quote('source_aliquot_id')} "
-            f"FROM {_quote('stock')}"
-        )
-    ]
+    stock_rows = [dict(row) for row in snapshot.stock_rows]
     for row in stock_rows:
         entity_name = entity_names.get(str(row["entity_id"]))
         graph.add_node(
@@ -273,19 +441,7 @@ def _build(ledger: Ledger) -> _Graph:
         if source is not None:
             links.append((str(row["id"]), str(source), "source_aliquot"))
 
-    for kind_name in sorted(schema.kinds):
-        kind = schema.kinds[kind_name]
-        if kind.object is ObjectType.box:
-            continue
-        fields = _lineage_fields(kind)
-        if not fields:
-            continue
-        table = table_name(kind.object, kind_name)
-        select = ", ".join(_quote(name) for name in fields)
-        where = " OR ".join(f"{_quote(name)} IS NOT NULL" for name in fields)
-        rows = ledger.driver.query(
-            f"SELECT {_quote('id')}, {select} FROM {_quote(table)} WHERE {where}"
-        )
+    for kind_name, fields, rows in snapshot.lineage:
         for row in rows:
             child_id = str(row["id"])
             if child_id not in graph.nodes:
@@ -299,8 +455,15 @@ def _build(ledger: Ledger) -> _Graph:
                     links.append((child_id, str(value), via))
                 else:
                     graph.add_edge(child_id, str(value), via)
+    return graph, links
 
-    owners = _aliquot_stocks(ledger, [aliquot_id for _child, aliquot_id, _via in links])
+
+def _add_aliquots(
+    graph: _Graph,
+    links: Sequence[tuple[str, str, str]],
+    owners: dict[str, str],
+) -> None:
+    """Add the referenced aliquot nodes and their edges, after the built graph."""
     for child_id, aliquot_id, via in links:
         stock_id = owners.get(aliquot_id)
         if stock_id is None:
@@ -317,12 +480,42 @@ def _build(ledger: Ledger) -> _Graph:
         )
         graph.add_edge(child_id, aliquot_id, via)
         graph.add_edge(aliquot_id, stock_id, via)
-    return graph
 
 
 # ---------------------------------------------------------------------------
 # The count accessor ticket 25 changes
 # ---------------------------------------------------------------------------
+
+
+def _count_queries(
+    kind: str, stock_ids: Iterable[str]
+) -> list[tuple[str, tuple[str, ...]]]:
+    """The ``v_stock_<kind>`` count queries, one per 500-id chunk."""
+    ids = list(dict.fromkeys(str(stock_id) for stock_id in stock_ids))
+    in_stock_column, total_column = STOCK_COUNT_COLUMNS
+    view = _quote(f"v_stock_{kind}")
+    queries: list[tuple[str, tuple[str, ...]]] = []
+    for start in range(0, len(ids), _CHUNK):
+        chunk = ids[start : start + _CHUNK]
+        queries.append(
+            (
+                f"SELECT {_quote('id')}, {_quote(in_stock_column)} AS {_quote('in_stock')}, "
+                f"{_quote(total_column)} AS {_quote('total')} FROM {view} "
+                f"WHERE {_quote('id')} IN ({_placeholders(len(chunk))})",
+                tuple(chunk),
+            )
+        )
+    return queries
+
+
+def _collect_counts(
+    rows: Iterable[dict[str, Any]], counts: dict[str, tuple[int, int]]
+) -> None:
+    for row in rows:
+        counts[str(row["id"])] = (
+            int(row.get("in_stock") or 0),
+            int(row.get("total") or 0),
+        )
 
 
 def stock_aliquot_counts(
@@ -335,37 +528,9 @@ def stock_aliquot_counts(
     stock views rename ``aliquots_stored`` to ``aliquots_in_stock`` (ticket
     25), change that tuple and nothing else in this module (or in the CLI).
     """
-    ids = list(dict.fromkeys(str(stock_id) for stock_id in stock_ids))
-    if not ids:
-        return {}
-    in_stock_column, total_column = STOCK_COUNT_COLUMNS
-    view = _quote(f"v_stock_{kind}")
     counts: dict[str, tuple[int, int]] = {}
-    for start in range(0, len(ids), _CHUNK):
-        chunk = ids[start : start + _CHUNK]
-        rows = ledger.driver.query(
-            f"SELECT {_quote('id')}, {_quote(in_stock_column)} AS {_quote('in_stock')}, "
-            f"{_quote(total_column)} AS {_quote('total')} FROM {view} "
-            f"WHERE {_quote('id')} IN ({_placeholders(len(chunk))})",
-            tuple(chunk),
-        )
-        for row in rows:
-            counts[str(row["id"])] = (
-                int(row.get("in_stock") or 0),
-                int(row.get("total") or 0),
-            )
-    return counts
-
-
-def _stock_counts(ledger: Ledger, nodes: Iterable[LineageNode]) -> dict[str, tuple[int, int]]:
-    """Counts of the visited stock nodes, one view query per stock kind."""
-    by_kind: dict[str, list[str]] = defaultdict(list)
-    for node in nodes:
-        if node.object == "stock":
-            by_kind[node.kind].append(node.id)
-    counts: dict[str, tuple[int, int]] = {}
-    for kind_name, stock_ids in by_kind.items():
-        counts.update(stock_aliquot_counts(ledger, kind_name, stock_ids))
+    for sql, params in _count_queries(kind, stock_ids):
+        _collect_counts(ledger.driver.query(sql, params), counts)
     return counts
 
 
@@ -374,11 +539,10 @@ def _stock_counts(ledger: Ledger, nodes: Iterable[LineageNode]) -> dict[str, tup
 # ---------------------------------------------------------------------------
 
 
-def _root_node(ledger: Ledger, graph: _Graph, ref: str) -> LineageNode:
-    """Resolve ``ID`` like ``tm find`` (id, then alias) to one lineage node."""
-    resolved = resolve_any(ledger, ref)
-    object_type = str(resolved["object"])
-    object_id = str(resolved["id"])
+def _root_node(
+    graph: _Graph, object_type: str, object_id: str, owners: dict[str, str]
+) -> LineageNode:
+    """The resolved root as a node; an unreferenced aliquot gets its stock edge."""
     if object_type == "box":
         raise UsageError(
             f"box {object_id!r} has no lineage: the graph nodes are entities, "
@@ -388,7 +552,6 @@ def _root_node(ledger: Ledger, graph: _Graph, ref: str) -> LineageNode:
     if node is not None:
         return node
     if object_type == "aliquot":
-        owners = _aliquot_stocks(ledger, [object_id])
         stock_id = owners.get(object_id)
         stock = None if stock_id is None else graph.nodes.get(stock_id)
         node = LineageNode(
@@ -441,6 +604,48 @@ def _starts(
     return items
 
 
+def _owners_and_counts(
+    ledger: Ledger,
+    links: Sequence[tuple[str, str, str]],
+    root_aliquot: str | None,
+    stock_rows: Sequence[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, tuple[int, int]]]:
+    """Aliquot owners and every stock count the walk may need, in one batch.
+
+    Both reads depend on the graph rows, so they cannot join the first batch;
+    they are independent of each other and share this one.  Counts cover every
+    stock of every kind (``WHERE id IN`` chunks of 500, exactly the view query
+    :func:`stock_aliquot_counts` runs), so a visited node reads the same tuple
+    it always did while the traversal is still free to visit any of them.
+    ``root_aliquot`` is the resolved ref when it is an aliquot: its owner is
+    needed for a tube no relation names (the id is de-duplicated against the
+    links, so a named tube costs no extra query).
+    """
+    owners: dict[str, str] = {}
+    counts: dict[str, tuple[int, int]] = {}
+    batch: list[tuple[str, tuple[str, ...]]] = []
+    owner_count = 0
+    link_ids = [aliquot_id for _child, aliquot_id, _via in links]
+    if root_aliquot is not None:
+        link_ids.append(root_aliquot)
+    for sql, params in _aliquot_owner_queries(link_ids):
+        batch.append((sql, params))
+        owner_count += 1
+    by_kind: dict[str, list[str]] = defaultdict(list)
+    for row in stock_rows:
+        by_kind[str(row["kind"])].append(str(row["id"]))
+    for kind_name, stock_ids in by_kind.items():
+        batch.extend(_count_queries(kind_name, stock_ids))
+    if not batch:
+        return owners, counts
+    results = ledger.driver.query_many(batch)
+    for index in range(owner_count):
+        _collect_owners(results[index], owners)
+    for rows in results[owner_count:]:
+        _collect_counts(rows, counts)
+    return owners, counts
+
+
 def lineage(
     ledger: Ledger,
     ref: str,
@@ -461,8 +666,19 @@ def lineage(
     if depth is not None and depth < 0:
         raise UsageError("--depth must not be negative")
 
-    graph = _build(ledger)
-    root = _root_node(ledger, graph, ref)
+    # One batch for the graph and root identification, a second for the
+    # graph-dependent ownership/counts reads; traversal itself is pure Python.
+    snapshot = _load(ledger, ref)
+    graph, links = _build(snapshot, ledger.schema)
+    object_type, object_id = _resolve_ref(snapshot, ref)
+    owners, counts = _owners_and_counts(
+        ledger,
+        links,
+        object_id if object_type == "aliquot" else None,
+        snapshot.stock_rows,
+    )
+    _add_aliquots(graph, links, owners)
+    root = _root_node(graph, object_type, object_id, owners)
 
     visited: dict[str, LineageNode] = {}
     ordered: list[LineageNode] = []
@@ -511,7 +727,6 @@ def lineage(
             _starts(graph, root.id, graph.children[root.id], direction=+1, level=1)
         )
 
-    counts = _stock_counts(ledger, ordered)
     if counts:
         ordered = [
             LineageNode(

@@ -11,17 +11,30 @@ Two independent trails are merged into one answer:
 
 Their order is different by nature: events have a timestamp (and an
 auto-increment id as tie-break), commits have ``dolt_log.commit_order``.
+
+Both trails are built by **one** read batch.  ``resolve_any`` (``tm find``) is
+result-dependent: which object type, id and kind the ref names decides the
+event and diff statements, and a single ``dolt sql`` process cannot read a
+statement plan out of another statement's result.  The batch therefore carries
+a small statement for every possible answer -- per object type and per way of
+naming it (id, box name, alias) -- and this module keeps only the statements
+that match the resolved object.  Every kept statement is the SQL the per-query
+path ran, so the answer (and its JSON/text/CSV renderings) is unchanged; a
+template ledger drops from one ``dolt sql`` process per trail step to two (one
+``-r json`` batch plus one ``-r csv`` pass for the omitted NULL columns).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from tetramark.ops.find import resolve_any
+from tetramark.core.objects import OBJECT_TYPES
+from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import table_name
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
+    from tetramark.schema.model import EffectiveSchema
 
 __all__ = ["HISTORY_COLUMNS", "history", "history_rows", "render_history_text"]
 
@@ -47,18 +60,409 @@ HISTORY_COLUMNS: tuple[str, ...] = (
     "message",
 )
 
+#: The three ways ``resolve_any`` can name an object.  A ref matches an id
+#: before a box name and a box name before an alias; the batch carries the
+#: statements for every way and :func:`_resolve` keeps the winning one.
+_ID = "id"
+_NAME = "name"
+_ALIAS = "alias"
 
-def history(ledger: Ledger, ref: str) -> dict[str, Any]:
+#: Naming ways per object type: only boxes can be named by their name.
+_SOURCES: dict[str, tuple[str, ...]] = {
+    "entity": (_ID, _ALIAS),
+    "stock": (_ID, _ALIAS),
+    "aliquot": (_ID, _ALIAS),
+    "box": (_ID, _NAME, _ALIAS),
+}
+
+
+def _quote(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
+def _params(text: str, sql: str) -> tuple[str, ...]:
+    """One ref value per placeholder of ``sql`` (every placeholder is the ref)."""
+    return (text,) * sql.count("%s")
+
+
+def _alias_ids_sql(object_type: str) -> str:
+    """The object ids one alias text names for ``object_type``."""
+    return (
+        f"(SELECT {_quote('object_id')} FROM {_quote('alias')} "
+        f"WHERE {_quote('object_type')} = '{object_type}' "
+        f"AND LOWER({_quote('alias')}) = LOWER(%s))"
+    )
+
+
+def _first_box_id_sql() -> str:
+    """The id of the first box with the ref's name (``resolve_any`` takes it)."""
+    return (
+        f"(SELECT {_quote('id')} FROM {_quote('box')} "
+        f"WHERE {_quote('name')} = %s LIMIT 1)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The single read batch
+# ---------------------------------------------------------------------------
+
+
+class _Batch:
+    """Statements of one history read batch, addressable by a stable key."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+        self._index: dict[str, int] = {}
+
+    def add(self, key: str, sql: str, params: tuple[Any, ...] = ()) -> None:
+        self._index[key] = len(self.statements)
+        self.statements.append((sql, params))
+
+    def rows(
+        self, results: list[list[dict[str, Any]]], key: str
+    ) -> list[dict[str, Any]]:
+        return results[self._index[key]]
+
+
+def _add_resolution(batch: _Batch, text: str) -> None:
+    """The rows ``resolve_any`` reads: ids, the box name and the alias matches."""
+    for object_type in OBJECT_TYPES:
+        if object_type == "aliquot":
+            # An aliquot's kind lives on the stock that owns it.
+            sql = (
+                f"SELECT 'aliquot' AS {_quote('object_type')}, "
+                f"a.{_quote('id')} AS {_quote('object_id')}, "
+                f"s.{_quote('kind')} AS {_quote('kind')} "
+                f"FROM {_quote('aliquot')} a LEFT JOIN {_quote('stock')} s "
+                f"ON s.{_quote('id')} = a.{_quote('stock_id')} "
+                f"WHERE a.{_quote('id')} = %s"
+            )
+        else:
+            sql = (
+                f"SELECT '{object_type}' AS {_quote('object_type')}, "
+                f"{_quote('id')} AS {_quote('object_id')}, "
+                f"{_quote('kind')} AS {_quote('kind')} "
+                f"FROM {_quote(object_type)} WHERE {_quote('id')} = %s"
+            )
+        batch.add(f"resolve:{object_type}", sql, (text,))
+    batch.add(
+        "resolve:name",
+        f"SELECT {_quote('id')} AS {_quote('object_id')}, "
+        f"{_quote('kind')} AS {_quote('kind')} "
+        f"FROM {_quote('box')} WHERE {_quote('name')} = %s",
+        (text,),
+    )
+    batch.add("resolve:alias", _alias_resolution_sql(), (text,))
+
+
+def _alias_resolution_sql() -> str:
+    """The alias rows of the ref with the kind and existence ``resolve_any`` needs.
+
+    ``resolve_any`` ignores an alias row whose object does not exist, and an
+    aliquot's kind comes from its stock; both are answered by the joins, so a
+    later ``_core_row`` query is not needed.
+    """
+    return (
+        f"SELECT al.{_quote('object_type')} AS {_quote('object_type')}, "
+        f"al.{_quote('object_id')} AS {_quote('object_id')}, "
+        f"COALESCE(e.{_quote('kind')}, s.{_quote('kind')}, b.{_quote('kind')}, "
+        f"st.{_quote('kind')}) AS {_quote('kind')}, "
+        f"CASE WHEN e.{_quote('id')} IS NOT NULL OR s.{_quote('id')} IS NOT NULL "
+        f"OR b.{_quote('id')} IS NOT NULL OR a.{_quote('id')} IS NOT NULL "
+        f"THEN 1 ELSE 0 END AS {_quote('present')} "
+        f"FROM {_quote('alias')} al "
+        f"LEFT JOIN {_quote('entity')} e ON al.{_quote('object_type')} = 'entity' "
+        f"AND e.{_quote('id')} = al.{_quote('object_id')} "
+        f"LEFT JOIN {_quote('stock')} s ON al.{_quote('object_type')} = 'stock' "
+        f"AND s.{_quote('id')} = al.{_quote('object_id')} "
+        f"LEFT JOIN {_quote('box')} b ON al.{_quote('object_type')} = 'box' "
+        f"AND b.{_quote('id')} = al.{_quote('object_id')} "
+        f"LEFT JOIN {_quote('aliquot')} a ON al.{_quote('object_type')} = 'aliquot' "
+        f"AND a.{_quote('id')} = al.{_quote('object_id')} "
+        f"LEFT JOIN {_quote('stock')} st ON st.{_quote('id')} = a.{_quote('stock_id')} "
+        f"WHERE LOWER(al.{_quote('alias')}) = LOWER(%s) "
+        f"ORDER BY al.{_quote('object_type')}"
+    )
+
+
+def _resolve(
+    batch: _Batch, results: list[list[dict[str, Any]]], text: str
+) -> tuple[str, str, str, str]:
+    """``(object, id, kind, source)`` of the ref, resolved like ``resolve_any``.
+
+    Ids win over a box name, which wins over an alias; an alias naming several
+    existing objects is ambiguous.  The error text is the one ``resolve_any``
+    raises.  ``source`` says which of the batch's statements answered.
+    """
+    for object_type in OBJECT_TYPES:
+        rows = batch.rows(results, f"resolve:{object_type}")
+        if rows:
+            return (
+                object_type,
+                str(rows[0]["object_id"]),
+                str(rows[0]["kind"]),
+                _ID,
+            )
+    rows = batch.rows(results, "resolve:name")
+    if rows:
+        return "box", str(rows[0]["object_id"]), str(rows[0]["kind"]), _NAME
+    resolved: dict[tuple[str, str], str] = {}
+    for row in batch.rows(results, "resolve:alias"):
+        if not int(row.get("present") or 0):
+            continue
+        resolved.setdefault(
+            (str(row["object_type"]), str(row["object_id"])),
+            str(row["kind"]),
+        )
+    if len(resolved) == 1:
+        (object_type, object_id), kind = next(iter(resolved.items()))
+        return object_type, object_id, kind, _ALIAS
+    if len(resolved) > 1:
+        kinds = ", ".join(
+            f"{object_type} {object_id}" for object_type, object_id in resolved
+        )
+        raise UsageError(
+            f"alias {text!r} is ambiguous: it names {kinds}; pass the object id"
+        )
+    raise LedgerError(f"unknown object {text!r} (no such id, box name or alias)")
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+
+def _event_where(object_type: str, source: str) -> str:
+    """The ``aliquot_event`` filter for one object and one naming way."""
+    if object_type == "aliquot":
+        if source == _ID:
+            return f"{_quote('aliquot_id')} = %s"
+        return f"{_quote('aliquot_id')} IN {_alias_ids_sql('aliquot')}"
+    if object_type == "stock":
+        if source == _ID:
+            return (
+                f"{_quote('aliquot_id')} IN ("
+                f"SELECT {_quote('id')} FROM {_quote('aliquot')} "
+                f"WHERE {_quote('stock_id')} = %s)"
+            )
+        return (
+            f"{_quote('aliquot_id')} IN ("
+            f"SELECT {_quote('id')} FROM {_quote('aliquot')} "
+            f"WHERE {_quote('stock_id')} IN {_alias_ids_sql('stock')})"
+        )
+    if object_type == "entity":
+        join = (
+            f"SELECT a.{_quote('id')} FROM {_quote('aliquot')} a "
+            f"JOIN {_quote('stock')} s ON s.{_quote('id')} = a.{_quote('stock_id')} "
+            "WHERE "
+        )
+        if source == _ID:
+            return f"{_quote('aliquot_id')} IN ({join}s.{_quote('entity_id')} = %s)"
+        return (
+            f"{_quote('aliquot_id')} IN "
+            f"({join}s.{_quote('entity_id')} IN {_alias_ids_sql('entity')})"
+        )
+    # box: the tube's location moves are the events that touch the box.
+    if source == _ID:
+        return f"({_quote('from_box_id')} = %s OR {_quote('to_box_id')} = %s)"
+    if source == _NAME:
+        first = _first_box_id_sql()
+        return f"({_quote('from_box_id')} = {first} OR {_quote('to_box_id')} = {first})"
+    ids = _alias_ids_sql("box")
+    return f"({_quote('from_box_id')} IN {ids} OR {_quote('to_box_id')} IN {ids})"
+
+
+def _add_events(batch: _Batch, text: str) -> None:
+    for object_type in ("entity", "stock", "aliquot", "box"):
+        for source in _SOURCES[object_type]:
+            where = _event_where(object_type, source)
+            sql = (
+                f"SELECT * FROM {_quote('aliquot_event')} WHERE {where} "
+                f"ORDER BY {_quote('at')}, {_quote('id')}"
+            )
+            batch.add(f"events:{object_type}:{source}", sql, _params(text, sql))
+
+
+# ---------------------------------------------------------------------------
+# Dolt diffs
+# ---------------------------------------------------------------------------
+
+
+def _diff_where(object_type: str, source: str, left: str, right: str) -> str:
+    """The diff filter for one object and one naming way, over two id columns."""
+    if source == _ID:
+        return f"(d.{_quote(left)} = %s OR d.{_quote(right)} = %s)"
+    if source == _ALIAS:
+        ids = _alias_ids_sql(object_type)
+        return f"(d.{_quote(left)} IN {ids} OR d.{_quote(right)} IN {ids})"
+    first = _first_box_id_sql()
+    return f"(d.{_quote(left)} = {first} OR d.{_quote(right)} = {first})"
+
+
+def _add_core_diffs(batch: _Batch, text: str) -> None:
+    for object_type in ("entity", "stock", "aliquot", "box"):
+        for source in _SOURCES[object_type]:
+            where = _diff_where(object_type, source, "to_id", "from_id")
+            sql = (
+                f"SELECT * FROM {_quote('dolt_diff_' + object_type)} d "
+                f"WHERE {where}"
+            )
+            batch.add(f"diff:{object_type}:{source}", sql, _params(text, sql))
+
+
+def _kind_diff_branch(table: str, source: str, where: str) -> str:
+    return (
+        f"SELECT '{table}' AS {_quote('tm_table')}, '{source}' AS {_quote('tm_src')}, "
+        f"d.{_quote('diff_type')} AS {_quote('diff_type')}, "
+        f"d.{_quote('to_commit')} AS {_quote('to_commit')} "
+        f"FROM {_quote('dolt_diff_' + table)} d WHERE {where}"
+    )
+
+
+def _add_kind_diffs(batch: _Batch, schema: EffectiveSchema, text: str) -> None:
+    """One ``UNION ALL`` statement for every kind table a ref could name.
+
+    The resolved ``(object, kind)`` decides which table's rows count, so the
+    batch asks every kind table (each branch is gated by the table's literal
+    name, the way ``SELECT * FROM dolt_diff_<table>`` would be chosen after
+    resolution); only the matching branches can return rows.  Only
+    ``diff_type``/``to_commit`` are read from a kind table's diff, so the
+    branches share one narrow shape instead of selecting every column.
+    """
+    branches: list[str] = []
+    params: list[str] = []
+    for object_type in ("entity", "stock", "box"):
+        for kind_name in sorted(schema.kinds_for(object_type)):
+            table = table_name(object_type, kind_name)
+            for source in _SOURCES[object_type]:
+                where = _diff_where(object_type, source, "to_id", "from_id")
+                branches.append(_kind_diff_branch(table, source, where))
+                params.extend(_params(text, where))
+    if not branches:
+        return
+    batch.add("diff:kinds", " UNION ALL ".join(branches), tuple(params))
+
+
+def _add_alias_diffs(batch: _Batch, text: str) -> None:
+    branches: list[str] = []
+    params: list[str] = []
+    for object_type in ("entity", "stock", "aliquot", "box"):
+        for source in _SOURCES[object_type]:
+            if source == _ID:
+                left = (
+                    f"(d.{_quote('to_object_type')} = '{object_type}' AND "
+                    f"d.{_quote('to_object_id')} = %s)"
+                )
+                right = (
+                    f"(d.{_quote('from_object_type')} = '{object_type}' AND "
+                    f"d.{_quote('from_object_id')} = %s)"
+                )
+            elif source == _ALIAS:
+                ids = _alias_ids_sql(object_type)
+                left = (
+                    f"(d.{_quote('to_object_type')} = '{object_type}' AND "
+                    f"d.{_quote('to_object_id')} IN {ids})"
+                )
+                right = (
+                    f"(d.{_quote('from_object_type')} = '{object_type}' AND "
+                    f"d.{_quote('from_object_id')} IN {ids})"
+                )
+            else:
+                first = _first_box_id_sql()
+                left = (
+                    f"(d.{_quote('to_object_type')} = 'box' AND "
+                    f"d.{_quote('to_object_id')} = {first})"
+                )
+                right = (
+                    f"(d.{_quote('from_object_type')} = 'box' AND "
+                    f"d.{_quote('from_object_id')} = {first})"
+                )
+            where = f"({left} OR {right})"
+            branches.append(
+                f"SELECT '{object_type}' AS {_quote('tm_type')}, "
+                f"'{source}' AS {_quote('tm_src')}, "
+                f"d.{_quote('diff_type')} AS {_quote('diff_type')}, "
+                f"d.{_quote('to_commit')} AS {_quote('to_commit')} "
+                f"FROM {_quote('dolt_diff_alias')} d WHERE {where}"
+            )
+            params.extend(_params(text, where))
+    batch.add("diff:alias", " UNION ALL ".join(branches), tuple(params))
+
+
+def _add_extra_diffs(batch: _Batch, text: str) -> None:
+    """The core-table diffs a box, stock or entity history needs in addition."""
+    # A box's moves change the aliquot table (to/from_box_id), not the box row.
+    for source in _SOURCES["box"]:
+        where = _diff_where("box", source, "to_box_id", "from_box_id")
+        sql = (
+            f"SELECT 'box' AS {_quote('tm_case')}, '{source}' AS {_quote('tm_src')}, "
+            f"d.{_quote('diff_type')} AS {_quote('diff_type')}, "
+            f"d.{_quote('to_commit')} AS {_quote('to_commit')}, "
+            f"d.{_quote('from_box_id')} AS {_quote('from_box_id')}, "
+            f"d.{_quote('to_box_id')} AS {_quote('to_box_id')} "
+            f"FROM {_quote('dolt_diff_aliquot')} d WHERE {where}"
+        )
+        batch.add(f"diff:extra:box:{source}", sql, _params(text, sql))
+    # Aliquot rows carry the stock id, so their diffs are stock history too.
+    for source in _SOURCES["stock"]:
+        where = _diff_where("stock", source, "to_stock_id", "from_stock_id")
+        sql = (
+            f"SELECT 'stock' AS {_quote('tm_case')}, '{source}' AS {_quote('tm_src')}, "
+            f"d.{_quote('diff_type')} AS {_quote('diff_type')}, "
+            f"d.{_quote('to_commit')} AS {_quote('to_commit')} "
+            f"FROM {_quote('dolt_diff_aliquot')} d WHERE {where}"
+        )
+        batch.add(f"diff:extra:stock:{source}", sql, _params(text, sql))
+    # Stock rows carry the entity id, so a new stock is entity history too.
+    for source in _SOURCES["entity"]:
+        where = _diff_where("entity", source, "to_entity_id", "from_entity_id")
+        sql = (
+            f"SELECT 'entity' AS {_quote('tm_case')}, '{source}' AS {_quote('tm_src')}, "
+            f"d.{_quote('diff_type')} AS {_quote('diff_type')}, "
+            f"d.{_quote('to_commit')} AS {_quote('to_commit')} "
+            f"FROM {_quote('dolt_diff_stock')} d WHERE {where}"
+        )
+        batch.add(f"diff:extra:entity:{source}", sql, _params(text, sql))
+
+
+def _add_static_reads(batch: _Batch) -> None:
+    """The ref-independent reads: box names, the commit log and every alias."""
+    batch.add("box_names", f"SELECT {_quote('id')}, {_quote('name')} FROM {_quote('box')}")
+    batch.add("dolt_log", f"SELECT * FROM {_quote('dolt_log')}")
+    batch.add(
+        "aliases",
+        f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
+        f"FROM {_quote('alias')} "
+        f"ORDER BY {_quote('object_type')}, {_quote('alias')}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The answer
+# ---------------------------------------------------------------------------
+
+
+def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
     """Events and commits for one object, resolved by id, box name or alias."""
-    resolved = resolve_any(ledger, ref)
-    object_type = str(resolved["object"])
-    object_id = str(resolved["id"])
-    kind_name = str(resolved["kind"])
+    text = str(ref).strip()
+    if not text:
+        raise UsageError("an object id or alias must not be empty")
 
-    events = _events(ledger, object_type, object_id)
+    batch = _Batch()
+    _add_resolution(batch, text)
+    _add_events(batch, text)
+    _add_core_diffs(batch, text)
+    _add_kind_diffs(batch, ledger.schema, text)
+    _add_alias_diffs(batch, text)
+    _add_extra_diffs(batch, text)
+    _add_static_reads(batch)
+
+    results = ledger.driver.query_many(batch.statements)
+    object_type, object_id, kind_name, source = _resolve(batch, results, text)
+
+    events = [dict(row) for row in batch.rows(results, f"events:{object_type}:{source}")]
     box_names = {
-        str(row["id"]): str(row["name"])
-        for row in ledger.driver.query("SELECT `id`, `name` FROM `box`")
+        str(row["id"]): str(row["name"]) for row in batch.rows(results, "box_names")
     }
     for event in events:
         for side in ("from", "to"):
@@ -66,14 +470,12 @@ def history(ledger: Ledger, ref: str) -> dict[str, Any]:
             event[f"{side}_box"] = (
                 None if box_id is None else box_names.get(str(box_id), str(box_id))
             )
-    commits = _commits(ledger, object_type, kind_name, object_id)
+    commits = _commits(batch, results, object_type, kind_name, object_id, source)
     aliases = [
         str(row["alias"])
-        for row in ledger.driver.query(
-            f"SELECT `alias` FROM `alias` "
-            f"WHERE `object_type` = %s AND `object_id` = %s ORDER BY `alias`",
-            (object_type, object_id),
-        )
+        for row in batch.rows(results, "aliases")
+        if str(row["object_type"]) == object_type
+        and str(row["object_id"]) == object_id
     ]
     return {
         "object": object_type,
@@ -85,115 +487,83 @@ def history(ledger: Ledger, ref: str) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Events
-# ---------------------------------------------------------------------------
+def _kind_diff_rows(
+    rows: list[dict[str, Any]], table: str, source: str
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(row.get("tm_table")) == table and str(row.get("tm_src")) == source
+    ]
 
 
-def _events(ledger: Ledger, object_type: str, object_id: str) -> list[dict[str, Any]]:
-    if object_type == "aliquot":
-        where = "`aliquot_id` = %s"
-        params: tuple[Any, ...] = (object_id,)
-    elif object_type == "stock":
-        where = "`aliquot_id` IN (SELECT `id` FROM `aliquot` WHERE `stock_id` = %s)"
-        params = (object_id,)
-    elif object_type == "entity":
-        where = (
-            "`aliquot_id` IN ("
-            "SELECT a.`id` FROM `aliquot` a "
-            "JOIN `stock` s ON s.`id` = a.`stock_id` "
-            "WHERE s.`entity_id` = %s)"
-        )
-        params = (object_id,)
-    else:  # box
-        where = "(`from_box_id` = %s OR `to_box_id` = %s)"
-        params = (object_id, object_id)
-    return ledger.driver.query(
-        f"SELECT * FROM `aliquot_event` WHERE {where} ORDER BY `at`, `id`",
-        params,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dolt diffs
-# ---------------------------------------------------------------------------
+def _alias_diff_rows(
+    rows: list[dict[str, Any]], object_type: str, source: str
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(row.get("tm_type")) == object_type
+        and str(row.get("tm_src")) == source
+    ]
 
 
 def _commits(
-    ledger: Ledger, object_type: str, kind_name: str, object_id: str
+    batch: _Batch,
+    results: list[list[dict[str, Any]]],
+    object_type: str,
+    kind_name: str,
+    object_id: str,
+    source: str,
 ) -> list[dict[str, Any]]:
-    # Each entry is (table, WHERE clause, params, is_box_move): ``is_box_move``
-    # asks for the aliquots' entering/leaving wording instead of the raw
-    # Dolt diff type.
-    queries: list[tuple[str, str, tuple[Any, ...], bool]] = [
+    # Each entry is (table, rows, is_box_move): ``is_box_move`` asks for the
+    # aliquots' entering/leaving wording instead of the raw Dolt diff type.
+    sources: list[tuple[str, list[dict[str, Any]], bool]] = [
         (
             object_type,
-            "`to_id` = %s OR `from_id` = %s",
-            (object_id, object_id),
+            batch.rows(results, f"diff:{object_type}:{source}"),
             False,
         )
     ]
     if object_type != "aliquot":
-        queries.append(
+        table = table_name(object_type, kind_name)
+        sources.append(
             (
-                table_name(object_type, kind_name),
-                "`to_id` = %s OR `from_id` = %s",
-                (object_id, object_id),
+                table,
+                _kind_diff_rows(batch.rows(results, "diff:kinds"), table, source),
                 False,
             )
         )
-    queries.append(
+    sources.append(
         (
             "alias",
-            "(`to_object_type` = %s AND `to_object_id` = %s) "
-            "OR (`from_object_type` = %s AND `from_object_id` = %s)",
-            (object_type, object_id, object_type, object_id),
+            _alias_diff_rows(batch.rows(results, "diff:alias"), object_type, source),
             False,
         )
     )
     if object_type == "box":
         # Moving an aliquot in or out changes the aliquot table, not the box
         # row; those diffs are the commits a box's history needs to show.
-        queries.append(
-            (
-                "aliquot",
-                "`to_box_id` = %s OR `from_box_id` = %s",
-                (object_id, object_id),
-                True,
-            )
+        sources.append(
+            ("aliquot", batch.rows(results, f"diff:extra:box:{source}"), True)
         )
     elif object_type == "stock":
         # Aliquot rows carry the stock id, so their create/move/use commits
         # are part of the stock's history.
-        queries.append(
-            (
-                "aliquot",
-                "`to_stock_id` = %s OR `from_stock_id` = %s",
-                (object_id, object_id),
-                False,
-            )
+        sources.append(
+            ("aliquot", batch.rows(results, f"diff:extra:stock:{source}"), False)
         )
     elif object_type == "entity":
         # Stock rows carry the entity id; a new stock is entity history too.
-        queries.append(
-            (
-                "stock",
-                "`to_entity_id` = %s OR `from_entity_id` = %s",
-                (object_id, object_id),
-                False,
-            )
+        sources.append(
+            ("stock", batch.rows(results, f"diff:extra:entity:{source}"), False)
         )
 
     log = {
-        str(row["commit_hash"]): row
-        for row in ledger.driver.query("SELECT * FROM `dolt_log`")
+        str(row["commit_hash"]): row for row in batch.rows(results, "dolt_log")
     }
     commits: dict[str, dict[str, Any]] = {}
-    for table, where, params, is_box_move in queries:
-        rows = ledger.driver.query(
-            f"SELECT * FROM `dolt_diff_{table}` WHERE {where}",
-            params,
-        )
+    for table, rows, is_box_move in sources:
         for row in rows:
             diff_type = str(row.get("diff_type") or "")
             if is_box_move:
