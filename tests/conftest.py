@@ -63,8 +63,16 @@ RunDolt = Callable[..., subprocess.CompletedProcess[str]]
 
 
 # ---------------------------------------------------------------------------
-# The opt-in server lane
+# The server lane (default in tests, opt-in in the product)
 # ---------------------------------------------------------------------------
+
+#: Run the suite through the opt-in ``dolt sql-server`` backend by default.
+#: This is a *test harness* default only: the product's default backend is
+#: still the embedded driver (one ``dolt sql`` process per batch).  Set
+#: ``TETRAMARK_DRIVER=embedded`` (the ``embedded`` lane does) to exercise that
+#: default backend; the ``embedded_driver`` budget tests below only mean
+#: something there.  The suite is still real Dolt either way.
+os.environ.setdefault("TETRAMARK_DRIVER", "server")
 
 
 def _server_lane() -> bool:

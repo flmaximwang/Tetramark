@@ -20,11 +20,14 @@ how the full suite fits in the five-minute budget. `scripts/test-lanes.sh full` 
   full real-Dolt suite then fits under the 300 s ceiling. Nothing about the data is different: the
   server is the same Dolt binary on the same `.dolt` directory.
 
-Selection is per ledger operation, not a global switch in the product:
+Selection is per ledger operation, not a global switch in the product. The test harness defaults
+`TETRAMARK_DRIVER=server` in `tests/conftest.py`, so a plain `pytest`/`uv run pytest` is the fast
+real-Dolt server lane; the product itself still defaults to the embedded driver:
 
 ```sh
-TETRAMARK_DRIVER=server pytest -q          # opt in (the `full` lane does this)
-TETRAMARK_DRIVER=embedded pytest -q        # explicit default (same as unset)
+pytest -q                                  # server lane (the conftest default; ~135 s)
+TETRAMARK_DRIVER=embedded pytest -q        # the embedded/default-backend lane (~12 min)
+scripts/test-lanes.sh embedded             # same, with the lane script's reporting
 ```
 
 The effective environment is the `env=` mapping a caller passes to `init_ledger`/`adopt_ledger`/
@@ -54,8 +57,8 @@ Server lifecycle details that matter when debugging:
 | Lane | Command | Budget | What belongs there |
 |---|---|---|---|
 | **fast** | `pytest -q -m fast` | **seconds** (0.5.0 baseline 2.38 s) | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
-| **full** | `TETRAMARK_DRIVER=server pytest` (`scripts/test-lanes.sh full`) | **≤ 300 s** hard ceiling: the real-Dolt suite through `dolt sql-server` | everything, including every real-Dolt integration flow |
-| **embedded** | `TETRAMARK_DRIVER= pytest` (`scripts/test-lanes.sh embedded`) | measured 732 s (12:11) on the reference machine; optional gate via `EMBEDDED_LANE_BUDGET_SECONDS` | the same tests through the default one-process-per-batch backend; run before a release to prove the default path |
+| **full** | `pytest` (conftest defaults `TETRAMARK_DRIVER=server`) or `scripts/test-lanes.sh full` | **≤ 300 s** hard ceiling: the real-Dolt suite through `dolt sql-server` | everything, including every real-Dolt integration flow |
+| **embedded** | `TETRAMARK_DRIVER=embedded pytest` or `scripts/test-lanes.sh embedded` | measured 732 s (12:11) on the reference machine; optional gate via `EMBEDDED_LANE_BUDGET_SECONDS` | the same tests through the default one-process-per-batch backend; run before a release to prove the default path |
 | **release** | fast + full + embedded + the heavy migration/lab subset | green, no new failures | `tests/test_migrate.py`, the read-only 0.4.2 lab-ledger check when `.dsh/tm-l8g/lab-snapshot` exists, docs flows, and `scripts/test-lanes.sh` |
 
 Rules:

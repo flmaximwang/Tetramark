@@ -73,17 +73,19 @@ batches (such as `tm find`, a list command or one write session) share one proce
 builds each standard shape once per session and hands out directory copies, so a fresh test ledger
 costs a copy rather than a full init.
 
-The **full lane runs the same tests through an opt-in `dolt sql-server`** (`TETRAMARK_DRIVER=server`)
-so the real-Dolt suite fits in the five-minute budget; the contract, data and SQL are unchanged.
-`scripts/test-lanes.sh embedded` runs the same tests on the default subprocess backend (~13 min) and
-is the release check that the default path is still green.
+The **full lane runs the same tests through an opt-in `dolt sql-server`** (the test harness
+defaults `TETRAMARK_DRIVER=server`) so the real-Dolt suite fits in the five-minute budget; the
+contract, data and SQL are unchanged. `TETRAMARK_DRIVER=embedded pytest` (or
+`scripts/test-lanes.sh embedded`) runs the same tests on the product's default subprocess backend
+(~12 min) and is the release check that the default path is still green.
 
 ```sh
-uv run pytest -q -m fast                  # Dolt-free unit tests: seconds; the inner loop
-uv run pytest -q -m fast                  # (same) the fast lane
-scripts/test-lanes.sh full                # real-Dolt suite via dolt sql-server, hard 300 s gate
-scripts/test-lanes.sh embedded            # same suite via dolt sql subprocesses (default backend)
-uv run pytest tests/test_objects.py -n0   # focused loop (embedded unless TETRAMARK_DRIVER=server)
+uv run pytest -q -m fast                         # Dolt-free unit tests: seconds; the inner loop
+uv run pytest                                    # full real-Dolt suite via dolt sql-server (server lane)
+scripts/test-lanes.sh full                       # same + hard 300 s gate, leftover-server check
+scripts/test-lanes.sh embedded                   # same suite via dolt sql subprocesses (default backend)
+TETRAMARK_DRIVER=embedded uv run pytest          # explicit default-backend run
+uv run pytest tests/test_objects.py -n0          # focused loop (server backend unless overridden)
 ```
 
 `scripts/test-lanes.sh` is the measurement and enforcement point (this repo has no CI): it runs the
