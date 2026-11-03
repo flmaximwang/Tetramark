@@ -6,9 +6,9 @@ The effective author used by commits is resolved in this order: ``ledger.yaml``
 it in ``ledger.yaml`` and in the ``ledger_meta`` copy so the database stays
 self-describing.
 
-Workspace settings (``host``, ``port``, ``default_ledger``, ``presets_dir``)
-were removed with the workspace layer (P7); presets are resolved through
-``$TETRAMARK_PRESETS_DIR`` or the bundled ``presets/`` directory (P8).
+Workspace-only settings were removed with the workspace layer (P7); presets are
+resolved through ``$TETRAMARK_PRESETS_DIR`` or the bundled ``presets/``
+directory (P8).
 """
 
 from __future__ import annotations
