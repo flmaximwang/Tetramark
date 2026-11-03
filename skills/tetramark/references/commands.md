@@ -93,7 +93,7 @@ tm entity add KIND [--name NAME] [--set FIELD=VALUE ...] [--alias ALIAS ...] \
   [--id EXPLICIT_ID] [--json]
 tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm entity ls [KIND] [--where FIELD=VALUE ...] [--json]
+tm entity list [KIND] [--where FIELD=VALUE ...] [--json]
 ```
 
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
@@ -111,7 +111,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm stock ls [KIND] [--where FIELD=VALUE ...] [--json]
+tm stock list [KIND] [--where FIELD=VALUE ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 ```
 
@@ -165,7 +165,7 @@ tm aliquot purge ALQ [--json]
 ```sh
 tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--json]
 tm box show NAME|ID|ALIAS [--json]
-tm box ls [--kind KIND] [--where FIELD=VALUE ...] [--json]
+tm box list [--kind KIND] [--where FIELD=VALUE ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 ```
 
@@ -185,13 +185,13 @@ boxes). `--format csv` prints one row per slot.
 
 ```sh
 tm alias add OBJECT_TYPE OBJECT_ID ALIAS [--json]
-tm alias rm [OBJECT_TYPE] ALIAS [--json]
+tm alias remove [OBJECT_TYPE] ALIAS [--json]
 tm find QUERY [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
 `OBJECT_TYPE` is `entity`, `stock`, `aliquot` or `box`; aliases are unique per object type.
-`alias rm ALIAS` removes that alias everywhere, `alias rm stock ALIAS` only from stocks.
+`alias remove ALIAS` removes that alias everywhere, `alias remove stock ALIAS` only from stocks.
 `find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
 location. `history` merges aliquot events and the Dolt commits that touched the object.
 
@@ -244,12 +244,12 @@ writes one file. The default output directory is the current directory.
 
 ```sh
 tm remote add NAME URL
-tm remote ls
-tm remote rm NAME
+tm remote list
+tm remote remove NAME
 tm remote push [NAME] [--branch BRANCH]
 tm remote pull [NAME] [--branch BRANCH]
 tm backup [DIR] [--name NAME]
-tm backup --ls          # same as: tm backup ls
+tm backup --list        # same as: tm backup list
 ```
 
 `remote push`/`pull` default to `origin` (or the only remote) and the current branch. A local URL is
@@ -258,7 +258,7 @@ created by Dolt on push.
 `backup` has **no default directory** (P10): a backup next to the ledger shares its disk and is lost
 with it. `tm backup DIR` configures a Dolt backup (name: the ledger name, or `--name`) and syncs it;
 a later `tm backup` syncs the ledger-named configured backup, `tm backup --name NAME` another one, and
-`tm backup --ls` lists what is configured. With no DIR and no configured backup the command is a
+`tm backup --list` lists what is configured. With no DIR and no configured backup the command is a
 usage error and nothing is written.
 
 ## Configuration

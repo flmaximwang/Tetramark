@@ -67,7 +67,7 @@ database directory (spec §3.1). The old spelling `tm init NAME --adopt` is gone
   An existing `ledger.yaml` keeps its author; change it with `tm config set author "Name <email>"`.
 - **No default backup (P10).** A backup next to the ledger shares its disk and dies with it, so a
   directory is required unless the ledger already has a configured backup. `tm backup DIR` configures
-  a Dolt backup and syncs it; `tm backup --ls` lists configured destinations.
+  a Dolt backup and syncs it; `tm backup --list` lists configured destinations.
 - **One writer per ledger (P11).** Writes take an `fcntl.flock` on
   `<ledger>/.dolt/tetramark.lock` for the whole read → validate → write → commit window. A second
   writer waits up to 10 s (override with `TETRAMARK_LOCK_TIMEOUT=<seconds>`) and then exits 2 with

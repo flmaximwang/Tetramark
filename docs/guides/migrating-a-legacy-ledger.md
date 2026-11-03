@@ -250,10 +250,10 @@ Run all of these; keep the output with the migration record.
 1. **Row counts per kind** match the old table counts:
 
 ```sh
-tm --format csv entity ls protein_construct | wc -l  # header + 27
-tm --format csv entity ls plasmid | wc -l            # header + 15
-tm --format csv stock ls bacterial_glycerol | wc -l  # header + 27
-tm --format csv stock ls plasmid_prep | wc -l        # header + 15
+tm --format csv entity list protein_construct | wc -l  # header + 27
+tm --format csv entity list plasmid | wc -l            # header + 15
+tm --format csv stock list bacterial_glycerol | wc -l  # header + 27
+tm --format csv stock list plasmid_prep | wc -l        # header + 15
 ```
 
 2. **Every old UID resolves** to the same entity/stock:

@@ -174,7 +174,7 @@ optional extra column.
 
 ```sh
 tm backup /path/to/archive/lab101   # required: there is no default directory (P10)
-tm backup --ls                      # list configured backups
+tm backup --list                    # list configured backups
 tm backup                           # later runs sync the configured ledger-named backup
 tm backup --name pre-spec4          # sync a configured backup with another name
 
