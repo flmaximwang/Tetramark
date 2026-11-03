@@ -459,7 +459,6 @@ def cli_isolated(
     """Run the CLI from ``tmp_path`` with the isolated Dolt/Git config."""
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 

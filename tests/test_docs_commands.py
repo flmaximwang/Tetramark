@@ -1,15 +1,19 @@
 """The documentation's commands must actually run (ticket 14).
 
-Four flows are executed against a real temporary workspace, all through the
-embedded driver (no ``dolt sql-server``):
+Four flows are executed against real temporary standalone ledgers, all through
+the embedded driver (no ``dolt sql-server``):
 
 * the README quickstart;
 * the command reference (every command group);
 * the schema skill's local-kind / rules / destructive workflow;
 * the migration recipe's explicit old IDs and CSV round-trip.
 
-Nothing is mocked: each CLI call goes through the real ``dolt`` binary with an
-isolated ``DOLT_ROOT_PATH``/``HOME`` from ``conftest.py``.
+A ledger is one self-contained directory in 0.5.0 (``.dolt/`` plus
+``ledger.yaml``), so each flow runs from a plain lab directory and points the
+CLI at the ledger with ``--ledger PATH`` -- the same way a user with several
+ledger directories does.  Nothing is mocked: each CLI call goes through the
+real ``dolt`` binary with an isolated ``DOLT_ROOT_PATH``/``HOME`` from
+``conftest.py``.
 """
 
 from __future__ import annotations
@@ -24,11 +28,12 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 
-from conftest import REPO_PRESETS
-
 runner = CliRunner()
 
 AUTHOR = "Docs Test <docs@tetramark.invalid>"
+
+#: The ledger every ``run`` targets (``--ledger PATH``); see :func:`new_ledger`.
+_CURRENT: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -41,20 +46,47 @@ def docs_env(
     monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str], tmp_path: Path
 ) -> Path:
     """Run the CLI from an empty lab directory with isolated Dolt/Git config."""
+    global _CURRENT
+    _CURRENT = None
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
+    # P8: bare preset names resolve from the bundled presets, never the shell.
+    monkeypatch.delenv("TETRAMARK_PRESETS_DIR", raising=False)
     lab = tmp_path / "lab"
     lab.mkdir()
     monkeypatch.chdir(lab)
     return lab
 
 
+def use_ledger(path: Path) -> Path:
+    """Make ``path`` the ledger every subsequent :func:`run` operates on."""
+    global _CURRENT
+    _CURRENT = path.resolve()
+    return _CURRENT
+
+
+def new_ledger(
+    name: str = "lab101",
+    *,
+    preset: str = "molbio",
+    id_prefix: str = "12",
+) -> Path:
+    """``tm init NAME`` from the lab directory, then target that ledger."""
+    run("init", name, "--preset", preset, "--id-prefix", id_prefix, "--author", AUTHOR)
+    ledger = use_ledger(Path.cwd() / name)
+    assert (ledger / ".dolt").is_dir()
+    assert (ledger / "ledger.yaml").is_file()
+    return ledger
+
+
 def run(*args: str, expect: int = 0):
-    """Invoke the CLI and assert its exit code, with output on failure."""
-    result = runner.invoke(app, list(args))
+    """Invoke the CLI (targeting the current ledger) and assert its exit code."""
+    argv = list(args)
+    if _CURRENT is not None:
+        argv = ["--ledger", str(_CURRENT), *argv]
+    result = runner.invoke(app, argv)
     assert result.exit_code == expect, (
-        f"ledger {' '.join(args)} exited {result.exit_code} (expected {expect}):\n"
+        f"ledger {' '.join(argv)} exited {result.exit_code} (expected {expect}):\n"
         f"{result.output}\n{result.exception!r}"
     )
     return result
@@ -65,33 +97,18 @@ def run_json(*args: str):
     return json.loads(result.output)
 
 
-def init_workspace() -> None:
-    run(
-        "workspace",
-        "init",
-        ".",
-        "--default-ledger",
-        "lab101",
-        "--author",
-        AUTHOR,
-        "--presets-dir",
-        str(REPO_PRESETS),
-    )
-
-
 # ---------------------------------------------------------------------------
 # README quickstart
 # ---------------------------------------------------------------------------
 
 
 def test_readme_quickstart_runs(docs_env: Path) -> None:
-    """workspace init → init → box/entity/stock → show → check."""
+    """init -> box/entity/stock -> show -> check (README quickstart)."""
     del docs_env  # the fixture only changes cwd / environment
-    init_workspace()
-
-    run("init", "lab101", "--preset", "molbio", "--id-prefix", "12")
-    assert (Path.cwd() / "lab101" / ".dolt").is_dir()
-    assert (Path.cwd() / "lab101" / "ledger.yaml").is_file()
+    ledger = new_ledger()
+    assert ledger.name == "lab101"
+    assert (ledger / ".dolt").is_dir()
+    assert (ledger / "ledger.yaml").is_file()
 
     created_box = run_json("box", "add", "grid8x12", "WFL-12-01")
     assert created_box["slots"] == 96
@@ -160,8 +177,7 @@ def test_readme_quickstart_runs(docs_env: Path) -> None:
 def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     """Every command in references/commands.md except schema changes and import."""
     del docs_env
-    init_workspace()
-    run("init", "lab101", "--preset", "molbio", "--id-prefix", "77")
+    ledger = new_ledger(id_prefix="77")
 
     presets = run("presets", "list")
     assert "molbio" in presets.output
@@ -292,10 +308,11 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     single = Path.cwd() / "single-export"
     run("export", "item", "--out", str(single))
     assert (single / "item.csv").is_file()
-    run("init", "itemcopy", "--preset", "molbio", "--id-prefix", "77")
-    run("--ledger", "itemcopy", "import", "item", str(single / "item.csv"))
-    copied_items = run_json("--ledger", "itemcopy", "entity", "ls", "item")
+    new_ledger("itemcopy", id_prefix="77")
+    run("import", "item", str(single / "item.csv"))
+    copied_items = run_json("entity", "ls", "item")
     assert {row["name"] for row in copied_items} >= {"Reagent", "no-commit-item"}
+    use_ledger(ledger)
 
     # Configuration.
     assert AUTHOR in run("config", "get", "author").output
@@ -327,9 +344,7 @@ def test_schema_skill_local_kind_rules_and_destructive_flow(
 ) -> None:
     """kinds_dir + rules_dir, plan/apply, destructive refusal and override."""
     del docs_env
-    init_workspace()
-    run("init", "lab101", "--preset", "base", "--id-prefix", "77")
-    ledger_dir = Path.cwd() / "lab101"
+    ledger_dir = new_ledger(preset="base", id_prefix="77")
 
     (ledger_dir / "kinds").mkdir()
     (ledger_dir / "kinds" / "equipment.yaml").write_text(
@@ -433,11 +448,7 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
 ) -> None:
     """The zsqlab08 mapping in docs/guides/migrating-a-legacy-ledger.md runs end to end."""
     del docs_env
-    run(
-        "workspace", "init", ".", "--default-ledger", "zsqlab08",
-        "--author", AUTHOR, "--presets-dir", str(REPO_PRESETS),
-    )
-    run("init", "zsqlab08", "--preset", "molbio", "--id-prefix", "08")
+    zsqlab = new_ledger("zsqlab08", preset="molbio", id_prefix="08")
 
     run("box", "add", "grid9x9", "WFL-08-01")
     run("box", "add", "grid9x9", "WFL-08-02")
@@ -518,15 +529,16 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     ):
         assert (exports / name).is_file(), name
 
-    run("init", "lab42", "--preset", "molbio", "--id-prefix", "08")
-    run("--ledger", "lab42", "--dry-run", "import", "all", str(exports))
-    run("--ledger", "lab42", "import", "all", str(exports))
-    assert "OK:" in run("--ledger", "lab42", "check").output
-    copied = run_json("--ledger", "lab42", "find", "0826FP02")
+    new_ledger("lab42", preset="molbio", id_prefix="08")
+    run("--dry-run", "import", "all", str(exports))
+    run("import", "all", str(exports))
+    assert "OK:" in run("check").output
+    copied = run_json("find", "0826FP02")
     assert copied
 
     # Importing into the source ledger rejects existing IDs, all-or-nothing.
-    rejected = run("--ledger", "zsqlab08", "import", "all", str(exports), expect=1)
+    use_ledger(zsqlab)
+    rejected = run("import", "all", str(exports), expect=1)
     assert "already exists" in str(rejected.exception)
 
 

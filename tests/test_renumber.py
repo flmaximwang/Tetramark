@@ -1,10 +1,9 @@
 """``tm stock renumber``: legacy ids become strategy-shaped ids plus aliases (TM-06).
 
-Everything runs against the real ``dolt`` binary (never a mock): the CLI tests
-use the worker's ``dolt sql-server`` like the other CLI tests, the core
-rename test runs on both drivers.  Legacy stocks (ids that do not match the
-ledger's stock id strategy) can only be created by seeding them with raw SQL,
-so the helpers below do exactly that inside one audited write session.
+Everything runs against the real ``dolt`` binary (never a mock) through the
+embedded driver, like the other CLI tests.  Legacy stocks (ids that do not
+match the ledger's stock id strategy) can only be created by seeding them with
+raw SQL, so the helpers below do exactly that inside one audited write session.
 """
 
 from __future__ import annotations
@@ -45,7 +44,6 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     """Run the CLI with the same isolated Dolt/Git environment as the ledger."""
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 def commit_count(ledger) -> int:
