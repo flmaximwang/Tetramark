@@ -5,13 +5,14 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import group, json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_read, output_format
 
 entity_app = group("Entities: the abstract thing a stock is a batch of.")
 
 
 @entity_app.command("add")
+@write_command
 def add_entity_command(
     ctx: typer.Context,
     kind: str = typer.Argument(..., help="Entity kind (e.g. plasmid, item)."),
@@ -86,6 +87,7 @@ def list_entities_command(
 
 
 @entity_app.command("edit")
+@write_command
 def edit_entity_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Entity id or alias."),

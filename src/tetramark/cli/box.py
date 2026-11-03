@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import group, json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_payload, emit_read, output_format
 from tetramark.ops.render import box_csv_rows, render_box
 
@@ -14,6 +14,7 @@ box_app = group("Boxes: containers with a geometry; they nest inside each other.
 
 
 @box_app.command("add")
+@write_command
 def add_box_command(
     ctx: typer.Context,
     kind: str = typer.Argument(..., help="Box kind (e.g. grid8x12, rack, shelf)."),
@@ -95,6 +96,7 @@ def list_boxes_command(
 
 
 @box_app.command("move")
+@write_command
 def move_box_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Box name, id or alias."),

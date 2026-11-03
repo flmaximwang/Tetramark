@@ -5,12 +5,13 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import group, json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 
 aliquot_app = group("Aliquots: the physical tubes that occupy box slots.")
 
 
 @aliquot_app.command("add")
+@write_command
 def add_aliquots_command(
     ctx: typer.Context,
     stock: str = typer.Argument(..., help="Stock id or alias."),
@@ -58,6 +59,7 @@ def add_aliquots_command(
 
 
 @aliquot_app.command("move")
+@write_command
 def move_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
@@ -94,6 +96,7 @@ def move_aliquot_command(
 
 
 @aliquot_app.command("use")
+@write_command
 def use_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
@@ -119,6 +122,7 @@ def use_aliquot_command(
 
 
 @aliquot_app.command("status")
+@write_command
 def status_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
@@ -160,6 +164,7 @@ def status_aliquot_command(
 
 
 @aliquot_app.command("purge")
+@write_command
 def purge_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),

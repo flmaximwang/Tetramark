@@ -12,7 +12,13 @@ import json
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, group, json_output, resolve_ledger
+from tetramark.cli.options import (
+    GlobalOptions,
+    group,
+    json_output,
+    resolve_ledger,
+    write_command,
+)
 from tetramark.driver.base import render_sql
 from tetramark.errors import UsageError
 
@@ -64,6 +70,7 @@ def branch_ls(ctx: typer.Context) -> None:
 
 
 @branch_app.command("create")
+@write_command
 def branch_create(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="New branch name."),
@@ -90,6 +97,7 @@ def branch_create(
 
 
 @branch_app.command("delete")
+@write_command
 def branch_delete(
     ctx: typer.Context,
     name: str = typer.Argument(...,

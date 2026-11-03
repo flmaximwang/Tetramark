@@ -32,6 +32,12 @@ Every successful write goes through :meth:`Ledger.write`, which groups the
 statements of one command into one SQL transaction and one Dolt commit (spec
 §6).  ``dry_run`` collects the SQL instead of executing it; ``no_commit``
 executes but leaves the change uncommitted.
+
+One writer per ledger (P11): a write takes an exclusive ``flock`` on
+``<ledger>/.dolt/tetramark.lock`` (see :mod:`tetramark.core.writelock`).
+:class:`WriteSession` holds it for the transaction and the commit; a CLI write
+command takes it before the ledger is opened and holds it for the whole
+read -> validate -> write -> commit window.  Reads and ``--dry-run`` never lock.
 """
 
 from __future__ import annotations
@@ -41,8 +47,8 @@ import re
 import shutil
 import subprocess
 import warnings
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, suppress
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -58,6 +64,11 @@ from tetramark.core.objects import (
     BoxOps,
     EntityOps,
     StockOps,
+)
+from tetramark.core.writelock import (
+    LockHolder,
+    WriteLock,
+    write_lock_holder,
 )
 from tetramark.driver.base import (
     Driver,
@@ -107,12 +118,14 @@ __all__ = [
     "AdoptPlan",
     "InitPlan",
     "Ledger",
+    "LockHolder",
     "WriteSession",
     "adopt_ledger",
     "build_id_strategies",
     "init_ledger",
     "open",
     "resolve_author",
+    "write_lock_holder",
 ]
 
 # ``LEDGER_FILE`` comes from :mod:`tetramark.driver.resolution` and stays in
@@ -1258,6 +1271,10 @@ class Ledger:
         #: Fingerprint warnings collected while opening (also emitted via
         #: :func:`warnings.warn`).  Useful for the CLI's non-fatal notices.
         self.warnings: list[str] = []
+        #: The per-ledger writer lock (P11); created on first use.
+        self._write_lock: WriteLock | None = None
+        #: Re-entrancy depth of :meth:`hold_write_lock` on this object.
+        self._write_lock_depth = 0
 
     # -- identity ---------------------------------------------------------
     @property
@@ -1434,6 +1451,89 @@ class Ledger:
             no_commit=self.no_commit if no_commit is None else no_commit,
         )
 
+    # -- writer lock (P11) ------------------------------------------------
+    def hold_write_lock(
+        self,
+        *,
+        command: str | None = None,
+        timeout: float | None = None,
+    ) -> AbstractContextManager[None]:
+        """Hold the per-ledger writer lock for a read -> write -> commit window.
+
+        ``command`` is the short label written to the lock file (the CLI passes
+        e.g. ``"tm stock add"``); ``timeout`` overrides the default wait
+        (10 s, or ``$TETRAMARK_LOCK_TIMEOUT`` seconds).  When another process
+        holds the lock for longer, :class:`~tetramark.errors.LedgerBusyError`
+        (exit code 2) is raised before the body runs.
+
+        The lock is re-entrant per ``Ledger`` object: nested scopes -- the
+        :class:`WriteSession` a command opens, or :meth:`set_author`'s session
+        -- join the outermost one, which releases on success, on any exception
+        and on ``KeyboardInterrupt``.
+
+        >>> with ledger.hold_write_lock(command="tm stock add"):
+        ...     ledger.stocks.add(...)
+        """
+        return self._write_lock_scope(command=command, timeout=timeout)
+
+    #: Alias: ``with ledger.writing():`` reads naturally at a call site.
+    writing = hold_write_lock
+
+    @contextmanager
+    def _write_lock_scope(
+        self,
+        *,
+        command: str | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[None]:
+        first = self._write_lock_depth == 0
+        if first:
+            if self._write_lock is None:
+                self._write_lock = WriteLock(self.path, command=command)
+            else:
+                self._write_lock.command = command
+            self._write_lock.acquire(timeout=timeout)
+        self._write_lock_depth += 1
+        try:
+            yield
+        finally:
+            self._write_lock_depth -= 1
+            if self._write_lock_depth == 0:
+                assert self._write_lock is not None
+                self._write_lock.release()
+
+    def write_lock_holder(self) -> LockHolder | None:
+        """Who holds this ledger's write lock right now; ``None`` when free.
+
+        A non-blocking probe for ``tm status`` (ticket .9): it never waits,
+        never creates the lock file and never takes the lock.
+        """
+        return write_lock_holder(self)
+
+    def _adopt_write_lock(self, lock: WriteLock) -> None:
+        """Own a lock acquired before this ledger was opened (CLI decorator).
+
+        The CLI takes the lock after resolving the directory but *before*
+        :func:`open` reads ``ledger.yaml``, the schema and ``ledger_meta``, so
+        even that part of a write command is inside the writer window.  The
+        adopted scope counts as the outermost :meth:`hold_write_lock` level:
+        write sessions opened by the command join it.
+        """
+        if self._write_lock is not None or self._write_lock_depth != 0:
+            raise LedgerError("this ledger already holds or tracks a write lock")
+        if not lock.held:
+            raise LedgerError("cannot adopt a write lock that is not held")
+        self._write_lock = lock
+        self._write_lock_depth = 1
+
+    def _release_adopted_write_lock(self) -> None:
+        """Release a lock adopted with :meth:`_adopt_write_lock` (idempotent)."""
+        lock = self._write_lock
+        self._write_lock = None
+        self._write_lock_depth = 0
+        if lock is not None:
+            lock.release()
+
     # -- lifecycle --------------------------------------------------------
     def close(self) -> None:
         _close_driver(self.driver)
@@ -1468,6 +1568,7 @@ class WriteSession:
         #: Hash of the Dolt commit the session made, if it made one.
         self.commit_hash: str | None = None
         self._transaction: AbstractContextManager[Driver] | None = None
+        self._lock: AbstractContextManager[None] | None = None
         self._open = False
 
     # -- content ----------------------------------------------------------
@@ -1500,8 +1601,20 @@ class WriteSession:
         if self._open:
             raise LedgerError("write session is already open")
         if not self.dry_run:
-            self._transaction = self.ledger.driver.transaction()
-            self._transaction.__enter__()
+            # One writer per ledger (P11): hold the lock across the transaction
+            # and the Dolt commit.  A command-level ``hold_write_lock`` (the
+            # CLI write commands) is re-entrant, so this joins it.
+            lock = self.ledger.hold_write_lock(
+                command=f"write session: {self.message}"
+            )
+            lock.__enter__()
+            self._lock = lock
+            try:
+                self._transaction = self.ledger.driver.transaction()
+                self._transaction.__enter__()
+            except BaseException:
+                self._release_lock()
+                raise
         self._open = True
         self.ledger.last_write = self
         return self
@@ -1522,14 +1635,25 @@ class WriteSession:
         transaction = self._transaction
         self._transaction = None
         assert transaction is not None
-        transaction.__exit__(exc_type, exc, traceback)
-        if exc_type is not None:
+        try:
+            transaction.__exit__(exc_type, exc, traceback)
+            if exc_type is not None:
+                return False
+            if self.statements and not self.no_commit:
+                self.commit_hash = self.ledger.driver.commit(
+                    self.message, self.ledger.author
+                )
             return False
-        if self.statements and not self.no_commit:
-            self.commit_hash = self.ledger.driver.commit(
-                self.message, self.ledger.author
-            )
-        return False
+        finally:
+            # Released after the transaction closed and the commit was made --
+            # and on every error path (rollback, failed commit, SIGINT).
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        lock = self._lock
+        self._lock = None
+        if lock is not None:
+            lock.__exit__(None, None, None)
 
     def _require_open(self) -> None:
         if not self._open:
