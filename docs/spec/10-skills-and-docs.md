@@ -12,9 +12,13 @@
   `cd` into the ledger directory, the P4 stale-`workspace.yaml` pointer, author and backup changes.
 - [Upgrading 0.5.0 → 0.5.1](../guides/upgrading-0.5.0-to-0.5.1.md) — the full-word subcommands: `ls` → `list`,
   `rm` → `remove`, `tm backup --ls` → `tm backup --list`. A hard break, CLI-only, no ledger step.
+- [Releasing](../guides/releasing.md) — the tag is not a step: `.github/workflows/release.yml` tags the
+  merge commit and publishes the release when a version bump lands on `main`. The three files that carry
+  the version (checked by [`scripts/release_check.py`](../../scripts/release_check.py)), the
+  [notes file](../releases/README.md), backfilling a forgotten tag, and what the workflow refuses.
 - [Test harness](../guides/test-harness.md) — embedded-only cost model, session ledger templates, the
   fast/full lanes and the wall-time budget enforced by [`scripts/test-lanes.sh`](../../scripts/test-lanes.sh).
 
 Documentation entry points: [the spec](../spec/README.md) (this document), [guides](../guides/),
-[records](../records/) of deliveries and real migrations, and open [design issues](../issues/) for
-planned work.
+[records](../records/) of deliveries and real migrations, [release notes](../releases/) per tag, and open
+[design issues](../issues/) for planned work.
