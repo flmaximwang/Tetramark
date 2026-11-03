@@ -15,6 +15,7 @@ kinds:
     fields:
       genotype:
         type: text
+        long: true
         description: Genotype / relevant markers of the strain.
       species:
         type: string

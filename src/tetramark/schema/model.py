@@ -342,6 +342,11 @@ class Field(BaseModel):
     #: Read-only metadata: it changes no DDL, but it is part of the schema
     #: fingerprint and of ``tm schema show``.
     lineage: bool = False
+    #: ``string``/``text``/``sequence`` only: the value can be large, so
+    #: interactive forms display it in short form (spec §2.1).  Read-only form
+    #: metadata: it changes no DDL and, like ``description``, is excluded from
+    #: the fingerprint and from :meth:`normalised`.
+    long: bool = False
     expr: str | None = None
     sql_type: SqlType | None = None
     renamed_from: str | None = None
@@ -426,6 +431,14 @@ class Field(BaseModel):
             # on refs that point at a box).
             if t is not FieldType.ref:
                 raise ValueError("'lineage' is only valid for type 'ref'")
+
+        if "long" in explicit:
+            # A form-display hint for values that can be large; it says nothing
+            # about any other field type (and never about computed columns).
+            if t not in (FieldType.string, FieldType.text, FieldType.sequence):
+                raise ValueError(
+                    "'long' is only valid for string, text and sequence fields"
+                )
 
         if self.expr is not None or self.sql_type is not None:
             if t is not FieldType.computed:

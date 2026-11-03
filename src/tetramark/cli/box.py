@@ -5,6 +5,8 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
+from tetramark.cli.form_commands import run_add_form_command
+from tetramark.cli.messages import box_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_payload, emit_read, output_format
@@ -40,12 +42,20 @@ def add_box_command(
         emit_write(
             ledger,
             result,
-            f"Created box {result['name']} ({result['kind']}) "
-            f"with {result['slots']} slot(s)",
+            box_add_message(result),
             as_json=json_output(ctx, as_json),
         )
     finally:
         ledger.close()
+
+
+@box_app.command("add-form")
+def add_box_form_command(
+    ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json", help="Print the created box as JSON."),
+) -> None:
+    """Interactively create a box (for people; agents use 'add')."""
+    run_add_form_command(ctx, "box", as_json=as_json)
 
 
 @box_app.command("show")

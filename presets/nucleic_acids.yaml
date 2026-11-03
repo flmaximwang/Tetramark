@@ -77,6 +77,7 @@ kinds:
     fields:
       sequence:
         type: sequence
+        long: true
         description: >-
           Nucleotide sequence; normalised (uppercase, whitespace stripped) by the
           app and fingerprinted through the generated sequence_sha256 column.

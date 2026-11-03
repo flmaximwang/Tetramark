@@ -7,6 +7,8 @@ from typing import Any
 
 import typer
 
+from tetramark.cli.form_commands import run_add_form_command
+from tetramark.cli.messages import stock_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import (
     echo_dry_run_sql,
@@ -78,15 +80,23 @@ def add_stock_command(
             id=explicit_id,
             status=status,
         )
-        message = (
-            f"Added stock {result['kind']} {result['id']} with "
-            f"{len(result['aliquots'])} aliquot(s)"
+        emit_write(
+            ledger,
+            result,
+            stock_add_message(result),
+            as_json=json_output(ctx, as_json),
         )
-        if result["aliquots"]:
-            message += ": " + ", ".join(result["aliquots"])
-        emit_write(ledger, result, message, as_json=json_output(ctx, as_json))
     finally:
         ledger.close()
+
+
+@stock_app.command("add-form")
+def add_stock_form_command(
+    ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json", help="Print the created stock as JSON."),
+) -> None:
+    """Interactively create a stock (for people; agents use 'add')."""
+    run_add_form_command(ctx, "stock", as_json=as_json)
 
 
 @stock_app.command("show")

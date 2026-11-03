@@ -40,6 +40,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Intent | Command |
 |---|---|
 | See the effective kinds/fields/rules | `tm schema show [KIND]` |
+| Fill in a form at the terminal (a person) | `tm entity\|stock\|aliquot\|box add-form` |
 | Register an abstract thing (design, item, strain) | `tm entity add KIND --name N [--set f=v] [--alias A]` |
 | Register a preparation/batch | `tm stock add KIND --entity ID\|ALIAS [--set f=v]` |
 | Put its tube in a box | `tm stock add … --box NAME --slot A1` |
@@ -62,6 +63,9 @@ one Dolt commit; every read is a normal `tm` command.
 | Bulk load / dump | `tm import …`, `tm export …` |
 | Mirror / back up | `tm remote add … && tm remote push`, `tm backup DIR` (or a configured backup) |
 | Change the schema | `skills/tetramark-schema/SKILL.md` |
+
+The **form** (`tm <obj> add-form`) is for people at a terminal; **agents use `add`** — it takes no
+flags and refuses to run without a TTY.
 
 Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 

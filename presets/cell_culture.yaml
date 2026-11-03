@@ -33,6 +33,7 @@ kinds:
         description: Where the line came from (ATCC, collaborator, lab stock).
       genotype:
         type: text
+        long: true
         description: Genotype / modifications / markers of the line.
       parental:
         type: ref

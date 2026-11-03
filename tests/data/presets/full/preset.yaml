@@ -8,14 +8,14 @@ kinds:
     mixins: [named_fields]
     fields:
       code: {type: string, length: 12, pattern: "^[A-Z]{3}$", description: three uppercase letters}
-      blurb: {type: text}
+      blurb: {type: text, long: true}
       count: {type: int, default: 0}
       ratio: {type: decimal, precision: 8, scale: 3}
       active: {type: bool, default: true}
       born: {type: date, default: 2024-01-31}
       seen_at: {type: datetime}
       color: {type: enum, values: [red, green, blue], default: red}
-      seq: {type: sequence, unique: true}
+      seq: {type: sequence, unique: true, long: true}
       parent: {type: ref, to: everything}
       display: {type: computed, expr: "CONCAT(name, '-', code)", sql_type: string}
       legacy: {type: string, renamed_from: old_legacy}

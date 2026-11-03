@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import typer
 
+from tetramark.cli.form_commands import run_add_form_command
+from tetramark.cli.messages import aliquots_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 
@@ -49,13 +51,23 @@ def add_aliquots_command(
             unit=unit,
             status=status,
         )
-        ids = result["ids"]
-        message = f"Added {len(ids)} aliquot(s) to {result['stock_id']}"
-        if ids:
-            message += ": " + ", ".join(ids)
-        emit_write(ledger, result, message, as_json=json_output(ctx, as_json))
+        emit_write(
+            ledger,
+            result,
+            aliquots_add_message(result),
+            as_json=json_output(ctx, as_json),
+        )
     finally:
         ledger.close()
+
+
+@aliquot_app.command("add-form")
+def add_aliquots_form_command(
+    ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json", help="Print the created objects as JSON."),
+) -> None:
+    """Interactively add aliquots to a stock (for people; agents use 'add')."""
+    run_add_form_command(ctx, "aliquot", as_json=as_json)
 
 
 @aliquot_app.command("move")

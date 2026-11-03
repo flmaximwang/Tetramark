@@ -477,6 +477,16 @@ WRITE_COMMANDS = [
     remote.remote_remove,
 ]
 
+#: The interactive forms are writes, but they must NOT take the lock up front:
+#: the spec says the lock is taken only when the review screen is confirmed
+#: with ``y`` (Tetramark-se9).  They are therefore not decorated.
+DEFERRED_WRITE_COMMANDS = [
+    entity.add_entity_form_command,
+    stock.add_stock_form_command,
+    aliquot.add_aliquots_form_command,
+    box.add_box_form_command,
+]
+
 READ_COMMANDS = [
     entity.show_entity_command,
     entity.list_entities_command,
@@ -498,6 +508,13 @@ READ_COMMANDS = [
 @pytest.mark.parametrize("command", WRITE_COMMANDS, ids=lambda fn: fn.__name__)
 def test_cli_write_commands_are_decorated(command: Any) -> None:
     assert getattr(command, cli_options.WRITE_COMMAND_MARKER, False) is True
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("command", DEFERRED_WRITE_COMMANDS, ids=lambda fn: fn.__name__)
+def test_add_form_commands_take_the_lock_lazily(command: Any) -> None:
+    """add-form is a write, but locks only after the user confirms with y."""
+    assert getattr(command, cli_options.WRITE_COMMAND_MARKER, False) is False
 
 
 @pytest.mark.fast

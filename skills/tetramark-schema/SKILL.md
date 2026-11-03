@@ -89,7 +89,8 @@ rules:
 | `computed` | generated `STORED` column | `expr:` over same-row columns + `sql_type:` |
 
 Modifiers: `required`, `unique`, `default`, `pattern` (regex), `description`, `length`
-(strings), `precision`/`scale` (decimals). `computed` does not allow `required`, `unique`,
+(strings), `precision`/`scale` (decimals), `long` (string/text/sequence: the interactive form shows
+the value in short form). `computed` does not allow `required`, `unique`,
 `default` or `pattern`. `sequence` does not allow `default`. `pattern` is checked by the app and by a
 generated test (Dolt CHECK cannot guarantee `REGEXP`).
 

@@ -181,6 +181,49 @@ path refuse it).
 `{box, kind, geometry, path, aliases, slots:[...]}`) and works for slotless boxes too (it lists child
 boxes). `--format csv` prints one row per slot.
 
+## The interactive form (for people)
+
+```sh
+tm entity add-form
+tm stock add-form
+tm aliquot add-form
+tm box add-form
+```
+
+The form asks for what a person does not know by heart — the kind, the fields, the box, the slots —
+and writes the same row `add` writes. It takes **no positional argument and no flags**: every
+question comes from the ledger's own schema. **Agents use `add`**, which is scriptable, never
+blocks and writes the same thing.
+
+- Step 1 is always the numbered list of kinds (shown even with one kind; Enter accepts it), then the
+  kind's fields in schema order, each with its description and `*` when it is required. Computed
+  fields are never asked; sequence fields are.
+- Values are checked as you type: an enum by number or value, a bool as `y`/`n`, a date/datetime in
+  ISO form (`today`/`now` accepted), an int/decimal parsed, a `pattern` checked, and a `ref` resolved
+  right away with its name shown back — `?term` searches the way `tm find` does and you pick a
+  result by number. Multi-value inputs (aliases, slots) take one value per line or comma-separated;
+  an empty line ends the list.
+- A `long: true` field is shown in short form, never in full:
+  `[pasted 5,432 chars · 12 lines · ATGCGTACGT…TTAGCCGGAA]`. A bracketed paste is taken as it is,
+  pasting again replaces it, Backspace on the placeholder clears it, and a short typed value shows
+  inline.
+- Keys: `Enter` goes to the next step (an optional field may be skipped and a default accepted; a
+  required field left empty keeps the step and says `required`), `Shift+Tab` goes back to the
+  previous step with its value pre-filled, `Alt+Enter`/`Ctrl+J` inserts a newline, `Tab` completes
+  enum values and ref ids/aliases, `Ctrl+E` edits the current field in `$VISUAL` → `$EDITOR` → `vi`
+  (the field name, its description and its pattern go below a git-style scissors line and are removed
+  from what you edit, while `#` lines are kept), `Ctrl+C` aborts and writes nothing. A footer lists
+  the keys.
+- The stock form asks: entity (ref, with search) → the kind's fields → aliquot count → box (`?`
+  lists the boxes) → slots (the next free slots are filled in by default; `?` shows the free slots).
+- The review screen numbers every value (long values in short form): a number jumps back to that
+  step, `y` writes, `q` cancels. The write lock is taken only on `y`; the write is the same
+  `ledger.<objects>.add(...)` as `add`, prints the same message, and `--dry-run`/`--no-commit`/
+  `--json` behave as they do for `add`. A rejection from the core shows the error and returns to
+  the field that failed.
+
+Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
+
 ## Aliases, search, history
 
 ```sh
