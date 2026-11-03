@@ -47,13 +47,17 @@ def _exercise(ledger, tmp_path: Path) -> None:
     export_csv(ledger, "all", export_dir)
     assert (export_dir / "item.csv").is_file()
 
-    result = remote.backup(ledger)
-    expected_dir = ledger.path.parent / "backups" / ledger.name
+    # A dotted ledger name still works as a Dolt backup name: dots are
+    # sanitized, and the destination must be given explicitly (P10).
+    backup_dir = tmp_path / "backups" / ledger.name
+    result = remote.backup(ledger, backup_dir)
     assert result.dry_run is False
-    assert remote.default_backup_dir(ledger) == expected_dir
-    assert expected_dir.is_dir()
+    assert backup_dir.is_dir()
     assert remote.list_backups(ledger) == [
-        remote.Backup(name=ledger.name.replace(".", "_"), url=expected_dir.resolve().as_uri())
+        remote.Backup(
+            name=ledger.name.replace(".", "_"),
+            url=backup_dir.resolve().as_uri(),
+        )
     ]
 
 

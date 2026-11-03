@@ -5,6 +5,10 @@
 positional argument as the subcommand, so the first argument is interpreted
 here (``ls`` lists instead of syncing; a real directory called ``ls`` can
 always be passed as ``./ls``).
+
+``DIR`` is optional only when the ledger already has a configured backup: a
+standalone ledger gets no default destination next to it, because that backup
+would sit on the same disk and be lost with the ledger (epic P10).
 """
 
 from __future__ import annotations
@@ -115,11 +119,21 @@ def backup_command(
     list_only: bool = typer.Option(
         False, "--ls", help="List configured backups instead of syncing."
     ),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help=(
+            "Backup name (default: the ledger name). Without DIR, selects the "
+            "configured backup to sync."
+        ),
+    ),
 ) -> None:
     """Back up the ledger to a Dolt backup directory.
 
-    The default is ``<data_dir>/backups/<ledger>``; use ``tm backup ls`` to
-    see the backups already configured for this ledger.
+    DIR is required unless this ledger already has a configured backup: then
+    that backup is synced.  There is no default directory, because a backup
+    next to the ledger shares its disk and is lost with it.  Use
+    ``tm backup ls`` to see the backups already configured for this ledger.
     """
     options: GlobalOptions = ctx.obj
     if list_only or (path is not None and path.strip().lower() == "ls"):
@@ -136,4 +150,6 @@ def backup_command(
         raise UsageError("a backup directory must not be empty")
     ledger = resolve_ledger(ctx)
     directory: str | None = path
-    _echo_result(remotes.backup(ledger, directory, dry_run=options.dry_run))
+    _echo_result(
+        remotes.backup(ledger, directory, name=name, dry_run=options.dry_run)
+    )
