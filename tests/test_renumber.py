@@ -327,8 +327,12 @@ def test_cli_single_rename_rewrites_every_reference(
     assert found["aliquot:TUBE-A"] == f"{new}.1"
 
     # Read side: old handles resolve, the kind fields still load, check passes.
+    # The old stock id is an exact alias (rank 900) and leads; the old tube ids
+    # it prefixes follow as weaker alias matches now that find matches part of
+    # an alias.
     old_find = json.loads(invoke(ledger, "find", old, "--json").output)
-    assert [row["id"] for row in old_find] == [new]
+    assert (old_find[0]["id"], old_find[0]["score"]) == (new, 900)
+    assert {row["id"] for row in old_find[1:]} == {f"{new}.1", f"{new}.2"}
     tube_find = json.loads(invoke(ledger, "find", alq_old[0], "--json").output)
     assert [row["id"] for row in tube_find] == [f"{new}.1"]
     new_find = json.loads(invoke(ledger, "--json", "find", new).output)
@@ -811,7 +815,11 @@ def test_core_renumber_on_both_drivers(driver_factory) -> None:
     assert int(ledger.driver.query("SELECT @@FOREIGN_KEY_CHECKS AS fk")[0]["fk"]) == 1
 
     # Read-side and validation keep working on the renamed object.
-    assert [row["id"] for row in ledger.find(old)] == [new]
+    # The old stock id is an exact alias, so it leads; the old tube ids it
+    # prefixes follow as weaker alias matches.
+    old_hits = ledger.find(old)
+    assert (old_hits[0]["id"], old_hits[0]["score"]) == (new, 900)
+    assert {row["id"] for row in old_hits[1:]} == {f"{new}.1", f"{new}.2"}
     assert [row["id"] for row in ledger.find(tubes[0])] == [f"{new}.1"]
     shown = ledger.stocks.show(new)
     assert shown["strain"] == "BL21(DE3)"

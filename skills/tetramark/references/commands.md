@@ -235,8 +235,9 @@ tm history ID|ALIAS|BOX [--json]
 
 `OBJECT_TYPE` is `entity`, `stock`, `aliquot` or `box`; aliases are unique per object type.
 `alias remove ALIAS` removes that alias everywhere, `alias remove stock ALIAS` only from stocks.
-`find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
-location. `history` merges aliquot events and the Dolt commits that touched the object.
+`find` matches ids exactly and aliases, names and kind string/text fields by exact, prefix or
+substring text (case-insensitive, literal), ranks exact id → exact alias → exact name → name prefix
+→ alias prefix → name substring → alias substring → fields, and shows summary and location. `history` merges aliquot events and the Dolt commits that touched the object.
 
 Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
 `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when
