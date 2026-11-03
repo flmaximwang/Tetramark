@@ -59,19 +59,22 @@ alias(object_type, object_id, alias, PK(object_type, alias))
 - `tetramark_version` records which tool version last wrote the metadata
   (`tm init` and every `tm schema apply` refresh it).
 - `created_with` records the tool version that first formatted the ledger
-  (`tm init`/`tm init --adopt`); it never changes afterwards.
-- `adopted_from_commit` is written only by `tm init --adopt`: the HEAD hash of
+  (`tm init`/`tm adopt`); it never changes afterwards.
+- `adopted_from_commit` is written only by `tm adopt`: the HEAD hash of
   the adopted database before formatting.
 
 `tetramark_version`, `created_with` and `adopted_from_commit` are provenance
 records: they are shown by `tm schema show` but drive no migration logic.
 
-### 3.1 Adopting an existing database (`tm init --adopt`)
+### 3.1 Adopting an existing database (`tm adopt`)
 
-`tm init NAME --adopt --preset …` formats a Dolt database that already exists in the workspace:
-it performs the same steps as `tm init` (write `ledger.yaml`, create the core and kind tables, write
-`ledger_meta`, install the generated `dolt_tests`) but skips `mkdir`/`dolt init` and commits
-`adopt(ledger): NAME` on top of the existing history instead of starting a new root commit.
+`tm adopt PATH --preset …` formats an existing bare Dolt database **in place** (the 11 legacy
+lab databases of the 0.4 era are just such directories): it performs the same steps as `tm init`
+(write `ledger.yaml`, create the core and kind tables, write `ledger_meta`, install the generated
+`dolt_tests`) but skips `mkdir`/`dolt init` and commits `adopt(ledger): NAME` on top of the existing
+history instead of starting a new root commit. `PATH` is the database directory itself; it is
+explicit, so a parent `workspace.yaml` is irrelevant (nothing is searched). `ledger.yaml`'s `name:`
+defaults to the directory basename and can be set with `--name`.
 `ledger_meta.adopted_from_commit` records the branch HEAD from *before* that commit; the rest of the
 history is untouched, so old commits stay reachable (e.g. `AS OF <old tag>`).
 
@@ -94,8 +97,8 @@ to the pre-adopt HEAD, restores or removes `ledger.yaml`, and leaves the working
 **never** remove the database directory: unlike a failed `tm init`, which deletes its own half-created
 directory, adopt operates on a real database and answering a failure with `rmtree` would destroy it.
 
-`tm --dry-run init NAME --adopt` runs the read-only preconditions (including the legacy-schema refusal) and
-prints the branch, the HEAD that would be recorded, and the DDL; nothing is written.
+`tm --dry-run adopt PATH --preset …` runs the read-only preconditions (including the legacy-schema
+refusal) and prints the branch, the HEAD that would be recorded, and the DDL; nothing is written.
 
 Kind tables (generated from schema):
 - `entity_<kind>(id PK, kind CHAR const DEFAULT '<kind>' CHECK(kind='<kind>'), <fields…>,

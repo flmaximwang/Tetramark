@@ -1,42 +1,82 @@
 # 6. CLI (`tm`)
 
-Global: `--workspace PATH` (default: search upward for `workspace.yaml`, else `$TETRAMARK_WORKSPACE`),
-`--ledger NAME` (default from workspace), `-b/--branch BRANCH` (session branch, see below),
-`--format table|json|csv` on reads, `--json` shorthand,
-`--dry-run` (print SQL, no write) and `--no-commit` on writes. Exit codes: 0 ok (help included),
-1 business/validation error, 2 usage error, 3 database unreachable.
+A command always operates on exactly one **ledger directory** — the directory that holds `.dolt/` and
+`ledger.yaml`. There is no workspace layer, no ledger registry and no default ledger outside it.
 
-Help: `-h` and `--help` print the same text on every command and every command group, and exit 0; a
-bare `tm`, or a bare group such as `tm box`, prints its help and also exits 0. Asking for help is not
-a usage error, so the exit code is 0 even where the command would otherwise need arguments. Misuse —
-an unknown option, an unknown command, a missing argument — still exits 2.
-
-Branch selection (`-b/--branch`, placed before the subcommand like `-w`/`-l`): every read, write and
-commit of that command happens on BRANCH. The default is `branch:` in `ledger.yaml`, else the branch
-checked out in the repository. A branch that does not exist is a usage error — it is never created
-implicitly. Selection is session-scoped and never moves the branch other sessions or the server see
-(see §7). `--dry-run` prints the target branch with the SQL. It also selects the branch that
-`tm init --adopt` formats (§3.1). `tm remote push/pull -b` is a different
-option with the same letter: it names the branch on the **remote**, while the global `-b` selects the
-local session branch. `tm branch ls|create NAME [--from REF]|delete NAME` manage branches; merging is
-not part of `tm` (cut over with Dolt's native `CALL DOLT_MERGE(branch, '--ff-only')`).
-
-Every successful write = exactly one Dolt commit. Message is ASCII: `<verb>(<object>): <summary>`;
-non-ASCII user text is kept in the event/notes, never in the commit message (known Dolt byte-truncation bug).
-Author from `ledger.yaml` → `workspace.yaml` → git config.
-
-The root help groups the commands into five panels — Setup, Inventory, Lookup, Data and Versioning —
-in workflow order; the listing below follows the same order.
+Global options go **before** the subcommand:
 
 ```
-# Setup: workspace, server, presets, init, schema, config
-tm workspace init [PATH] [--port 13308]
-tm server start [-d] | status | stop
+tm [-l|--ledger PATH] [-b|--branch BRANCH] [--dry-run] [--no-commit]
+   [--json] [--format|-f table|json|csv] [--version] COMMAND ...
+```
+
+| Option | Meaning |
+|---|---|
+| `-l`, `--ledger PATH` | Ledger directory (the one holding `.dolt/` and `ledger.yaml`); `PATH` may also be the `ledger.yaml` file itself. Omit it to search upward from the current directory. |
+| `-b`, `--branch BRANCH` | Session branch for every read, write and commit of this command (see below). |
+| `--dry-run` | Print/collect the SQL of a write and change nothing. |
+| `--no-commit` | Execute the write but leave it uncommitted (advanced). |
+| `--json` | Print reads and write results as JSON. |
+| `--format table\|json\|csv` | Read output format (default `table`). |
+| `--version` | Print the version. |
+
+**Resolution** (P3): an explicit `-l/--ledger PATH` wins and is validated directly; otherwise the CLI
+walks up from the current directory and stops at the nearest directory containing both `.dolt/` and
+`ledger.yaml`. There is deliberately **no environment variable** (0.4's `$TETRAMARK_LEDGER` and
+`$TETRAMARK_WORKSPACE` are gone). Resolution errors are usage errors (exit 2) and name the path/cwd:
+
+- nothing up to the filesystem root → `no ledger found from <cwd> … Pass --ledger PATH, cd into a
+  ledger directory, or create one with 'tm init'`;
+- a directory with `.dolt/` but no `ledger.yaml` → `is not a ledger … 'tm adopt' formats an existing
+  bare Dolt database in place` (P9);
+- **P4 migration guard** — a 0.4 `workspace.yaml` met before any ledger is an error that names the
+  old workspace and tells you to `cd` into one of its ledger directories (or pass `--ledger`).
+  Nothing is converted: `workspace.yaml` is not a ledger marker, and no setting has to move because
+  `ledger.yaml` already carries the author;
+- `tm init`/`tm adopt` refuse a PATH inside an existing ledger: `Ledgers do not nest` (P5).
+
+Exit codes: `0` ok (help included), `1` business/validation error, `2` usage error, `3` database
+unreachable.
+
+Help (Tetramark-03j): `-h` and `--help` print the same text on every command and every command group,
+and exit 0; a bare `tm`, or a bare group such as `tm box`, prints its help and also exits 0. Asking
+for help is not a usage error. Misuse — an unknown option, an unknown command, a missing argument —
+still exits 2.
+
+Branch selection (`-b/--branch`, placed before the subcommand): every read, write and commit of that
+command happens on BRANCH. The default is `branch:` in `ledger.yaml`, else the branch checked out in
+the repository. A branch that does not exist is a usage error — it is never created implicitly.
+Selection is session-scoped and never moves the branch other sessions (or a user-run `dolt
+sql-server`) see (see §7). `--dry-run` prints the target branch with the SQL. It also selects the
+branch that `tm adopt` formats (§3.1). `tm remote push/pull -b` is a different option with the same
+letter: it names the branch on the **remote**, while the global `-b` selects the local session
+branch. `tm branch ls|create NAME [--from REF]|delete NAME` manage branches; merging is not part of
+`tm` (cut over with Dolt's native `CALL DOLT_MERGE(branch, '--ff-only')`).
+
+Every successful write = exactly one Dolt commit. Message is ASCII: `<verb>(<object>): <summary>`;
+non-ASCII user text is kept in the event/notes, never in the commit message (known Dolt byte-truncation
+bug). Author from `ledger.yaml` → Git `user.name`/`user.email` (P6); there is no workspace tier.
+
+**One writer per ledger** (P11): a write command takes an exclusive `flock` on
+`<ledger>/.dolt/tetramark.lock` before it opens the ledger and holds it through the whole
+read → validate → write → commit window. A second writer retries briefly, then exits 2 with a typed
+busy error: `ledger busy: pid 4711 (tm stock add) is writing (waited 10.0s; set
+TETRAMARK_LOCK_TIMEOUT=<seconds> to wait longer)`. `$TETRAMARK_LOCK_TIMEOUT` (seconds, default 10)
+overrides the wait. Reads never lock; `tm status` probes the lock without taking it, and `--dry-run`
+writes nothing and does not lock.
+
+The root help groups the commands into five panels — Setup, Inventory, Lookup, Data and Versioning —
+in workflow order. `Setup` is `presets`, `init`, `adopt`, `schema`, `config`, `status`; there is no
+`workspace` and no `server` command group in 0.5.0. The listing below follows the same order.
+
+```
+# Setup: presets, init, adopt, schema, config, status
 tm presets [list|show NAME]
-tm init NAME --preset base --preset molbio [--id-prefix 12]
-tm init NAME --adopt --preset molbio [--id-prefix 12] [--force-config]   # §3.1
+tm init PATH --preset base [--preset molbio] [--name N] [--id-prefix 12] [--author ...]
+tm adopt PATH --preset molbio [--name N] [--id-prefix 12] [--author ...] [--force-config]  # §3.1
 tm schema show [KIND] | plan | apply [--allow-destructive]
-tm config get KEY ; tm config set KEY VALUE   # KEY: author | presets_dir
+tm config get [author] ; tm config set author "Name <email>"   # the only setting
+tm status [--json]                        # one ledger at a glance (6.1)
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
@@ -45,7 +85,7 @@ tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
 tm stock show|ls|edit ...
-tm stock renumber [--id NEW | --auto | --map PATH] [--dry-run] [--json] [REF ...]
+tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot move ALQ --box NAME [--slot S] [--status S]
@@ -65,14 +105,29 @@ tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # desce
 # Data: import, export, check
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
                                 # a 'status' column is a creation status (any set status)
-tm export KIND|all [--out DIR]
-tm check [-v] [--group G]
+tm import all DIRECTORY ; tm export KIND|all [--out DIR]
+tm check [-v] [--group G] [--format table|json|csv]
 
 # Versioning: branch, remote, backup
 tm branch ls | create NAME [--from REF] | delete NAME
-tm remote add NAME URL | push | pull
-tm backup [DIR]
+tm remote add NAME URL | ls | push [NAME] [--branch B] | pull [NAME] [--branch B] | rm NAME
+tm backup [DIR] [--name NAME]     # DIR required unless a backup is already configured
+tm backup --ls                    # same as: tm backup ls
 ```
+
+`tm init PATH` creates a ledger **directory** at PATH (relative to the cwd or absolute). It creates
+`.dolt/`, `ledger.yaml` and `presets/`; missing parents are created and an existing **empty**
+directory is reused. `ledger.yaml`'s `name:` defaults to the directory basename and can be set with
+`--name`; the path is not identity (P2). `tm adopt PATH` is the entry point for a bare pre-0.5 Dolt
+database: same schema as `init`, history kept, one `adopt(ledger): NAME` commit (§3.1). Both commands
+take a repeatable `--preset` (bare name or path, §8) and refuse a nested target with a usage error
+(P5). `tm --dry-run init|adopt …` prints the plan and the SQL and writes nothing.
+
+`tm backup` has **no default directory** (P10): a backup next to the ledger shares its disk and is
+lost with it. Pass a directory (`tm backup DIR`; `--name` sets the backup name, default the ledger
+name), or sync a backup already configured on the ledger (`tm backup` = the ledger-named configured
+backup, `tm backup --name NAME` for another, `tm backup --ls` to list). A missing directory /
+configured backup is a usage error; nothing is created implicitly.
 
 Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
 column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
@@ -135,10 +190,57 @@ row, `renumber(stock): N stock(s)` for a batch). Because the foreign keys are `N
 key rename runs with `SET FOREIGN_KEY_CHECKS=0` and the checks are restored in the same session before
 the commit; `--dry-run` prints the mapping table and the SQL and writes nothing.
 
-Python API mirrors the CLI (`tetramark.open(workspace, ledger, branch=None)` → `Ledger` with
-`.entities`, `.stocks`, `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin layer over it.
+Python API mirrors the CLI (`tetramark.open(path=None, branch=None)` → `Ledger` with `.path`,
+`.name`, `.entities`, `.stocks`, `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin
+layer over it. `tetramark.init_ledger(path, name=None, presets=...)` and
+`tetramark.adopt_ledger(path, name=None, presets=...)` are the lifecycle functions behind
+`tm init`/`tm adopt`.
 
-### 6.1 ID strategies
+### 6.1 `tm status` — one ledger at a glance
+
+`tm status` prints the ledger it resolves (`-l/--ledger PATH` or the upward walk) and **never lists
+sibling ledgers**. It replaces 0.4's `tm server status` / workspace ledger listing. Human output is
+one aligned block:
+
+```
+path            /Users/me/lab/zsqlab_10
+name            zsqlab_10
+branch          main
+spec_version    5
+presets         molbio
+author          wangfanlin1 <wangfanlin2022@sibcb.ac.cn>
+write lock      free
+portability     no warnings
+```
+
+- a held P11 lock reads `write lock      pid 4711 (tm stock add) since …Z on host`; the probe is
+  non-blocking and never creates or steals the lock;
+- portability warnings list the absolute `file://` remote/backup URLs that point outside the ledger
+  (P13), one indented line per finding; `no warnings` when there are none;
+- missing values render `(unknown)` / `(none)`.
+
+`--json` (or global `--json` / `--format json`) prints exactly this shape, with stable types:
+
+```json
+{
+  "path": "/abs/ledger",
+  "name": "zsqlab_10",
+  "branch": "main",
+  "spec_version": 5,
+  "presets": ["molbio"],
+  "author": "Name <email>",
+  "lock": {"held": false, "pid": null, "command": null, "since": null, "host": null},
+  "portability_warnings": [
+    {"kind": "backup", "name": "old", "url": "file:///old/backup", "path": "/old/backup"}
+  ]
+}
+```
+
+`path`/`name` are strings, `branch`/`author` are string-or-null, `spec_version` is int-or-null,
+`presets` is a list of strings, `lock` always has all five keys, and every warning has
+`kind`/`name`/`url`/`path`. There are only two shapes: `--format csv` is a usage error (exit 2).
+
+### 6.2 ID strategies
 
 - `uuid` — uuid4 string.
 - `datecode` — `<prefix><YY><M><D><NN>`: M = month marker `A–M` skipping I; D = day `1–9` then `A–W`
