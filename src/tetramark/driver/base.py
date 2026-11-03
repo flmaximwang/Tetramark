@@ -294,11 +294,26 @@ class Driver(abc.ABC):
         """Name of the Dolt database this driver talks to."""
 
     @abc.abstractmethod
-    def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
-        """Run a read-only statement and return rows as dictionaries."""
+    def query(
+        self, sql: str, params: Params = None, *, fill_columns: bool = True
+    ) -> list[dict[str, Any]]:
+        """Run a read-only statement and return rows as dictionaries.
+
+        ``fill_columns`` is part of the contract: with the default ``True``
+        every column key is present in every row, even when its value is
+        ``NULL``.  A caller that has established -- from the schema it just
+        loaded -- that every selected column is ``NOT NULL`` may pass ``False``
+        to opt out of that guarantee; a backend can then skip the extra
+        metadata read it needs to discover NULL columns.  With ``False`` a
+        ``NULL`` value is simply absent from the row, so the caller must not
+        rely on the key being there.
+        """
 
     def query_many(
-        self, statements: Sequence[tuple[str, Params]]
+        self,
+        statements: Sequence[tuple[str, Params]],
+        *,
+        fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
         """Run several independent read-only statements, one result each.
 
@@ -308,8 +323,16 @@ class Driver(abc.ABC):
         trip; this default implementation simply runs :meth:`query` per
         statement.  The statements must be independent (a later statement cannot
         read an earlier one's result) and must not write.
+
+        ``fill_columns`` is forwarded to every statement's :meth:`query`; the
+        default ``True`` keeps the all-columns-present contract.  Pass ``False``
+        only when every selected column of every statement is ``NOT NULL`` (see
+        :meth:`query`): the batch then never needs the NULL-column metadata read.
         """
-        return [self.query(sql, params) for sql, params in statements]
+        return [
+            self.query(sql, params, fill_columns=fill_columns)
+            for sql, params in statements
+        ]
 
     @abc.abstractmethod
     def execute(self, sql: str, params: Params = None) -> None:

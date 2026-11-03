@@ -11,6 +11,8 @@ Two Dolt quirks are handled here:
 * JSON result rows omit columns whose value is ``NULL``.  A second run with
   ``-r csv`` supplies the column list (the CSV header is printed even for zero
   rows), so ``query`` always returns dictionaries with every column present.
+  A caller that proved every selected column is ``NOT NULL`` can pass
+  ``fill_columns=False`` to skip that second run: one ``dolt sql`` process less.
 """
 
 from __future__ import annotations
@@ -52,13 +54,20 @@ _MARKER_LINE = re.compile(
 
 
 class EmbeddedDriver(Driver):
-    """Talk to a Dolt database by shelling out to ``dolt sql`` in its directory."""
+    """Talk to a Dolt database by shelling out to ``dolt sql`` in its directory.
+
+    ``branch`` selects a session-scoped revision database.  By default the
+    branch is checked to exist immediately (one ``dolt sql`` run); a caller that
+    folds that check into its own read batch passes ``validate_branch=False``
+    and must validate the branch itself before relying on it.
+    """
 
     def __init__(
         self,
         path: str | Path,
         *,
         branch: str | None = None,
+        validate_branch: bool = True,
         dolt_binary: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
@@ -75,13 +84,22 @@ class EmbeddedDriver(Driver):
         if not (self._path / ".dolt").is_dir():
             raise UnreachableError(f"not a Dolt database: {self._path}")
         if branch is not None:
-            self._branch = self._require_branch(branch)
+            name = check_branch_name(branch)
+            if validate_branch:
+                # The existence query runs on the checked-out database, so it
+                # must happen before ``_branch`` selects a revision database.
+                self._require_branch(name)
+            self._branch = name
 
     def _require_branch(self, branch: str) -> str:
         """Fail with a usage error when ``branch`` does not exist (never create)."""
         name = check_branch_name(branch)
+        # ``name`` is the dolt_branches primary key, hence NOT NULL: the row's
+        # column is always present, so the CSV metadata run can be skipped.
         rows = self.query(
-            "SELECT `name` FROM dolt_branches WHERE `name` = %s", (name,)
+            "SELECT `name` FROM dolt_branches WHERE `name` = %s",
+            (name,),
+            fill_columns=False,
         )
         if not rows:
             raise UsageError(
@@ -107,7 +125,14 @@ class EmbeddedDriver(Driver):
         return self._branch
 
     # -- reads / writes ---------------------------------------------------
-    def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
+    def query(
+        self, sql: str, params: Params = None, *, fill_columns: bool = True
+    ) -> list[dict[str, Any]]:
+        """Run one read; ``fill_columns=False`` skips the CSV header run.
+
+        The caller must have proved every selected column is ``NOT NULL``:
+        without the CSV run a ``NULL`` column is simply absent from the row.
+        """
         rendered = render_sql(sql, params)
         if self._pending:
             # There is no session to query *inside* the pending transaction, so
@@ -115,13 +140,18 @@ class EmbeddedDriver(Driver):
             # the state from there.  The buffer itself stays pending, ready for
             # the real commit when the context manager exits.
             batch = ";\n".join(["START TRANSACTION", *self._pending, rendered, "ROLLBACK"])
-            # Column names do not depend on the pending data, so ask for the
-            # header with the bare query instead of replaying the buffer.
-            return self._with_columns(self._query_json(batch), rendered)
-        return self._with_columns(self._query_json(rendered), rendered)
+            rows = self._query_json(batch)
+        else:
+            rows = self._query_json(rendered)
+        if not fill_columns:
+            return rows
+        return self._with_columns(rows, rendered)
 
     def query_many(
-        self, statements: Sequence[tuple[str, Params]]
+        self,
+        statements: Sequence[tuple[str, Params]],
+        *,
+        fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
         """Run a whole read batch in one ``dolt sql`` process (plus one CSV run).
 
@@ -133,6 +163,10 @@ class EmbeddedDriver(Driver):
         be aligned (an unexpected Dolt output shape), the statements fall back to
         individual :meth:`query` calls: the batching only changes speed, never
         the result.
+
+        ``fill_columns=False`` is the explicit opt-out for a batch whose every
+        selected column is ``NOT NULL``: the CSV run is skipped, so the batch is
+        a single ``dolt sql`` process and a ``NULL`` column is not restored.
         """
         ordered = list(statements)
         if not ordered:
@@ -140,15 +174,21 @@ class EmbeddedDriver(Driver):
         if self._pending:
             # Inside the deferred transaction there is no session to batch in;
             # the per-statement path replays the buffer and previews the state.
-            return [self.query(sql, params) for sql, params in ordered]
+            return [
+                self.query(sql, params, fill_columns=fill_columns)
+                for sql, params in ordered
+            ]
         rendered = [render_sql(sql, params) for sql, params in ordered]
         # A newline before the separator keeps a query that ends in a
         # ``--`` line comment from swallowing the next statement.
         batch = "\n;\n".join(rendered)
         result_sets = _parse_result_sets(self._invoke(batch, "json"), keep_empty=True)
         if len(result_sets) != len(rendered):
-            return [self.query(sql, params) for sql, params in ordered]
-        if not any(result_sets):
+            return [
+                self.query(sql, params, fill_columns=fill_columns)
+                for sql, params in ordered
+            ]
+        if not fill_columns or not any(result_sets):
             return result_sets
         columns = self._batch_columns(batch, [len(rows) for rows in result_sets])
         if columns is None:  # pragma: no cover - defensive: unexpected Dolt output
