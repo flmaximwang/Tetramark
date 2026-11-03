@@ -30,7 +30,7 @@ from tetramark.cli.csv_io import export_command, import_command
 from tetramark.cli.entity import entity_app
 from tetramark.cli.find import find_command
 from tetramark.cli.history import history_command
-from tetramark.cli.ledger import init_command, presets_app
+from tetramark.cli.ledger import adopt_command, init_command, presets_app
 from tetramark.cli.lineage import lineage_command
 from tetramark.cli.options import (
     HELP_CONTEXT_SETTINGS,
@@ -66,6 +66,7 @@ ROOT_COMMAND_ORDER: tuple[str, ...] = (
     # Setup
     "presets",
     "init",
+    "adopt",
     "schema",
     "config",
     # Inventory
@@ -214,6 +215,7 @@ def root(
 # -- Setup -------------------------------------------------------------------
 app.add_typer(presets_app, name="presets", rich_help_panel=PANEL_SETUP)
 app.command("init", rich_help_panel=PANEL_SETUP)(init_command)
+app.command("adopt", rich_help_panel=PANEL_SETUP)(adopt_command)
 app.add_typer(schema_app, name="schema", rich_help_panel=PANEL_SETUP)
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_SETUP)
 
