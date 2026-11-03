@@ -1,7 +1,6 @@
-"""Database drivers: embedded ``dolt sql`` and ``dolt sql-server``."""
+"""Database drivers: the embedded ``dolt sql`` driver."""
 
 from tetramark.driver.base import Driver
 from tetramark.driver.embedded import EmbeddedDriver
-from tetramark.driver.server import ServerDriver
 
-__all__ = ["Driver", "EmbeddedDriver", "ServerDriver"]
+__all__ = ["Driver", "EmbeddedDriver"]

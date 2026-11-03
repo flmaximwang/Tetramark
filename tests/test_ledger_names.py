@@ -1,25 +1,17 @@
-"""Ledger names may contain dots (TM-02 / SPEC A2), on both drivers.
+"""Ledger names may contain dots (TM-02 / SPEC A2).
 
-Everything runs against the real ``dolt`` binary.  The server case follows the
-harness in ``tests/test_driver_contract.py`` (``server_workspace``): a real
-``dolt sql-server`` on a random free port.  ``dolt sql-server`` discovers the
-databases present when it starts but does not pick up one created later, so the
-ledger is initialised (``init_ledger`` always writes through the embedded
-driver) before the server starts — exactly how a workspace's server is started
-after its ledgers exist.
+Everything runs against the real ``dolt`` binary through the embedded driver
+(``dolt sql`` in the ledger directory).
 """
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from tetramark.core.ledger import init_ledger
 from tetramark.core.ledger import open as open_ledger
-from tetramark.driver.server import ServerDriver
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import UsageError
 from tetramark.ops import remote
@@ -69,38 +61,6 @@ def workspace(tmp_path: Path, dolt_env: dict[str, str]) -> Workspace:
     return Workspace.create(tmp_path / "data", env=dolt_env)
 
 
-@pytest.fixture
-def server_workspace(
-    tmp_path: Path,
-    dolt_env: dict[str, str],
-    dolt_binary: str,
-    port: int,
-) -> Iterator[Workspace]:
-    """A workspace holding one dotted ledger and a running server."""
-    for key, value in (
-        ("user.name", "Tetramark Tests"),
-        ("user.email", "tests@tetramark.invalid"),
-    ):
-        subprocess.run(
-            [dolt_binary, "config", "--global", "--add", key, value],
-            env=dolt_env,
-            capture_output=True,
-            check=True,
-        )
-    workspace = Workspace.create(
-        tmp_path / "data", port=port, default_ledger=DOTTED, env=dolt_env
-    )
-    ledger = init_ledger(
-        workspace, DOTTED, [PRESETS / "base"], id_prefix="77", author=FACTORY_AUTHOR
-    )
-    ledger.close()
-    workspace.start(daemon=True)
-    try:
-        yield workspace
-    finally:
-        workspace.stop()
-
-
 @pytest.mark.parametrize("name", VALID_NAMES)
 def test_dotted_name_end_to_end_embedded(
     workspace: Workspace, tmp_path: Path, name: str
@@ -128,22 +88,6 @@ def test_dotted_name_end_to_end_embedded(
         assert reopened.config.name == name
     finally:
         reopened.close()
-
-
-@pytest.mark.server
-def test_dotted_name_end_to_end_on_server(
-    server_workspace: Workspace, tmp_path: Path
-) -> None:
-    workspace = server_workspace
-    assert DOTTED in workspace.list_ledgers()
-
-    ledger = open_ledger(workspace, DOTTED)
-    try:
-        assert isinstance(ledger.driver, ServerDriver)
-        assert ledger.database == DOTTED
-        _exercise(ledger, tmp_path)
-    finally:
-        ledger.close()
 
 
 @pytest.mark.parametrize("name", INVALID_NAMES)

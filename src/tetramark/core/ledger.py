@@ -44,7 +44,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-import pymysql
 import yaml
 
 from tetramark.core.ids import IdStrategy, strategy_from_config
@@ -63,7 +62,6 @@ from tetramark.driver.base import (
     render_sql,
 )
 from tetramark.driver.embedded import EmbeddedDriver
-from tetramark.driver.server import ServerDriver
 from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 from tetramark.schema.ddl import Statement, schema_statements
@@ -100,7 +98,6 @@ __all__ = [
     "adopt_ledger",
     "build_id_strategies",
     "init_ledger",
-    "init_ledger_on_server",
     "open",
     "resolve_author",
 ]
@@ -449,74 +446,6 @@ def _run_dolt_init(
     # Dolt 2.3.5 exits 0 even when it refuses to initialise (e.g. no author).
     if process.returncode != 0 or looks_like_error(output) or not (path / ".dolt").is_dir():
         raise LedgerError(f"dolt init failed in {path}:\n{output or '(no output)'}")
-
-
-# ---------------------------------------------------------------------------
-# Server admin connection
-# ---------------------------------------------------------------------------
-
-#: PyMySQL codes meaning "the server went away" rather than "bad SQL".
-_ADMIN_UNREACHABLE_CODES = {2002, 2003, 2005, 2006, 2013}
-
-
-def _admin_error_text(error: pymysql.err.MySQLError) -> str:
-    return str(error.args[1]) if len(error.args) >= 2 else str(error)
-
-
-def _admin_connection(workspace: Workspace) -> pymysql.connections.Connection:
-    """An admin connection to the workspace server, with no database selected."""
-    try:
-        return pymysql.connect(
-            host=workspace.config.host,
-            port=workspace.config.port,
-            user="root",
-            password="",
-            autocommit=True,
-            charset="utf8mb4",
-            connect_timeout=5,
-        )
-    except OSError as error:
-        raise UnreachableError(
-            f"cannot connect to the Dolt server at "
-            f"{workspace.config.host}:{workspace.config.port}: {error}"
-        ) from error
-    except pymysql.err.MySQLError as error:
-        raise UnreachableError(_admin_error_text(error)) from error
-
-
-def _quote_admin_ident(name: str) -> str:
-    return "`" + name.replace("`", "``") + "`"
-
-
-def _admin_database_statement(
-    workspace: Workspace, statement: str, name: str
-) -> None:
-    connection = _admin_connection(workspace)
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(statement)
-    except pymysql.err.MySQLError as error:
-        text = _admin_error_text(error)
-        code = error.args[0] if error.args else None
-        if code in _ADMIN_UNREACHABLE_CODES:
-            raise UnreachableError(text) from error
-        verb = statement.split()[0].lower()
-        raise LedgerError(f"cannot {verb} database {name!r}: {text}") from error
-    finally:
-        connection.close()
-
-
-def _create_database(workspace: Workspace, name: str) -> None:
-    _admin_database_statement(
-        workspace, f"CREATE DATABASE {_quote_admin_ident(name)}", name
-    )
-
-
-def _drop_database(workspace: Workspace, name: str, *, missing_ok: bool = False) -> None:
-    clause = "IF EXISTS " if missing_ok else ""
-    _admin_database_statement(
-        workspace, f"DROP DATABASE {clause}{_quote_admin_ident(name)}", name
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -941,8 +870,10 @@ def _rollback_adopt(
     failed: list[str] = []
     driver: Driver | None = None
     try:
-        driver = workspace.driver_for(name, branch=branch)
-    except Exception as error:  # pragma: no cover - only if the server vanished
+        driver = EmbeddedDriver(
+            workspace.ledger_path(name), branch=branch, env=workspace.env
+        )
+    except Exception as error:  # pragma: no cover - only if the database vanished
         failed.append(f"could not reconnect: {error}")
     if driver is not None:
         try:
@@ -1026,7 +957,7 @@ def adopt_ledger(
     )
     target = plan.path
 
-    driver = plan.workspace.driver_for(name, branch=branch)
+    driver = EmbeddedDriver(target, branch=branch, env=plan.workspace.env)
     try:
         _check_adoptable(driver, name)
         selected = branch if branch is not None else _active_branch(driver)
@@ -1109,83 +1040,6 @@ def adopt_ledger(
     return ledger
 
 
-def init_ledger_on_server(
-    workspace: Workspace | str | Path,
-    name: str,
-    presets: Sequence[str | Path] | str | Path | None = None,
-    *,
-    id_prefix: str | None = None,
-    author: str | None = None,
-) -> Ledger:
-    """Create a ledger inside a running workspace ``dolt sql-server``.
-
-    Same result as :func:`init_ledger` (identical schema, ``ledger.yaml``,
-    ``ledger_meta``, generated tests and one ``init(ledger)`` commit), but the
-    database is created with ``CREATE DATABASE`` over an admin PyMySQL
-    connection and the DDL runs through :class:`ServerDriver`.  The workspace
-    server must already be running; otherwise :class:`UnreachableError` is
-    raised.  On failure the database and the ledger directory are removed.
-    """
-    ws = _as_workspace(workspace)
-    pid = ws.running_pid()
-    if pid is None or not ws.port_in_use():
-        raise UnreachableError(
-            f"no Dolt server is running for workspace {ws.data_dir}"
-        )
-
-    plan = _prepare_init(
-        ws,
-        name,
-        presets,
-        id_prefix=id_prefix,
-        author=author,
-    )
-    target = plan.path
-    created = False
-    driver: ServerDriver | None = None
-    try:
-        _create_database(ws, name)
-        created = True
-        target.mkdir(parents=True, exist_ok=True)
-        # The ledger is self-contained: its presets live in <ledger>/presets/.
-        _write_presets(target, plan.preset_copies)
-        (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
-        _verify_preset_copy(target, plan.schema)
-
-        driver = ServerDriver(ws.config.host, ws.config.port, name)
-        with driver.transaction():
-            for statement in plan.statements:
-                driver.execute(statement.sql)
-            _write_meta(driver, plan.schema, plan.ledger_yaml)
-            # Generated dolt_tests are derived state (spec §4): install them
-            # with the schema so a fresh ledger is immediately checkable.
-            install_tests(driver, plan.schema)
-        driver.commit(f"init(ledger): {name}", author=plan.author)
-    except BaseException:
-        # Never leave a half-initialised ledger behind: drop the database and
-        # remove the directory.  Cleanup failures must not mask the real error.
-        if driver is not None:
-            with suppress(Exception):
-                _close_driver(driver)
-        if created:
-            with suppress(Exception):
-                _drop_database(ws, name, missing_ok=True)
-        shutil.rmtree(target, ignore_errors=True)
-        raise
-
-    assert driver is not None
-    ledger = Ledger(
-        workspace=ws,
-        name=name,
-        driver=driver,
-        config=plan.config,
-        schema=plan.schema,
-        author=plan.author,
-    )
-    ledger.refresh_meta()
-    return ledger
-
-
 # ---------------------------------------------------------------------------
 # Open
 # ---------------------------------------------------------------------------
@@ -1200,11 +1054,15 @@ def open(
     no_commit: bool = False,
     allow_legacy_statuses: bool = False,
 ) -> Ledger:
-    """Open an existing ledger, choosing a server or embedded driver (spec §6).
+    """Open an existing ledger through the embedded driver (spec §6).
 
     ``workspace`` accepts a :class:`Workspace`, a data directory or a
     ``workspace.yaml`` path; when omitted the workspace is discovered from the
-    current directory (then ``$TETRAMARK_WORKSPACE``).
+    current directory (then ``$TETRAMARK_WORKSPACE``).  Every command runs
+    ``dolt sql`` in the ledger directory: Tetramark neither requires nor
+    manages a ``dolt sql-server``.  If the user runs one on that directory
+    anyway, ``dolt sql`` auto-routes through it; that is Dolt's behaviour, not
+    something Tetramark configures.
 
     ``branch`` selects the branch every read, write and commit of this command
     happens on.  It defaults to ``branch:`` in ``ledger.yaml`` and otherwise to
@@ -1236,7 +1094,7 @@ def open(
         path, allow_legacy_statuses=allow_legacy_statuses
     )
     selected = branch if branch is not None else (config.branch or None)
-    driver = ws.driver_for(name, branch=selected)
+    driver = EmbeddedDriver(path, branch=selected, env=ws.env)
     try:
         author = resolve_author(
             config.author, ws.config.author, cwd=path, env=ws.env

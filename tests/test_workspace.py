@@ -1,14 +1,13 @@
-"""Workspace config, ledger listing and server lifecycle (real dolt server)."""
+"""Workspace config, ledger listing and embedded driver selection."""
 
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 
 import pytest
 import yaml
 
-from tetramark.driver import EmbeddedDriver, ServerDriver
+from tetramark.driver import EmbeddedDriver
 from tetramark.driver.workspace import (
     DEFAULT_PORT,
     Workspace,
@@ -131,74 +130,7 @@ def test_list_ledgers_empty_for_missing_data_dir(tmp_path: Path) -> None:
     assert workspace.list_ledgers() == []
 
 
-# -- port -----------------------------------------------------------------
-
-
-def test_port_in_use_detects_a_listener(port: int) -> None:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", port))
-        listener.listen()
-        workspace = Workspace("/tmp", WorkspaceConfig(port=port))
-        assert workspace.port_in_use()
-
-
-def test_port_in_use_false_when_free(port: int) -> None:
-    workspace = Workspace("/tmp", WorkspaceConfig(port=port))
-    assert not workspace.port_in_use()
-
-
-# -- running pid ----------------------------------------------------------
-
-
-def test_stale_pid_file_is_removed(workspace: Workspace) -> None:
-    workspace.pid_file.write_text("999999", encoding="utf-8")
-    assert workspace.running_pid() is None
-    assert not workspace.pid_file.exists()
-
-
-def test_pid_file_with_garbage_is_ignored(workspace: Workspace) -> None:
-    workspace.pid_file.write_text("not-a-pid", encoding="utf-8")
-    assert workspace.running_pid() is None
-
-
-def test_status_when_not_running(workspace: Workspace) -> None:
-    status = workspace.status()
-    assert not status.running
-    assert status.pid is None
-    assert status.host == "127.0.0.1"
-    assert status.port == DEFAULT_PORT
-    assert status.endpoint() == "mysql://root@127.0.0.1:13308"
-    assert status.endpoint("led1").endswith("/led1")
-
-
-def test_log_tail_reads_the_end(workspace: Workspace) -> None:
-    workspace.log_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
-    assert workspace.log_tail(2) == "two\nthree"
-    workspace.log_file.unlink()
-    assert "no log" in workspace.log_tail()
-
-
 # -- start / stop ---------------------------------------------------------
-
-
-def test_start_without_ledgers_is_refused(workspace: Workspace) -> None:
-    with pytest.raises(LedgerError, match="no ledgers"):
-        workspace.start(daemon=True)
-
-
-def test_start_with_busy_port_is_refused(
-    workspace: Workspace, make_ledger, port: int
-) -> None:
-    make_ledger(workspace.data_dir / "led1")
-    workspace.config.port = port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", port))
-        listener.listen()
-        with pytest.raises(LedgerError, match=f"port {port} is already in use"):
-            workspace.start(daemon=True)
-    assert not workspace.pid_file.exists()
 
 
 def test_driver_for_uses_embedded_when_no_server(
@@ -220,62 +152,6 @@ def test_driver_for_missing_ledger(workspace: Workspace) -> None:
     with pytest.raises(UnreachableError, match="not found"):
         workspace.driver_for()
 
-
-@pytest.mark.server
-def test_server_lifecycle(workspace: Workspace, make_ledger, port: int) -> None:
-    make_ledger(workspace.data_dir / "led1")
-    workspace.config.port = port
-    workspace.config.default_ledger = "led1"
-
-    assert not workspace.status().running
-    assert isinstance(workspace.driver_for("led1"), EmbeddedDriver)
-
-    pid = workspace.start(daemon=True)
-    try:
-        assert pid is not None
-        assert workspace.pid_file.read_text().strip() == str(pid)
-        assert workspace.log_file.is_file()
-
-        status = workspace.status()
-        assert status.running
-        assert status.pid == pid
-        assert status.port_busy
-        assert status.ledgers == ["led1"]
-        assert status.default_ledger == "led1"
-
-        with pytest.raises(LedgerError, match="already running"):
-            workspace.start(daemon=True)
-
-        driver = workspace.driver_for("led1")
-        assert isinstance(driver, ServerDriver)
-        assert driver.query("SELECT 1 AS one") == [{"one": 1}]
-        driver.close()
-    finally:
-        assert workspace.stop() is True
-
-    assert not workspace.status().running
-    assert not workspace.pid_file.exists()
-    assert workspace.stop() is False
-
-    # The ledger is usable again through the embedded driver.
-    driver = workspace.driver_for("led1")
-    assert isinstance(driver, EmbeddedDriver)
-    assert driver.query("SELECT 1 AS one") == [{"one": 1}]
-
-
-@pytest.mark.server
-def test_server_start_failure_leaves_no_pid_file(
-    workspace: Workspace, make_ledger, monkeypatch: pytest.MonkeyPatch, port: int
-) -> None:
-    make_ledger(workspace.data_dir / "led1")
-    workspace.config.port = port
-
-    # A server command that exits immediately: the readiness probe must fail
-    # fast, clean up the pid file and surface the log tail.
-    monkeypatch.setattr(Workspace, "_server_argv", lambda self: ["/usr/bin/false"])
-    with pytest.raises(LedgerError, match="did not become ready"):
-        workspace.start(daemon=True)
-    assert not workspace.pid_file.exists()
 
 
 # This module intentionally keeps the embedded-driver path covered.

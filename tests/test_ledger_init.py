@@ -21,13 +21,7 @@ from tetramark.driver.workspace import Workspace
 from tetramark.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
 from tetramark.schema.model import SPEC_VERSION
 
-from conftest import (
-    FACTORY_AUTHOR,
-    PRESETS,
-    admin_connection,
-    drop_database,
-    worker_id,
-)
+from conftest import FACTORY_AUTHOR, PRESETS
 
 CLI_AUTHOR = "CLI User <cli@tetramark.invalid>"
 LEGACY_AUTHOR = "Legacy User <legacy@tetramark.invalid>"
@@ -419,8 +413,8 @@ def test_open_is_quiet_when_the_fingerprint_matches(ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_is_one_transaction_and_one_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "full"])
+def test_write_is_one_transaction_and_one_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box") as session:
@@ -436,8 +430,8 @@ def test_write_is_one_transaction_and_one_commit(server_ledger_factory) -> None:
     assert latest["author_email"] == "factory@tetramark.invalid"
 
 
-def test_write_rolls_back_when_the_body_raises(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_rolls_back_when_the_body_raises(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
     ledger.driver.execute("CREATE TABLE rollback_probe (id BIGINT)")
 
@@ -450,8 +444,8 @@ def test_write_rolls_back_when_the_body_raises(server_ledger_factory) -> None:
     assert commit_count(ledger) == before
 
 
-def test_write_dry_run_collects_sql_and_executes_nothing(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_dry_run_collects_sql_and_executes_nothing(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", dry_run=True) as session:
@@ -464,8 +458,8 @@ def test_write_dry_run_collects_sql_and_executes_nothing(server_ledger_factory) 
     assert commit_count(ledger) == before
 
 
-def test_write_no_commit_executes_but_does_not_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_no_commit_executes_but_does_not_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", no_commit=True) as session:
@@ -476,8 +470,8 @@ def test_write_no_commit_executes_but_does_not_commit(server_ledger_factory) -> 
     assert session.commit_hash is None
 
 
-def test_open_carries_default_dry_run_and_no_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"], name="flags")
+def test_open_carries_default_dry_run_and_no_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="flags")
     opened = open_ledger(ledger.workspace, "flags", dry_run=True)
     with opened.write("probe", verb="add", object="box") as session:
         session.execute("CREATE TABLE never_created (id BIGINT)")
@@ -585,30 +579,30 @@ def test_open_with_the_checked_out_branch_uses_the_revision_database(
         opened.close()
 
 
-def test_write_requires_a_context_manager(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_requires_a_context_manager(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     session = ledger.write("probe", verb="add", object="box")
     assert isinstance(session, WriteSession)
     with pytest.raises(LedgerError, match="inside 'with"):
         session.execute("SELECT 1")
 
 
-def test_write_refuses_non_ascii_commit_messages(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_refuses_non_ascii_commit_messages(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     with pytest.raises(LedgerError, match="ASCII"):
         ledger.write("加了一支管", verb="add", object="aliquot")
 
 
-def test_write_refuses_a_malformed_verb_or_object(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_refuses_a_malformed_verb_or_object(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     with pytest.raises(UsageError):
         ledger.write("x", verb="Add It", object="box")
     with pytest.raises(UsageError):
         ledger.write("x", verb="add", object="Box!")
 
 
-def test_next_id_uses_the_configured_strategies(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"], id_prefix="08")
+def test_next_id_uses_the_configured_strategies(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], id_prefix="08")
     entity_id = ledger.next_id("entity")
     assert isinstance(entity_id, str) and len(entity_id) == 36
     stock_id = ledger.next_id("stock")
@@ -783,12 +777,12 @@ def test_cli_presets_list_and_show(
     assert "presets_dir" in str(missing_key.exception)
 
 
-def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
+def test_cli_schema_show(cli_isolated: None, ledger_factory) -> None:
     from typer.testing import CliRunner
 
     from tetramark.cli.app import app
 
-    ledger = server_ledger_factory([PRESETS / "full"], name="shown")
+    ledger = ledger_factory([PRESETS / "full"], name="shown")
     runner = CliRunner()
     result = runner.invoke(
         app,
@@ -1370,74 +1364,6 @@ def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
     ]
 
 
-@pytest.mark.server
-def test_adopt_formats_an_existing_server_database(server_workspace: Workspace) -> None:
-    """Adopt works through the server driver (the production path)."""
-    from tetramark.driver.server import ServerDriver
-
-    name = f"t_{worker_id()}_adopt"
-    host, port = server_workspace.config.host, server_workspace.config.port
-    with admin_connection(server_workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(f"CREATE DATABASE `{name}`")
-    try:
-        assert (server_workspace.data_dir / name / ".dolt").is_dir()
-        main_driver = ServerDriver(host, port, name)
-        main_driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
-        main_driver.commit("legacy schema", FACTORY_AUTHOR)
-        main_head = str(
-            main_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-        )
-        main_driver.execute("CALL DOLT_BRANCH(%s)", ("tetramark",))
-        main_driver.close()
-
-        branch_driver = ServerDriver(host, port, name, branch="tetramark")
-        branch_driver.execute("DROP TABLE legacy_t")
-        branch_driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
-        branch_head = str(
-            branch_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-        )
-        branch_count = int(
-            branch_driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]
-        )
-        branch_driver.close()
-
-        ledger = adopt_ledger(
-            server_workspace,
-            name,
-            [PRESETS / "base"],
-            author=FACTORY_AUTHOR,
-            branch="tetramark",
-        )
-        try:
-            assert ledger.branch == "tetramark"
-            assert ledger.meta["adopted_from_commit"] == branch_head
-            assert ledger.meta["spec_version"] == str(SPEC_VERSION)
-            assert ledger.check().passed
-            messages = [
-                str(row["message"])
-                for row in ledger.driver.query("SELECT message FROM dolt_log")
-            ]
-            assert len(messages) == branch_count + 1
-            assert messages[0] == f"adopt(ledger): {name}"
-        finally:
-            ledger.close()
-
-        reopened = ServerDriver(host, port, name)
-        try:
-            assert reopened.query(
-                "SELECT table_name AS name FROM information_schema.tables "
-                "WHERE table_schema = DATABASE()"
-            ) == [{"name": "legacy_t"}]
-            assert str(
-                reopened.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-            ) == main_head
-        finally:
-            reopened.close()
-    finally:
-        drop_database(server_workspace, name)
-
-
 # ---------------------------------------------------------------------------
 # Adopt CLI (spec A4)
 # ---------------------------------------------------------------------------
@@ -1658,67 +1584,3 @@ def test_cli_force_config_requires_adopt(
         main()
     assert excinfo.value.code == EXIT_USAGE
     assert "--force-config only applies to --adopt" in capsys.readouterr().err
-
-
-@pytest.mark.server
-def test_failed_adopt_on_a_server_database_rolls_back(
-    server_workspace: Workspace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The production path: the server database survives a failed adopt too."""
-    from tetramark.driver.server import ServerDriver
-
-    name = f"t_{worker_id()}_adopt_fail"
-    host, port = server_workspace.config.host, server_workspace.config.port
-    with admin_connection(server_workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(f"CREATE DATABASE `{name}`")
-    try:
-        driver = ServerDriver(host, port, name)
-        driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
-        driver.commit("legacy schema", FACTORY_AUTHOR)
-        driver.execute("DROP TABLE legacy_t")
-        driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
-        pre_head = str(driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"])
-        base_count = int(driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"])
-        driver.close()
-
-        def boom(*args: object, **kwargs: object) -> None:
-            raise RuntimeError("injected adopt failure")
-
-        with monkeypatch.context() as patcher:
-            patcher.setattr("tetramark.core.ledger.install_tests", boom)
-            with pytest.raises(RuntimeError, match="injected adopt failure"):
-                adopt_ledger(
-                    server_workspace,
-                    name,
-                    [PRESETS / "base"],
-                    author=FACTORY_AUTHOR,
-                )
-
-        assert (server_workspace.data_dir / name / ".dolt").is_dir()
-        check = ServerDriver(host, port, name)
-        try:
-            assert str(check.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]) == (
-                pre_head
-            )
-            assert int(check.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]) == (
-                base_count
-            )
-            assert check.query(
-                "SELECT table_name AS name FROM information_schema.tables "
-                "WHERE table_schema = DATABASE()"
-            ) == []
-            assert check.query("SELECT * FROM dolt_status") == []
-        finally:
-            check.close()
-
-        # The rollback is complete, so the adopt can be retried as-is.
-        ledger = adopt_ledger(
-            server_workspace, name, [PRESETS / "base"], author=FACTORY_AUTHOR
-        )
-        try:
-            assert ledger.meta["adopted_from_commit"] == pre_head
-        finally:
-            ledger.close()
-    finally:
-        drop_database(server_workspace, name)
