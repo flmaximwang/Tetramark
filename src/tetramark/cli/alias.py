@@ -5,12 +5,13 @@ from __future__ import annotations
 import typer
 
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import group, json_output, resolve_ledger
+from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 
 alias_app = group("Aliases: short human names for any entity/stock/aliquot/box.")
 
 
 @alias_app.command("add")
+@write_command
 def add_alias_command(
     ctx: typer.Context,
     object_type: str = typer.Argument(
@@ -36,6 +37,7 @@ def add_alias_command(
 
 
 @alias_app.command("rm")
+@write_command
 def remove_alias_command(
     ctx: typer.Context,
     first: str = typer.Argument(

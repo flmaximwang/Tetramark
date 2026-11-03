@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, group, resolve_ledger
+from tetramark.cli.options import (
+    GlobalOptions,
+    group,
+    resolve_ledger,
+    write_command,
+)
 from tetramark.errors import UsageError
 from tetramark.ops import remote as remotes
 
@@ -30,6 +35,7 @@ def _echo_result(result: remotes.Result) -> None:
 
 
 @remote_app.command("add")
+@write_command
 def remote_add(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Remote name (e.g. origin)."),
@@ -54,6 +60,7 @@ def remote_ls(ctx: typer.Context) -> None:
 
 
 @remote_app.command("push")
+@write_command
 def remote_push(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
@@ -77,6 +84,7 @@ def remote_push(
 
 
 @remote_app.command("pull")
+@write_command
 def remote_pull(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
@@ -100,6 +108,7 @@ def remote_pull(
 
 
 @remote_app.command("rm")
+@write_command
 def remote_rm(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Remote to remove."),
@@ -150,6 +159,13 @@ def backup_command(
         raise UsageError("a backup directory must not be empty")
     ledger = resolve_ledger(ctx)
     directory: str | None = path
-    _echo_result(
-        remotes.backup(ledger, directory, name=name, dry_run=options.dry_run)
-    )
+    # ``tm backup`` reads the ledger and writes a copy: one writer per ledger
+    # (P11), but only for the sync -- ``tm backup ls`` above is a read and the
+    # dry run writes nothing.
+    if options.dry_run:
+        _echo_result(remotes.backup(ledger, directory, name=name, dry_run=True))
+    else:
+        with ledger.hold_write_lock(command="tm backup"):
+            _echo_result(
+                remotes.backup(ledger, directory, name=name, dry_run=False)
+            )

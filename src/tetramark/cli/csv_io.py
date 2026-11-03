@@ -12,10 +12,12 @@ from tetramark.cli.options import (
     json_output,
     resolve_ledger,
     target_branch,
+    write_command,
 )
 from tetramark.ops import io_csv
 
 
+@write_command
 def import_command(
     ctx: typer.Context,
     kind: str = typer.Argument(

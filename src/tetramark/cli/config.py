@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, echo_dry_run_sql, group, resolve_ledger
+from tetramark.cli.options import (
+    GlobalOptions,
+    echo_dry_run_sql,
+    group,
+    resolve_ledger,
+    write_command,
+)
 from tetramark.errors import UsageError
 
 config_app = group("Read and write the ledger configuration.")
@@ -45,6 +51,7 @@ def config_get(
 
 
 @config_app.command("set")
+@write_command
 def config_set(
     ctx: typer.Context,
     key: str = typer.Argument(..., help="Configuration key (author)."),

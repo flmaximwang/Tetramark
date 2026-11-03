@@ -13,6 +13,7 @@ from tetramark.cli.options import (
     group,
     json_output,
     resolve_ledger,
+    write_command,
 )
 from tetramark.cli.output import emit_read, output_format
 
@@ -20,6 +21,7 @@ stock_app = group("Stocks: logical batches/preparations of one entity.")
 
 
 @stock_app.command("add")
+@write_command
 def add_stock_command(
     ctx: typer.Context,
     kind: str = typer.Argument(..., help="Stock kind (e.g. bacterial, lot)."),
@@ -126,6 +128,7 @@ def list_stocks_command(
 
 
 @stock_app.command("edit")
+@write_command
 def edit_stock_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Stock id or alias."),
@@ -157,6 +160,7 @@ def _echo_renumber_plan(result: dict[str, Any]) -> None:
 
 
 @stock_app.command("renumber")
+@write_command
 def renumber_stocks_command(
     ctx: typer.Context,
     ref: list[str] = typer.Argument(

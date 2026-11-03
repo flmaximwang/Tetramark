@@ -7,13 +7,23 @@ command groups whose help answers ``-h`` and a bare invocation (see
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypeVar
 
 import typer
 
 from tetramark.core.ledger import Ledger, open as open_ledger
+from tetramark.core.writelock import WriteLock
+from tetramark.driver.resolution import resolve_ledger as resolve_ledger_dir
 from tetramark.errors import EXIT_OK
+
+#: Attribute :func:`write_command` sets on the wrapper (tests assert coverage).
+WRITE_COMMAND_MARKER = "__tetramark_write_command__"
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 #: ``--help`` is spelled ``-h`` too, on every command and command group. Click
 #: inherits ``help_option_names`` from the root context down the command tree,
@@ -58,6 +68,16 @@ class GlobalOptions:
     no_commit: bool = False
     json: bool = False
     format: str | None = None
+    #: The ledger opened once by :func:`resolve_ledger` for this command.  A
+    #: write command holds its lock while the command body runs.
+    opened: Ledger | None = None
+
+
+def _global_options(ctx: typer.Context) -> GlobalOptions:
+    options = ctx.obj
+    if not isinstance(options, GlobalOptions):
+        raise RuntimeError("the CLI root callback did not set GlobalOptions")
+    return options
 
 
 def json_output(ctx: typer.Context, local: bool = False) -> bool:
@@ -67,16 +87,82 @@ def json_output(ctx: typer.Context, local: bool = False) -> bool:
 
 
 def resolve_ledger(ctx: typer.Context) -> Ledger:
-    """Open the ledger selected by ``-l/--ledger`` or discovered from the cwd."""
-    options = ctx.obj
-    if not isinstance(options, GlobalOptions):
-        raise RuntimeError("the CLI root callback did not set GlobalOptions")
-    return open_ledger(
-        options.ledger,
-        branch=options.branch,
-        dry_run=options.dry_run,
-        no_commit=options.no_commit,
-    )
+    """Open the ledger selected by ``-l/--ledger`` or discovered from the cwd.
+
+    The ledger is opened once per command and cached on the options: a write
+    command's decorator opens it first (to hold the write lock) and the
+    command body then uses the same object instead of opening the schema and
+    ``ledger_meta`` a second time.
+    """
+    options = _global_options(ctx)
+    if options.opened is None:
+        options.opened = open_ledger(
+            options.ledger,
+            branch=options.branch,
+            dry_run=options.dry_run,
+            no_commit=options.no_commit,
+        )
+    return options.opened
+
+
+def _command_label(ctx: typer.Context) -> str:
+    """``"tm stock add"``: the command path shown in the lock file/busy error."""
+    names: list[str] = []
+    node: typer.Context | None = ctx
+    while node is not None:
+        name = getattr(node, "info_name", None)
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+        node = getattr(node, "parent", None)
+    return " ".join(reversed(names)) or "tm"
+
+
+def write_command(func: _F) -> _F:
+    """Run a CLI write command with the ledger's write lock held (P11).
+
+    The lock is taken before :func:`open` reads ``ledger.yaml``, the schema and
+    ``ledger_meta``, and held through the command body -- its reads,
+    validation, write session and Dolt commit.  That covers the whole
+    read -> validate -> write -> commit window of the command, so the
+    read-then-write race between two ``tm`` processes is closed even though the
+    embedded driver runs one ``dolt sql`` process per statement.  ``--dry-run``
+    writes nothing and therefore takes no lock; the body opens the ledger
+    itself in that case.  Reads are never decorated.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        ctx = args[0] if args else kwargs.get("ctx")
+        options = getattr(ctx, "obj", None)
+        if (
+            isinstance(options, GlobalOptions)
+            and not options.dry_run
+            and options.opened is None
+        ):
+            # Resolve the directory first (filesystem/YAML only, no database
+            # read), take the lock, and open the ledger inside it.
+            ref = resolve_ledger_dir(options.ledger)
+            lock = WriteLock(ref.path, command=_command_label(ctx))
+            lock.acquire()
+            try:
+                ledger = open_ledger(
+                    options.ledger,
+                    branch=options.branch,
+                    dry_run=options.dry_run,
+                    no_commit=options.no_commit,
+                )
+                ledger._adopt_write_lock(lock)
+                options.opened = ledger
+            except BaseException:
+                lock.release()
+                raise
+            try:
+                return func(*args, **kwargs)
+            finally:
+                ledger._release_adopted_write_lock()
+        return func(*args, **kwargs)
+
+    setattr(wrapper, WRITE_COMMAND_MARKER, True)
+    return wrapper  # type: ignore[return-value]
 
 
 def target_branch(ledger: Ledger) -> str:
