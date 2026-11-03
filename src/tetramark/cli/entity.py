@@ -94,6 +94,7 @@ def list_entities_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=["id", "kind", "name"],
+            short_uuid_columns=("id",),
         )
     finally:
         ledger.close()

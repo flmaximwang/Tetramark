@@ -100,6 +100,9 @@ tm entity list [KIND] [--where FIELD=VALUE ...] [--json]
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
 `--where` filters match the kind's columns and can be repeated (AND).
 `show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
+The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
+(at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
+always print the full 36-character id, and datecode/sequence/aliquot ids are never shortened.
 
 ## Stocks
 
