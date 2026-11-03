@@ -24,7 +24,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -282,11 +282,55 @@ class EmbeddedDriver(Driver):
             if is_nothing_to_commit(str(error)):
                 return None
             raise
-        for rows in reversed(result_sets):
-            for row in rows:
-                if "hash" in row:
-                    return str(row["hash"])
-        return None
+        return _commit_hash(result_sets)
+
+    def commit_pending(
+        self,
+        transaction: AbstractContextManager[Driver],
+        message: str,
+        author: str | None = None,
+    ) -> str | None:
+        """Flush the buffered DML and create the Dolt commit in ONE process.
+
+        ``transaction`` is the entered context manager returned by
+        :meth:`transaction`; this call ends it, so it must be called once in
+        place of ``transaction.__exit__`` plus :meth:`commit`.  The usual
+        ``START TRANSACTION; <buffered DML>; COMMIT`` script and
+        :func:`commit_statements` are rendered into one script and run as one
+        ``dolt sql`` process, then this returns the commit hash (``None`` when
+        Dolt said there was nothing to commit).
+
+        Failure behaves like the two-process path: if a statement before the
+        DOLT commit fails, Dolt rolls the transaction back (or leaves the DDL
+        it already applied) and the error surfaces as a
+        :class:`~tetramark.errors.LedgerError`.  As before, a failure *after*
+        the SQL ``COMMIT`` (e.g. DOLT_COMMIT refusing) leaves the rows in the
+        working set, uncommitted in Dolt's history.
+        """
+        if self._pending is None:
+            # Defensive: no deferred transaction to fold in.  Behave exactly
+            # like the base class rather than commit inside a stale buffer.
+            return super().commit_pending(transaction, message, author)
+        pending = list(self._pending)
+        try:
+            statements = list(commit_statements(message, author))
+            if pending:
+                statements = ["START TRANSACTION", *pending, "COMMIT", *statements]
+            # The transaction ends here: closing it below must not run the DML
+            # again (``_flush`` only runs a non-empty buffer).
+            self._pending = []
+            try:
+                result_sets = self._run(";\n".join(statements))
+            except LedgerError as error:
+                if is_nothing_to_commit(str(error)):
+                    return None
+                raise
+        finally:
+            # Ends the transaction even when the combined script failed; an
+            # unexpected error before ``_pending`` was cleared still closes
+            # it (and flushes the DML) exactly as the old two-step path did.
+            transaction.__exit__(None, None, None)
+        return _commit_hash(result_sets)
 
     # -- plumbing ---------------------------------------------------------
     def _query_json(self, sql: str) -> list[dict[str, Any]]:
@@ -417,6 +461,15 @@ def _batch_error(error: LedgerError, rendered: Sequence[str]) -> LedgerError:
             "could not be identified"
         )
     return LedgerError(f"{context}\n{cleaned}" if cleaned else context)
+
+
+def _commit_hash(result_sets: Sequence[Sequence[dict[str, Any]]]) -> str | None:
+    """The hash of the ``DOLT_COMMIT`` result in a commit script's output."""
+    for rows in reversed(result_sets):
+        for row in rows:
+            if "hash" in row:
+                return str(row["hash"])
+    return None
 
 
 def _check_output(
