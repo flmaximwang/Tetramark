@@ -17,7 +17,6 @@ import yaml
 from tetramark import Ledger, __version__, init_ledger, open as open_ledger
 from tetramark.core.ledger import AdoptPlan, InitPlan, WriteSession, adopt_ledger
 from tetramark.core.ids import DatecodeIds, UuidIds
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
 from tetramark.schema.model import SPEC_VERSION
 

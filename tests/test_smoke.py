@@ -35,7 +35,6 @@ def test_help_lists_global_options() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == EXIT_OK
     assert "--version" in result.output
-    assert "--workspace" in result.output
     assert "--ledger" in result.output
 
 

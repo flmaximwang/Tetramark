@@ -34,10 +34,8 @@ def dirty(ledger) -> list[dict[str, object]]:
 
 def base_args(ledger) -> list[str]:
     return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
 
 
@@ -333,7 +331,7 @@ def test_cli_global_branch_selects_the_session_branch(
     # the session branch only.
     assert ledger.entities.ls() == []
     assert commit_count(ledger) == before
-    branch = open_ledger(ledger.workspace, ledger.name, branch="feature")
+    branch = open_ledger(ledger.path, branch="feature")
     try:
         assert [row["name"] for row in branch.entities.ls()] == ["branch-item"]
         assert ledger.driver.query("SELECT active_branch() AS `b`") == [
@@ -411,7 +409,7 @@ def test_cli_branch_ls_create_and_delete_roundtrip(
 
     # An unmerged branch is refused by Dolt, then deletable once merged.
     assert invoke(ledger, "branch", "create", "unmerged").exit_code == 0
-    branch = open_ledger(ledger.workspace, ledger.name, branch="unmerged")
+    branch = open_ledger(ledger.path, branch="unmerged")
     try:
         branch.entities.add("item", name="unmerged-row")
     finally:

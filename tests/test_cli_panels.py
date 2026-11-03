@@ -33,7 +33,7 @@ pytestmark = pytest.mark.fast
 #: The root help, as the epic defines it: panel name -> its commands, in the
 #: order they are shown.
 EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
-    "Setup": ("workspace", "presets", "init", "schema", "config"),
+    "Setup": ("presets", "init", "schema", "config"),
     "Inventory": ("entity", "stock", "aliquot", "box"),
     "Lookup": ("find", "alias", "history", "lineage"),
     "Data": ("import", "export", "check"),
@@ -42,7 +42,6 @@ EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
 
 #: The subcommands of every root command group, in the order they are shown.
 EXPECTED_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
-    "workspace": ("init",),
     "presets": ("list", "show"),
     "schema": ("show", "plan", "apply"),
     "config": ("get", "set"),

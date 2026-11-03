@@ -20,7 +20,6 @@ from typer.testing import CliRunner
 from tetramark.cli.app import app
 
 from tetramark.core.ledger import init_ledger, open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows
 from tetramark.schema.loader import (

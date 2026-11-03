@@ -1,6 +1,6 @@
 """Remote, backup and author configuration (ticket 13, spec §6/§1.1).
 
-Every test drives the real ``dolt`` binary through the isolated workspace from
+Every test drives the real ``dolt`` binary through the isolated environment from
 ``conftest.py``; no Dolt behaviour is mocked.
 """
 
@@ -70,16 +70,16 @@ def table_names(ledger: Ledger) -> set[str]:
 
 
 def clone_ledger(ledger: Ledger, dolt_run, name: str = "clone") -> Ledger:
-    """Clone ``ledger`` from its pushed remote into the same workspace."""
+    """Clone ``ledger`` from its pushed remote next to it (a standalone ledger)."""
     url = remote.list_remotes(ledger)[0].url
-    target = ledger.workspace.ledger_path(name)
+    target = ledger.path.parent / name
     dolt_run("clone", url, str(target))
     # Dolt clones the database, not plain files: a ledger needs its config and
     # its own preset copies (ticket 20; they are not package data and not in
     # the database). A real clone copies them next to ledger.yaml as well.
     shutil.copy(ledger.path / LEDGER_FILE, target / LEDGER_FILE)
     shutil.copytree(ledger.path / "presets", target / "presets")
-    return open_ledger(ledger.workspace, name)
+    return open_ledger(target)
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_backup_default_directory_is_restorable(
     ledger = ledger_factory([PRESETS / "base"])
     add_entity(ledger, "e1", "one")
 
-    expected_dir = ledger.workspace.data_dir / "backups" / ledger.name
+    expected_dir = ledger.path.parent / "backups" / ledger.name
     result = remote.backup(ledger)
 
     assert result.dry_run is False
@@ -295,7 +295,7 @@ def test_set_author_updates_yaml_meta_and_commit_author(ledger_factory) -> None:
     assert latest["author"] == "New Author"
     assert latest["author_email"] == "new@tetramark.invalid"
     assert ledger.author == "New Author <new@tetramark.invalid>"
-    assert open_ledger(ledger.workspace, "authors").author == "New Author <new@tetramark.invalid>"
+    assert open_ledger(ledger.path.parent / "authors").author == "New Author <new@tetramark.invalid>"
 
 
 def test_set_author_dry_run_and_validation(ledger_factory) -> None:
@@ -326,9 +326,8 @@ def test_cli_remote_push_and_backup_workflow(
     ledger_factory, cli_isolated, tmp_path: Path
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="cli")
-    workspace = str(ledger.workspace.data_dir)
     remote_dir = tmp_path / "cli-remote"
-    prefix = ["--workspace", workspace, "--ledger", "cli"]
+    prefix = ["--ledger", str(ledger.path)]
 
     added = runner.invoke(app, [*prefix, "remote", "add", "origin", str(remote_dir)])
     assert added.exit_code == 0, added.output
@@ -351,7 +350,7 @@ def test_cli_remote_push_and_backup_workflow(
 
     backed_up = runner.invoke(app, [*prefix, "backup"])
     assert backed_up.exit_code == 0, backed_up.output
-    expected_dir = ledger.workspace.data_dir / "backups" / "cli"
+    expected_dir = ledger.path.parent / "backups" / "cli"
     assert expected_dir.is_dir()
 
     backups = runner.invoke(app, [*prefix, "backup", "ls"])
@@ -364,7 +363,7 @@ def test_cli_config_get_and_set_author(
     ledger_factory, cli_isolated
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="cli-author")
-    prefix = ["--workspace", str(ledger.workspace.data_dir), "--ledger", "cli-author"]
+    prefix = ["--ledger", str(ledger.path)]
 
     got = runner.invoke(app, [*prefix, "config", "get", "author"])
     assert got.exit_code == 0, got.output
@@ -378,7 +377,7 @@ def test_cli_config_get_and_set_author(
     got = runner.invoke(app, [*prefix, "config", "get", "author"])
     assert got.exit_code == 0, got.output
     assert new_author in got.output
-    assert open_ledger(ledger.workspace, "cli-author").author == new_author
+    assert open_ledger(ledger.path).author == new_author
 
     unknown = runner.invoke(app, [*prefix, "config", "get", "colour"])
     assert unknown.exit_code != 0

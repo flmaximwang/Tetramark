@@ -56,7 +56,7 @@ def load_repo_preset(name: str):
 
 
 def base_args(ledger) -> list[str]:
-    return ["--workspace", str(ledger.workspace.data_dir), "--ledger", ledger.name]
+    return ["--ledger", str(ledger.path)]
 
 
 def run(ledger, *args: str):
