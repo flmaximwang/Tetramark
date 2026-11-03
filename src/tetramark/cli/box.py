@@ -73,7 +73,7 @@ def show_box_command(
         ledger.close()
 
 
-@box_app.command("ls")
+@box_app.command("list")
 def list_boxes_command(
     ctx: typer.Context,
     kind: str | None = typer.Option(None, "--kind", "-k", help="Only this box kind."),

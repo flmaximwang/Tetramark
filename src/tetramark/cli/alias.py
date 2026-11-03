@@ -36,7 +36,7 @@ def add_alias_command(
         ledger.close()
 
 
-@alias_app.command("rm")
+@alias_app.command("remove")
 @write_command
 def remove_alias_command(
     ctx: typer.Context,

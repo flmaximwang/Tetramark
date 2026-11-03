@@ -64,7 +64,7 @@ def show_entity_command(
         ledger.close()
 
 
-@entity_app.command("ls")
+@entity_app.command("list")
 def list_entities_command(
     ctx: typer.Context,
     kind: str | None = typer.Argument(None, help="Only this entity kind."),

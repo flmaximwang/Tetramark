@@ -45,8 +45,8 @@ def _check_name(name: str) -> str:
     return text
 
 
-@branch_app.command("ls")
-def branch_ls(ctx: typer.Context) -> None:
+@branch_app.command("list")
+def branch_list(ctx: typer.Context) -> None:
     """List branches; the checked-out one (what other sessions see) is marked."""
     ledger = resolve_ledger(ctx)
     rows = ledger.driver.query(

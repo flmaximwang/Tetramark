@@ -324,7 +324,7 @@ _NO_BACKUP_DIRECTORY = (
     "tm backup needs a directory: there is no default, because a backup next "
     "to the ledger lives on the same disk and is lost together with it, which "
     "defeats the purpose of a backup. Pass a directory (tm backup DIR) or sync "
-    "an already configured backup (tm backup --name NAME; see tm backup ls)."
+    "an already configured backup (tm backup --name NAME; see tm backup list)."
 )
 
 

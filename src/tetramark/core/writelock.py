@@ -19,8 +19,8 @@ Covered window
   the commit.  A caller that reads before opening the session should wrap the
   whole step in ``with ledger.hold_write_lock():``; the lock is re-entrant per
   ``Ledger`` object, so the nested write session joins it.
-* **Reads never lock** (find/show/ls/status/check/history/export,
-  ``tm backup ls``, ...), and neither does ``--dry-run``: it writes nothing.
+* **Reads never lock** (find/show/list/status/check/history/export,
+  ``tm backup list``, ...), and neither does ``--dry-run``: it writes nothing.
 * ``tm init``/``tm adopt`` are not covered: they create/format the database
   directory and are exclusive by nature.
 

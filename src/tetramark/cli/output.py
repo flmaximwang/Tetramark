@@ -1,6 +1,6 @@
 """Shared read-side output: table, JSON and CSV (spec §6, ticket 11).
 
-Every ``ls``/``show`` command funnels through :func:`emit_read` (or
+Every ``list``/``show`` command funnels through :func:`emit_read` (or
 :func:`emit_payload` for a shape that needs custom rendering).  Format selection
 is uniform: a command's ``--json`` wins, then the global ``--json``, then the
 global ``--format``, else the table.
