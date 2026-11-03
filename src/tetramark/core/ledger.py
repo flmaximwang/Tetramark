@@ -31,7 +31,9 @@ inspecting the ledger is still useful and ``tm schema plan`` is the fix.
 Every successful write goes through :meth:`Ledger.write`, which groups the
 statements of one command into one SQL transaction and one Dolt commit (spec
 §6).  ``dry_run`` collects the SQL instead of executing it; ``no_commit``
-executes but leaves the change uncommitted.
+executes but leaves the change uncommitted.  Consecutive DDL statements are
+sent as one ``execute_many`` batch, because Dolt applies DDL immediately and a
+schema change must not cost one ``dolt sql`` process per statement.
 
 One writer per ledger (P11): a write takes an exclusive ``flock`` on
 ``<ledger>/.dolt/tetramark.lock`` (see :mod:`tetramark.core.writelock`).
@@ -74,6 +76,7 @@ from tetramark.driver.base import (
     Driver,
     Params,
     ensure_ascii,
+    is_ddl,
     looks_like_error,
     render_sql,
 )
@@ -708,13 +711,18 @@ def _prepare_adopt(
     )
 
 
-def _write_meta(
-    driver: Driver,
+def _meta_values(
     schema: EffectiveSchema,
     ledger_yaml: str,
     *,
     adopted_from_commit: str | None = None,
-) -> None:
+) -> dict[str, str]:
+    """The ``ledger_meta`` rows a successful init/adopt writes, in META_ORDER.
+
+    Returned (not just written) so the caller can fill the opened ledger's
+    ``meta`` cache with the exact rows it just committed instead of paying a
+    read-back round trip; the database content is the same either way.
+    """
     # Imported here because ``tetramark/__init__`` imports this module; the
     # package is fully initialised by the time a ledger is written.
     from tetramark import __version__
@@ -731,18 +739,37 @@ def _write_meta(
         ),
         META_LEDGER_YAML: ledger_yaml,
     }
-    for key in META_ORDER:
-        driver.execute(
-            "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s)",
-            (key, values[key]),
-        )
+    # The insert order is part of the stored history, so it is spelled out.
+    assert list(values) == list(META_ORDER)
     # Only the adopt path records the pre-adoption HEAD (ticket TM-04); a plain
     # init has no history to adopt, so the key stays absent.
     if adopted_from_commit is not None:
+        values[META_ADOPTED_FROM_COMMIT] = adopted_from_commit
+    return values
+
+
+def _write_meta(
+    driver: Driver,
+    schema: EffectiveSchema,
+    ledger_yaml: str,
+    *,
+    adopted_from_commit: str | None = None,
+) -> dict[str, str]:
+    """Write every ``ledger_meta`` row; return the values written.
+
+    The rows are ordinary DML of the caller's transaction, so they land in the
+    one init/adopt commit.  The return value lets the caller fill the returned
+    :class:`Ledger`'s ``meta`` without reading the rows back.
+    """
+    values = _meta_values(
+        schema, ledger_yaml, adopted_from_commit=adopted_from_commit
+    )
+    for key, value in values.items():
         driver.execute(
             "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s)",
-            (META_ADOPTED_FROM_COMMIT, adopted_from_commit),
+            (key, value),
         )
+    return values
 
 
 def init_ledger(
@@ -798,9 +825,11 @@ def init_ledger(
 
         driver = EmbeddedDriver(target, env=plan.env)
         with driver.transaction():
-            for statement in plan.statements:
-                driver.execute(statement.sql)
-            _write_meta(driver, plan.schema, plan.ledger_yaml)
+            # The generated DDL is one batch: one ``dolt sql`` process for the
+            # whole schema instead of one per statement (Dolt applies DDL
+            # immediately, so it cannot be rolled back with the DML below).
+            driver.execute_many([statement.sql for statement in plan.statements])
+            meta = _write_meta(driver, plan.schema, plan.ledger_yaml)
             # Generated dolt_tests are derived state (spec §4): install them
             # with the schema so a fresh ledger is immediately checkable.
             install_tests(driver, plan.schema)
@@ -828,8 +857,11 @@ def init_ledger(
         config=plan.config,
         schema=plan.schema,
         author=plan.author,
+        # The commit's own rows, not a second read of them: the values were
+        # built and written above, so ``init`` stays at three ``dolt sql``
+        # processes (DDL batch, DML transaction, commit).
+        meta=meta,
     )
-    ledger.refresh_meta()
     return ledger
 
 
@@ -1110,9 +1142,11 @@ def adopt_ledger(
         config_path.write_text(plan.ledger_yaml, encoding="utf-8")
         _verify_preset_copy(target, plan.schema)
         with driver.transaction():
-            for statement in plan.statements:
-                driver.execute(statement.sql)
-            _write_meta(
+            # The generated DDL is one batch: one ``dolt sql`` process for the
+            # whole schema instead of one per statement (Dolt applies DDL
+            # immediately, so it cannot be rolled back with the DML below).
+            driver.execute_many([statement.sql for statement in plan.statements])
+            meta = _write_meta(
                 driver,
                 plan.schema,
                 plan.ledger_yaml,
@@ -1147,8 +1181,8 @@ def adopt_ledger(
         schema=plan.schema,
         author=plan.author,
         branch=branch,
+        meta=meta,
     )
-    ledger.refresh_meta()
     return ledger
 
 
@@ -1244,6 +1278,7 @@ class Ledger:
         branch: str | None = None,
         dry_run: bool = False,
         no_commit: bool = False,
+        meta: Mapping[str, str] | None = None,
     ) -> None:
         #: The ledger directory: ``.dolt/`` plus ``ledger.yaml``.
         self.path = Path(path)
@@ -1257,7 +1292,10 @@ class Ledger:
         self.dry_run = dry_run
         self.no_commit = no_commit
         self.ids = build_id_strategies(config)
-        self.meta: dict[str, str] = {}
+        #: ``ledger_meta`` rows.  ``init``/``adopt`` pass the exact rows they
+        #: committed (they wrote them); everyone else reads them back through
+        #: :meth:`read_meta`.
+        self.meta: dict[str, str] = dict(meta) if meta is not None else {}
         #: Object-operation facades (spec §6): entities, stocks, aliquots,
         #: boxes and aliases.  The CLI is a thin layer over these.
         self.entities = EntityOps(self)
@@ -1560,6 +1598,15 @@ class WriteSession:
 
     ``dry_run`` collects :attr:`statements` (see :attr:`sql`) and executes
     nothing.  ``no_commit`` executes normally but skips the Dolt commit.
+
+    Consecutive DDL statements are deferred and sent as one
+    :meth:`~tetramark.driver.base.Driver.execute_many` batch: Dolt applies DDL
+    immediately (it cannot be rolled back with the transaction), so one schema
+    operation must not pay one ``dolt sql`` process per statement.  The batch is
+    flushed before the next DML statement (order is preserved), before a
+    :meth:`query` (a read must see the statements before it) and when the
+    session closes.  If the body raises, the deferred DDL was never applied and
+    is dropped, like the DML the transaction rolls back.
     """
 
     def __init__(
@@ -1577,6 +1624,8 @@ class WriteSession:
         self.statements: list[str] = []
         #: Hash of the Dolt commit the session made, if it made one.
         self.commit_hash: str | None = None
+        #: Consecutive DDL statements not yet sent (one batch, in order).
+        self._ddl_batch: list[str] = []
         self._transaction: AbstractContextManager[Driver] | None = None
         self._lock: AbstractContextManager[None] | None = None
         self._open = False
@@ -1588,13 +1637,29 @@ class WriteSession:
         rendered = render_sql(sql, params)
         self.statements.append(rendered)
         if not self.dry_run:
-            self.ledger.driver.execute(rendered)
+            if is_ddl(rendered):
+                # Dolt applies DDL immediately; collect the run so a schema
+                # operation is one process, not one per statement.
+                self._ddl_batch.append(rendered)
+            else:
+                self._flush_ddl()
+                self.ledger.driver.execute(rendered)
         return rendered
 
     def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
         """Read through the ledger; inside a transaction this sees its writes."""
         self._require_open()
+        # A read must see the DDL that logically came before it.
+        self._flush_ddl()
         return self.ledger.driver.query(sql, params)
+
+    def _flush_ddl(self) -> None:
+        """Send the deferred DDL as one batch (no-op when none is pending)."""
+        batch = self._ddl_batch
+        if not batch:
+            return
+        self._ddl_batch = []
+        self.ledger.driver.execute_many(batch)
 
     @property
     def sql(self) -> str:
@@ -1646,6 +1711,23 @@ class WriteSession:
         self._transaction = None
         assert transaction is not None
         try:
+            if exc_type is None:
+                try:
+                    # DDL first: the buffered DML (and the transaction flush it
+                    # triggers below) must come after the schema it targets.
+                    self._flush_ddl()
+                except BaseException as error:
+                    # The DDL failed, so the buffered DML is rolled back rather
+                    # than committed; the transaction still has to close.
+                    with suppress(BaseException):
+                        transaction.__exit__(
+                            type(error), error, error.__traceback__
+                        )
+                    raise
+            else:
+                # The body failed: DDL that was deferred never ran, so it is
+                # dropped together with the DML the transaction rolls back.
+                self._ddl_batch = []
             transaction.__exit__(exc_type, exc, traceback)
             if exc_type is not None:
                 return False

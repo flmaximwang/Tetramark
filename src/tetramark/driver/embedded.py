@@ -31,19 +31,23 @@ from tetramark.driver.base import (
     Params,
     check_branch_name,
     commit_statements,
+    is_ddl,
     is_nothing_to_commit,
     looks_like_error,
     render_sql,
+    render_statement,
     revision_database,
 )
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 __all__ = ["EmbeddedDriver"]
 
-#: Statements Dolt commits regardless of the surrounding transaction.
-_DDL = re.compile(
-    r"(?is)^\s*(?:/\*.*?\*/\s*|--[^\n]*\n\s*|#[^\n]*\n\s*)*"
-    r"(?:CREATE|ALTER|DROP|RENAME|TRUNCATE|GRANT|REVOKE|COMMENT)\b"
+#: A batch statement is preceded by ``SELECT 'TM_STMT_<n>'``; the JSON result
+#: of that marker tells a failed batch how far Dolt got (see ``execute_many``).
+_MARKER_SQL = "SELECT '{prefix}{index}' AS `marker`"
+_MARKER_PREFIX = "TM_STMT_"
+_MARKER_LINE = re.compile(
+    r'^\s*\{\s*"rows"\s*:\s*\[\s*\{\s*"marker"\s*:\s*"TM_STMT_(\d+)"\s*\}\s*\]\s*\}\s*$'
 )
 
 
@@ -161,7 +165,7 @@ class EmbeddedDriver(Driver):
     def execute(self, sql: str, params: Params = None) -> None:
         rendered = render_sql(sql, params)
         if self._pending is not None:
-            if _DDL.match(rendered):
+            if is_ddl(rendered):
                 # Dolt 2.3.5 does not roll DDL back, so it must run outside the
                 # deferred DML transaction.  Flush the DML that logically came
                 # first; otherwise a schema change would see the old rows.
@@ -171,6 +175,29 @@ class EmbeddedDriver(Driver):
             self._pending.append(rendered)
             return
         self._run(rendered)
+
+    def execute_many(self, statements: Sequence[str | tuple[str, Params]]) -> None:
+        """Run a whole DDL batch in one ``dolt sql`` process.
+
+        Dolt applies DDL immediately, so the batch is one script (statement
+        order preserved) instead of one process per statement.  Inside
+        :meth:`transaction` the DML buffered so far is flushed first, in its
+        own transaction, and only then does the batch run -- exactly the order
+        the statements were called in.
+
+        A failure keeps the Dolt error text but names the failing statement:
+        each statement is preceded by a ``SELECT 'TM_STMT_<n>'`` marker, and
+        the markers Dolt printed before it stopped say which statement was
+        running.  Nothing is re-run to find it, so the DDL that already applied
+        stays applied once.
+        """
+        ordered = list(statements)
+        if not ordered:
+            return
+        rendered = [render_statement(statement) for statement in ordered]
+        if self._pending is not None:
+            self._flush()
+        self._run_batch(rendered)
 
     @contextmanager
     def transaction(self) -> Iterator[EmbeddedDriver]:
@@ -303,6 +330,53 @@ class EmbeddedDriver(Driver):
             check_stdout=result_format == "json",
         )
         return process.stdout
+
+    def _run_batch(self, rendered: Sequence[str]) -> None:
+        """Run one script made of ``rendered``, each statement behind a marker."""
+        parts: list[str] = []
+        for index, sql in enumerate(rendered, start=1):
+            parts.append(_MARKER_SQL.format(prefix=_MARKER_PREFIX, index=index))
+            parts.append(sql)
+        try:
+            self._invoke("\n;\n".join(parts), "json")
+        except LedgerError as error:
+            raise _batch_error(error, rendered) from error
+
+
+def _batch_error(error: LedgerError, rendered: Sequence[str]) -> LedgerError:
+    """Name the failing statement of a batch without re-running any of it.
+
+    ``_check_output`` puts both captured streams in the message, so the markers
+    Dolt printed are in it too: marker ``n`` is emitted immediately before
+    statement ``n``, therefore the highest marker seen is the statement that
+    was running when Dolt stopped.  The marker lines are removed from the
+    reported output; the Dolt error text itself is kept verbatim.
+    """
+    total = len(rendered)
+    failing = 0
+    kept: list[str] = []
+    for line in str(error).splitlines():
+        marker = _MARKER_LINE.match(line)
+        if marker is not None:
+            failing = max(failing, int(marker.group(1)))
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept).strip()
+
+    if failing:
+        statement = " ".join(rendered[failing - 1].split())
+        if len(statement) > 160:
+            statement = statement[:157] + "..."
+        context = f"statement {failing} of {total} failed: {statement}"
+    else:
+        # Dolt failed before the first statement's marker was printed (e.g. the
+        # session's revision database could not be selected, or the output was
+        # lost): the batch failed as a whole and the statement is not named.
+        context = (
+            f"a batch of {total} statement(s) failed; the failing statement "
+            "could not be identified"
+        )
+    return LedgerError(f"{context}\n{cleaned}" if cleaned else context)
 
 
 def _check_output(
