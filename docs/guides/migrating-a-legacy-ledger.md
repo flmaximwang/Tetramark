@@ -33,28 +33,35 @@ extension tables is upgraded by moving the values to the stock first and then ru
    `dolt_stop.sh` in the old data directory.
 2. Copy the old ledger directory to a scratch place; work from the copy and leave the original
    untouched until the new ledger is verified.
-3. Create a new workspace and ledger. **Match the stock ID prefix to the project** so old date-code
-   UIDs remain valid explicit IDs (zsqlab08 → prefix `08`; zsqlab10 → `10`):
+3. Create one standalone ledger directory. **Match the stock ID prefix to the project** so old
+   date-code UIDs remain valid explicit IDs (zsqlab08 → prefix `08`; zsqlab10 → `10`):
 
 ```sh
-mkdir -p ~/migration/zsqlab08
-cd ~/migration/zsqlab08
-tm workspace init . --default-ledger zsqlab08 --author "Name <you@example.com>" \
-  --presets-dir "$HOME/tetramark/presets"
-tm init zsqlab08 --preset molbio --id-prefix 08
-tm schema show   # confirm protein_construct/plasmid/bacterial_glycerol/... exist
+mkdir -p ~/migration
+cd ~/migration
+tm init zsqlab08 --preset molbio --id-prefix 08 \
+  --author "Name <you@example.com>"
+cd zsqlab08        # the ledger is one directory; later commands run inside it (or use -l PATH)
+tm schema show     # confirm protein_construct/plasmid/bacterial_glycerol/... exist
 tm box add grid9x9 WFL-08-01
 tm box add grid9x9 WFL-08-02
 ```
 
-`presets_dir` is the directory holding the preset YAML files (this repository's `presets/`,
-or your own copy). `molbio` is a **bundle**: `tm init --preset molbio` copies `molbio.yaml` and
-everything it includes — the `base`, `nucleic_acids`, `bacteria`, `proteins` and `cell_culture`
-parts — into `<ledger>/presets/`, and the ledger is then opened from that copy only. Later edits to
-the source presets do not change it. To change a ledger's presets on purpose, replace the files
-under `<ledger>/presets/` together with the schema change: they are not Dolt content, so a
+A bare preset name resolves through `$TETRAMARK_PRESETS_DIR` when set, otherwise through the presets
+**bundled with tetramark** (the installed wheel ships `tetramark/presets/`); `--preset PATH` points at
+a YAML file or a preset directory instead. `molbio` is a **bundle**: `tm init --preset molbio` copies
+`molbio.yaml` and everything it includes — the `base`, `nucleic_acids`, `bacteria`, `proteins` and
+`cell_culture` parts — into `<ledger>/presets/`, and the ledger is then opened from that copy only.
+Later edits to the source presets do not change it. To change a ledger's presets on purpose, replace
+the files under `<ledger>/presets/` together with the schema change: they are not Dolt content, so a
 migration script copies them from the repository right after its one commit (and verifies that
 the ledger reopens with the migrated fingerprint).
+
+`tm adopt PATH` is the other way in, for a **bare** Dolt database with no user schema: it formats the
+database in place and keeps its history, but it refuses a populated schema. A hand-written zsqlab
+database has tables, so it is migrated by the export → transform → `tm import` path described below,
+not by `tm adopt`. (A parent `workspace.yaml` from a 0.4 data directory is ignored when the ledger
+path is explicit, and discovery from inside the new ledger finds the ledger before the stale file.)
 
 An existing Tetramark ledger is upgraded in place first: run the step for every counter it still
 carries, oldest first, and only then import. A molbio-2 ledger (0.2.x) runs
@@ -275,10 +282,10 @@ tm check --group core
 ## 9. Retire the old database
 
 Keep the old directory read-only until the new ledger has been in use for a while: copy it to an
-archive location and back up the new ledger (`tm backup` / `tm remote push`). To roll back,
-point the old server at the untouched copy; do not edit the old database in place after cut-over.
-Document in the new ledger's notes which old database and date it came from, and keep the exported old
-CSVs next to the migration record.
+archive location and back up the new ledger (`tm backup /path/to/archive/lab101` or a configured
+backup, plus `tm remote push`). To roll back, point the old tooling at the untouched copy; do not edit
+the old database in place after cut-over. Document in the new ledger's notes which old database and
+date it came from, and keep the exported old CSVs next to the migration record.
 
 ## Checklist (copy into the migration record)
 

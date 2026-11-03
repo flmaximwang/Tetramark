@@ -1,6 +1,6 @@
 ---
 name: tetramark
-description: Use when working with a Tetramark workspace or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
+description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
 ---
 
 # Tetramark operating manual
@@ -11,20 +11,22 @@ one Dolt commit; every read is a normal `tm` command.
 
 ## Before you start
 
-1. Find the workspace: `tm server status` (or run inside the directory holding `workspace.yaml`).
-   If several ledgers exist, pass `--ledger NAME` **before** the subcommand; otherwise the workspace
-   default is used.
+1. Find the ledger: `tm status` inside the ledger directory (the one holding `.dolt/` and
+   `ledger.yaml`). From anywhere else pass `-l/--ledger PATH` **before** the subcommand; there is no
+   workspace and no default ledger when several exist.
 2. Inspect before writing: `tm schema show`, `tm box ls`, `tm find QUERY`.
 3. Prefer an alias/ID from `find` over a guessed ID.
-4. Global flags (`--workspace`, `--ledger`, `--dry-run`, `--no-commit`, `--json`, `--format`) go
-   before the command: `tm --ledger lab101 --json entity ls plasmid`.
-5. On a server-backed workspace every command uses the server; with no server it falls back to the
-   embedded driver. Never run two writers against one ledger at the same time.
-6. Presets are files, not part of the tool. `tm init --preset NAME` looks `NAME` up in the
-   workspace's `presets_dir` (set with `tm workspace init --presets-dir ...`; see
-   `tm config get presets_dir`) and copies it, plus its `include:` closure, into
-   `<ledger>/presets/`. Every later command opens only that copy, so to change a ledger's schema you
-   edit `<ledger>/presets/*.yaml` (or a local `kinds_dir`/`rules_dir`) — editing a checkout's
+4. Global flags (`-l/--ledger PATH`, `-b/--branch`, `--dry-run`, `--no-commit`, `--json`,
+   `--format`) go before the command: `tm -l ~/lab/lab101 --json entity ls plasmid`.
+5. Every command uses the embedded driver (one `dolt sql` process per statement); there is no server
+   to start or stop. Writes are serialized by a per-ledger lock: a second writer waits ~10 s, then
+   exits with a typed `ledger busy` error (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never
+   lock; still never run two writers on one ledger.
+6. Presets ship with tetramark (wheel `tetramark/presets/`) and live in the repo's `presets/`. A bare
+   `tm init --preset NAME` resolves through `$TETRAMARK_PRESETS_DIR` (when set), then the bundled
+   copies, and copies the preset plus its `include:` closure into `<ledger>/presets/`. Every later
+   command opens only that copy, so to change a ledger's schema edit `<ledger>/presets/*.yaml` (or a
+   local `kinds_dir`/`rules_dir`, which must stay relative inside the ledger) — editing a checkout's
    `presets/` does not affect existing ledgers. A bundled preset such as `molbio` is a **bundle**:
    its kinds come from the parts it includes (`base`, `nucleic_acids`, `bacteria`, `proteins`,
    `cell_culture`), so a kind the ledger shows may live in any of those files. `cellbio` is the
@@ -58,7 +60,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Where material came from / what derives from it | `tm lineage ID [--up \| --down] [--depth N]` |
 | Validate the ledger | `tm check [-v] [--group G]` |
 | Bulk load / dump | `tm import …`, `tm export …` |
-| Mirror / back up | `tm remote add … && tm remote push`, `tm backup` |
+| Mirror / back up | `tm remote add … && tm remote push`, `tm backup DIR` (or a configured backup) |
 | Change the schema | `skills/tetramark-schema/SKILL.md` |
 
 Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
@@ -134,8 +136,9 @@ tm check --group core
   can be nested in a named or slotless box, not in a grid.
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
   delete with no undo (only Dolt history can recover it).
-- **One writer at a time.** Do not write through the CLI while another dolt process writes the same
-  ledger; stop the server before offline maintenance.
+- **One writer at a time.** A write command takes an exclusive lock on the ledger
+  (`<ledger>/.dolt/tetramark.lock`) for its whole run; a second writer waits briefly and then exits
+  with a typed `ledger busy` error. Reads never lock. There is no `dolt sql-server` to start or stop.
 - **Do not move a tube by editing fields.** `aliquot move` records the event and checks slot capacity
   and exclusivity; `stock edit` only changes stock metadata.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.

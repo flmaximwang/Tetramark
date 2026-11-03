@@ -1,59 +1,73 @@
 # `tm` command reference
 
-Every command-line form in the project. Global options must come **before** the subcommand.
+Every command-line form in the project. A command operates on exactly one **ledger directory** (the
+directory holding `.dolt/` and `ledger.yaml`). Global options must come **before** the subcommand.
 
 ## Global options
 
 ```
-ledger [--workspace|-w PATH] [--ledger|-l NAME] [--dry-run] [--no-commit]
-       [--json] [--format|-f table|json|csv] [--version] COMMAND ...
+tm [--ledger|-l PATH] [--branch|-b BRANCH] [--dry-run] [--no-commit]
+   [--json] [--format|-f table|json|csv] [--version] COMMAND ...
 ```
 
 | Option | Meaning |
 |---|---|
-| `--workspace PATH` | Workspace data directory; default: search upward for `workspace.yaml`, then `$TETRAMARK_WORKSPACE`. |
-| `--ledger NAME` | Ledger to open; default: `default_ledger` from `workspace.yaml`. Required when there is no default. |
-| `--dry-run` | Print/collect the SQL of a write and change nothing. |
+| `--ledger PATH` / `-l PATH` | Ledger directory (or its `ledger.yaml` file). Omit it to search upward from the current directory to the nearest ledger. |
+| `--branch BRANCH` / `-b BRANCH` | Session branch for every read, write and commit of this command. Default: `branch:` in `ledger.yaml`, else the checked-out branch. A missing branch is a usage error; it is never created. |
+| `--dry-run` | Print/collect the SQL of a write and change nothing. Takes no write lock. |
 | `--no-commit` | Execute the write but leave it uncommitted (advanced). |
 | `--json` | Print reads and write results as JSON. |
 | `--format table\|json\|csv` | Read output format (default `table`). |
 | `--version` | Print the version. |
 
-Exit codes: `0` ok, `1` business/validation error, `2` usage error, `3` database unreachable.
+There is **no** `-w/--workspace`, no ledger name and no environment variable that selects a ledger:
+`-l PATH` wins, otherwise the upward walk finds the ledger from the current directory. Errors are
+usage errors (exit 2) that name the path/cwd; a 0.4 `workspace.yaml` met before any ledger produces
+the P4 message telling you to `cd` into the ledger directory (or pass `--ledger PATH`).
 
-## Workspace and server
+Writes are serialized per ledger: a write command takes an exclusive `flock` on
+`<ledger>/.dolt/tetramark.lock` and holds it through the read → validate → write → commit window. A
+second writer waits up to 10 s (`$TETRAMARK_LOCK_TIMEOUT`), then exits 2 with
+`ledger busy: pid … (tm …) is writing …`. Reads and `tm status` never lock. All commands use the
+embedded driver; there is no `dolt sql-server` to start or stop.
+
+Exit codes: `0` ok (help included), `1` business/validation error, `2` usage error, `3` database
+unreachable. Help (Tetramark-03j): `-h` and `--help` print the same text on every command and group
+and exit 0; a bare `tm` or bare group prints its help and exits 0; misuse exits 2.
+
+## Ledger lifecycle, status and presets
 
 ```sh
-tm workspace init [PATH] [--port 13308] [--host 127.0.0.1] \
-  [--default-ledger NAME] [--author "Name <email>"]
-tm server start [-d|--daemon]
-tm server stop
-tm server status
-```
-
-A workspace is one data directory with `workspace.yaml`. Every direct subdirectory containing `.dolt`
-is a ledger. `server start` refuses to run when there is no ledger yet, so create the first ledger
-first. `status` lists ledgers and prints the `mysql://root@host:port` endpoint.
-
-## Ledger lifecycle and presets
-
-```sh
-tm init NAME --preset base [--preset molbio] [--id-prefix 12] \
-  [--author "Name <email>"] [--status pending --status stored ...]
+tm init PATH --preset base [--preset molbio] [--name N] [--id-prefix 12] \
+  [--author "Name <email>"]
+tm adopt PATH --preset molbio [--name N] [--id-prefix 12] \
+  [--author "Name <email>"] [--force-config]
+tm status [--json]
 tm presets list
-tm presets show NAME
+tm presets show NAME|PATH
 ```
 
-`init` creates the Dolt database, writes `ledger.yaml` and the meta row, generates DDL/views/tests and
-commits once. `--preset` is repeatable; a bare name resolves as `<presets_dir>/<name>.yaml`
-(`presets_dir` in `workspace.yaml`, set with `tm workspace init --presets-dir` or `tm config set
-presets_dir`), while a value containing `/` or ending in `.yaml` is used as a path and needs no
-`presets_dir`. The preset and its include closure are copied into `<ledger>/presets/`; the ledger
-then resolves presets only from that copy.
-`--id-prefix` feeds the default date-code stock strategy (`1226FP01` for prefix `12`, 2026-06-16).
-`--status` replaces the default vocabulary `pending, stored, missing, consumed`.
-
-`presets show` prints the include-resolved preset as YAML.
+- `init PATH` creates the ledger **directory** at PATH (relative to the cwd or absolute): `.dolt/`,
+  `ledger.yaml` and `presets/`. Missing parents are created; an existing empty directory is reused;
+  `ledger.yaml`'s `name:` defaults to the basename (override with `--name`; the path is not identity).
+- `adopt PATH` formats an existing bare Dolt database in place (the 0.4 lab databases): same schema as
+  init, history kept, one `adopt(ledger): NAME` commit and `adopted_from_commit` recorded. It needs an
+  empty schema on the selected branch (no user tables, no views, no `dolt_tests` rows), a clean
+  working set and no `ledger.yaml` (`--force-config` overwrites a stray one); nothing is deleted, and
+  a failed adopt rolls back without removing the directory. See spec §3.1.
+- Both commands take a repeatable `--preset` and refuse a nested target (`Ledgers do not nest`, P5).
+  `tm --dry-run init|adopt …` prints the plan and SQL and writes nothing.
+- `--preset` resolution: a value containing `/` or ending in `.yaml`/`.yml` is a **path** used as-is
+  from the cwd. A bare value resolves through `$TETRAMARK_PRESETS_DIR` when set, otherwise the presets
+  bundled with tetramark (the wheel ships `tetramark/presets/`); a missing source is a usage error.
+  The preset and its `include:` closure are copied into `<ledger>/presets/`, and the ledger opens only
+  that copy afterwards.
+- `status` prints the resolved ledger: path, name, branch, `spec_version`, presets, author, write-lock
+  holder and portability warnings (human block), or the fixed JSON shape with `--json`
+  (`path`, `name`, `branch`, `spec_version`, `presets`, `author`, `lock`, `portability_warnings`).
+  It never lists sibling ledgers; `--format csv` is a usage error. See spec §6.1.
+- `presets list` lists the source a bare name resolves from; `presets show NAME|PATH` prints one
+  include-resolved preset as YAML.
 
 ## Schema
 
@@ -68,7 +82,9 @@ tm schema apply [--allow-destructive]
 - `apply` executes the plan in one transaction and one Dolt commit. Destructive steps are refused
   unless `--allow-destructive` is passed. After apply, `plan` must say `schema is up to date`.
 
-See `skills/tetramark-schema/` for authoring and evolution rules.
+`kinds_dir` and `rules_dir` in `ledger.yaml` are resolved against the ledger directory and must stay
+inside it (P13): an absolute path, a `..` escape or a symlink leaving the ledger is a usage error, so
+the ledger stays copyable. See `skills/tetramark-schema/` for authoring and evolution rules.
 
 ## Entities
 
@@ -91,7 +107,7 @@ tm entity ls [KIND] [--where FIELD=VALUE ...] [--json]
 tm stock add KIND --entity ID|ALIAS \
   [--set FIELD=VALUE ...] \
   [--parent STOCK] [--source-aliquot ALQ] \
-  [--aliquots N] [--box NAME --slot A1 [--slot B2 ...]] \
+  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot B2 ...]] \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
@@ -100,6 +116,7 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 ```
 
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
+- `--status` sets the creation status of the new aliquots (any status of the stock kind's set).
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
@@ -123,18 +140,19 @@ rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session 
 ## Aliquots
 
 ```sh
-tm aliquot add STOCK [--count N] [--box NAME --slot S ...] \
+tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] \
   [--quantity Q --unit U] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] [--json]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT] [--note TEXT] [--json]
-tm aliquot status ALQ STATUS [--note TEXT] [--json]
+tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
 tm aliquot purge ALQ [--json]
 ```
 
 - Alias strings like `STOCK`/`ALQ` mean a full ID (`1226FP01`) or an alias (`p035`).
 - `use` subtracts `AMOUNT` in the aliquot's own unit and sets `consumed` when the quantity reaches
   zero; the event stores the purpose.
-- `status` sets one of the ledger's status vocabulary words.
+- `status` sets one of the stock kind's status vocabulary words; `--force` requires `--note` and is
+  the only way to make an unforced-illegal change.
 - An aliquot's **position follows its status**: a status with `in_stock: true` needs a box (and a slot
   in a slotted box), and any other status clears `box_id`/`slot` in the same write. The status/use
   event keeps the old position in its `from_*` columns, so `history` still shows where the tube was.
@@ -177,12 +195,11 @@ tm history ID|ALIAS|BOX [--json]
 `find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
 location. `history` merges aliquot events and the Dolt commits that touched the object.
 
-Aliases are also visible in the generated views (since ledger format 2): every
-`v_entity_<kind>`, `v_stock_<kind>`, `v_stock_status` and `v_aliquot_location` row has a sorted,
-`;`-separated `alias_list` (NULL when there are none), and `v_box_slots` has `occupant_alias_list`
-for the slot's occupant (the aliquot's aliases for a tube, the box's aliases for a nested box). The
-column is not called `aliases` because some kinds have a domain field with that name (e.g.
-`protein_construct.aliases`).
+Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
+`v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when
+there are none), and `v_box_slots` has `occupant_alias_list` for the slot's occupant (the aliquot's
+aliases for a tube, the box's aliases for a nested box). The column is not called `aliases` because
+some kinds have a domain field with that name (e.g. `protein_construct.aliases`).
 
 Since spec 5 every **existing box** has its own `v_box_<box name>` view (grid pivot with a `row`
 column and one column per column label; `slot | occupants` for a named box; one `occupant` column
@@ -203,7 +220,8 @@ tm check [-v|--verbose] [--group|-g GROUP] [--format|-f table|json|csv] [--json]
 Runs the generated `dolt_tests` and exits `1` when a test with severity `fail` fails. Tests whose
 severity is `info` are reported but never change the exit code. `-v` prints offending rows for each
 failure. `--group` accepts a group (`core`, `rules`, `schema:bacterial_glycerol`) or a prefix
-(`rules:local`).
+(`rules:local`). The `portability:info` rule reports absolute `file://` remote/backup URLs that point
+outside the ledger (P13); it is informational and never fails the command.
 
 ## CSV import / export
 
@@ -230,13 +248,18 @@ tm remote ls
 tm remote rm NAME
 tm remote push [NAME] [--branch BRANCH]
 tm remote pull [NAME] [--branch BRANCH]
-tm backup [DIR]
+tm backup [DIR] [--name NAME]
 tm backup --ls          # same as: tm backup ls
 ```
 
 `remote push`/`pull` default to `origin` (or the only remote) and the current branch. A local URL is
-created by Dolt on push. `backup` uses `<data_dir>/backups/<ledger>` by default and syncs an existing
-destination; `backup --ls` lists configured backups.
+created by Dolt on push.
+
+`backup` has **no default directory** (P10): a backup next to the ledger shares its disk and is lost
+with it. `tm backup DIR` configures a Dolt backup (name: the ledger name, or `--name`) and syncs it;
+a later `tm backup` syncs the ledger-named configured backup, `tm backup --name NAME` another one, and
+`tm backup --ls` lists what is configured. With no DIR and no configured backup the command is a
+usage error and nothing is written.
 
 ## Configuration
 
@@ -245,5 +268,6 @@ tm config get [author]
 tm config set author "Name <email>"
 ```
 
-The effective author is `ledger.yaml` → `workspace.yaml` → Git `user.name`/`user.email`. Setting it
-updates `ledger.yaml`, the meta copy in the DB, and creates one commit.
+The effective author is `ledger.yaml` → Git `user.name`/`user.email` (P6); there is no workspace
+tier. Setting it updates `ledger.yaml`, the meta copy in the DB, and creates one commit. `author` is
+the only configuration key (`tm config get host` / `presets_dir` are usage errors).

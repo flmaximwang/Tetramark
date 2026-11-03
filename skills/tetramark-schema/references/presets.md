@@ -1,9 +1,10 @@
 # Presets, annotated
 
-Three presets live in the repository's `presets/`. `base` is the common floor; `molbio` and
-`library` both `include: [base]`. `tm init --preset NAME` may be repeated (e.g. `-p base -p
-library`) and also accepts a path to a local preset directory or a preset YAML file. Names resolve
-through the workspace's `presets_dir`; `tm init` copies the chosen preset and its include closure
+Three presets live in the repository's `presets/` (and ship with the wheel as
+`tetramark/presets/`). `base` is the common floor; `molbio` and `library` both `include: [base]`.
+`tm init --preset NAME` may be repeated (e.g. `-p base -p library`) and also accepts a path to a
+local preset directory or a preset YAML file. A bare name resolves through `$TETRAMARK_PRESETS_DIR`
+when set, otherwise the bundled copies; `tm init` copies the chosen preset and its include closure
 into `<ledger>/presets/`, which is what the ledger opens from then on.
 
 ```
