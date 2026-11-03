@@ -41,7 +41,9 @@ Public entry points
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -69,6 +71,7 @@ from tetramark.schema.model import (
 __all__ = [
     "PresetCopy",
     "PresetFile",
+    "default_presets_dir",
     "expand_presets",
     "list_presets",
     "load_ledger_config",
@@ -999,6 +1002,22 @@ def _reference_name(raw: str | Path) -> str:
     return path.name
 
 
+def default_presets_dir(*, env: Mapping[str, str] | None = None) -> Path | None:
+    """The directory a bare ``--preset NAME`` resolves from (P8).
+
+    ``$TETRAMARK_PRESETS_DIR`` wins.  Otherwise the ``presets/`` directory of
+    the source checkout is used when present (the presets live outside the
+    Python package); an installed wheel without bundled presets returns
+    ``None`` so the caller can report how to set the variable.
+    """
+    environ = os.environ if env is None else env
+    override = environ.get("TETRAMARK_PRESETS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    bundled = Path(__file__).resolve().parents[3] / "presets"
+    return bundled if bundled.is_dir() else None
+
+
 def resolve_preset_spec(
     spec: str | Path,
     *,
@@ -1009,8 +1028,9 @@ def resolve_preset_spec(
 
     A value containing ``/`` (or ``\\``) or ending in ``.yaml``/``.yml`` is a
     path, resolved against ``base_dir`` (the caller's cwd).  Anything else is a
-    bare name resolved as ``<presets_dir>/<name>.yaml``; without a configured
-    ``presets_dir`` the error names that workspace-config key.
+    bare name resolved as ``<presets_dir>/<name>.yaml``; without a preset
+    directory the error points at ``$TETRAMARK_PRESETS_DIR`` and at passing a
+    path (P8).
     """
     text = str(spec).strip()
     if not text:
@@ -1032,9 +1052,10 @@ def resolve_preset_spec(
 
     if presets_dir is None:
         raise UsageError(
-            f"preset name {text!r} needs 'presets_dir' in workspace.yaml: set it "
-            "to the directory that holds <name>.yaml (for example the Tetramark "
-            "checkout's presets/), or pass --preset as a path instead"
+            f"preset name {text!r} is a bare name but no preset directory is "
+            "configured: set $TETRAMARK_PRESETS_DIR to the directory that holds "
+            "<name>.yaml (for example the Tetramark checkout's presets/), or "
+            "pass --preset as a path instead"
         )
     directory = Path(presets_dir).expanduser()
     if not directory.is_absolute():
@@ -1206,9 +1227,9 @@ def resolve_ledger_presets(
 
     A ledger uses **only** the presets under ``<ledger>/presets/``: the
     recorded ``preset_versions`` must describe exactly the schema the ledger is
-    opened with, so there is no fallback to a workspace ``presets_dir`` or to a
-    path recorded in ``ledger.yaml``.  A missing copy is a hard error naming the
-    expected file.
+    opened with, so there is no fallback to ``$TETRAMARK_PRESETS_DIR``, the
+    bundled presets, or a path recorded in ``ledger.yaml``.  A missing copy is
+    a hard error naming the expected file.
     """
     root = Path(ledger_dir).expanduser()
     presets_dir = root / "presets"

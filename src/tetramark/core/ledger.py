@@ -1,9 +1,11 @@
 """Ledger lifecycle: ``init_ledger``, ``adopt_ledger``, ``open`` and the write session.
 
-A ledger is one Dolt database inside a :class:`~tetramark.driver.workspace.Workspace`
+A ledger is one self-contained directory holding a Dolt database (``.dolt/``)
+and its configuration (``ledger.yaml``); it lives next to its docs or
+repository and every command edits it in place through the embedded driver
 (spec §1.1).  Creating one means:
 
-1. ``mkdir <data_dir>/<name>`` and ``dolt init`` in it;
+1. ``mkdir <ledger_dir>`` and ``dolt init`` in it;
 2. write ``ledger.yaml`` (the human-editable config, copied into the DB);
 3. load the effective schema and execute the generated DDL;
 4. write ``ledger_meta`` (fingerprint, preset versions, the ``ledger.yaml`` text,
@@ -17,11 +19,14 @@ init``, one ``adopt(ledger): <name>`` commit on top of the existing history and
 anything, and a failed adopt rolls its own writes back — it must never remove
 the database directory the way a failed :func:`init_ledger` removes its own.
 
+A ledger's identity is ``ledger.yaml``'s ``name:``, not its path; the directory
+basename is only the Dolt database name (P2).  Resolution (``-l/--ledger PATH``
+or the upward walk) lives in :mod:`tetramark.driver.resolution`.
+
 Opening one loads ``ledger.yaml``, the effective schema, the id strategies and
-the commit author (``ledger.yaml`` → ``workspace.yaml`` → Git config), then
-compares the live fingerprint with the YAML one.  A mismatch is a warning, not
-an error: inspecting the ledger is still useful and ``tm schema plan`` is
-the fix.
+the commit author (``ledger.yaml`` → Git config), then compares the live
+fingerprint with the YAML one.  A mismatch is a warning, not an error:
+inspecting the ledger is still useful and ``tm schema plan`` is the fix.
 
 Every successful write goes through :meth:`Ledger.write`, which groups the
 statements of one command into one SQL transaction and one Dolt commit (spec
@@ -62,12 +67,17 @@ from tetramark.driver.base import (
     render_sql,
 )
 from tetramark.driver.embedded import EmbeddedDriver
-from tetramark.driver.workspace import Workspace
+from tetramark.driver.resolution import (
+    LEDGER_FILE,
+    refuse_nested,
+    resolve_ledger,
+)
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 from tetramark.schema.ddl import Statement, schema_statements
 from tetramark.schema.loader import (
     PresetCopy,
     PresetFile,
+    default_presets_dir,
     expand_presets,
     load_ledger_schema,
     load_schema,
@@ -102,8 +112,8 @@ __all__ = [
     "resolve_author",
 ]
 
-#: Config file inside a ledger directory.
-LEDGER_FILE = "ledger.yaml"
+# ``LEDGER_FILE`` comes from :mod:`tetramark.driver.resolution` and stays in
+# this module's ``__all__``: callers (and the migration scripts) import it here.
 
 #: Keys stored in ``ledger_meta``.  Other tickets (08/09) read and update them.
 META_SPEC_VERSION = "spec_version"
@@ -132,12 +142,6 @@ _AUTHOR_RE = re.compile(r"^\s*(?P<name>[^<>]*?)\s*<(?P<email>[^<>]+)>\s*$")
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
-
-
-def _as_workspace(workspace: Workspace | str | Path) -> Workspace:
-    if isinstance(workspace, Workspace):
-        return workspace
-    return Workspace.load(workspace)
 
 
 def _check_name(name: str) -> str:
@@ -204,15 +208,17 @@ def split_author(author: str | None) -> tuple[str | None, str | None]:
 
 def resolve_author(
     config_author: str | None,
-    workspace_author: str | None,
     *,
     cwd: Path,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """Resolve the commit author: ledger.yaml → workspace.yaml → Git config."""
-    for candidate in (config_author, workspace_author):
-        if candidate and str(candidate).strip():
-            return str(candidate).strip()
+    """Resolve the commit author: ``ledger.yaml`` → Git config (P6).
+
+    The workspace tier is gone in 0.5.0: a ledger carries its own author, and a
+    ledger copied to another machine falls back to that machine's Git identity.
+    """
+    if config_author and str(config_author).strip():
+        return str(config_author).strip()
     return _git_identity(cwd, env)
 
 
@@ -226,8 +232,7 @@ def _dolt_identity(
     if not name or not email:
         raise UsageError(
             "cannot initialise a ledger without an author: pass --author "
-            "\"Name <email>\", set author in workspace.yaml, or configure "
-            "git user.name/user.email"
+            "\"Name <email>\" or configure git user.name/user.email"
         )
     return name, email
 
@@ -249,14 +254,15 @@ def build_id_strategies(config: LedgerConfig) -> dict[str, IdStrategy]:
 
 
 def _preset_sources(
-    presets: Sequence[str | Path], workspace: Workspace
+    presets: Sequence[str | Path], presets_dir: Path | None
 ) -> tuple[list[PresetFile], list[PresetCopy]]:
     """Resolve ``--preset`` values and the files that copy them into the ledger.
 
-    Bare names resolve through the workspace's ``presets_dir``; a path (one
-    containing ``/`` or ending in ``.yaml``/``.yml``) works without it.  The
-    second element is the full include closure, so a ledger's ``presets/`` copy
-    is self-contained.
+    Bare names resolve through ``$TETRAMARK_PRESETS_DIR`` then the bundled
+    ``presets/`` directory (P8); a path (one containing ``/`` or ending in
+    ``.yaml``/``.yml``) works without any preset directory.  The second element
+    is the full include closure, so a ledger's ``presets/`` copy is
+    self-contained.
     """
     sources: list[str] = []
     for raw in presets:
@@ -265,9 +271,7 @@ def _preset_sources(
             raise UsageError("preset names must not be empty")
         sources.append(text)
     top = [
-        resolve_preset_spec(
-            source, presets_dir=workspace.presets_dir_path, base_dir=Path.cwd()
-        )
+        resolve_preset_spec(source, presets_dir=presets_dir, base_dir=Path.cwd())
         for source in sources
     ]
     names: list[str] = []
@@ -457,15 +461,16 @@ def _run_dolt_init(
 class InitPlan:
     """Everything ``init_ledger`` would do, computed without touching disk."""
 
-    workspace: Workspace
-    name: str
     path: Path
+    name: str
     config: LedgerConfig
     schema: EffectiveSchema
     ledger_yaml: str
     statements: list[Statement]
     author: str
     preset_copies: tuple[PresetCopy, ...]
+    #: Environment override for the ``dolt`` subprocesses (tests/embedding only).
+    env: Mapping[str, str] | None
 
     @property
     def sql(self) -> str:
@@ -487,12 +492,13 @@ class AdoptPlan(InitPlan):
 
 
 def _ledger_plan(
-    ws: Workspace,
+    path: str | Path,
     name: str,
     presets: Sequence[str | Path] | str | Path | None,
     *,
     id_prefix: str | None,
     author: str | None,
+    env: Mapping[str, str] | None,
 ) -> InitPlan:
     """Build the configuration, schema and DDL of a new ledger (no disk writes).
 
@@ -500,7 +506,7 @@ def _ledger_plan(
     preset or a missing author fails before a directory is created or (for
     adopt) before the existing database is touched.
     """
-    target = ws.ledger_path(name)
+    target = Path(path).expanduser().resolve()
 
     if presets is None:
         requested: list[str | Path] = []
@@ -512,14 +518,15 @@ def _ledger_plan(
         raise UsageError(
             "a ledger needs at least one preset: pass --preset NAME (or a preset path)"
         )
-    preset_files, preset_copies = _preset_sources(requested, ws)
+    preset_files, preset_copies = _preset_sources(
+        requested, default_presets_dir(env=env)
+    )
     preset_names = [preset.name for preset in preset_files]
 
-    resolved_author = resolve_author(
-        author, ws.config.author, cwd=ws.data_dir, env=ws.env
-    )
+    identity_cwd = target.parent if target.parent.is_dir() else Path.cwd()
+    resolved_author = resolve_author(author, cwd=identity_cwd, env=env)
     identity_name, identity_email = _dolt_identity(
-        resolved_author, cwd=ws.data_dir, env=ws.env
+        resolved_author, cwd=identity_cwd, env=env
     )
     canonical_author = f"{identity_name} <{identity_email}>"
 
@@ -544,50 +551,54 @@ def _ledger_plan(
     schema = load_schema(schema_config, base_dir=target)
 
     return InitPlan(
-        workspace=ws,
-        name=name,
         path=target,
+        name=name,
         config=config,
         schema=schema,
         ledger_yaml=text,
         statements=schema_statements(schema),
         author=canonical_author,
         preset_copies=tuple(preset_copies),
+        env=env,
     )
 
 
 def _prepare_init(
-    workspace: Workspace | str | Path,
-    name: str,
+    path: str | Path,
+    name: str | None,
     presets: Sequence[str | Path] | str | Path | None,
     *,
     id_prefix: str | None,
     author: str | None,
+    env: Mapping[str, str] | None,
 ) -> InitPlan:
-    ws = _as_workspace(workspace)
-    _check_name(name)
+    target = Path(path).expanduser().resolve()
+    ledger = _check_name(name or target.name)
 
-    target = ws.ledger_path(name)
     if target.exists():
-        raise LedgerError(f"ledger {name!r} already exists at {target}")
+        raise LedgerError(f"ledger {ledger!r} already exists at {target}")
+    # P5: a ledger is one self-contained directory; never create one inside one.
+    refuse_nested(target)
 
     return _ledger_plan(
-        ws,
-        name,
+        target,
+        ledger,
         presets,
         id_prefix=id_prefix,
         author=author,
+        env=env,
     )
 
 
 def _prepare_adopt(
-    workspace: Workspace | str | Path,
-    name: str,
+    path: str | Path,
+    name: str | None,
     presets: Sequence[str | Path] | str | Path | None,
     *,
     id_prefix: str | None,
     author: str | None,
     force_config: bool,
+    env: Mapping[str, str] | None,
 ) -> InitPlan:
     """Validation of the adopt target that needs no database connection.
 
@@ -595,34 +606,35 @@ def _prepare_adopt(
     ``ledger.yaml``; the schema and working-set preconditions need SQL and are
     checked by :func:`_check_adoptable`.
     """
-    ws = _as_workspace(workspace)
-    _check_name(name)
+    target = Path(path).expanduser().resolve()
+    ledger = _check_name(name or target.name)
 
-    target = ws.ledger_path(name)
     if not (target / ".dolt").is_dir():
         if target.exists():
             raise LedgerError(
-                f"cannot adopt {name!r}: {target} exists but is not a Dolt "
+                f"cannot adopt {ledger!r}: {target} exists but is not a Dolt "
                 "database (no '.dolt' directory); use 'tm init' to create a "
                 "new ledger"
             )
         raise LedgerError(
-            f"cannot adopt {name!r}: no Dolt database at {target}; create a new "
+            f"cannot adopt {ledger!r}: no Dolt database at {target}; create a new "
             "ledger with 'tm init' instead"
         )
+    refuse_nested(target)
     config_path = target / LEDGER_FILE
     if config_path.is_file() and not force_config:
         raise LedgerError(
-            f"cannot adopt {name!r}: {config_path} already exists; pass "
+            f"cannot adopt {ledger!r}: {config_path} already exists; pass "
             "--force-config to overwrite it"
         )
 
     return _ledger_plan(
-        ws,
-        name,
+        target,
+        ledger,
         presets,
         id_prefix=id_prefix,
         author=author,
+        env=env,
     )
 
 
@@ -664,25 +676,34 @@ def _write_meta(
 
 
 def init_ledger(
-    workspace: Workspace | str | Path,
-    name: str,
+    path: str | Path,
+    name: str | None = None,
     presets: Sequence[str | Path] | str | Path | None = None,
     *,
     id_prefix: str | None = None,
     author: str | None = None,
     dry_run: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> Ledger | InitPlan:
-    """Create a ledger (spec §1.1, §3).
+    """Create one standalone ledger directory (spec §1.1, §3; R2).
+
+    ``path`` is the ledger directory to create (``.dolt/`` and ``ledger.yaml``
+    end up in it).  ``name`` is the ledger's identity in ``ledger.yaml`` and
+    defaults to the directory basename (P2/R2); the basename is also the Dolt
+    database name.  Every enclosing directory is checked first: ledgers do not
+    nest (P5).
 
     Returns the opened :class:`Ledger`; with ``dry_run=True`` returns an
-    :class:`InitPlan` and writes nothing.
+    :class:`InitPlan` and writes nothing.  ``env`` overrides the environment of
+    the ``dolt`` subprocesses (tests/embedding only).
     """
     plan = _prepare_init(
-        workspace,
+        path,
         name,
         presets,
         id_prefix=id_prefix,
         author=author,
+        env=env,
     )
     if dry_run:
         return plan
@@ -692,14 +713,14 @@ def init_ledger(
     try:
         identity_name, identity_email = split_author(plan.author)
         assert identity_name and identity_email  # _dolt_identity checked this
-        _run_dolt_init(target, identity_name, identity_email, plan.workspace.env)
+        _run_dolt_init(target, identity_name, identity_email, plan.env)
 
         # The ledger is self-contained: its presets live in <ledger>/presets/.
         _write_presets(target, plan.preset_copies)
         (target / LEDGER_FILE).write_text(plan.ledger_yaml, encoding="utf-8")
         _verify_preset_copy(target, plan.schema)
 
-        driver = EmbeddedDriver(target, env=plan.workspace.env)
+        driver = EmbeddedDriver(target, env=plan.env)
         with driver.transaction():
             for statement in plan.statements:
                 driver.execute(statement.sql)
@@ -707,15 +728,15 @@ def init_ledger(
             # Generated dolt_tests are derived state (spec §4): install them
             # with the schema so a fresh ledger is immediately checkable.
             install_tests(driver, plan.schema)
-        driver.commit(f"init(ledger): {name}", author=plan.author)
+        driver.commit(f"init(ledger): {plan.name}", author=plan.author)
     except BaseException:
         # A half-initialised ledger is worse than none: never leave one behind.
         shutil.rmtree(target, ignore_errors=True)
         raise
 
     ledger = Ledger(
-        workspace=plan.workspace,
-        name=name,
+        path=plan.path,
+        name=plan.name,
         driver=driver,
         config=plan.config,
         schema=plan.schema,
@@ -847,7 +868,7 @@ def _missing_object_error(error: BaseException) -> bool:
 
 
 def _rollback_adopt(
-    workspace: Workspace,
+    path: Path,
     name: str,
     *,
     branch: str | None,
@@ -857,6 +878,7 @@ def _rollback_adopt(
     previous_config: str | None,
     preset_writes: Sequence[tuple[Path, bytes | None]] = (),
     presets_root: Path | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Best-effort undo of a failed adopt.  Never deletes the database.
 
@@ -870,9 +892,7 @@ def _rollback_adopt(
     failed: list[str] = []
     driver: Driver | None = None
     try:
-        driver = EmbeddedDriver(
-            workspace.ledger_path(name), branch=branch, env=workspace.env
-        )
+        driver = EmbeddedDriver(path, branch=branch, env=env)
     except Exception as error:  # pragma: no cover - only if the database vanished
         failed.append(f"could not reconnect: {error}")
     if driver is not None:
@@ -914,8 +934,8 @@ def _rollback_adopt(
 
 
 def adopt_ledger(
-    workspace: Workspace | str | Path,
-    name: str,
+    path: str | Path,
+    name: str | None = None,
     presets: Sequence[str | Path] | str | Path | None = None,
     *,
     id_prefix: str | None = None,
@@ -923,20 +943,23 @@ def adopt_ledger(
     force_config: bool = False,
     branch: str | None = None,
     dry_run: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> Ledger | AdoptPlan:
-    """Format an existing, empty Dolt database in place (spec A4).
+    """Format an existing, empty Dolt database in place (spec A4; P9).
 
-    This is ``init`` steps 2–5 (``ledger.yaml``, core and kind tables,
-    ``ledger_meta``, generated ``dolt_tests``) applied to a database that
-    already exists, skipping ``mkdir``/``dolt init``.  It commits
+    ``path`` is the existing database directory; ``name`` is the identity
+    written to ``ledger.yaml`` and defaults to the directory basename (the Dolt
+    database name).  This is ``init`` steps 2–5 (``ledger.yaml``, core and kind
+    tables, ``ledger_meta``, generated ``dolt_tests``) applied to a database
+    that already exists, skipping ``mkdir``/``dolt init``.  It commits
     ``adopt(ledger): <name>`` on top of the existing history and records the
     pre-adopt HEAD in ``ledger_meta.adopted_from_commit``.
 
     Preconditions (a refusal writes nothing): the selected branch's working set
     is clean, it has no user tables, no views and no ``dolt_tests`` rows, and
-    the database has no ``ledger.yaml`` unless ``force_config`` is set.
-    ``branch`` selects the branch (default: the checked-out one); a missing
-    branch is an error, never created.
+    the database has no ``ledger.yaml`` unless ``force_config`` is set.  An
+    enclosing ledger directory is refused (P5).  ``branch`` selects the branch
+    (default: the checked-out one); a missing branch is an error, never created.
 
     A failure rolls this attempt's writes back and resets the branch to the
     pre-adopt HEAD; the database directory is never removed (unlike a failed
@@ -948,18 +971,19 @@ def adopt_ledger(
     nothing.
     """
     plan = _prepare_adopt(
-        workspace,
+        path,
         name,
         presets,
         id_prefix=id_prefix,
         author=author,
         force_config=force_config,
+        env=env,
     )
     target = plan.path
 
-    driver = EmbeddedDriver(target, branch=branch, env=plan.workspace.env)
+    driver = EmbeddedDriver(target, branch=branch, env=plan.env)
     try:
-        _check_adoptable(driver, name)
+        _check_adoptable(driver, plan.name)
         selected = branch if branch is not None else _active_branch(driver)
         # Read before any DDL: this is the hash the meta key records, never the
         # hash of the adoption commit.
@@ -971,15 +995,15 @@ def adopt_ledger(
     if dry_run:
         _close_driver(driver)
         return AdoptPlan(
-            workspace=plan.workspace,
-            name=plan.name,
             path=plan.path,
+            name=plan.name,
             config=plan.config,
             schema=plan.schema,
             ledger_yaml=plan.ledger_yaml,
             statements=plan.statements,
             author=plan.author,
             preset_copies=plan.preset_copies,
+            env=plan.env,
             branch=selected,
             adopted_from_commit=pre_head,
         )
@@ -1010,13 +1034,13 @@ def adopt_ledger(
             # Generated dolt_tests are derived state (spec §4): the adopted
             # database is immediately checkable, like a freshly initialised one.
             install_tests(driver, plan.schema)
-        driver.commit(f"adopt(ledger): {name}", author=plan.author)
+        driver.commit(f"adopt(ledger): {plan.name}", author=plan.author)
     except BaseException:
         # Never rmtree here: this is the production database.  Drop what this
         # attempt created and reset the branch to where it was.
         _rollback_adopt(
-            plan.workspace,
-            name,
+            plan.path,
+            plan.name,
             branch=branch,
             pre_head=pre_head,
             statements=plan.statements,
@@ -1024,12 +1048,13 @@ def adopt_ledger(
             previous_config=previous_config,
             preset_writes=preset_writes,
             presets_root=None if presets_root_existed else presets_dir,
+            env=plan.env,
         )
         raise
 
     ledger = Ledger(
-        workspace=plan.workspace,
-        name=name,
+        path=plan.path,
+        name=plan.name,
         driver=driver,
         config=plan.config,
         schema=plan.schema,
@@ -1046,62 +1071,50 @@ def adopt_ledger(
 
 
 def open(
-    workspace: Workspace | str | Path | None = None,
-    ledger: str | None = None,
+    path: str | Path | None = None,
     *,
     branch: str | None = None,
     dry_run: bool = False,
     no_commit: bool = False,
     allow_legacy_statuses: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> Ledger:
-    """Open an existing ledger through the embedded driver (spec §6).
+    """Open an existing standalone ledger through the embedded driver (spec §6).
 
-    ``workspace`` accepts a :class:`Workspace`, a data directory or a
-    ``workspace.yaml`` path; when omitted the workspace is discovered from the
-    current directory (then ``$TETRAMARK_WORKSPACE``).  Every command runs
-    ``dolt sql`` in the ledger directory: Tetramark neither requires nor
-    manages a ``dolt sql-server``.  If the user runs one on that directory
-    anyway, ``dolt sql`` auto-routes through it; that is Dolt's behaviour, not
-    something Tetramark configures.
+    ``path`` is the ledger directory (P15).  When omitted it is resolved from
+    the current directory: the nearest directory holding both ``.dolt/`` and
+    ``ledger.yaml`` (P3), never an environment variable.  The ledger's identity
+    is ``ledger.yaml``'s ``name:`` (P2); the directory basename is only the Dolt
+    database name.
+
+    Every command runs ``dolt sql`` in the ledger directory: Tetramark neither
+    requires nor manages a ``dolt sql-server``.  If the user runs one on that
+    directory anyway, ``dolt sql`` auto-routes through it; that is Dolt's
+    behaviour, not something Tetramark configures.
 
     ``branch`` selects the branch every read, write and commit of this command
     happens on.  It defaults to ``branch:`` in ``ledger.yaml`` and otherwise to
     the branch checked out in the repository.  Selection is session-scoped (a
     Dolt ``db/branch`` revision database), so other sessions and the server
     keep seeing the checked-out branch.  A missing branch is an error; it is
-    never created implicitly.
+    never created implicitly.  ``env`` overrides the environment of the
+    ``dolt`` subprocesses (tests/embedding only).
     """
-    ws = _as_workspace(workspace) if workspace is not None else Workspace.discover()
-    if ws is None:
-        raise UsageError(
-            "no workspace found: pass --workspace PATH or run inside a directory "
-            "containing workspace.yaml"
-        )
-    name = ledger or ws.config.default_ledger
-    if not name:
-        raise UsageError(
-            "no ledger selected: pass --ledger or set default_ledger in workspace.yaml"
-        )
-    _check_name(name)
-
-    path = ws.ledger_path(name)
-    if not (path / LEDGER_FILE).is_file():
-        raise UnreachableError(f"ledger {name!r} not found in {ws.data_dir}")
+    ref = resolve_ledger(path)
+    ledger_path = ref.path
 
     # The configuration is needed to resolve the default branch, so read it
     # before opening a connection.
     config, schema = load_ledger_schema(
-        path, allow_legacy_statuses=allow_legacy_statuses
+        ledger_path, allow_legacy_statuses=allow_legacy_statuses
     )
     selected = branch if branch is not None else (config.branch or None)
-    driver = EmbeddedDriver(path, branch=selected, env=ws.env)
+    driver = EmbeddedDriver(ledger_path, branch=selected, env=env)
     try:
-        author = resolve_author(
-            config.author, ws.config.author, cwd=path, env=ws.env
-        )
+        author = resolve_author(config.author, cwd=ledger_path, env=env)
         result = Ledger(
-            workspace=ws,
-            name=name,
+            path=ledger_path,
+            name=config.name,
             driver=driver,
             config=config,
             schema=schema,
@@ -1130,12 +1143,12 @@ def _close_driver(driver: Driver) -> None:
 
 
 class Ledger:
-    """One opened ledger: driver, config, schema, id strategies and author."""
+    """One opened ledger: directory, driver, config, schema, ids and author."""
 
     def __init__(
         self,
         *,
-        workspace: Workspace,
+        path: Path,
         name: str,
         driver: Driver,
         config: LedgerConfig,
@@ -1145,7 +1158,8 @@ class Ledger:
         dry_run: bool = False,
         no_commit: bool = False,
     ) -> None:
-        self.workspace = workspace
+        #: The ledger directory: ``.dolt/`` plus ``ledger.yaml``.
+        self.path = Path(path)
         self.name = name
         self.driver = driver
         self.config = config
@@ -1172,10 +1186,6 @@ class Ledger:
         self.warnings: list[str] = []
 
     # -- identity ---------------------------------------------------------
-    @property
-    def path(self) -> Path:
-        return self.workspace.ledger_path(self.name)
-
     @property
     def database(self) -> str:
         return self.driver.database
