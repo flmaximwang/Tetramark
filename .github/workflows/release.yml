@@ -1,0 +1,181 @@
+name: release
+
+# Cut a release when a version bump lands on main.
+#
+# The version in pyproject.toml is the trigger: merge a PR that changes it and
+# this workflow puts an annotated tag `v<version>` on the merge commit (the
+# repository convention: tags sit on the merge commit, as v0.5.0 and v0.4.2 do)
+# and publishes a GitHub release for it. Manual tagging is no longer part of the
+# process -- see docs/guides/releasing.md.
+#
+# The workflow is idempotent. Re-running it on an already tagged commit heals a
+# half-finished release: a tag without a release gets its release, a complete
+# release is left alone. Nothing is ever retagged.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - src/tetramark/__init__.py
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to release (default: main)"
+        required: false
+        default: main
+        type: string
+      dry_run:
+        description: "Check only; create no tag and no release"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # Releases are serial: two pushes must never race for the same tag.
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the tree to release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # One report, one source of truth: the three version strings, the tag
+      # state and whether this push actually moved the version. The human
+      # version of the same report is what an agent runs before merging.
+      - name: Check the version sources
+        id: check
+        env:
+          BEFORE: ${{ github.event.before }}
+          REPORT: ${{ runner.temp }}/release-check.json
+        run: |
+          set -uo pipefail
+          args=(--json)
+          if [ "${{ github.event_name }}" = "push" ] \
+             && [ -n "${BEFORE:-}" ] \
+             && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            args+=(--since "$BEFORE")
+          fi
+          # The JSON goes to the runner's temp dir, not the checkout: a stray
+          # file in the tree would make the next report call the tree dirty.
+          python3 scripts/release_check.py "${args[@]}" > "$REPORT" || true
+          python3 scripts/release_check.py || true
+          python3 - "$REPORT" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1]))
+          print(f"ready={'true' if report['ready'] else 'false'}")
+          print(f"version={report['version']}")
+          print(f"tag={report['tag']}")
+          print(f"changed={'false' if report['version_changed'] is False else 'true'}")
+          print(f"tag_exists={'true' if report['tag_exists'] else 'false'}")
+          print(f"notes_path={report['notes_path']}")
+          print(f"notes_present={'true' if report['notes_present'] else 'false'}")
+          print(f"head={report['head']}")
+          PY
+
+      - name: Refuse to tag a tree whose version sources disagree
+        if: steps.check.outputs.ready != 'true'
+        env:
+          REPORT: ${{ runner.temp }}/release-check.json
+        run: |
+          python3 - "$REPORT" <<'PY'
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1]))
+          for problem in report["problems"]:
+              print(f"::error::{problem}")
+          PY
+          echo "Fix the bump before merging: pyproject.toml, src/tetramark/__init__.py" \
+               "and uv.lock must carry the same version." >&2
+          exit 1
+
+      - name: Tag the commit and publish the release
+        if: >-
+          steps.check.outputs.ready == 'true' &&
+          steps.check.outputs.changed == 'true' &&
+          inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.check.outputs.tag }}
+          NOTES: ${{ steps.check.outputs.notes_path }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ -f "$NOTES" ]; then
+            # First heading of the notes file is both the tag subject and the
+            # release title, e.g. "0.5.1 -- full-word subcommands".
+            subject="$(head -n1 "$NOTES" | sed -E 's/^#+[[:space:]]*//; s/[[:space:]]+$//')"
+          else
+            subject="Tetramark $TAG"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::tag $TAG already exists; not touching it"
+          else
+            git tag -a "$TAG" -m "$subject"
+            if ! git push origin "refs/tags/$TAG"; then
+              echo "::error::could not push $TAG. On a 403 the token is read-only:"
+              echo "::error::Settings -> Actions -> General -> Workflow permissions -> Read and write."
+              exit 1
+            fi
+            echo "::notice::tagged $(git rev-parse --short HEAD) as $TAG"
+          fi
+
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "::notice::release $TAG already exists; nothing to publish"
+            exit 0
+          fi
+          if [ -f "$NOTES" ]; then
+            gh release create "$TAG" --title "$subject" --notes-file "$NOTES"
+          else
+            echo "::warning::no $NOTES; falling back to GitHub generated notes"
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+
+      - name: Verify the tag is on the remote
+        if: >-
+          steps.check.outputs.ready == 'true' &&
+          steps.check.outputs.tag_exists != 'true' &&
+          inputs.dry_run != true
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
+          echo "::notice::$TAG is published"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Release ${{ steps.check.outputs.tag }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| version | \`${{ steps.check.outputs.version }}\` |"
+            echo "| version moved | ${{ steps.check.outputs.changed }} |"
+            echo "| tag already existed | ${{ steps.check.outputs.tag_exists }} |"
+            echo "| notes file | \`${{ steps.check.outputs.notes_path }}\` (${{ steps.check.outputs.notes_present }}) |"
+            echo "| commit | \`${{ steps.check.outputs.head }}\` |"
+            echo "| tag created | ${{ steps.check.outputs.tag_exists == 'true' && 'no (already present)' || 'yes' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
