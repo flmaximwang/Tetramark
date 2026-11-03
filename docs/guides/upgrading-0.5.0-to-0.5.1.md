@@ -20,11 +20,16 @@ Only the spelling of the commands you type changes.
 
 ## It is a hard break
 
-No compatibility aliases are shipped. Every spelling in the left column above is now rejected with
-a usage error and exit 2 — the short subcommands are unknown commands, and `tm backup --ls` is an
-unknown option. A script, shell alias, cron entry, Makefile or CI step that still uses one of them
-fails at its next run; so does muscle memory at the prompt. There is no deprecation period — 0.5.1
-has exactly one spelling per command.
+No compatibility aliases are shipped. The seven short subcommands above — `tm entity ls`,
+`tm stock ls`, `tm box ls`, `tm branch ls`, `tm remote ls`, `tm alias rm` and `tm remote rm` — are
+unknown commands, and `tm backup --ls` is an unknown option; all eight exit 2. A script, shell
+alias, cron entry, Makefile or CI step that still uses one of them fails at its next run; so does
+muscle memory at the prompt. There is no deprecation period — 0.5.1 has exactly one spelling per
+command.
+
+`tm backup ls` is the one row above that does **not** exit 2: `tm backup` takes a positional
+directory, so a bare `ls` is now read as a directory name and would sync a backup into `./ls`.
+Write `tm backup list` to list the configured backups.
 
 **Subcommand names are full words.** `ls` and `rm` are not abbreviations of anything: a listing
 subcommand is `list`, a removal subcommand is `remove`, and a new subcommand is named with its full

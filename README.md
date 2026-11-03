@@ -159,7 +159,8 @@ The full note, including what to do with each 0.4 layout, is
 [`docs/guides/upgrading-0.4-to-0.5.md`](docs/guides/upgrading-0.4-to-0.5.md).
 
 0.5.1 is CLI-only as well: subcommands are spelled out in full (`list`/`remove`, not
-`ls`/`rm`) and the old spellings exit 2, while ledgers and data stay as they are — see
+`ls`/`rm`), the old short subcommands are unknown commands that exit 2, and ledgers and data
+stay as they are — see
 [`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md).
 
 ## Command overview
