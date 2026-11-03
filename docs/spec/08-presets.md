@@ -1,10 +1,12 @@
 # 8. Presets
 
-Presets are YAML schema documents, not package data. They live in the repository's `presets/`
-directory; the wheel ships no `*.yaml` files. A **preset** is a single YAML file containing kinds,
-mixins and rules; a preset given by path may also be a directory containing `preset.yaml` plus
-optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the name, `version:` an integer, `include:`
-a list of bare preset names (path includes cannot be copied into a self-contained ledger, see below).
+Presets are YAML schema documents shipped with Tetramark and also kept in the repository's `presets/`
+directory. The wheel packages that directory as data (<site-packages>/tetramark/presets, P8), so a
+bare `--preset NAME` works from an installed tool with no checkout and no configuration. A **preset**
+is a single YAML file containing kinds, mixins and rules; a preset given by path may also be a
+directory containing `preset.yaml` plus optional `kinds/*.yaml` and `rules/*.yaml`. `preset:` is the
+name, `version:` an integer, `include:` a list of bare preset names (path includes cannot be copied
+into a self-contained ledger, see below).
 
 A **part** is a preset meant to be included: it owns a coherent slice of the model (`base`,
 `nucleic_acids`, `bacteria`, `proteins`, `cell_culture`, …) and includes only the parts it
@@ -14,35 +16,38 @@ loaded once each, so listing `molbio` and `cellbio` in one ledger loads the shar
 names remain one global namespace. A part never includes a bundle. `presets/README.md` has the
 part/bundle table, the include graph and the rule for adding a part.
 
-- **Selecting.** `tm init NAME --preset ...` is repeatable. A value containing `/` (or `\`) or
-  ending in `.yaml`/`.yml` is a **path**, used as-is from the caller's cwd. Anything else is a bare
-  **name**, resolved as `<presets_dir>/<name>.yaml`; `presets_dir` is a `workspace.yaml` key,
-  resolved relative to that file. Without a configured `presets_dir`, a bare name is a usage error
-  that names the key. A path works with no `presets_dir`. A preset's own name (its `preset:` field,
-  else its file stem/directory name) must match `[A-Za-z][A-Za-z0-9._-]*`: it is the filename of
-  the ledger's copy, so a path-like name is rejected.
-- **Copying.** `tm init` copies the selected preset **and its `include:` closure** into the ledger:
-  `<ledger>/presets/<name>.yaml` for a YAML preset, `<ledger>/presets/<name>/` (with `preset.yaml`,
-  `kinds/` and `rules/`) for a directory preset. The copies are byte-identical to the sources.
-  Every `include:` must be a bare preset name that matches the included preset's own `preset:`
-  field; a path include or a mismatching name is rejected before anything is written, because the
-  flattened copy could not resolve it. `include:` entries inside a copy then resolve against the
-  copy directory, so the closure is copied too and the ledger is self-contained. After writing the
-  copy, `tm init` reloads the ledger from its own `presets/` and fails (rolling the ledger back)
-  unless that copy reproduces exactly the planned schema.
+- **Selecting.** `tm init PATH --preset ...` (and `tm adopt PATH --preset ...`) is repeatable. A
+  value containing `/` (or `\`) or ending in `.yaml`/`.yml` is a **path**, used as-is from the
+  caller's cwd; it needs no preset directory. Anything else is a bare **name**, resolved in this
+  order (P8): (1) `$TETRAMARK_PRESETS_DIR` when set — used verbatim, so a wrong value fails loudly
+  instead of silently falling back; (2) the presets bundled with tetramark (the checkout's
+  `presets/`, or `<site-packages>/tetramark/presets` in an installed wheel). When neither exists the
+  command is a usage error naming `$TETRAMARK_PRESETS_DIR` and the expected path. The 0.4
+  `presets_dir` workspace setting is gone; a bare name needs no configuration. A preset's own name
+  (its `preset:` field, else its file stem/directory name) must match `[A-Za-z][A-Za-z0-9._-]*`: it
+  is the filename of the ledger's copy, so a path-like name is rejected.
+- **Copying.** `tm init` (and `tm adopt`) copies the selected preset **and its `include:` closure**
+  into the ledger: `<ledger>/presets/<name>.yaml` for a YAML preset, `<ledger>/presets/<name>/`
+  (with `preset.yaml`, `kinds/` and `rules/`) for a directory preset. The copies are byte-identical
+  to the sources. Every `include:` must be a bare preset name that matches the included preset's own
+  `preset:` field; a path include or a mismatching name is rejected before anything is written,
+  because the flattened copy could not resolve it. `include:` entries inside a copy then resolve
+  against the copy directory, so the closure is copied too and the ledger is self-contained. After
+  writing the copy, `tm init`/`tm adopt` reload the ledger from its own `presets/` and fail (rolling
+  the ledger back) unless that copy reproduces exactly the planned schema.
 - **Resolution.** A ledger opens presets **only** from `<ledger>/presets/`. `ledger.yaml` lists bare
   names (`presets: [molbio]`) and `ledger_meta.preset_versions` is written exactly as before. If a
   copy is missing — including an `include:` target such as `base` — opening fails with the
   expected file path and says that `migration/` or a manual copy fixes it; there is
-  no fallback to `presets_dir`, because a silent fallback would let the
-  ledger drift from its recorded `preset_versions`. Changing a source preset after init therefore
-  does **not** change an existing ledger — replacing its `<ledger>/presets/` files is an explicit
-  schema change. The copies live on disk next to `ledger.yaml` and are **not** stored in Dolt, so
-  cloning a ledger elsewhere (or restoring a database without its directory) must copy
+  no fallback to `$TETRAMARK_PRESETS_DIR` or the bundled presets, because a silent fallback would
+  let the ledger drift from its recorded `preset_versions`. Changing a source preset after init
+  therefore does **not** change an existing ledger — replacing its `<ledger>/presets/` files is an
+  explicit schema change. The copies live on disk next to `ledger.yaml` and are **not** stored in
+  Dolt, so cloning a ledger elsewhere (or restoring a database without its directory) must copy
   `<ledger>/presets/` along with `ledger.yaml`.
-- **Inspecting.** `tm presets list` lists the workspace's `presets_dir`; `tm presets show NAME|PATH`
-  prints one include-resolved preset; `tm config get|set presets_dir` reads or writes the workspace
-  setting.
+- **Inspecting.** `tm presets list` lists the presets a bare name resolves from
+  (`$TETRAMARK_PRESETS_DIR` or the bundled copies); `tm presets show NAME|PATH` prints one
+  include-resolved preset. `tm config` exposes only `author`; there is no `presets_dir` setting.
 
 Preset catalogue:
 

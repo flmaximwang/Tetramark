@@ -1,14 +1,14 @@
-"""``tm init`` and ``tm presets`` commands (spec §6)."""
+"""``tm init``, ``tm adopt`` and ``tm presets`` commands (spec §6)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import typer
 import yaml
 
 from tetramark.cli.options import GlobalOptions, group
-from tetramark.cli.workspace import resolve_workspace
 from tetramark.core.ledger import (
     META_ADOPTED_FROM_COMMIT,
     AdoptPlan,
@@ -20,92 +20,72 @@ from tetramark.core.ledger import (
 from tetramark.errors import UsageError
 from tetramark.schema.loader import (
     YAML_SUFFIXES,
+    default_presets_dir,
     list_presets,
     load_preset,
     resolve_preset_spec,
 )
 from tetramark.schema.model import EffectiveSchema, Kind, ObjectType, Preset, Rule
 
-presets_app = group("List and inspect the presets available to this workspace.")
+presets_app = group("List and inspect the presets available for 'tm init --preset'.")
+
+#: Help of the ``--preset`` option, shared by ``init`` and ``adopt``.
+_PRESET_HELP = (
+    "Preset name (resolved through $TETRAMARK_PRESETS_DIR, then the presets "
+    "bundled with tetramark) or a path to a preset YAML file or directory; "
+    "repeat to combine presets (e.g. -p base -p molbio). The preset and its "
+    "includes are copied into the ledger, so it reopens without access to the "
+    "source."
+)
+
+
+def _target_path(path: Path) -> Path:
+    """The absolute ledger directory a positional PATH names (relative to cwd)."""
+    target = path.expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    return target.resolve()
+
+
+def _require_preset(preset: list[str]) -> None:
+    if not preset:
+        raise UsageError("at least one --preset is required (e.g. --preset base)")
 
 
 def init_command(
     ctx: typer.Context,
-    name: str = typer.Argument(
+    path: Path = typer.Argument(
         ...,
+        metavar="PATH",
         help=(
-            "Ledger (Dolt database) name: letters, digits, '_', '-' and '.' "
-            "(no '/', '..' or trailing '.')."
+            "Ledger directory to create, relative to the current directory or "
+            "absolute; '.dolt/' and 'ledger.yaml' end up in it. Its 'name:' in "
+            "ledger.yaml defaults to the directory basename."
         ),
     ),
-    preset: list[str] = typer.Option(
-        [],
-        "--preset",
-        "-p",
+    preset: list[str] = typer.Option([], "--preset", "-p", help=_PRESET_HELP),
+    name: str | None = typer.Option(
+        None,
+        "--name",
         help=(
-            "Preset name (from the workspace's 'presets_dir') or a path to a "
-            "preset YAML file or directory; repeat to combine presets "
-            "(e.g. -p base -p molbio). The preset and its includes are copied "
-            "into the ledger, so it reopens without access to the source."
+            "Ledger identity written to ledger.yaml (default: the directory "
+            "basename). The path is not identity; rename or copy freely."
         ),
     ),
     id_prefix: str | None = typer.Option(
         None, "--id-prefix", help="Prefix for date-code stock ids (e.g. 12)."
     ),
     author: str | None = typer.Option(
-        None, "--author", help='"Name <email>" for commits (default: workspace/git).'
-    ),
-    adopt: bool = typer.Option(
-        False,
-        "--adopt",
-        help=(
-            "Format a Dolt database that already exists in the workspace instead "
-            "of creating one: same schema as init, existing history kept. The "
-            "database must be empty (no tables, views or dolt_tests rows), have "
-            "a clean working set and no ledger.yaml (or pass --force-config)."
-        ),
-    ),
-    force_config: bool = typer.Option(
-        False,
-        "--force-config",
-        help="With --adopt: overwrite an existing ledger.yaml; nothing is deleted.",
+        None, "--author", help='"Name <email>" for commits (default: git config).'
     ),
 ) -> None:
-    """Create a ledger in the workspace, or format an existing one with --adopt."""
+    """Create one standalone ledger directory (a Dolt database + ledger.yaml)."""
     options: GlobalOptions = ctx.obj
-    workspace = resolve_workspace(ctx)
-    if not preset:
-        raise UsageError("at least one --preset is required (e.g. --preset base)")
-    if force_config and not adopt:
-        raise UsageError("--force-config only applies to --adopt")
-
-    if adopt:
-        adopted = adopt_ledger(
-            workspace,
-            name,
-            preset,
-            id_prefix=id_prefix,
-            author=author,
-            force_config=force_config,
-            branch=options.branch,
-            dry_run=options.dry_run,
-        )
-        if isinstance(adopted, AdoptPlan):
-            typer.echo(
-                f"Would adopt ledger {adopted.name} at {adopted.path} "
-                f"(branch {adopted.branch}, HEAD {adopted.adopted_from_commit})"
-            )
-            typer.echo(f"  presets : {', '.join(adopted.config.presets)}")
-            typer.echo(f"  schema  : {_describe_schema(adopted.schema)}")
-            typer.echo("  history : kept; nothing is deleted")
-            typer.echo("")
-            typer.echo(adopted.sql)
-            return
-        _print_adopted(adopted)
-        return
+    target = _target_path(path)
+    _require_preset(preset)
 
     result = init_ledger(
-        workspace,
+        target,
         name,
         preset,
         id_prefix=id_prefix,
@@ -121,6 +101,71 @@ def init_command(
         return
 
     _print_created(result)
+
+
+def adopt_command(
+    ctx: typer.Context,
+    path: Path = typer.Argument(
+        ...,
+        metavar="PATH",
+        help=(
+            "Existing bare Dolt database directory to format in place: it holds "
+            "'.dolt/' and no 'ledger.yaml' (the 0.4 lab databases). Its history "
+            "is kept; its 'name:' in ledger.yaml defaults to the basename."
+        ),
+    ),
+    preset: list[str] = typer.Option([], "--preset", "-p", help=_PRESET_HELP),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help=(
+            "Ledger identity written to ledger.yaml (default: the directory "
+            "basename). The path is not identity; rename or copy freely."
+        ),
+    ),
+    id_prefix: str | None = typer.Option(
+        None, "--id-prefix", help="Prefix for date-code stock ids (e.g. 12)."
+    ),
+    author: str | None = typer.Option(
+        None, "--author", help='"Name <email>" for commits (default: git config).'
+    ),
+    force_config: bool = typer.Option(
+        False,
+        "--force-config",
+        help=(
+            "Overwrite an existing ledger.yaml left on an otherwise empty "
+            "database; nothing is deleted. The database must be empty and have "
+            "a clean working set."
+        ),
+    ),
+) -> None:
+    """Format an existing bare Dolt database as a ledger, in place (P9)."""
+    options: GlobalOptions = ctx.obj
+    target = _target_path(path)
+    _require_preset(preset)
+
+    adopted = adopt_ledger(
+        target,
+        name,
+        preset,
+        id_prefix=id_prefix,
+        author=author,
+        force_config=force_config,
+        branch=options.branch,
+        dry_run=options.dry_run,
+    )
+    if isinstance(adopted, AdoptPlan):
+        typer.echo(
+            f"Would adopt ledger {adopted.name} at {adopted.path} "
+            f"(branch {adopted.branch}, HEAD {adopted.adopted_from_commit})"
+        )
+        typer.echo(f"  presets : {', '.join(adopted.config.presets)}")
+        typer.echo(f"  schema  : {_describe_schema(adopted.schema)}")
+        typer.echo("  history : kept; nothing is deleted")
+        typer.echo("")
+        typer.echo(adopted.sql)
+        return
+    _print_adopted(adopted)
 
 
 def _print_adopted(ledger: Ledger) -> None:
@@ -159,23 +204,23 @@ def _describe_schema(schema: EffectiveSchema) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _presets_dir(workspace: Any) -> Any:
-    """The workspace's ``presets_dir``, or a usage error naming the key."""
-    directory = workspace.presets_dir_path
+def _presets_dir() -> Path:
+    """The directory bare preset names resolve from (P8)."""
+    directory = default_presets_dir()
     if directory is None:
         raise UsageError(
-            "workspace.yaml has no 'presets_dir': set it to the directory holding "
-            "<name>.yaml presets (for example the Tetramark checkout's presets/), "
-            "or pass a preset path instead"
+            "no preset directory: the presets bundled with tetramark were not "
+            "found (broken installation?) and $TETRAMARK_PRESETS_DIR is unset. "
+            "Set it to the directory holding <name>.yaml presets (for example "
+            "the Tetramark checkout's presets/), or pass a preset path instead"
         )
     return directory
 
 
 @presets_app.command("list")
 def presets_list(ctx: typer.Context) -> None:
-    """List the presets in the workspace's ``presets_dir``."""
-    workspace = resolve_workspace(ctx)
-    directory = _presets_dir(workspace)
+    """List the presets available to ``tm init --preset NAME``."""
+    directory = _presets_dir()
     names = list_presets(directory)
     if not names:
         typer.echo(f"no presets in {directory}")
@@ -189,7 +234,7 @@ def presets_show(
     ctx: typer.Context,
     name: str = typer.Argument(
         ...,
-        help="Preset name (from the workspace's presets_dir) or a path to a preset.",
+        help="Preset name (resolved like 'tm init --preset') or a path to a preset.",
     ),
 ) -> None:
     """Print one preset (include-resolved) as YAML."""
@@ -197,7 +242,7 @@ def presets_show(
     path_like = "/" in text or "\\" in text or text.endswith(YAML_SUFFIXES)
     presets_dir = None
     if not path_like:
-        presets_dir = _presets_dir(resolve_workspace(ctx))
+        presets_dir = _presets_dir()
     preset_file = resolve_preset_spec(name, presets_dir=presets_dir)
     preset = load_preset(str(preset_file.path))
     typer.echo(

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tetramark"
-version = "0.4.2"
+version = "0.5.0"
 description = "A general-purpose, version-controlled inventory ledger on Dolt"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,6 @@ dependencies = [
     "typer>=0.12",
     "pyyaml>=6.0",
     "pydantic>=2.0",
-    "pymysql>=1.1",
     "rich>=13.0",
 ]
 
@@ -29,11 +28,24 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/tetramark"]
 
+# P8: presets are repository data, not Python modules.  Ship the checkout's
+# presets/ inside the installed package (<site-packages>/tetramark/presets) so a
+# bare `--preset NAME` resolves from a wheel without $TETRAMARK_PRESETS_DIR.
+[tool.hatch.build.targets.wheel.force-include]
+"presets" = "tetramark/presets"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/tetramark",
+    "presets",
+    "README.md",
+    "pyproject.toml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -n auto --dist loadfile"
 markers = [
-    "server: starts a real dolt sql-server on a random free port (slow; skip with -m 'not server')",
     "embedded: test deliberately runs against the embedded driver (no dolt sql-server)",
     "fast: Dolt-free unit test (no database, no dolt binary). Fast lane: `uv run pytest -q -m fast` (seconds); never put it on an integration test.",
 ]

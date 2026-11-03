@@ -2,9 +2,8 @@
 
 Every test uses a **real** Dolt database (no mocks): the spec/1-to-2 and
 presets/molbio/1-to-2 steps, the rename-map hook and the runner's
-target-schema / post-commit-file hooks are exercised end to end, either
-embedded or through a worker's ``dolt sql-server`` (the driver the ticket-24
-migration will use).
+target-schema / post-commit-file hooks are exercised end to end through the
+embedded driver (``dolt sql`` in the ledger directory).
 
 The spec-1 fixture is built from the current tool (init, then downgrade the
 generated views to their pre-``861faae`` shape and stamp ``spec_version=1``
@@ -37,7 +36,6 @@ from typer.testing import CliRunner
 from tetramark import __version__
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, build_id_strategies, open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.migrate import (
     SPEC4_ONLY_TESTS,
@@ -59,7 +57,7 @@ from tetramark.schema.loader import load_ledger_schema, load_schema
 
 import tetramark.schema.model as model
 
-from conftest import PRESETS, REPO_PRESETS, free_port, isolated_env
+from conftest import PRESETS, REPO_PRESETS, isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
@@ -87,12 +85,8 @@ def base_v2_schema():
 
 
 def base_args(ledger: Ledger) -> list[str]:
-    return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
-        "--ledger",
-        ledger.name,
-    ]
+    """CLI arguments selecting a standalone ledger (P3/P15: a path, no workspace)."""
+    return ["--ledger", str(ledger.path)]
 
 
 # ---------------------------------------------------------------------------
@@ -100,25 +94,10 @@ def base_args(ledger: Ledger) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(
-    params=[
-        pytest.param("embedded", id="embedded"),
-        pytest.param("server", id="server", marks=pytest.mark.server),
-    ]
-)
-def ledger_factory(request):
-    """Both driver backends: the step must be driver-agnostic."""
-    if request.param == "server":
-        return request.getfixturevalue("server_ledger_factory")
-    return request.getfixturevalue("embedded_ledger_factory")
-
-
 @pytest.fixture
 def script_env(dolt_env: dict[str, str]) -> dict[str, str]:
     """The environment a ``migration/…/migrate.py`` subprocess runs with."""
-    env = {**os.environ, **dolt_env}
-    env.pop("TETRAMARK_WORKSPACE", None)
-    return env
+    return {**os.environ, **dolt_env}
 
 
 # ---------------------------------------------------------------------------
@@ -428,12 +407,11 @@ def test_spec_1_to_2_dry_run_prints_sql_and_writes_nothing(
     assert "alias_list" not in column_names(ledger, "v_entity_item")
 
 
-@pytest.mark.server
 def test_failed_step_prints_last_good_commit_and_restore_command(
-    server_ledger_factory, script_env: dict[str, str], tmp_path: Path
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     """Verify contract 5: DDL is not transactional, no commit, report printed."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     head_before = head(ledger)
     commits_before = commit_count(ledger)
@@ -465,12 +443,11 @@ def test_failed_step_prints_last_good_commit_and_restore_command(
     assert "t21_partial" in table_names(ledger)
 
 
-@pytest.mark.server
 def test_preset_step_bumps_preset_versions_counter(
-    server_ledger_factory, script_env: dict[str, str], tmp_path: Path
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
 ) -> None:
     """The helper's preset branch (ticket 22 will use it): counter + message."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     ledger.driver.execute(
         "UPDATE `ledger_meta` SET `value` = '{\"base\": 1}' "
         "WHERE `key` = 'preset_versions'"
@@ -504,12 +481,11 @@ def test_preset_step_bumps_preset_versions_counter(
     assert "preset_versions[base] 2, expected 1" in again.stdout + again.stderr
 
 
-@pytest.mark.server
 def test_migration_can_run_on_a_branch(
-    server_ledger_factory, script_env: dict[str, str]
+    ledger_factory, script_env: dict[str, str]
 ) -> None:
     """``--branch``: the commit lands on the branch, the checkout stays put."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("upgrade",))
     main_head = head(ledger)
@@ -530,7 +506,7 @@ def test_migration_can_run_on_a_branch(
     ledger.read_meta()
     assert ledger.meta["spec_version"] == "1"
 
-    branch = open_ledger(ledger.workspace, ledger.name, branch="upgrade")
+    branch = open_ledger(ledger.path, branch="upgrade")
     try:
         branch.read_meta()
         assert branch.meta["spec_version"] == "2"
@@ -542,18 +518,17 @@ def test_migration_can_run_on_a_branch(
         branch.close()
 
 
-@pytest.mark.server
 def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
-    server_ledger_factory,
+    ledger_factory,
 ) -> None:
     """The documented fact: no spec guard, a fingerprint warning, writes allowed."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     spec1_head = head(ledger)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        reopened = open_ledger(ledger.workspace, ledger.name)
+        reopened = open_ledger(ledger.path)
     try:
         messages = [str(item.message) for item in caught]
         assert any("fingerprint does not match" in text for text in messages), messages
@@ -732,17 +707,16 @@ def renamed_from_kinds() -> dict[str, Any]:
     return kinds
 
 
-@pytest.mark.server
 def test_rename_map_renames_kind_tables_and_kind_values_without_data_loss(
-    server_ledger_factory, tmp_path: Path
+    ledger_factory, tmp_path: Path
 ) -> None:
     """Verify bullet 2: map-driven rename == ``renamed_from``, rows preserved."""
     preset_map = tmp_path / "preset_map"
     preset_rf = tmp_path / "preset_renamed_from"
     write_preset(preset_map, OLD_PRESET["kinds"], version=1)
     write_preset(preset_rf, OLD_PRESET["kinds"], version=1)
-    ledger_map = server_ledger_factory([preset_map], name="rename-map")
-    ledger_rf = server_ledger_factory([preset_rf], name="rename-renamed-from")
+    ledger_map = ledger_factory([preset_map], name="rename-map")
+    ledger_rf = ledger_factory([preset_rf], name="rename-renamed-from")
     for ledger in (ledger_map, ledger_rf):
         seed_rename_data(ledger)
 
@@ -860,21 +834,36 @@ def test_load_renames_reads_the_step_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.server
-def test_open_target_rejects_a_workspace_directory(
-    server_ledger_factory,
+def test_open_target_rejects_a_workspace_directory(tmp_path: Path) -> None:
+    """A 0.4 workspace directory is not a ledger: the path is opened directly."""
+    workspace = tmp_path / "Dolt"
+    workspace.mkdir()
+    (workspace / "workspace.yaml").write_text("name: Dolt\n", encoding="utf-8")
+    with pytest.raises(UsageError, match="not a Tetramark ledger"):
+        open_target(workspace)
+
+
+def test_open_target_ignores_a_parent_workspace_yaml(
+    ledger_factory,
 ) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
-    with pytest.raises(UsageError):
-        open_target(ledger.workspace.data_dir)
+    """No parent/``workspace.yaml`` guessing: the ledger path is enough (P7)."""
+    ledger = ledger_factory([PRESETS / "base"])
+    (ledger.path.parent / "workspace.yaml").write_text(
+        "name: Dolt\n", encoding="utf-8"
+    )
+    reopened = open_target(ledger.path)
+    try:
+        assert reopened.path == ledger.path
+        assert reopened.name == ledger.name
+    finally:
+        reopened.close()
 
 
-@pytest.mark.server
 def test_run_refuses_a_dirty_working_set(
-    server_ledger_factory, script_env: dict[str, str]
+    ledger_factory, script_env: dict[str, str]
 ) -> None:
     """A migration commit must be the only change in its commit."""
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     head_before = head(ledger)
     ledger.driver.execute("CREATE TABLE t21_dirty (i INT)")
@@ -892,11 +881,10 @@ def test_run_refuses_a_dirty_working_set(
         ledger.driver.execute("DROP TABLE `t21_dirty`")
 
 
-@pytest.mark.server
 def test_counter_reads_spec_and_preset_counters(
-    server_ledger_factory,
+    ledger_factory,
 ) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+    ledger = ledger_factory([PRESETS / "base"])
     spec_step = MigrationStep(
         kind="spec", from_version=1, plan=lambda opened: ["SELECT 1"]
     )
@@ -950,8 +938,10 @@ def copy_molbio_v1(destination: Path) -> Path:
     return destination
 
 
-def open_copied_molbio_v1(workspace, name: str = "molbio-v1") -> Ledger:
-    """Open a copied fixture, tolerating its documented legacy shape.
+def open_copied_molbio_v1(
+    path: Path, *, env: dict[str, str] | None = None
+) -> Ledger:
+    """Open a copied fixture directory, tolerating its documented legacy shape.
 
     A genuine v1 ledger records the fingerprint the spec-2 tool computed and
     still carries the spec-4-removed ``statuses:`` key in ``ledger.yaml``; the
@@ -962,7 +952,7 @@ def open_copied_molbio_v1(workspace, name: str = "molbio-v1") -> Ledger:
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        ledger = open_ledger(workspace, name, allow_legacy_statuses=True)
+        ledger = open_ledger(path, allow_legacy_statuses=True, env=env)
     assert ledger.warnings, "a genuine v1 ledger must warn about its stale fingerprint"
     assert any("fingerprint does not match" in text for text in ledger.warnings)
     return ledger
@@ -973,62 +963,13 @@ def molbio_v1_ledger(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> Iterator[Ledger]:
     """A fresh copy of the checked-in molbio-1 fixture (embedded driver)."""
-    workspace = Workspace.create(
-        tmp_path / "workspace", presets_dir=str(REPO_PRESETS), env=dolt_env
-    )
-    copy_molbio_v1(workspace.data_dir / "molbio-v1")
-    ledger = open_copied_molbio_v1(workspace)
+    ledger_path = tmp_path / "molbio-v1"
+    copy_molbio_v1(ledger_path)
+    ledger = open_copied_molbio_v1(ledger_path, env=dolt_env)
     try:
         yield ledger
     finally:
         ledger.close()
-
-
-@pytest.fixture
-def _molbio_v1_on_server(
-    tmp_path: Path, dolt_binary: str
-) -> Iterator[Ledger]:
-    """The same fixture served by its own fresh ``dolt sql-server``.
-
-    A running server does not notice a database directory copied into its data
-    dir afterwards, so the fixture is copied in **before** the server starts.
-    The worker's session-scoped server cannot be reused for that without
-    stopping and restarting it mid-suite.
-    """
-    base = tmp_path / "server-workspace"
-    data_dir = base / "data"
-    copy_molbio_v1(data_dir / "molbio-v1")
-    workspace = Workspace.create(
-        data_dir,
-        port=free_port(),
-        presets_dir=str(REPO_PRESETS),
-        env=isolated_env(base / "dolt-root", base / "home"),
-    )
-    try:
-        workspace.start(daemon=True)
-    except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
-        pytest.skip(f"dolt sql-server unavailable ({workspace.data_dir}): {error}")
-    try:
-        ledger = open_copied_molbio_v1(workspace)
-        try:
-            yield ledger
-        finally:
-            ledger.close()
-    finally:
-        workspace.stop()
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("embedded", id="embedded"),
-        pytest.param("server", id="server", marks=pytest.mark.server),
-    ]
-)
-def molbio_v1_ledger_any_driver(request) -> Ledger:
-    """Both driver backends: the step must be driver-agnostic."""
-    if request.param == "server":
-        return request.getfixturevalue("_molbio_v1_on_server")
-    return request.getfixturevalue("molbio_v1_ledger")
 
 
 #: Every old molbio kind, a bacterial stock with two agreeing aliquots (S1), a
@@ -1097,10 +1038,10 @@ def seed_molbio_v1(ledger: Ledger) -> None:
 
 
 def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
-    molbio_v1_ledger_any_driver, script_env: dict[str, str]
+    molbio_v1_ledger, script_env: dict[str, str]
 ) -> None:
     """Verify bullet 2, both drivers: renames, data move, metadata, files, check."""
-    ledger = molbio_v1_ledger_any_driver
+    ledger = molbio_v1_ledger
     seed_molbio_v1(ledger)
     preset_copy = ledger.path / "presets" / "molbio.yaml"
     preset_before = preset_copy.read_bytes()
@@ -1151,7 +1092,7 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
     # The ledger is still spec 3 (its ledger.yaml keeps statuses: until
     # migration/spec/3-to-4), so reopen it through the migration path.
     reopened = open_ledger(
-        ledger.workspace, ledger.name, allow_legacy_statuses=True
+        ledger.path, allow_legacy_statuses=True
     )
     try:
         # The vendored v2 copy reopens without a fingerprint warning.
@@ -1381,7 +1322,7 @@ def test_molbio_1_to_2_refuses_a_directory_preset_copy(
     (copies / "molbio.yaml").unlink()
     (copies / "molbio").mkdir()
     (copies / "molbio" / "preset.yaml").write_bytes(document)
-    reopenable = open_copied_molbio_v1(ledger.workspace, ledger.name)
+    reopenable = open_copied_molbio_v1(ledger.path)
     reopenable.close()
 
     head_before = head(ledger)
@@ -1511,7 +1452,7 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
     assert widgets_copy.read_bytes() == widgets_before
 
     reopened = open_ledger(
-        ledger.workspace, ledger.name, allow_legacy_statuses=True
+        ledger.path, allow_legacy_statuses=True
     )
     try:
         assert "widget" in reopened.schema.kinds
@@ -2582,7 +2523,7 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
     assert "committed" in applied.stdout
     assert "migrate(ledger): molbio 2 -> 3" in applied.stdout
 
-    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
         assert reopened.warnings == []
         assert reopened.check_fingerprint(warn=False) is True
@@ -2683,7 +2624,7 @@ def test_base_2_to_3_adds_the_incubator_kind(
     assert applied.returncode == 0, applied.stdout + applied.stderr
     assert "migrate(ledger): base 2 -> 3" in applied.stdout
 
-    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
         # Only base's counter is bumped: molbio's own step records molbio/parts.
         assert json.loads(reopened.meta["preset_versions"]) == {
@@ -2720,7 +2661,7 @@ def test_base_2_to_3_adds_the_incubator_kind(
         MOLBIO_2_TO_3, "--ledger", str(ledger.path), env=script_env
     )
     assert molbio_after.returncode == 0, molbio_after.stdout + molbio_after.stderr
-    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
         assert json.loads(reopened.meta["preset_versions"]) == {
             **MOLBIO_V3_VERSIONS,
@@ -2762,7 +2703,7 @@ def test_spec_3_to_4_then_molbio_2_to_3_is_the_zsqlab10_path(
         assert result.returncode == 0, result.stdout + result.stderr
         assert message in result.stdout, result.stdout
 
-    reopened = open_ledger(ledger.workspace, ledger.name)
+    reopened = open_ledger(ledger.path)
     try:
         assert reopened.meta["spec_version"] == "5"
         expected_versions = {
@@ -2932,7 +2873,7 @@ def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
     assert "committed" in applied.stdout
     assert "migrate(ledger): cell_culture 1 -> 2" in applied.stdout
 
-    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
         assert reopened.warnings == []
         assert reopened.check_fingerprint(warn=False) is True
@@ -3085,7 +3026,7 @@ def test_molbio_v3_ledger_upgrades_to_cellbio_era(
         assert result.returncode == 0, result.stdout + result.stderr
         assert message in result.stdout
 
-    reopened = open_ledger(ledger.workspace, ledger.name, allow_legacy_statuses=True)
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
         assert json.loads(reopened.meta["preset_versions"]) == {
             "bacteria": 1,
@@ -3165,15 +3106,11 @@ def open_spec4_fixture(
     current loader warns about the stale fingerprint; migration steps are the
     supported reader of that shape, so the helper opens it the same way.
     """
-    workspace = Workspace.create(
-        tmp_path / f"ws-{name}",
-        presets_dir=str(REPO_PRESETS),
-        env=dolt_env,
-    )
-    copy_spec4_fixture(workspace.data_dir / "spec4-boxes")
+    ledger_path = tmp_path / name
+    copy_spec4_fixture(ledger_path)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        ledger = open_ledger(workspace, "spec4-boxes")
+        ledger = open_ledger(ledger_path, env=dolt_env)
     assert ledger.warnings, "a spec-4 ledger must warn about its stale fingerprint"
     assert any("fingerprint does not match" in text for text in ledger.warnings)
     return ledger
@@ -3673,18 +3610,13 @@ def open_spec5_fixture(
     The base 3 -> 4 step requires spec 5 and a ledger whose own base copy is
     still v3 (``grid96``); that is exactly the state ``spec/4-to-5`` leaves.
     """
-    workspace = Workspace.create(
-        tmp_path / f"ws-{name}",
-        presets_dir=str(REPO_PRESETS),
-        env=dolt_env,
-    )
-    ledger_path = workspace.data_dir / "spec4-boxes"
+    ledger_path = tmp_path / name
     copy_spec4_fixture(ledger_path)
     applied = run_python(SPEC_4_TO_5, "--ledger", str(ledger_path), env=script_env)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        ledger = open_ledger(workspace, "spec4-boxes")
+        ledger = open_ledger(ledger_path, env=dolt_env)
     return ledger
 
 

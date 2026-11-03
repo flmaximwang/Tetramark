@@ -5,13 +5,22 @@
 positional argument as the subcommand, so the first argument is interpreted
 here (``ls`` lists instead of syncing; a real directory called ``ls`` can
 always be passed as ``./ls``).
+
+``DIR`` is optional only when the ledger already has a configured backup: a
+standalone ledger gets no default destination next to it, because that backup
+would sit on the same disk and be lost with the ledger (epic P10).
 """
 
 from __future__ import annotations
 
 import typer
 
-from tetramark.cli.options import GlobalOptions, group, resolve_ledger
+from tetramark.cli.options import (
+    GlobalOptions,
+    group,
+    resolve_ledger,
+    write_command,
+)
 from tetramark.errors import UsageError
 from tetramark.ops import remote as remotes
 
@@ -26,6 +35,7 @@ def _echo_result(result: remotes.Result) -> None:
 
 
 @remote_app.command("add")
+@write_command
 def remote_add(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Remote name (e.g. origin)."),
@@ -50,6 +60,7 @@ def remote_ls(ctx: typer.Context) -> None:
 
 
 @remote_app.command("push")
+@write_command
 def remote_push(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
@@ -73,6 +84,7 @@ def remote_push(
 
 
 @remote_app.command("pull")
+@write_command
 def remote_pull(
     ctx: typer.Context,
     name: str | None = typer.Argument(None, help="Remote name (default: the only/origin remote)."),
@@ -96,6 +108,7 @@ def remote_pull(
 
 
 @remote_app.command("rm")
+@write_command
 def remote_rm(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Remote to remove."),
@@ -115,11 +128,21 @@ def backup_command(
     list_only: bool = typer.Option(
         False, "--ls", help="List configured backups instead of syncing."
     ),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help=(
+            "Backup name (default: the ledger name). Without DIR, selects the "
+            "configured backup to sync."
+        ),
+    ),
 ) -> None:
     """Back up the ledger to a Dolt backup directory.
 
-    The default is ``<data_dir>/backups/<ledger>``; use ``tm backup ls`` to
-    see the backups already configured for this ledger.
+    DIR is required unless this ledger already has a configured backup: then
+    that backup is synced.  There is no default directory, because a backup
+    next to the ledger shares its disk and is lost with it.  Use
+    ``tm backup ls`` to see the backups already configured for this ledger.
     """
     options: GlobalOptions = ctx.obj
     if list_only or (path is not None and path.strip().lower() == "ls"):
@@ -136,4 +159,13 @@ def backup_command(
         raise UsageError("a backup directory must not be empty")
     ledger = resolve_ledger(ctx)
     directory: str | None = path
-    _echo_result(remotes.backup(ledger, directory, dry_run=options.dry_run))
+    # ``tm backup`` reads the ledger and writes a copy: one writer per ledger
+    # (P11), but only for the sync -- ``tm backup ls`` above is a read and the
+    # dry run writes nothing.
+    if options.dry_run:
+        _echo_result(remotes.backup(ledger, directory, name=name, dry_run=True))
+    else:
+        with ledger.hold_write_lock(command="tm backup"):
+            _echo_result(
+                remotes.backup(ledger, directory, name=name, dry_run=False)
+            )

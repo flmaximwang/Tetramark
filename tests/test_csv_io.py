@@ -26,11 +26,6 @@ BASE = PRESETS / "base"
 FULL = PRESETS / "full"
 
 
-@pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -164,10 +159,8 @@ def make_source(ledger):
 
 def cli_args(ledger) -> list[str]:
     return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
 
 
@@ -175,7 +168,6 @@ def cli_args(ledger) -> list[str]:
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 # ---------------------------------------------------------------------------

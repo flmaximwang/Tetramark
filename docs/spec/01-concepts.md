@@ -20,23 +20,58 @@ Rules:
   never both. Box nesting must be acyclic.
 - "Removing" a tube means status → `consumed` (soft). Hard delete only via explicit `--purge`.
 
-### 1.1 Workspace and ledger
+### 1.1 Ledger
 
-- **Workspace** = one Dolt `data_dir` served by one `dolt sql-server`. Config: `workspace.yaml` in the
-  data_dir (host, port, default ledger, author).
-- **Ledger** = one Dolt database = one direct subdirectory of the data_dir. Its config `ledger.yaml`
-  lives inside the ledger directory and is also stored in the DB (`ledger_meta`) so the DB is self-describing.
-  A ledger can be created fresh (`tm init`) or formatted in place from an existing empty database
-  (`tm init --adopt`, §3.1), which keeps that database's history.
+- **Ledger** = one self-contained directory. It holds the Dolt database (`.dolt/`), the
+  human-editable configuration `ledger.yaml`, the preset copies `presets/` created at init, and —
+  when the ledger declares them — its local `kinds/` and `rules/`. It lives next to the docs or
+  repository it describes; the directory moves, copies and backs up as one unit. There is no
+  workspace or Dolt data directory around it.
+- **Identity is `ledger.yaml`'s `name:`** (P2), not the path and not the directory basename. Copy or
+  rename the directory freely; the basename is only the Dolt database name the embedded driver uses
+  internally.
+- **Resolution** (P3): `tm -l/--ledger PATH` selects a ledger directory explicitly; otherwise the
+  CLI walks up from the current directory to the nearest directory that holds both `.dolt/` and
+  `ledger.yaml`. There is no environment variable, no registry and no default outside the ledger.
+- **Creating a ledger**: `tm init PATH` creates one standalone ledger (Dolt database,
+  `ledger.yaml`, preset copies). `tm adopt PATH` formats an existing bare Dolt database in place
+  and keeps its history (P9, §3.1). Ledgers never nest: both commands refuse a PATH inside an
+  existing ledger (P5).
+- **Python API** (P15): `tetramark.open(path=None, branch=None)` opens, or discovers, a ledger;
+  `Ledger.path` is the directory and `Ledger.name` is the `ledger.yaml` identity.
+- **0.4 migration guard** (P4): `workspace.yaml` is not a ledger marker. If resolution meets one
+  before any ledger it exits 2, names the old workspace and tells you to `cd` into the ledger
+  directory (or pass `-l PATH`). Nothing is converted: `ledger.yaml` already carries the author and
+  every other setting a ledger needs.
 
 ```yaml
-# <data_dir>/<ledger>/ledger.yaml
+# <ledger>/ledger.yaml
 name: lab101
 presets: [base, molbio]          # bare names; tm init copies them into <ledger>/presets/
-kinds_dir: kinds/                # optional local kinds (YAML), same format as presets
+kinds_dir: kinds/                # optional local kinds (YAML), relative to <ledger>
 author: "Your Name <you@example.com>"   # fallback: git config user.name/email
 ids:
   stock: {strategy: datecode, prefix: "12"}   # → 1226JT01
   entity: {strategy: uuid}
-rules_dir: rules/                # optional custom validation rules (YAML)
+rules_dir: rules/                # optional custom validation rules (YAML), relative to <ledger>
 ```
+
+Several ledgers can live next to each other (one project each, or a lab with a dozen projects);
+nothing couples them — no shared `workspace.yaml`, no server, no registry. A command is always
+about exactly one ledger directory, selected by `-l/--ledger PATH` or the upward walk.
+
+### 1.2 Sharing and portability
+
+A ledger is one self-contained directory, so **sharing a ledger means copying that directory** —
+`cp -a`, `rsync`, `dolt clone` or `dolt backup` — exactly like a git repository. Two machines writing
+one ledger over a network share is **not supported**: the embedded driver reads and writes through
+separate `dolt sql` processes, so a shared directory has no single writer.
+
+Two rules keep a copied ledger working:
+
+- `kinds_dir` and `rules_dir` must be **relative paths inside the ledger directory**. An absolute
+  path, a `..` escape or a symlink that leaves the ledger is refused with a usage error when the
+  ledger is opened.
+- A Dolt remote or backup stored as an absolute `file://` URL keeps pointing at the machine it was
+  configured on. `tm check` reports such URLs as an **informational** rule — it never fails the
+  command — so a moved ledger says what to re-configure. `tm status` lists the same findings.

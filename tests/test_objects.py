@@ -21,11 +21,6 @@ FULL = PRESETS / "full"
 BASE = PRESETS / "base"
 
 
-@pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1001,7 +996,7 @@ def test_dry_run_collects_sql_and_leaves_status_clean(ledger_factory) -> None:
 
 def test_no_commit_executes_without_a_commit(ledger_factory) -> None:
     ledger = make_ledger(ledger_factory)
-    opened = open_ledger(ledger.workspace, ledger.name, no_commit=True)
+    opened = open_ledger(ledger.path, no_commit=True)
     try:
         before = commit_count(opened)
         opened.entities.add("item", name="uncommitted")

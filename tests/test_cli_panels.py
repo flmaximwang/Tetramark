@@ -33,7 +33,7 @@ pytestmark = pytest.mark.fast
 #: The root help, as the epic defines it: panel name -> its commands, in the
 #: order they are shown.
 EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
-    "Setup": ("workspace", "server", "presets", "init", "schema", "config"),
+    "Setup": ("presets", "init", "adopt", "schema", "config", "status"),
     "Inventory": ("entity", "stock", "aliquot", "box"),
     "Lookup": ("find", "alias", "history", "lineage"),
     "Data": ("import", "export", "check"),
@@ -42,8 +42,6 @@ EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
 
 #: The subcommands of every root command group, in the order they are shown.
 EXPECTED_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
-    "workspace": ("init",),
-    "server": ("start", "status", "stop"),
     "presets": ("list", "show"),
     "schema": ("show", "plan", "apply"),
     "config": ("get", "set"),
@@ -154,13 +152,28 @@ def test_the_commands_inside_each_panel_are_in_the_expected_order(
 
 
 def test_the_root_has_exactly_the_expected_groups(root: TyperGroup) -> None:
-    """The root has exactly the twelve command groups of the epic."""
+    """The root has exactly the ten command groups of the 0.5.0 tree."""
     groups = [
         name
         for name in _root_names(root)
         if getattr(_root_command(root, name), "commands", None)
     ]
     assert sorted(groups) == sorted(EXPECTED_SUBCOMMANDS)
+
+
+def test_the_root_has_no_workspace_or_server_commands(root: TyperGroup) -> None:
+    """0.5.0 removed ``tm workspace`` (P3) and the server group (P14)."""
+    names = set(_root_names(root))
+    assert "workspace" not in names
+    assert "server" not in names
+
+
+def test_the_rendered_help_has_no_workspace_content() -> None:
+    """The root help never mentions the removed workspace layer."""
+    result = CliRunner().invoke(app, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert "workspace" not in result.output.lower()
+    assert "─ Server " not in result.output
 
 
 @pytest.mark.parametrize("group_name", sorted(EXPECTED_SUBCOMMANDS))

@@ -17,16 +17,10 @@ BASE = PRESETS / "base"
 
 
 @pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
-@pytest.fixture
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     """Run the CLI with the same isolated Dolt/Git environment as the ledger."""
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 def commit_count(ledger) -> int:
@@ -39,10 +33,8 @@ def dirty(ledger) -> list[dict[str, object]]:
 
 def base_args(ledger) -> list[str]:
     return [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        ledger.name,
+        str(ledger.path),
     ]
 
 
@@ -338,7 +330,7 @@ def test_cli_global_branch_selects_the_session_branch(
     # the session branch only.
     assert ledger.entities.ls() == []
     assert commit_count(ledger) == before
-    branch = open_ledger(ledger.workspace, ledger.name, branch="feature")
+    branch = open_ledger(ledger.path, branch="feature")
     try:
         assert [row["name"] for row in branch.entities.ls()] == ["branch-item"]
         assert ledger.driver.query("SELECT active_branch() AS `b`") == [
@@ -416,7 +408,7 @@ def test_cli_branch_ls_create_and_delete_roundtrip(
 
     # An unmerged branch is refused by Dolt, then deletable once merged.
     assert invoke(ledger, "branch", "create", "unmerged").exit_code == 0
-    branch = open_ledger(ledger.workspace, ledger.name, branch="unmerged")
+    branch = open_ledger(ledger.path, branch="unmerged")
     try:
         branch.entities.add("item", name="unmerged-row")
     finally:

@@ -56,19 +56,13 @@ TUBE_SET = {
 
 
 @pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-
-
-@pytest.fixture
 def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
     for key, value in dolt_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
 
 
 def base_args(ledger) -> list[str]:
-    return ["--workspace", str(ledger.workspace.data_dir), "--ledger", ledger.name]
+    return ["--ledger", str(ledger.path)]
 
 
 def invoke(ledger, *args: str):

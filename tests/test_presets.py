@@ -20,7 +20,6 @@ from typer.testing import CliRunner
 from tetramark.cli.app import app
 
 from tetramark.core.ledger import init_ledger, open as open_ledger
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import slot_rows
 from tetramark.schema.loader import (
@@ -753,10 +752,8 @@ def test_molbio_v3_fresh_init_has_every_kind_table_and_part_version(
     checked = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            ledger.name,
+            str(ledger.path),
             "check",
         ],
     )
@@ -921,15 +918,14 @@ def test_library_add_book_copy_and_aliquot_in_a_box(ledger_factory) -> None:
     )[0]
     assert book["title"] == "The C Programming Language"
     assert book["isbn"] == "978-0-13-110362-7"
-
-
 # ---------------------------------------------------------------------------
-# Ticket 20: presets are copied into the ledger, which resolves only its copy
+# Ticket 20/P8: presets are copied into the ledger, which resolves only its copy
 # ---------------------------------------------------------------------------
 
 
-def make_workspace(tmp_path: Path, dolt_env: dict[str, str], **overrides: object):
-    return Workspace.create(tmp_path / "data", env=dolt_env, **overrides)
+def preset_env(dolt_env: dict[str, str], directory: Path) -> dict[str, str]:
+    """The isolated env with bare preset names resolving from ``directory`` (P8)."""
+    return {**dolt_env, "TETRAMARK_PRESETS_DIR": str(directory)}
 
 
 def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
@@ -938,9 +934,15 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
     """``tm init --preset molbio`` copies the bundle + every part, byte for byte."""
     source = tmp_path / "presets-src"
     shutil.copytree(REPO_PRESETS, source)
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
+    ledger_path = tmp_path / "data" / "copied"
 
-    ledger = init_ledger(workspace, "copied", ["molbio"], author=FACTORY_AUTHOR)
+    ledger = init_ledger(
+        ledger_path,
+        None,
+        ["molbio"],
+        author=FACTORY_AUTHOR,
+        env=preset_env(dolt_env, source),
+    )
     copies = ledger.path / "presets"
     for name in MOLBIO_VERSIONS:
         assert (copies / f"{name}.yaml").read_bytes() == (
@@ -955,7 +957,7 @@ def test_init_name_copies_the_closure_byte_identical_and_reopens_without_source(
 
     # The ledger is self-contained: deleting the source directory changes nothing.
     shutil.rmtree(source)
-    reopened = open_ledger(workspace, "copied")
+    reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
         assert {"plasmid", "oligo", "item"} <= set(reopened.schema.kinds)
@@ -976,10 +978,14 @@ def test_molbio_and_cellbio_share_parts_once(
     """
     source = tmp_path / "presets-src"
     shutil.copytree(REPO_PRESETS, source)
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
+    ledger_path = tmp_path / "data" / "shared"
 
     ledger = init_ledger(
-        workspace, "shared", ["molbio", "cellbio"], author=FACTORY_AUTHOR
+        ledger_path,
+        None,
+        ["molbio", "cellbio"],
+        author=FACTORY_AUTHOR,
+        env=preset_env(dolt_env, source),
     )
     try:
         # The shared parts appear once: the kind set is the union, not a
@@ -1008,7 +1014,7 @@ def test_molbio_and_cellbio_share_parts_once(
     finally:
         ledger.close()
 
-    reopened = open_ledger(workspace, "shared")
+    reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
         assert set(reopened.schema.kinds) == (
@@ -1021,7 +1027,7 @@ def test_molbio_and_cellbio_share_parts_once(
 def test_init_path_needs_no_presets_dir_and_copies_its_includes(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    """A custom preset path works without ``presets_dir``; its includes are copied."""
+    """A custom preset path works without a preset directory; includes are copied."""
     custom_dir = tmp_path / "custom"
     custom_dir.mkdir()
     shutil.copyfile(REPO_PRESETS / "base.yaml", custom_dir / "base.yaml")
@@ -1038,10 +1044,14 @@ kinds:
 """,
         encoding="utf-8",
     )
-    workspace = make_workspace(tmp_path, dolt_env)
+    ledger_path = tmp_path / "data" / "customled"
 
     ledger = init_ledger(
-        workspace, "customled", [custom_dir / "custom.yaml"], author=FACTORY_AUTHOR
+        ledger_path,
+        None,
+        [custom_dir / "custom.yaml"],
+        author=FACTORY_AUTHOR,
+        env=dolt_env,
     )
     try:
         copies = ledger.path / "presets"
@@ -1060,7 +1070,7 @@ kinds:
         ledger.close()
 
     shutil.rmtree(custom_dir)
-    reopened = open_ledger(workspace, "customled")
+    reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
         assert reopened.schema.preset_versions == {"base": 4, "custom": 1}
@@ -1071,8 +1081,14 @@ kinds:
 def test_init_copies_a_directory_preset_with_its_kinds_and_rules(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    ledger = init_ledger(workspace, "dirled", [PRESETS / "extras"], author=FACTORY_AUTHOR)
+    ledger_path = tmp_path / "data" / "dirled"
+    ledger = init_ledger(
+        ledger_path,
+        None,
+        [PRESETS / "extras"],
+        author=FACTORY_AUTHOR,
+        env=dolt_env,
+    )
     try:
         copies = ledger.path / "presets"
         assert (copies / "extras" / "preset.yaml").read_bytes() == (
@@ -1089,7 +1105,7 @@ def test_init_copies_a_directory_preset_with_its_kinds_and_rules(
     finally:
         ledger.close()
 
-    reopened = open_ledger(workspace, "dirled")
+    reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
         assert {"local_entity", "extra_box"} <= set(reopened.schema.kinds)
@@ -1100,18 +1116,20 @@ def test_init_copies_a_directory_preset_with_its_kinds_and_rules(
 def test_open_names_the_expected_file_when_the_ledger_copy_is_missing(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
-    ledger = init_ledger(workspace, "deleted", ["molbio"], author=FACTORY_AUTHOR)
+    ledger_path = tmp_path / "data" / "deleted"
+    ledger = init_ledger(
+        ledger_path, None, ["molbio"], author=FACTORY_AUTHOR, env=dolt_env
+    )
     ledger.close()
 
     (ledger.path / "presets" / "molbio.yaml").unlink()
     with pytest.raises(SchemaError) as caught:
-        open_ledger(workspace, "deleted")
+        open_ledger(ledger_path, env=dolt_env)
     message = str(caught.value)
     assert "presets/molbio.yaml" in message
     assert "migration/" in message
     assert "manual copy" in message
-    # The workspace's presets_dir is not a fallback.
+    # The env dir / bundled presets are not a fallback.
     assert "never from a search path" in message
 
 
@@ -1120,8 +1138,14 @@ def test_changing_the_source_preset_after_init_does_not_change_the_ledger(
 ) -> None:
     source = tmp_path / "presets-src"
     shutil.copytree(REPO_PRESETS, source)
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(source))
-    ledger = init_ledger(workspace, "frozen", ["molbio"], author=FACTORY_AUTHOR)
+    ledger_path = tmp_path / "data" / "frozen"
+    ledger = init_ledger(
+        ledger_path,
+        None,
+        ["molbio"],
+        author=FACTORY_AUTHOR,
+        env=preset_env(dolt_env, source),
+    )
     fingerprint = ledger.fingerprint
     ledger.close()
 
@@ -1131,7 +1155,7 @@ def test_changing_the_source_preset_after_init_does_not_change_the_ledger(
     document["kinds"]["late_entity"] = {"object": "entity"}
     part.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
-    reopened = open_ledger(workspace, "frozen")
+    reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert "late_entity" not in reopened.schema.kinds
         assert reopened.fingerprint == fingerprint
@@ -1140,22 +1164,31 @@ def test_changing_the_source_preset_after_init_does_not_change_the_ledger(
         reopened.close()
 
 
-def test_init_name_without_presets_dir_is_a_usage_error_naming_the_key(
-    tmp_path: Path, dolt_env: dict[str, str]
+def test_init_bare_name_without_any_preset_directory_is_a_usage_error(
+    tmp_path: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    with pytest.raises(UsageError, match="presets_dir"):
-        init_ledger(workspace, "nokey", ["molbio"], author=FACTORY_AUTHOR)
-    assert not workspace.ledger_path("nokey").exists()
+    """P8: no env dir and no bundled presets is one clear usage error."""
+    monkeypatch.setattr(
+        "tetramark.core.ledger.default_presets_dir",
+        lambda *, env=None: None,
+    )
+    target = tmp_path / "data" / "nokey"
+    with pytest.raises(UsageError, match="TETRAMARK_PRESETS_DIR"):
+        init_ledger(target, None, ["molbio"], author=FACTORY_AUTHOR, env=dolt_env)
+    assert not target.exists()
 
 
 def test_init_path_must_exist(tmp_path: Path, dolt_env: dict[str, str]) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    target = tmp_path / "data" / "nofile"
     with pytest.raises((SchemaError, LedgerError), match="not found"):
         init_ledger(
-            workspace, "nofile", [tmp_path / "missing.yaml"], author=FACTORY_AUTHOR
+            target,
+            None,
+            [tmp_path / "missing.yaml"],
+            author=FACTORY_AUTHOR,
+            env=dolt_env,
         )
-    assert not workspace.ledger_path("nofile").exists()
+    assert not target.exists()
 
 
 def test_preset_helpers_resolve_names_and_paths(tmp_path: Path) -> None:
@@ -1209,8 +1242,8 @@ def test_init_rejects_an_invalid_preset_name_and_writes_nothing_outside(
     tmp_path: Path, dolt_env: dict[str, str], evil_name: str
 ) -> None:
     """F1: a path-like ``preset:`` must not escape ``<ledger>/presets/``."""
-    workspace = make_workspace(tmp_path, dolt_env)
-    victim = workspace.ledger_path("lab1") / "presets"
+    data = tmp_path / "data"
+    victim = data / "lab1" / "presets"
     victim.mkdir(parents=True)
     (victim / "molbio.yaml").write_bytes(b"victim preset\n")
     evil = write_preset(
@@ -1219,9 +1252,11 @@ def test_init_rejects_an_invalid_preset_name_and_writes_nothing_outside(
     )
 
     with pytest.raises(UsageError, match="invalid preset name"):
-        init_ledger(workspace, "labC", [evil], author=FACTORY_AUTHOR)
+        init_ledger(
+            data / "labC", None, [evil], author=FACTORY_AUTHOR, env=dolt_env
+        )
 
-    assert not workspace.ledger_path("labC").exists()
+    assert not (data / "labC").exists()
     # Nothing outside the failed ledger was written or overwritten.
     assert (victim / "molbio.yaml").read_bytes() == b"victim preset\n"
     assert sorted(item.name for item in victim.iterdir()) == ["molbio.yaml"]
@@ -1256,16 +1291,18 @@ def test_init_rejects_an_include_given_by_path(
             "kinds": {"widget": {"object": "entity"}},
         },
     )
-    workspace = make_workspace(tmp_path, dolt_env)
+    target = tmp_path / "data" / "pathinclude"
 
     with pytest.raises(SchemaError, match="is a path") as caught:
-        init_ledger(workspace, "pathinclude", [preset], author=FACTORY_AUTHOR)
+        init_ledger(
+            target, None, [preset], author=FACTORY_AUTHOR, env=dolt_env
+        )
 
     message = str(caught.value)
     assert "bare preset names" in message
     assert "own 'preset:' field" in message
     assert caught.value.path == "include"
-    assert not workspace.ledger_path("pathinclude").exists()
+    assert not target.exists()
 
 
 def test_init_rejects_an_include_name_not_matching_the_preset_name(
@@ -1284,40 +1321,46 @@ def test_init_rejects_an_include_name_not_matching_the_preset_name(
             "kinds": {"widget": {"object": "entity"}},
         },
     )
-    workspace = make_workspace(tmp_path, dolt_env)
+    target = tmp_path / "data" / "nameinclude"
 
     with pytest.raises(SchemaError, match="own name is 'base'") as caught:
-        init_ledger(workspace, "nameinclude", [preset], author=FACTORY_AUTHOR)
+        init_ledger(
+            target, None, [preset], author=FACTORY_AUTHOR, env=dolt_env
+        )
 
     assert "bare preset names" in str(caught.value)
-    assert not workspace.ledger_path("nameinclude").exists()
+    assert not target.exists()
 
 
 def test_init_verifies_the_copy_reloads_and_rolls_back_when_it_cannot(
     tmp_path: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """F2: init reloads the ledger from its own copy before doing any DB work."""
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
+    target = tmp_path / "data" / "unverifiable"
 
     def boom(path: object) -> None:
         raise SchemaError("injected copy verification failure")
 
     monkeypatch.setattr("tetramark.core.ledger.load_ledger_schema", boom)
     with pytest.raises(LedgerError, match="do not reopen from the ledger itself") as caught:
-        init_ledger(workspace, "unverifiable", ["molbio"], author=FACTORY_AUTHOR)
+        init_ledger(
+            target, None, ["molbio"], author=FACTORY_AUTHOR, env=dolt_env
+        )
 
     assert "injected copy verification failure" in str(caught.value)
     assert "self-contained" in str(caught.value)
     # The failed init left nothing behind (no half-initialised ledger).
-    assert not workspace.ledger_path("unverifiable").exists()
+    assert not target.exists()
 
 
 def test_a_missing_include_copy_keeps_the_documented_hint(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
     """F7: deleting ``presets/base.yaml`` still points at migration/ + manual copy."""
-    workspace = make_workspace(tmp_path, dolt_env, presets_dir=str(REPO_PRESETS))
-    ledger = init_ledger(workspace, "falling_apart", ["molbio"], author=FACTORY_AUTHOR)
+    ledger_path = tmp_path / "data" / "falling_apart"
+    ledger = init_ledger(
+        ledger_path, None, ["molbio"], author=FACTORY_AUTHOR, env=dolt_env
+    )
     fingerprint = ledger.fingerprint
     ledger.close()
 
@@ -1327,7 +1370,7 @@ def test_a_missing_include_copy_keeps_the_documented_hint(
 
     (ledger.path / "presets" / "base.yaml").unlink()
     with pytest.raises(SchemaError) as caught:
-        open_ledger(workspace, "falling_apart")
+        open_ledger(ledger_path, env=dolt_env)
     message = str(caught.value)
     assert "presets/base.yaml" in message
     assert "migration/" in message

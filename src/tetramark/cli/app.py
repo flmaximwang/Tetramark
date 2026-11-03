@@ -2,12 +2,13 @@
 
 Command groups are registered here as their tickets land; the core objects
 (entity/stock/aliquot/box) live in sibling modules and only depend on
-:class:`GlobalOptions` for the resolved workspace and ledger.
+:class:`GlobalOptions` for the resolved ledger path and its options.
 
 The root help is grouped into five Rich panels -- Setup, Inventory, Lookup,
-Data and Versioning -- that follow the order of a real session: set the
-workspace up, work with the objects in it, look things up, move data in and
-out, then version it.
+Data and Versioning -- that follow the order of a real session: set the ledger
+up, work with the objects in it, look things up, move data in and out, then
+version it.  A ledger is one self-contained directory, so there is no
+workspace layer and no server group.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from tetramark.cli.csv_io import export_command, import_command
 from tetramark.cli.entity import entity_app
 from tetramark.cli.find import find_command
 from tetramark.cli.history import history_command
-from tetramark.cli.ledger import init_command, presets_app
+from tetramark.cli.ledger import adopt_command, init_command, presets_app
 from tetramark.cli.lineage import lineage_command
 from tetramark.cli.options import (
     HELP_CONTEXT_SETTINGS,
@@ -38,8 +39,8 @@ from tetramark.cli.options import (
 )
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
+from tetramark.cli.status import status_command
 from tetramark.cli.stock import stock_app
-from tetramark.cli.workspace import server_app, workspace_app
 from tetramark.errors import EXIT_OK, LedgerError
 
 #: Names of the Rich help panels of the root command tree.  They are defined
@@ -64,12 +65,12 @@ ROOT_PANELS: tuple[str, ...] = (
 #: panels and of the commands inside them.
 ROOT_COMMAND_ORDER: tuple[str, ...] = (
     # Setup
-    "workspace",
-    "server",
     "presets",
     "init",
+    "adopt",
     "schema",
     "config",
+    "status",
     # Inventory
     "entity",
     "stock",
@@ -149,17 +150,15 @@ def root(
         is_eager=True,
         help="Show the version and exit.",
     ),
-    workspace: Path | None = typer.Option(
-        None,
-        "--workspace",
-        "-w",
-        help="Workspace data directory (default: search upward for workspace.yaml).",
-    ),
-    ledger: str | None = typer.Option(
+    ledger: Path | None = typer.Option(
         None,
         "--ledger",
         "-l",
-        help="Ledger name (default: the workspace's default ledger).",
+        metavar="PATH",
+        help=(
+            "Path to the ledger directory -- the one holding .dolt/ and "
+            "ledger.yaml. Omit it to search upward from the current directory."
+        ),
     ),
     branch: str | None = typer.Option(
         None,
@@ -205,7 +204,6 @@ def root(
             "expected one of table, json, csv", param_hint="--format"
         )
     ctx.obj = GlobalOptions(
-        workspace=workspace,
         ledger=ledger,
         branch=branch,
         dry_run=dry_run,
@@ -217,12 +215,12 @@ def root(
 
 
 # -- Setup -------------------------------------------------------------------
-app.add_typer(workspace_app, name="workspace", rich_help_panel=PANEL_SETUP)
-app.add_typer(server_app, name="server", rich_help_panel=PANEL_SETUP)
 app.add_typer(presets_app, name="presets", rich_help_panel=PANEL_SETUP)
 app.command("init", rich_help_panel=PANEL_SETUP)(init_command)
+app.command("adopt", rich_help_panel=PANEL_SETUP)(adopt_command)
 app.add_typer(schema_app, name="schema", rich_help_panel=PANEL_SETUP)
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_SETUP)
+app.command("status", rich_help_panel=PANEL_SETUP)(status_command)
 
 # -- Inventory ---------------------------------------------------------------
 app.add_typer(entity_app, name="entity", rich_help_panel=PANEL_INVENTORY)

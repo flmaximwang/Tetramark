@@ -32,10 +32,12 @@ apply`` (ticket 09) calls it after changing the physical schema.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Sequence
 
 from tetramark.driver.base import Driver, literal
 from tetramark.errors import LedgerError
+from tetramark.ops.portability import PORTABILITY_GROUP, absolute_file_urls
 from tetramark.schema.ddl import (
     _in_stock_sql,
     box_view_statements,
@@ -1075,6 +1077,7 @@ def run_check(
     *,
     group: str | None = None,
     verbose: bool = False,
+    ledger_dir: Path | None = None,
 ) -> CheckReport:
     """Run every installed test and optionally collect offending rows.
 
@@ -1089,6 +1092,12 @@ def run_check(
     blocking ``core`` failure (missing, orphaned or out-of-date view).  It is
     appended only when there is drift, so a clean ledger's test count is
     unchanged.
+
+    ``ledger_dir`` adds the portability rule of P12/P13: a Dolt remote or
+    backup that is stored as an absolute ``file://`` URL outside the ledger
+    directory breaks when the ledger is copied somewhere else.  It is reported
+    as an informational result (group ``portability:info``), so it never changes
+    the exit code, and only when there is something to report.
     """
     rows = driver.query(
         "SELECT `test_name`, `test_group_name`, `query`, `status`, `message` "
@@ -1129,6 +1138,28 @@ def run_check(
                     status="FAIL",
                     message=f"{len(problems)} per-box view problem(s)",
                     detail_rows=problems,
+                )
+            )
+    if ledger_dir is not None and (
+        group is None or _group_matches(PORTABILITY_GROUP, group)
+    ):
+        findings = absolute_file_urls(ledger_dir)
+        if findings:
+            names = ", ".join(
+                f"{finding['kind']} {finding['name']!r}" for finding in findings
+            )
+            report.results.append(
+                TestResult(
+                    name="portability_absolute_file_urls",
+                    group=PORTABILITY_GROUP,
+                    query="",
+                    status="FAIL",
+                    message=(
+                        f"{len(findings)} absolute file:// URL(s) point outside "
+                        f"the ledger directory ({names}); they keep pointing at "
+                        "the old location when the ledger is copied (P12)"
+                    ),
+                    detail_rows=findings,
                 )
             )
     return report

@@ -1,280 +1,161 @@
-# Test harness — server-backed pytest fixtures
+# Test harness — embedded-only pytest fixtures
 
-Status: **implemented** · Depends on: current test suite (`dolt 2.3.5`). Measurement history: §9b.
+Status: **shipped in 0.5.0**. This page replaces the 0.2.0 *server-backed* harness design: P14
+removed `ServerDriver`, the `tm server` commands and the per-worker `dolt sql-server`. The old
+server-harness performance numbers are kept as historical context in §2 so they are not mistaken for
+today's target.
 
-## 1. Problem
+## 1. Cost model
 
-The suite spends its wall time spawning `dolt` processes: one `dolt sql` per statement
-(60–100 ms idle, 0.2–0.4 s under 10-worker load). A full run is **758 s** and records about
-**13,000 dolt spawns**; 199 of 605 tests touch dolt and consume >99 % of the time.
+Everything runs against the real `dolt` binary — no mocks — and every SQL statement is one `dolt sql`
+subprocess in the ledger directory. On an idle machine that is **60–100 ms per statement** (0.2–0.4 s
+under ten-worker load), because Dolt starts a process and opens the database for each batch.
 
-A long-lived `dolt sql-server` changes the unit cost: one query is **0.40 ms** (measured,
-100 queries), a connection is 56 ms, and server start is 464 ms. Embedded error paths are
-still exercised by dedicated tests. The goal of this spec is to move the *bulk* of the
-dolt-heavy tests onto a per-worker server while keeping the suite semantics (isolation,
-assertions, embedded coverage) intact.
+The consequence for tests is simple: **never run a full `tm init` per test**. A standard init executes
+100+ statements (roughly 10 s); a test that does that for every case makes the suite unusable.
 
-## 2. Goals / non-goals
+The harness therefore builds each **standard ledger shape once per pytest session per xdist worker**
+and hands out directory copies:
 
-Goals
+- `LedgerTemplates` lazily runs one real `init_ledger` for each shape (`tests/data/presets/base`,
+  `tests/data/presets/full`, the repository's `presets/base.yaml`);
+- `embedded_ledger_factory` / `ledger_factory` `shutil.copytree` the closed ledger into
+  `tmp_path/<name>` (≈0.05 s) and rewrite only `name:` in `ledger.yaml`;
+- a factory call that asks for a non-standard shape (another `id_prefix`, `author`, preset list,
+  `statuses`) keeps the real init path — a template must be exactly what init would have produced;
+- tests whose subject *is* what init generates pass `real_init=True`;
+- historical shapes the current tool can no longer create (`tests/data/ledgers/molbio-v1`, …) are
+  checked in as real Dolt databases and copied; their builders are tested against the fixture itself.
 
-1. Full suite wall time **≤ 180 s** (stretch **≤ 120 s**) on the M1 Max developer machine with
-   `-n auto`, from 758 s; 605 tests still pass (or the documented count after intentional merges).
-2. Isolation unchanged: every test behaves as if it had a private ledger; no cross-test state.
-3. No product behaviour change: `tm` CLI and embedded driver semantics stay identical;
-   only the test harness and small, additive library helpers change.
-4. Embedded coverage retained: driver contract, workspace/server lifecycle, docs quickstart,
-   init-semantics and raw-CLI tests still run against the embedded driver / real CLI.
-5. No leaked `dolt sql-server` processes; no flaky failures across 3 consecutive full runs.
+The environment is isolated the same way: `DOLT_ROOT_PATH`, `HOME`, `XDG_CONFIG_HOME` and the
+`GIT_CONFIG_*` variables point into `tmp_path`, so the developer's global Dolt/Git configuration is
+never read or written. No ledger-selection environment variable exists (`TETRAMARK_LEDGER` /
+`TETRAMARK_WORKSPACE` are gone); `$TETRAMARK_PRESETS_DIR` is popped unless a test sets it explicitly.
 
-Non-goals
+There is no server, port, pid or lifecycle to manage in 0.5.0, so there are no leaked
+`dolt sql-server` processes and no `pgrep` checks. Write-lock coverage uses `fcntl.flock` directly
+(same process and a subprocess waiter), which needs no server either.
 
-- Removing `EmbeddedDriver` or changing its public contract.
-- Reworking the CLI UX or output formats.
-- CI configuration, Windows support, or dolt version bumps.
-- Product performance work (separate from the test-harness change, which only covers the harness and
-  the small helper it needs).
+## 2. The lanes and their budgets
 
-## 3. Measured inputs
+Two lanes, plus a release acceptance run:
 
-| Fact | Value | Source |
-|---|---|---|
-| Server query / connect / start | 0.40 ms / 56 ms / 464 ms | `perf-notes/prod-hotpath.md` §8 |
-| `init_ledger(base/full)` embedded | 39 / 65 dolt spawns, 4.4–7.4 s | harness/arch audits |
-| Embedded read query | 1–2 spawns; 60–100 ms idle | `embedded.py:81-207` |
-| Suite | 605 tests / 758 s / ~13,000 spawns | `/tmp/baseline_full.log` |
-| Pure-Python 4 files | 341 tests, ~1.6 s | `perf-notes/pytest-arch.md` §3.1 |
+| Lane | Command | Budget | What belongs there |
+|---|---|---|---|
+| **fast** | `pytest -q -m fast` | **seconds** — 0.5.0 baseline **597 passed in 2.38 s**; keep it that way | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
+| **full** | `pytest` (addopts: `-n auto --dist loadfile`) | **≤ ~33 min** on this 10-CPU machine (0.5.0 baseline 1643.22 s = 27:23, +20 %) | everything, including every real-Dolt integration flow |
+| **release** | full lane + the heavy migration/lab subset | green, no new failures | `tests/test_migrate.py`, the read-only 0.4.2 lab-ledger check when `.dsh/tm-l8g/lab-snapshot` exists, docs flows, and `scripts/test-lanes.sh` |
 
-## 4. Architecture
+Rules:
+
+- **Never put a database test on the fast lane.** If it opens a `Ledger`, calls `init_ledger`/`open`,
+  or shells out to `dolt`, it is not `fast`. A fast test that starts costing seconds is a bug.
+- **`-n auto`, not `-n 4`.** The suite is dominated by independent directory copies and per-worker
+  subprocesses; on the developer machine `-n 4` is measurably **slower** than `-n auto`, so the
+  addopts default stays `-n auto --dist loadfile`. Measure on the target machine rather than copying
+  a worker count from another one.
+- **Full-lane budget: ≤ measured baseline +20 %.** The 0.5.0 baseline is **1091 passed, 0 failed,
+  0 skipped in 1643.22 s (27:23) with `-n auto` on 10 workers** (ticket .11's report,
+  `.dsh/tm-l8g/reports/tm-l8g.11.md`); the budget is therefore **≤ ~33 min** on this machine.
+  `scripts/test-lanes.sh` carries that baseline as `FULL_LANE_BASELINE_SECONDS` (1643) and fails
+  above 1.2 × baseline; re-measure with the script on another machine and override the variable.
+  New real-Dolt tests are allowed only if they reuse the session templates and their cost is
+  justified in the ticket report; prefer extending an existing flow over adding another init.
+- **`scripts/test-lanes.sh` is the enforcement point.** The repository has no CI, so this script —
+  run before a merge and before a release — is what turns the budgets into a failing exit code. It
+  runs both lanes with `--durations`, prints their wall times and fails when the full lane exceeds
+  the baseline by more than 20 % (override the baseline for a different machine with
+  `FULL_LANE_BASELINE_SECONDS`; setting it to an empty value measures without gating).
+  Script defaults: fast-lane budget **10 s** (measured: 2.38 s for 597 tests), full-lane baseline
+  **1643 s** (the measured 0.5.0 value, gate at 1.2 ×). In sandboxes where `uv run` does not work,
+  point the script at a venv pytest:
+  `PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh fast` (or `full`).
+- **The wall time is content-bound, not worker-bound.** The same suite run with `-n 4` took
+  1637 s / 27:17 — the same ~27 min. The five heaviest modules are `test_migrate.py` (~872 s
+  single-process), `test_schema_diff.py` (~580 s), `test_docs_commands.py` (~508 s of call time,
+  ~322 s standalone), `test_presets.py` (~386 s) and `test_ledger_init.py` (~180 s). A single test
+  can take 300 s because `--dist loadfile` gives one file to one worker. Optimise the content, not
+  the worker count.
+
+The **server-harness numbers are historical**: the 758 s → 154.83 s result and the “≤180 s” goal
+belong to the 0.2.0 server design that P14 removed. They are context for how the suite used to be
+measured, not the 0.5.0 target; do not quote them as the current budget.
+
+## 3. Fixtures and layout
 
 ```
-pytest worker (xdist gw0..gwN)
-└── session fixture `server_workspace`            (one per worker)
-    ├── data_dir = tmp_path_factory.mktemp("server-ws-gw0")
-    ├── env = isolated_env(...)                   (DOLT_ROOT_PATH, HOME, XDG_*, GIT_*)
-    ├── bootstrap: one bare `dolt init` ledger    (Workspace.start needs ≥1 ledger)
-    ├── `dolt sql-server` on a free port          (Workspace.create + start(daemon=True))
-    ├── drop stale `t_<worker>_*` databases       (left over by a crashed run)
-    └── per-test `server_ledger_factory` (function scope)
-        ├── CREATE DATABASE `t_<gw>_<n>`          (admin pymysql connection)
-        ├── write `<data_dir>/<db>/ledger.yaml`   (same YAML as init_ledger)
-        ├── ServerDriver: DDL + ledger_meta + dolt_tests + DOLT_COMMIT
-        ├── Ledger(..., driver=ServerDriver)      (caller uses it like any Ledger)
-        └── teardown: close driver + DROP DATABASE
+tests/conftest.py
+  dolt_binary / dolt_env / dolt_run / dolt_conf   isolated real-Dolt environment
+  isolated_env(root, home)                        DOLT_ROOT_PATH, HOME, XDG_*, GIT_*
+  template_ledgers                                session LedgerTemplates (per worker)
+  embedded_ledger_factory / ledger_factory        copy a session template (or real init)
+  make_ledger / dolt_repo                         bare Dolt databases for adopt/raw tests
+tests/data/presets/                               preset fixtures used by the templates
+tests/data/ledgers/                               checked-in historical databases + builders
 ```
 
-Key decisions
+- Use `ledger_factory([...])` for "a normal ledger of this shape"; it returns an opened `Ledger`.
+- Use `dolt_repo` / `make_ledger` when the test is about a bare database or `tm adopt`.
+- Pass `-l/--ledger <ledger.path>` (or `monkeypatch.chdir` into the ledger) in CLI tests; there is no
+  `--workspace` and no `TETRAMARK_WORKSPACE`, and a test must never create a `workspace.yaml`.
+- Isolated Dolt config: a test that shells out directly uses `dolt_run`/`dolt_env`, never the
+  developer's global config. The lab directory `~/Documents/Lab/Dolt` is only ever **read** in the
+  optional read-only snapshot test (copy it under `tmp_path` first if a test needs to write).
 
-- **One server per xdist worker**, not per test: 464 ms start + 56 ms connect is amortised over
-  the worker's whole slice. Workers are isolated by their own `data_dir` and port.
-- **Database per test**, not directory copy: `CREATE DATABASE` is ~1 round trip and `DROP DATABASE`
-  gives clean isolation without copying 170 KB+ of noms files.
-- **Bootstrap ledger** exists only so `Workspace.start()` (which refuses an empty data dir) can
-  start the server; tests never see it.
-- **Embedded templates are not needed** in v1: 34–67 DDL statements over the server cost
-  ~15–20 ms each, i.e. ~0.5–1.0 s per fresh ledger, versus 4.4–7.4 s embedded. A later ticket may
-  add `DOLT_CLONE`/template databases if the remaining cost matters.
-- **Error-path tests stay embedded**: pymysql surfaces different messages and class names than the
-  embedded CLI output, so tests that assert raw Dolt error text stay on the embedded driver
-  (see §6).
+## 4. Markers and selection
 
-## 5. API changes (additive only)
+- `fast` — Dolt-free; the only mark the fast lane runs. The module owns it with
+  `pytestmark = pytest.mark.fast` (or per-test decorators) and the module must not import/execute
+  Dolt work at collection time.
+- `embedded` — the test deliberately exercises the embedded driver and needs the real `dolt` binary.
+  In 0.5.0 that is every real-database test; `-m embedded` selects the integration set, while the
+  unmarked remainder is likewise embedded whenever it touches a ledger.
+- Default addopts: `-ra -n auto --dist loadfile`.
 
-### 5.1 `tetramark.core.ledger.init_ledger_on_server(...)`
-
-```python
-def init_ledger_on_server(
-    workspace: Workspace | str | Path,
-    name: str,
-    presets: Sequence[str | Path] | str | Path | None = None,
-    *,
-    id_prefix: str | None = None,
-    author: str | None = None,
-    statuses: Sequence[str] | None = None,
-) -> Ledger: ...
-```
-
-- Shares `_prepare_init` with `init_ledger` (same YAML, schema, statements, author handling).
-- Requires a running server (`workspace.running_pid()` + port reachable), else `UnreachableError`.
-- Creates the database through an **admin** PyMySQL connection (no database selected),
-  writes `ledger.yaml`, applies statements + `_write_meta` + `install_tests` inside
-  `ServerDriver.transaction()`, commits `init(ledger): <name>`, and returns the opened `Ledger`.
-- On any failure: `DROP DATABASE` + remove the directory; never leave a half-initialised ledger.
-- `init_ledger` (embedded) remains unchanged and becomes the reference implementation;
-  both paths must produce the same schema/meta commit. A shared regression test asserts this.
-
-### 5.2 `tetramark.driver.workspace` helpers (optional, if useful)
-
-- Small read-only helpers to expose `host`, `port`, `data_dir` for the admin connection are already
-  available via `Workspace.config`; do not add mutation APIs.
-
-### 5.3 Test fixtures (`tests/conftest.py`)
-
-- `server_workspace` (session): as §4; tears down with `workspace.stop()` and asserts the server
-  process is gone.
-- `server_ledger_factory` (function): factory with the **same signature and return type** as
-  `ledger_factory(presets=None, *, name=None, id_prefix="77", author=FACTORY_AUTHOR, statuses=None)`.
-  Calls are recorded and every created database is dropped in teardown. `name` may be passed for
-  tests that assert on it; default unique `t_<gw>_<n>`.
-- `embedded_ledger_factory` (function): the current implementation of `ledger_factory`, kept under
-  a clearly named fixture for tests that must stay embedded.
-- Migration stays a one-line module fixture, exactly like the existing pattern:
-
-```python
-@pytest.fixture
-def ledger_factory(server_ledger_factory):
-    return server_ledger_factory
-```
-
-- A helper `_admin_connection(workspace)` (tests-only) may wrap `pymysql.connect`; it must not
-  leak connections.
-
-## 6. Migration matrix
-
-| File | Tests | Target | Notes |
-|---|---:|---|---|
-| `test_objects.py` | 26 | **server** | direct ledger API; already on template copy |
-| `test_csv_io.py` | 15 | **server** | direct API + some CLI (`--workspace` needed) |
-| `test_cli_objects.py` | 6 | **server** | CliRunner; pass `--workspace` explicitly |
-| `test_read_side.py` | 13 | **server** | direct API + CLI history/find |
-| `test_validation.py` | 18 | **server** | raw SQL via `ledger.driver` works on server too |
-| `test_schema_diff.py` | 31 | **server** | `plan`/`apply` via server; ledger.path edits still work |
-| `test_ledger_init.py` | 31 | mixed | init/open **semantics** tests stay embedded; write/open smoke cases may move |
-| `test_docs_commands.py` | 5 | mixed | quickstart/server flow stays real-server; other flows may start a server for their workspace |
-| `test_remote_backup.py` | 13 | mostly embedded | `dolt push/clone` needs real directories; migrate only pure API cases if safe |
-| `test_presets.py` | 5 | embedded | asserts every bundled preset can init via `init_ledger` |
-| `test_ddl.py` | 16 | embedded | uses raw `dolt` CLI + dolt-specific error text |
-| `test_driver_contract.py` | 27 | embedded + server | already parametrised; keep both |
-| `test_workspace.py`, `test_cli_workspace.py` | 35 | embedded | server lifecycle itself |
-| `test_smoke.py` | 8 | embedded | process-level CLI smoke |
-
-Rules
-
-1. Never delete, rename or weaken a test to make migration easier. No `skip`/`xfail` without Lead
-   approval; no assertion loosening beyond adapting backend-specific message matching.
-2. A migrated file must still pass **all** its original assertions; if a test asserts embedded-only
-   behaviour (raw CLI output, file layout after `dolt init`, `pgrep`-based lifecycle), it stays
-   embedded and is listed in the PR description.
-3. If a CLI call inside a test needs a workspace, pass `--workspace <session ws>` or set
-   `TETRAMARK_WORKSPACE`; do not rely on `monkeypatch.chdir` into a per-test dir.
-4. Tests that mutate `ledger.yaml`/`presets` on disk may run on the server path: the files live in
-   `data_dir/<db>/`, exactly as before.
-5. Anything that runs `dolt sql` embedded against a directory that the worker's server has open is
-   forbidden (Dolt does not support that); such tests stay embedded.
-
-## 7. Isolation, cleanup, failure modes
-
-- Per-worker data dir and port; unique database names; `DROP DATABASE` in teardown.
-- Session start: drop `t_<gw>_*` leftovers (best effort; one `SHOW DATABASES` + drops).
-- Session end: stop server, wait for exit (existing `Workspace.stop()` semantics). **Known fix
-  required** (found during T15): when `start()`/`stop()` run in the same process the exited server
-  stays a zombie and `stop()` waits the full `READY_TIMEOUT` (12 s per worker); `_terminate` must
-  call `os.waitpid(pid, os.WNOHANG)` to reap the child. Regression test: `stop()` < 5 s.
-- If the server dies: all subsequent tests in that worker fail with `UnreachableError`; the
-  session fixture must attempt one restart per worker (bounded, no infinite loops).
-- The existing `_reap_test_servers` watchdog stays; it must not kill the session server while the
-  worker is alive.
-- Parallel runs (`-n auto`) keep one server per worker; `-n0` gets one server total.
-- `pytest -x`/killed runs leave a `dolt sql-server`: the existing reaper covers tmp roots.
-
-## 8. Acceptance criteria (per ticket and final)
-
-| # | Check | Threshold |
-|---|---|---|
-| A1 | Full suite, `-n auto --dist load` (or loadfile if still default) | 605 passed, 0 failed |
-| A2 | Wall time, same machine as baseline | ≤ 240 s after T16–T18; **≤ 180 s** after T19; stretch ≤ 120 s |
-| A3 | Three consecutive full runs | green, no flake |
-| A4 | Embedded path | `test_driver_contract.py` both params, `test_workspace.py`, `test_docs_commands.py`, `test_ledger_init.py` init cases pass |
-| A5 | Process hygiene | no `dolt sql-server` after run; `pgrep -f pytest-of` empty |
-| A6 | Equivalence | shared regression test: embedded `init_ledger` and `init_ledger_on_server` produce identical schema/fingerprint/`ledger_meta`/commit count |
-| A7 | Developer env | `uv run pytest` (with the harness's ps shim only in this sandbox) works; no new required env vars |
-
-Measurements to record in the final report: wall time, user/sys CPU, dolt spawn count, per-file
-table before/after, remaining embedded tests.
-
-## 9. Risks & mitigations
-
-| Risk | Mitigation |
-|---|---|
-| Error-message differences (pymysql vs CLI) | keep driver-error tests embedded; adapt message regex only where the underlying error is identical |
-| `Workspace.start` needs ≥1 ledger | bootstrap bare ledger; tests never depend on it |
-| Server crash mid-run | one bounded restart per worker; fail fast otherwise |
-| `DROP DATABASE` slows teardown | measure; if >5 ms/test, batch drops at session end with `t_<gw>_*` sweep |
-| Shared `default_ledger` in `workspace.yaml` | session workspace has no default ledger; tests pass `--ledger`/`--workspace` |
-| CLI workspace discovery | pass `--workspace` explicitly or set `TETRAMARK_WORKSPACE` |
-| `close()` semantics | `ServerDriver.close()` exists; factory must close drivers, and teardown must not hang on server shutdown while drivers are open |
-| Sandbox lacks `ps` | tests harness must only rely on `Workspace.stop()`; the temporary `ps` shim is a measurement-environment workaround, not a product requirement |
-| Windows/portability | out of scope; use `free_port()` already in conftest |
-
-## 9b. Measured result (implemented)
-
-Tickets 15–19 landed on the `optimize-tests` worktree. Same machine, same dolt 2.3.5:
-
-| Run | Config | Result | Wall | CPU (user+sys) |
-|---|---|---|---:|---:|
-| baseline (before) | `-n auto --dist loadfile` | 605 passed | **758.27 s** | 1369 s |
-| after, default | `-n auto --dist loadfile` | **614 passed** | **154.83 s (-79.6 %)** | 260 s |
-| after, cheap change | `-n auto --dist load` | 614 passed | **141.50 s (-81.3 %)** | 271 s |
-
-- Worker time dropped from 4,323 s to ~894 s; the new total includes 9 new harness tests (605→614).
-- Embedded residual (still on `embedded_ledger_factory`, ~2 min of worker time): `test_ddl` (50 s),
-  `test_presets` (106 s), `test_remote_backup` (144 s), plus the embedded halves of
-  `test_ledger_init`/`test_driver_contract`/`test_workspace`/`test_cli_workspace`/`test_smoke`.
-- `test_schema_diff.py` dropped from 757 s worker time to ~49 s; `test_validation` 500→41 s;
-  `test_objects` 491→89 s; `test_docs_commands` 565→95 s (real server per flow).
-- Two tests in batch A stayed embedded because `ServerDriver` returns `datetime` objects where the
-  test helper serialises rows with `json.dumps`; a follow-up can normalise that in `ServerDriver`.
-- Optional next wins: template databases (`DOLT_CLONE`) to remove the per-test DDL (~0.5–1 s each),
-  migrating the remaining `test_remote_backup`/`test_presets` cases, and `-n 8` on 8 P-cores.
-
-## 9c. Ledger templates and the fast lane (0.2.0+)
-
-A second lever on the same cost: most tests only need "a fresh ledger of a standard shape", and a real
-`tm init` costs ~11 s (≈120 DDL statements, each a separate `dolt sql` process) while copying a closed
-ledger directory costs ~0.05 s. `tests/conftest.py` therefore builds each standard shape **once per
-pytest session per xdist worker** and hands out copies:
-
-- `LedgerTemplates` initialises three shapes lazily — `tests/data/presets/base`,
-  `tests/data/presets/full`, `<repo>/presets/base.yaml`. `embedded_ledger_factory` / `ledger_factory`
-  `shutil.copytree` the closed ledger into the test's workspace and rewrite only `name:` in
-  `ledger.yaml`. `server_ledger_factory` cannot copy a directory into a running server, so it exports
-  the template to a Dolt backup once and restores it per call (`dolt_backup('restore')`, ~0.4 s).
-- Anything non-standard keeps the real init path: a custom `id_prefix`, `author`, `statuses`, or a
-  preset list outside the three shapes. Tests whose subject *is* what `init` generates pass
-  `real_init=True` (init-matches-embedded, no-dolt-process, generated-test install, preset-init shapes).
-- A copy carries the template's init commit and the `ledger_meta.ledger_yaml` name; tests asserting
-  those use the real path.
-
-Fast lane: `pytest.mark.fast` marks the Dolt-free modules (`test_ids`, `test_schema_model`,
-`test_driver_literals`, `test_schema_loader`):
+Common commands:
 
 ```sh
-uv run pytest -q -m fast     # ~340 tests, seconds — while iterating
-uv run pytest -q -n 4        # the full suite — on merges and before a release
+uv run pytest -q -m fast                # fast lane (seconds)
+uv run pytest                           # full lane (-n auto from addopts)
+uv run pytest -n0 tests/test_status.py  # one file, no xdist
+uv run pytest -q -m embedded            # real-Dolt integration set
+uv run pytest -k "backup or lock"       # focused by keyword
 ```
 
-Historical shapes that the current tool can no longer create are checked in as real databases
-instead of being faked: `tests/data/ledgers/molbio-v1/` is a genuine 0.1.2-era molbio-1 database
-(456 KiB, empty; tests seed their rows), reproduced by `tests/data/ledgers/build_fixtures.py` from the
-wave-9-era commit in a temporary worktree. The migration tests copy it, and the module-scoped
-`test_molbio_v1_fixture_matches_its_builder` rebuilds it and compares schema fingerprint, tables, views,
-`dolt_tests` count and the preset files, so a tool change cannot silently leave a stale fixture behind.
-`-k molbio_1_to_2`: 169.1 s → 105.0 s.
+In a restricted sandbox without `uv`, the repository's `.dsh/tm-l8g/t.sh <worktree> <pytest args>` and
+`tm.sh` wrappers run the same commands against a worktree (`PYTHONPATH=<worktree>/src`). They are a
+measurement-environment helper, not a product requirement.
 
-Measured on a shared box (0.2.0): per ledger 11.17 s → 0.84 s (13.3×); full suite 763.5 s → 597.9 s
-(−21.7 %, with a load spike in the final run); the 50th-slowest test 19.0 s → 11.0 s. The remaining
-wall is concentrated in `tests/test_migrate.py` (multi-preset builds and the molbio-1 migration
-fixture).
+## 5. Rules for adding tests
 
-## 10. Rollout / ticket wave
+1. **Keep the fast lane fast.** New pure-Python tests are marked fast; a test that needs Dolt is not.
+2. **Reuse the session templates.** A test that just needs a ledger uses `ledger_factory`; only a test
+   about init/adopt/preset generation pays for a real init (`real_init=True`).
+3. **Justify real-Dolt cost.** One end-to-end flow per behaviour is enough; extend an existing flow
+   instead of adding a second ledger. Put the cost in the ticket report when adding a new module.
+4. **Docs are executable.** `tests/test_docs_commands.py` runs the flows documented in the README,
+   the command reference, the migration recipe and the schema skill; when a doc example changes, that
+   test changes with it. Documentation and its test stay in one change.
+5. **Never weaken a test to make a lane green.** Adapt paths/flags (e.g. `-l PATH` instead of
+   `--workspace`) and fixture names; keep the assertion.
+6. **Never mock Dolt** and never hand-fake a database directory; copy a template, a fixture or run a
+   real init.
+7. **No server, no ports.** Do not start/stop `dolt sql-server` in tests; do not add a pid/port
+   fixture. The write lock is tested with `flock` directly.
+8. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard test
+   greps for it. Resolution tests use stub directories and belong to the fast lane.
+9. **Isolate the environment.** Use the fixtures; never rely on the developer's Dolt/Git config or on
+   `~/Documents/Lab`.
+10. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes or
+    lock files survive a green run (lock files are left in place inside `tmp_path` on purpose).
 
-| Ticket | Scope | Depends | Parallel-safe |
-|---|---|---|---|
-| T15 | `init_ledger_on_server` + `server_workspace`/`server_ledger_factory` fixtures + equivalence test | — | no (touches `tests/conftest.py`, `src/tetramark/core/ledger.py`) |
-| T16 | migrate `test_objects`, `test_csv_io`, `test_cli_objects`, `test_read_side` | T15 | yes (own files) |
-| T17 | migrate `test_validation`, mixed `test_ledger_init` cases, `test_docs_commands` server flow | T15 | yes |
-| T18 | migrate `test_schema_diff`; split heavy test files if ticket says so | T15 | yes |
-| T19 | acceptance: full-suite runs ×3, spawn count, markers (`embedded`), docs/README, final report; optional `-n` tuning | T15–T18 | no (Lead) |
+## 6. Release acceptance
 
-Files are disjoint across T16–T18 except `tests/conftest.py` (T15 only) and final docs (T19).
-Merging: cherry-pick/apply each ticket's diff on the integration branch, then run T19.
+Before a release (ticket .13/.14) run and record:
+
+- `uv run pytest -q -m fast` — green, seconds;
+- `uv run pytest` — green, with test/skip counts and wall time (the 0.5.0 baseline lives in the .11
+  report);
+- the heavy migration/lab subset — green: `tests/test_migrate.py` and the read-only 0.4.2 snapshot
+  test (skipped cleanly when the snapshot directory is absent);
+- `scripts/test-lanes.sh` — fast and full lanes inside budget (exit 0).

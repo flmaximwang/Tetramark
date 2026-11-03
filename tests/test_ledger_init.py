@@ -1,7 +1,7 @@
 """Ledger init, open and the one-commit write session (ticket 06).
 
-Everything runs against a real ``dolt`` binary; the workspace, Dolt root and
-Git config all live under ``tmp_path``.
+Everything runs against a real ``dolt`` binary; the ledger directories, Dolt
+root and Git config all live under ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -9,25 +9,21 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from tetramark import Ledger, __version__, init_ledger, open as open_ledger
+from tetramark.cli.app import app, main
 from tetramark.core.ledger import AdoptPlan, InitPlan, WriteSession, adopt_ledger
 from tetramark.core.ids import DatecodeIds, UuidIds
-from tetramark.driver.workspace import Workspace
-from tetramark.errors import EXIT_USAGE, LedgerError, UnreachableError, UsageError
+from tetramark.errors import EXIT_USAGE, LedgerError, UsageError
 from tetramark.schema.model import SPEC_VERSION
 
-from conftest import (
-    FACTORY_AUTHOR,
-    PRESETS,
-    admin_connection,
-    drop_database,
-    worker_id,
-)
+from conftest import FACTORY_AUTHOR, PRESETS
 
 CLI_AUTHOR = "CLI User <cli@tetramark.invalid>"
 LEGACY_AUTHOR = "Legacy User <legacy@tetramark.invalid>"
@@ -38,8 +34,9 @@ LEGACY_AUTHOR = "Legacy User <legacy@tetramark.invalid>"
 # ---------------------------------------------------------------------------
 
 
-def make_workspace(tmp_path: Path, dolt_env: dict[str, str], **overrides: object) -> Workspace:
-    return Workspace.create(tmp_path / "data", env=dolt_env, **overrides)
+def make_lab(tmp_path: Path) -> Path:
+    """The plain directory the new ledger directories are created in."""
+    return tmp_path / "data"
 
 
 def commit_count(ledger: Ledger) -> int:
@@ -71,6 +68,29 @@ def write_config(ledger: Ledger, payload: dict[str, object]) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_dolt(
+    monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]
+) -> None:
+    """Run every init/adopt/open of this module in the isolated Dolt/Git env.
+
+    A ledger is one directory now, so the tests call ``init_ledger(path, ...)``
+    directly; the old workspace layer carried the isolated environment.
+    Injecting ``env=dolt_env`` here keeps each test body about the ledger
+    instead of the environment, and guarantees no test ever reads or writes the
+    developer's global Dolt/Git configuration.
+    """
+    module = sys.modules[__name__]
+    for function_name in ("init_ledger", "adopt_ledger", "open_ledger"):
+        real = getattr(module, function_name)
+
+        def wrapper(*args: object, _real=real, **kwargs: object):
+            kwargs.setdefault("env", dolt_env)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(module, function_name, wrapper)
+
+
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
@@ -79,9 +99,9 @@ def write_config(ledger: Ledger, payload: dict[str, object]) -> None:
 def test_init_creates_database_schema_and_one_commit(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     ledger = init_ledger(
-        workspace,
+        lab / "lab101",
         "lab101",
         [PRESETS / "full"],
         id_prefix="12",
@@ -89,7 +109,7 @@ def test_init_creates_database_schema_and_one_commit(
     )
 
     assert isinstance(ledger, Ledger)
-    assert ledger.path == workspace.ledger_path("lab101")
+    assert ledger.path == (lab / "lab101")
     assert (ledger.path / ".dolt").is_dir()
     assert (ledger.path / "ledger.yaml").is_file()
 
@@ -123,9 +143,9 @@ def test_init_creates_database_schema_and_one_commit(
 def test_init_writes_ledger_yaml_and_ledger_meta(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     ledger = init_ledger(
-        workspace,
+        lab / "meta",
         "meta",
         [PRESETS / "full"],
         id_prefix="08",
@@ -175,9 +195,9 @@ def test_init_has_no_global_status_check_or_statuses_option(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
     """Spec 4: the global CHECK is gone; the vocabulary belongs to stock kinds."""
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     ledger = init_ledger(
-        workspace, "statuses", [PRESETS / "base"], author=FACTORY_AUTHOR
+        lab / "statuses", "statuses", [PRESETS / "base"], author=FACTORY_AUTHOR
     )
     schema = ledger.schema
     assert schema.status_set("lot").names == [
@@ -204,10 +224,8 @@ def test_init_has_no_global_status_check_or_statuses_option(
     result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(workspace.data_dir),
             "init",
-            "no-statuses-option",
+            str(lab / "no-statuses-option"),
             "--preset",
             str(PRESETS / "base"),
             "--statuses",
@@ -221,9 +239,9 @@ def test_init_has_no_global_status_check_or_statuses_option(
 def test_init_without_id_prefix_uses_uuid_stock_ids(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     ledger = init_ledger(
-        workspace, "noprefix", [PRESETS / "base"], author=FACTORY_AUTHOR
+        lab / "noprefix", "noprefix", [PRESETS / "base"], author=FACTORY_AUTHOR
     )
     assert isinstance(ledger.ids["entity"], UuidIds)
     assert isinstance(ledger.ids["stock"], UuidIds)
@@ -233,57 +251,58 @@ def test_init_without_id_prefix_uses_uuid_stock_ids(
 def test_init_refuses_an_existing_ledger(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    init_ledger(workspace, "twice", [PRESETS / "base"], author=FACTORY_AUTHOR)
-    with pytest.raises(LedgerError, match="already exists"):
-        init_ledger(workspace, "twice", [PRESETS / "base"], author=FACTORY_AUTHOR)
+    lab = make_lab(tmp_path)
+    init_ledger(lab / "twice", "twice", [PRESETS / "base"], author=FACTORY_AUTHOR)
+    # R2: an existing ledger is refused with the identity and a use-it hint.
+    with pytest.raises(LedgerError, match="already the ledger 'twice'"):
+        init_ledger(lab / "twice", "twice", [PRESETS / "base"], author=FACTORY_AUTHOR)
 
 
 def test_init_requires_a_preset(tmp_path: Path, dolt_env: dict[str, str]) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     with pytest.raises(UsageError, match="at least one preset"):
-        init_ledger(workspace, "nopreset", author=FACTORY_AUTHOR)
-    assert not workspace.ledger_path("nopreset").exists()
+        init_ledger(lab / "nopreset", "nopreset", author=FACTORY_AUTHOR)
+    assert not (lab / "nopreset").exists()
 
 
 def test_init_without_author_or_git_config_is_a_usage_error(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     with pytest.raises(UsageError, match="author"):
-        init_ledger(workspace, "noauthor", [PRESETS / "base"])
+        init_ledger(lab / "noauthor", "noauthor", [PRESETS / "base"])
     # Nothing half-created is left behind.
-    assert not workspace.ledger_path("noauthor").exists()
+    assert not (lab / "noauthor").exists()
 
 
 def test_init_rejects_an_invalid_ledger_name(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     with pytest.raises(UsageError, match="invalid ledger name"):
-        init_ledger(workspace, "../escape", [PRESETS / "base"], author=FACTORY_AUTHOR)
+        init_ledger(lab / "../escape", "../escape", [PRESETS / "base"], author=FACTORY_AUTHOR)
 
 
 def test_init_bad_preset_leaves_nothing_behind(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     with pytest.raises(LedgerError):
         init_ledger(
-            workspace,
+            lab / "broken",
             "broken",
             [tmp_path / "missing-preset"],
             author=FACTORY_AUTHOR,
         )
-    assert not workspace.ledger_path("broken").exists()
+    assert not (lab / "broken").exists()
 
 
 def test_init_dry_run_returns_a_plan_and_writes_nothing(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     plan = init_ledger(
-        workspace,
+        lab / "planned",
         "planned",
         [PRESETS / "full"],
         id_prefix="12",
@@ -306,7 +325,7 @@ def test_init_dry_run_returns_a_plan_and_writes_nothing(
 
 def test_open_reopens_with_the_same_schema_and_strategies(ledger_factory) -> None:
     ledger = ledger_factory([PRESETS / "full"], name="reopen", id_prefix="77")
-    reopened = open_ledger(ledger.workspace, "reopen")
+    reopened = open_ledger(ledger.path)
 
     assert reopened.name == "reopen"
     assert reopened.config.name == "reopen"
@@ -326,46 +345,57 @@ def test_open_reopens_with_the_same_schema_and_strategies(ledger_factory) -> Non
     }
 
 
-def test_open_uses_the_default_ledger_and_discovers_the_workspace(
-    tmp_path: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+def test_open_discovers_the_ledger_from_a_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = Workspace.create(
-        tmp_path / "data", default_ledger="default", env=dolt_env
+    """P3: walking up from a subdirectory finds the nearest ledger directory."""
+    lab = make_lab(tmp_path)
+    init_ledger(
+        lab / "default", "default", [PRESETS / "base"], author=FACTORY_AUTHOR
     )
-    init_ledger(workspace, "default", [PRESETS / "base"], author=FACTORY_AUTHOR)
+    nested = lab / "default" / "docs" / "notes"
+    nested.mkdir(parents=True)
 
-    monkeypatch.chdir(workspace.data_dir)
-    for key, value in dolt_env.items():
-        monkeypatch.setenv(key, value)
+    monkeypatch.chdir(nested)
     discovered = open_ledger()
     assert discovered.name == "default"
+    assert discovered.path == (lab / "default").resolve()
 
 
-def test_open_missing_ledger_points_at_the_workspace(
+def test_open_missing_ledger_is_a_usage_error(tmp_path: Path) -> None:
+    """P3: an explicit path that is not a ledger is a clear usage error."""
+    lab = make_lab(tmp_path)
+    with pytest.raises(UsageError, match="does not exist"):
+        open_ledger(lab / "absent")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_open_prefers_the_ledger_author_then_git_config(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    with pytest.raises(UnreachableError, match="not found"):
-        open_ledger(workspace, "absent")
-
-
-def test_open_prefers_ledger_author_then_workspace_author(
-    tmp_path: Path, dolt_env: dict[str, str]
-) -> None:
-    workspace = Workspace.create(
-        tmp_path / "data", author="Workspace <ws@tetramark.invalid>", env=dolt_env
-    )
-    ledger = init_ledger(workspace, "authors", [PRESETS / "base"])
-    assert ledger.author == "Workspace <ws@tetramark.invalid>"
+    """P6: ``ledger.yaml`` wins; removing it falls back to Git config."""
+    for key, value in (
+        ("user.name", "Git User"),
+        ("user.email", "git@tetramark.invalid"),
+    ):
+        subprocess.run(
+            ["git", "config", "--global", "--add", key, value],
+            env=dolt_env,
+            check=True,
+            capture_output=True,
+        )
+    lab = make_lab(tmp_path)
+    ledger = init_ledger(lab / "authors", "authors", [PRESETS / "base"])
+    assert ledger.author == "Git User <git@tetramark.invalid>"
 
     config = read_config(ledger)
     config["author"] = "Ledger <led@tetramark.invalid>"
     write_config(ledger, config)
-    assert open_ledger(workspace, "authors").author == "Ledger <led@tetramark.invalid>"
+    assert open_ledger(lab / "authors").author == "Ledger <led@tetramark.invalid>"
 
     config.pop("author")
     write_config(ledger, config)
-    assert open_ledger(workspace, "authors").author == "Workspace <ws@tetramark.invalid>"
+    assert open_ledger(lab / "authors").author == "Git User <git@tetramark.invalid>"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -382,12 +412,12 @@ def test_open_falls_back_to_git_config(
             check=True,
             capture_output=True,
         )
-    workspace = make_workspace(tmp_path, dolt_env)
-    ledger = init_ledger(workspace, "git", [PRESETS / "base"])
+    lab = make_lab(tmp_path)
+    ledger = init_ledger(lab / "git", "git", [PRESETS / "base"])
 
     assert ledger.author == "Git User <git@tetramark.invalid>"
     assert read_config(ledger)["author"] == "Git User <git@tetramark.invalid>"
-    assert open_ledger(workspace, "git").author == "Git User <git@tetramark.invalid>"
+    assert open_ledger(lab / "git").author == "Git User <git@tetramark.invalid>"
 
 
 def test_open_warns_when_the_live_fingerprint_differs(ledger_factory) -> None:
@@ -397,7 +427,7 @@ def test_open_warns_when_the_live_fingerprint_differs(ledger_factory) -> None:
     )
 
     with pytest.warns(UserWarning, match="tm schema plan"):
-        reopened = open_ledger(ledger.workspace, "stale")
+        reopened = open_ledger(ledger.path)
     assert reopened.warnings and "tm schema plan" in reopened.warnings[0]
     assert reopened.check_fingerprint(warn=False) is False
 
@@ -408,7 +438,7 @@ def test_open_is_quiet_when_the_fingerprint_matches(ledger_factory) -> None:
 
     with warnings_module.catch_warnings(record=True) as caught:
         warnings_module.simplefilter("always")
-        reopened = open_ledger(ledger.workspace, "fresh")
+        reopened = open_ledger(ledger.path)
     assert not [w for w in caught if "schema plan" in str(w.message)]
     assert reopened.warnings == []
     assert reopened.check_fingerprint(warn=False) is True
@@ -419,8 +449,8 @@ def test_open_is_quiet_when_the_fingerprint_matches(ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_is_one_transaction_and_one_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "full"])
+def test_write_is_one_transaction_and_one_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box") as session:
@@ -436,8 +466,8 @@ def test_write_is_one_transaction_and_one_commit(server_ledger_factory) -> None:
     assert latest["author_email"] == "factory@tetramark.invalid"
 
 
-def test_write_rolls_back_when_the_body_raises(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_rolls_back_when_the_body_raises(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
     ledger.driver.execute("CREATE TABLE rollback_probe (id BIGINT)")
 
@@ -450,8 +480,8 @@ def test_write_rolls_back_when_the_body_raises(server_ledger_factory) -> None:
     assert commit_count(ledger) == before
 
 
-def test_write_dry_run_collects_sql_and_executes_nothing(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_dry_run_collects_sql_and_executes_nothing(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", dry_run=True) as session:
@@ -464,8 +494,8 @@ def test_write_dry_run_collects_sql_and_executes_nothing(server_ledger_factory) 
     assert commit_count(ledger) == before
 
 
-def test_write_no_commit_executes_but_does_not_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_no_commit_executes_but_does_not_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     before = commit_count(ledger)
 
     with ledger.write("create probe", verb="add", object="box", no_commit=True) as session:
@@ -476,9 +506,9 @@ def test_write_no_commit_executes_but_does_not_commit(server_ledger_factory) -> 
     assert session.commit_hash is None
 
 
-def test_open_carries_default_dry_run_and_no_commit(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"], name="flags")
-    opened = open_ledger(ledger.workspace, "flags", dry_run=True)
+def test_open_carries_default_dry_run_and_no_commit(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="flags")
+    opened = open_ledger(ledger.path, dry_run=True)
     with opened.write("probe", verb="add", object="box") as session:
         session.execute("CREATE TABLE never_created (id BIGINT)")
     assert "never_created" not in table_names(opened)
@@ -511,7 +541,7 @@ def test_open_on_a_branch_writes_there_and_leaves_main_unchanged(
     _create_branch(ledger, "feature")
     before = commit_count(ledger)
 
-    branch = open_ledger(ledger.workspace, "branchy", branch="feature")
+    branch = open_ledger(ledger.path, branch="feature")
     try:
         assert branch.branch == "feature"
         created = branch.entities.add("item", name="on-branch")
@@ -548,7 +578,7 @@ def test_ledger_yaml_branch_is_the_default_for_open(ledger_factory) -> None:
     write_config(ledger, config)
     assert read_config(ledger)["branch"] == "config-branch"
 
-    opened = open_ledger(ledger.workspace, "branchdefault")
+    opened = open_ledger(ledger.path)
     try:
         assert opened.branch == "config-branch"
         opened.entities.add("item", name="from-config")
@@ -562,7 +592,7 @@ def test_missing_branch_raises_usage_and_creates_nothing(ledger_factory) -> None
     ledger = ledger_factory([PRESETS / "base"], name="nobranch")
     before = commit_count(ledger)
     with pytest.raises(UsageError, match="does not exist"):
-        open_ledger(ledger.workspace, "nobranch", branch="absent")
+        open_ledger(ledger.path, branch="absent")
     assert ledger.driver.query(
         "SELECT 1 AS `found` FROM dolt_branches WHERE `name` = %s", ("absent",)
     ) == []
@@ -573,7 +603,7 @@ def test_open_with_the_checked_out_branch_uses_the_revision_database(
     ledger_factory,
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="samebranch")
-    opened = open_ledger(ledger.workspace, "samebranch", branch="main")
+    opened = open_ledger(ledger.path, branch="main")
     try:
         opened.entities.add("item", name="on-main")
         assert opened.branch == "main"
@@ -585,30 +615,30 @@ def test_open_with_the_checked_out_branch_uses_the_revision_database(
         opened.close()
 
 
-def test_write_requires_a_context_manager(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_requires_a_context_manager(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     session = ledger.write("probe", verb="add", object="box")
     assert isinstance(session, WriteSession)
     with pytest.raises(LedgerError, match="inside 'with"):
         session.execute("SELECT 1")
 
 
-def test_write_refuses_non_ascii_commit_messages(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_refuses_non_ascii_commit_messages(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     with pytest.raises(LedgerError, match="ASCII"):
         ledger.write("加了一支管", verb="add", object="aliquot")
 
 
-def test_write_refuses_a_malformed_verb_or_object(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"])
+def test_write_refuses_a_malformed_verb_or_object(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"])
     with pytest.raises(UsageError):
         ledger.write("x", verb="Add It", object="box")
     with pytest.raises(UsageError):
         ledger.write("x", verb="add", object="Box!")
 
 
-def test_next_id_uses_the_configured_strategies(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([PRESETS / "base"], id_prefix="08")
+def test_next_id_uses_the_configured_strategies(ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "base"], id_prefix="08")
     entity_id = ledger.next_id("entity")
     assert isinstance(entity_id, str) and len(entity_id) == 36
     stock_id = ledger.next_id("stock")
@@ -625,35 +655,23 @@ def test_next_id_uses_the_configured_strategies(server_ledger_factory) -> None:
 def cli_isolated(
     monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str], tmp_path: Path
 ) -> None:
-    for key in (
-        "DOLT_ROOT_PATH",
-        "HOME",
-        "XDG_CONFIG_HOME",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_SYSTEM",
-    ):
-        monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
+    """Run the CLI with the isolated Dolt/Git config and an empty cwd."""
+    for key, value in dolt_env.items():
+        monkeypatch.setenv(key, value)
+    # P8: bare preset names must resolve from the bundled presets, not a
+    # developer's shell; dolt_env already popped this, so unset it here too.
+    monkeypatch.delenv("TETRAMARK_PRESETS_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
-def test_cli_init_creates_a_ledger(
-    cli_isolated: None, tmp_path: Path
-) -> None:
-    from typer.testing import CliRunner
+def test_cli_init_creates_a_ledger(cli_isolated: None, tmp_path: Path) -> None:
+    target = tmp_path / "data" / "cliled"
 
-    from tetramark.cli.app import app
-
-    runner = CliRunner()
-    data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    result = runner.invoke(
+    result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
             "init",
-            "cliled",
+            str(target),
             "--preset",
             str(PRESETS / "full"),
             "--id-prefix",
@@ -662,58 +680,50 @@ def test_cli_init_creates_a_ledger(
             CLI_AUTHOR,
         ],
     )
+
     assert result.exit_code == 0, result.output
     assert "Created ledger cliled" in result.output
-    assert (workspace.ledger_path("cliled") / ".dolt").is_dir()
+    assert (target / ".dolt").is_dir()
 
-    ledger = open_ledger(workspace, "cliled")
-    assert latest_commit(ledger)["message"] == "init(ledger): cliled"
-    assert ledger.author == CLI_AUTHOR
+    ledger = open_ledger(target)
+    try:
+        assert latest_commit(ledger)["message"] == "init(ledger): cliled"
+        assert ledger.author == CLI_AUTHOR
+    finally:
+        ledger.close()
 
 
 def test_cli_init_dry_run_prints_sql_and_writes_nothing(
     cli_isolated: None, tmp_path: Path
 ) -> None:
-    from typer.testing import CliRunner
+    target = tmp_path / "data" / "planned"
 
-    from tetramark.cli.app import app
-
-    runner = CliRunner()
-    data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    result = runner.invoke(
+    result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
             "--dry-run",
             "init",
-            "planned",
+            str(target),
             "--preset",
             str(PRESETS / "base"),
             "--author",
             CLI_AUTHOR,
         ],
     )
+
     assert result.exit_code == 0, result.output
     assert "Would create ledger planned" in result.output
     assert "CREATE TABLE `ledger_meta`" in result.output
-    assert not workspace.ledger_path("planned").exists()
+    assert not target.exists()
 
 
 def test_cli_init_requires_a_preset(
     cli_isolated: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import sys
-
-    from tetramark.cli.app import main
-
-    data = tmp_path / "data"
-    Workspace.create(data)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["tm", "--workspace", str(data), "init", "bare", "--author", CLI_AUTHOR],
+        ["tm", "init", str(tmp_path / "data" / "bare"), "--author", CLI_AUTHOR],
     )
     with pytest.raises(SystemExit) as excinfo:
         main()
@@ -722,21 +732,9 @@ def test_cli_init_requires_a_preset(
 
 
 def test_cli_presets_list_and_show(
-    cli_isolated: None, tmp_path: Path, dolt_env: dict[str, str]
+    cli_isolated: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from typer.testing import CliRunner
-
-    from conftest import REPO_PRESETS
-
-    from tetramark.cli.app import app
-
-    runner = CliRunner()
-    data = tmp_path / "data"
-    Workspace.create(data, presets_dir=str(REPO_PRESETS))
-
-    listed = runner.invoke(
-        app, ["--workspace", str(data), "presets", "list"]
-    )
+    listed = CliRunner().invoke(app, ["presets", "list"])
     assert listed.exit_code == 0, listed.output
     # The parts are listed next to the bundles: molbio is `include:`-only now.
     assert listed.output.split() == [
@@ -758,48 +756,33 @@ def test_cli_presets_list_and_show(
         "zebrafish",
     ]
 
-    shown = runner.invoke(
-        app, ["--workspace", str(data), "presets", "show", "molbio"]
-    )
+    shown = CliRunner().invoke(app, ["presets", "show", "molbio"])
     assert shown.exit_code == 0, shown.output
     payload = yaml.safe_load(shown.output)
     assert payload["preset"] == "molbio"
     assert {"plasmid", "item"} <= set(payload["kinds"])
 
-    # A path still works without any workspace.
-    shown = runner.invoke(app, ["presets", "show", str(PRESETS / "chain")])
+    # A path works with no preset directory at all (P8).
+    shown = CliRunner().invoke(app, ["presets", "show", str(PRESETS / "chain")])
     assert shown.exit_code == 0, shown.output
     payload = yaml.safe_load(shown.output)
     assert payload["preset"] == "chain"
     assert [rule["id"] for rule in payload["rules"]] == ["CH01", "CH02"]
 
-    empty = tmp_path / "empty"
-    Workspace.create(empty)
-    missing_key = runner.invoke(
-        app, ["--workspace", str(empty), "presets", "list"]
-    )
+    # A broken installation with no env var and no bundled presets is a usage
+    # error pointing at $TETRAMARK_PRESETS_DIR.
+    monkeypatch.setattr("tetramark.cli.ledger.default_presets_dir", lambda: None)
+    missing_key = CliRunner().invoke(app, ["presets", "list"])
     assert missing_key.exit_code != 0
     assert isinstance(missing_key.exception, UsageError)
-    assert "presets_dir" in str(missing_key.exception)
+    assert "TETRAMARK_PRESETS_DIR" in str(missing_key.exception)
 
 
-def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
-    from typer.testing import CliRunner
-
-    from tetramark.cli.app import app
-
-    ledger = server_ledger_factory([PRESETS / "full"], name="shown")
-    runner = CliRunner()
-    result = runner.invoke(
+def test_cli_schema_show(cli_isolated: None, ledger_factory) -> None:
+    ledger = ledger_factory([PRESETS / "full"], name="shown")
+    result = CliRunner().invoke(
         app,
-        [
-            "--workspace",
-            str(ledger.workspace.data_dir),
-            "--ledger",
-            "shown",
-            "schema",
-            "show",
-        ],
+        ["--ledger", str(ledger.path), "schema", "show"],
     )
     assert result.exit_code == 0, result.output
     payload = yaml.safe_load(result.output)
@@ -824,17 +807,9 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     }
     assert "forced" in event_columns
 
-    as_json = runner.invoke(
+    as_json = CliRunner().invoke(
         app,
-        [
-            "--workspace",
-            str(ledger.workspace.data_dir),
-            "--ledger",
-            "shown",
-            "schema",
-            "show",
-            "--json",
-        ],
+        ["--ledger", str(ledger.path), "schema", "show", "--json"],
     )
     assert as_json.exit_code == 0, as_json.output
     json_payload = json.loads(as_json.output)
@@ -842,18 +817,9 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
     assert json_payload["tetramark_version"] == __version__
     assert json_payload["created_with"] == __version__
 
-    one = runner.invoke(
+    one = CliRunner().invoke(
         app,
-        [
-            "--workspace",
-            str(ledger.workspace.data_dir),
-            "--ledger",
-            "shown",
-            "schema",
-            "show",
-            "plasmid",
-            "--json",
-        ],
+        ["--ledger", str(ledger.path), "schema", "show", "plasmid", "--json"],
     )
     assert one.exit_code == 0, one.output
     single = json.loads(one.output)
@@ -867,9 +833,9 @@ def test_cli_schema_show(cli_isolated: None, server_ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def make_bare_database(workspace: Workspace, name: str, dolt_run) -> Path:
-    """A ``dolt init`` database inside the workspace, without ``ledger.yaml``."""
-    path = workspace.ledger_path(name)
+def make_bare_database(lab: Path, name: str, dolt_run) -> Path:
+    """A ``dolt init`` database inside the lab directory, without ``ledger.yaml``."""
+    path = lab / name
     path.mkdir(parents=True)
     dolt_run(
         "init",
@@ -962,8 +928,8 @@ def test_adopt_refuses_a_legacy_schema_and_writes_nothing(
     dolt_run,
     dry_run: bool,
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "legacy", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "legacy", dolt_run)
     create_legacy_schema(path, dolt_run)
     head = head_hash(path, dolt_run)
     messages = dolt_messages(path, dolt_run)
@@ -972,7 +938,7 @@ def test_adopt_refuses_a_legacy_schema_and_writes_nothing(
 
     with pytest.raises(LedgerError, match="schema is not empty"):
         adopt_ledger(
-            workspace,
+            lab / "legacy",
             "legacy",
             [PRESETS / "base"],
             author=LEGACY_AUTHOR,
@@ -990,14 +956,14 @@ def test_adopt_refuses_a_legacy_schema_and_writes_nothing(
 def test_adopt_refuses_a_database_with_dolt_tests_rows(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "tested", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "tested", dolt_run)
     create_legacy_schema(path, dolt_run, tests_row=True)
     drop_legacy_schema(path, dolt_run)  # tables/views gone, the test row remains
     head = head_hash(path, dolt_run)
 
     with pytest.raises(LedgerError, match="dolt_tests"):
-        adopt_ledger(workspace, "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
+        adopt_ledger(lab / "tested", "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
 
     assert head_hash(path, dolt_run) == head
     assert not (path / "ledger.yaml").exists()
@@ -1006,22 +972,22 @@ def test_adopt_refuses_a_database_with_dolt_tests_rows(
     dolt_run("sql", "-q", "DELETE FROM dolt_tests", cwd=path)
     commit_all(path, dolt_run, "migrate: clear legacy dolt_tests")
     pre_head = head_hash(path, dolt_run)
-    ledger = adopt_ledger(workspace, "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
+    ledger = adopt_ledger(lab / "tested", "tested", [PRESETS / "base"], author=LEGACY_AUTHOR)
     assert ledger.meta["adopted_from_commit"] == pre_head
 
 
 def test_adopt_refuses_a_dirty_working_set(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "dirty", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "dirty", dolt_run)
     dolt_run("sql", "-q", "CREATE TABLE scratch (id BIGINT)", cwd=path)
     head = head_hash(path, dolt_run)
     status = working_set(path, dolt_run)
     assert status and status[0]["table_name"] == "scratch"
 
     with pytest.raises(LedgerError, match="working set is not clean"):
-        adopt_ledger(workspace, "dirty", [PRESETS / "base"], author=LEGACY_AUTHOR)
+        adopt_ledger(lab / "dirty", "dirty", [PRESETS / "base"], author=LEGACY_AUTHOR)
 
     assert head_hash(path, dolt_run) == head
     assert working_set(path, dolt_run) == status  # untouched, still dirty
@@ -1031,30 +997,30 @@ def test_adopt_refuses_a_dirty_working_set(
 def test_adopt_requires_an_existing_dolt_database(
     tmp_path: Path, dolt_env: dict[str, str]
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
+    lab = make_lab(tmp_path)
     with pytest.raises(LedgerError, match="no Dolt database"):
         adopt_ledger(
-            workspace, "absent", [PRESETS / "base"], author=LEGACY_AUTHOR
+            lab / "absent", "absent", [PRESETS / "base"], author=LEGACY_AUTHOR
         )
-    assert not workspace.ledger_path("absent").exists()
+    assert not (lab / "absent").exists()
 
-    plain = workspace.ledger_path("plain")
-    plain.mkdir()
+    plain = lab / "plain"
+    plain.mkdir(parents=True)
     with pytest.raises(LedgerError, match="not a Dolt database"):
-        adopt_ledger(workspace, "plain", [PRESETS / "base"], author=LEGACY_AUTHOR)
+        adopt_ledger(lab / "plain", "plain", [PRESETS / "base"], author=LEGACY_AUTHOR)
     assert list(plain.iterdir()) == []
 
 
 def test_adopt_reports_a_missing_branch_as_a_usage_error(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "branchless", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "branchless", dolt_run)
     head = head_hash(path, dolt_run)
 
     with pytest.raises(UsageError, match="does not exist"):
         adopt_ledger(
-            workspace,
+            lab / "branchless",
             "branchless",
             [PRESETS / "base"],
             author=LEGACY_AUTHOR,
@@ -1070,8 +1036,8 @@ def test_adopt_reports_a_missing_branch_as_a_usage_error(
 def test_adopt_formats_an_existing_database_and_keeps_its_history(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "legacy", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "legacy", dolt_run)
     create_legacy_schema(path, dolt_run)
     drop_legacy_schema(path, dolt_run)
     pre_head = head_hash(path, dolt_run)
@@ -1079,7 +1045,7 @@ def test_adopt_formats_an_existing_database_and_keeps_its_history(
     old_count = len(old_messages)
 
     ledger = adopt_ledger(
-        workspace,
+        lab / "legacy",
         "legacy",
         [PRESETS / "base"],
         id_prefix="12",
@@ -1128,13 +1094,13 @@ def test_adopt_formats_an_existing_database_and_keeps_its_history(
 def test_adopt_dry_run_reports_and_writes_nothing(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "planned", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "planned", dolt_run)
     head = head_hash(path, dolt_run)
     messages = dolt_messages(path, dolt_run)
 
     plan = adopt_ledger(
-        workspace,
+        lab / "planned",
         "planned",
         [PRESETS / "base"],
         author=LEGACY_AUTHOR,
@@ -1157,21 +1123,21 @@ def test_adopt_dry_run_reports_and_writes_nothing(
 def test_adopt_force_config_overwrites_an_existing_ledger_yaml(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "configured", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "configured", dolt_run)
     stale = "name: stale\npresets: []\n"
     (path / "ledger.yaml").write_text(stale, encoding="utf-8")
     head = head_hash(path, dolt_run)
 
     with pytest.raises(LedgerError, match="force-config"):
         adopt_ledger(
-            workspace, "configured", [PRESETS / "base"], author=LEGACY_AUTHOR
+            lab / "configured", "configured", [PRESETS / "base"], author=LEGACY_AUTHOR
         )
     assert (path / "ledger.yaml").read_text(encoding="utf-8") == stale
     assert head_hash(path, dolt_run) == head
 
     ledger = adopt_ledger(
-        workspace,
+        lab / "configured",
         "configured",
         [PRESETS / "base"],
         author=LEGACY_AUTHOR,
@@ -1189,8 +1155,8 @@ def test_failed_adopt_rolls_back_without_removing_the_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression for SPEC A4: a failed adopt must never rmtree the database."""
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "protected", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "protected", dolt_run)
     create_legacy_schema(path, dolt_run)
     drop_legacy_schema(path, dolt_run)
     pre_head = head_hash(path, dolt_run)
@@ -1203,7 +1169,7 @@ def test_failed_adopt_rolls_back_without_removing_the_database(
         patcher.setattr("tetramark.core.ledger.install_tests", boom)
         with pytest.raises(RuntimeError, match="injected adopt failure"):
             adopt_ledger(
-                workspace, "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
+                lab / "protected", "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
             )
 
     # The directory, its .dolt repository and the whole history survive.
@@ -1218,7 +1184,7 @@ def test_failed_adopt_rolls_back_without_removing_the_database(
 
     # ... and because the rollback is complete, adopting can simply be retried.
     ledger = adopt_ledger(
-        workspace, "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
+        lab / "protected", "protected", [PRESETS / "base"], author=LEGACY_AUTHOR
     )
     assert ledger.meta["adopted_from_commit"] == pre_head
     assert dolt_messages(path, dolt_run)[0] == "adopt(ledger): protected"
@@ -1230,8 +1196,8 @@ def test_failed_adopt_with_force_config_restores_the_ledger_yaml(
     dolt_run,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "restore", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "restore", dolt_run)
     stale = "name: stale\npresets: []\n"
     (path / "ledger.yaml").write_text(stale, encoding="utf-8")
     head = head_hash(path, dolt_run)
@@ -1243,7 +1209,7 @@ def test_failed_adopt_with_force_config_restores_the_ledger_yaml(
         patcher.setattr("tetramark.core.ledger.install_tests", boom)
         with pytest.raises(RuntimeError, match="injected adopt failure"):
             adopt_ledger(
-                workspace,
+                lab / "restore",
                 "restore",
                 [PRESETS / "base"],
                 author=LEGACY_AUTHOR,
@@ -1267,8 +1233,8 @@ def test_failed_adopt_mid_preset_copy_restores_every_preset_file(
     adopt rollback can restore a pre-existing copy and remove the ones this
     attempt created — even when the failure happens mid-copy.
     """
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "copyfail", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "copyfail", dolt_run)
     presets = path / "presets"
     (presets / "base").mkdir(parents=True)
     previous = b"pre-existing base preset\n"
@@ -1287,7 +1253,7 @@ def test_failed_adopt_mid_preset_copy_restores_every_preset_file(
         patcher.setattr("tetramark.core.ledger.shutil.copyfile", flaky)
         with pytest.raises(OSError, match="injected mid-copy failure"):
             adopt_ledger(
-                workspace, "copyfail", [PRESETS / "full"], author=LEGACY_AUTHOR
+                lab / "copyfail", "copyfail", [PRESETS / "full"], author=LEGACY_AUTHOR
             )
 
     # Exactly the file that existed before survives, byte for byte; the files
@@ -1306,8 +1272,8 @@ def test_failed_adopt_mid_preset_copy_restores_every_preset_file(
 def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
     tmp_path: Path, dolt_env: dict[str, str], dolt_run
 ) -> None:
-    workspace = make_workspace(tmp_path, dolt_env)
-    path = make_bare_database(workspace, "branched", dolt_run)
+    lab = make_lab(tmp_path)
+    path = make_bare_database(lab, "branched", dolt_run)
     create_legacy_schema(path, dolt_run)
     main_head = head_hash(path, dolt_run)
     main_messages = dolt_messages(path, dolt_run)
@@ -1344,7 +1310,7 @@ def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
     )
 
     ledger = adopt_ledger(
-        workspace,
+        lab / "branched",
         "branched",
         [PRESETS / "base"],
         author=LEGACY_AUTHOR,
@@ -1370,100 +1336,31 @@ def test_adopt_on_a_branch_leaves_the_other_branch_untouched(
     ]
 
 
-@pytest.mark.server
-def test_adopt_formats_an_existing_server_database(server_workspace: Workspace) -> None:
-    """Adopt works through the server driver (the production path)."""
-    from tetramark.driver.server import ServerDriver
-
-    name = f"t_{worker_id()}_adopt"
-    host, port = server_workspace.config.host, server_workspace.config.port
-    with admin_connection(server_workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(f"CREATE DATABASE `{name}`")
-    try:
-        assert (server_workspace.data_dir / name / ".dolt").is_dir()
-        main_driver = ServerDriver(host, port, name)
-        main_driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
-        main_driver.commit("legacy schema", FACTORY_AUTHOR)
-        main_head = str(
-            main_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-        )
-        main_driver.execute("CALL DOLT_BRANCH(%s)", ("tetramark",))
-        main_driver.close()
-
-        branch_driver = ServerDriver(host, port, name, branch="tetramark")
-        branch_driver.execute("DROP TABLE legacy_t")
-        branch_driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
-        branch_head = str(
-            branch_driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-        )
-        branch_count = int(
-            branch_driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]
-        )
-        branch_driver.close()
-
-        ledger = adopt_ledger(
-            server_workspace,
-            name,
-            [PRESETS / "base"],
-            author=FACTORY_AUTHOR,
-            branch="tetramark",
-        )
-        try:
-            assert ledger.branch == "tetramark"
-            assert ledger.meta["adopted_from_commit"] == branch_head
-            assert ledger.meta["spec_version"] == str(SPEC_VERSION)
-            assert ledger.check().passed
-            messages = [
-                str(row["message"])
-                for row in ledger.driver.query("SELECT message FROM dolt_log")
-            ]
-            assert len(messages) == branch_count + 1
-            assert messages[0] == f"adopt(ledger): {name}"
-        finally:
-            ledger.close()
-
-        reopened = ServerDriver(host, port, name)
-        try:
-            assert reopened.query(
-                "SELECT table_name AS name FROM information_schema.tables "
-                "WHERE table_schema = DATABASE()"
-            ) == [{"name": "legacy_t"}]
-            assert str(
-                reopened.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]
-            ) == main_head
-        finally:
-            reopened.close()
-    finally:
-        drop_database(server_workspace, name)
-
-
 # ---------------------------------------------------------------------------
 # Adopt CLI (spec A4)
 # ---------------------------------------------------------------------------
 
 
-def test_cli_init_help_documents_adopt(cli_isolated: None) -> None:
-    from typer.testing import CliRunner
+def test_cli_help_documents_the_adopt_command(cli_isolated: None) -> None:
+    """P9/R2: adoption has its own command; ``tm init --adopt`` is gone."""
+    adopt_help = CliRunner().invoke(app, ["adopt", "--help"])
+    assert adopt_help.exit_code == 0, adopt_help.output
+    assert "--force-config" in adopt_help.output
+    assert "in place" in adopt_help.output
 
-    from tetramark.cli.app import app
+    init_help = CliRunner().invoke(app, ["init", "--help"])
+    assert init_help.exit_code == 0, init_help.output
+    assert "--name" in init_help.output
+    assert "PATH" in init_help.output
+    assert "--adopt" not in init_help.output
+    assert "--force-config" not in init_help.output
 
-    result = CliRunner().invoke(app, ["init", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "--adopt" in result.output
-    assert "--force-config" in result.output
 
-
-def test_cli_init_adopt_formats_an_existing_database(
+def test_cli_adopt_formats_an_existing_database(
     cli_isolated: None, tmp_path: Path, dolt_run
 ) -> None:
-    from typer.testing import CliRunner
-
-    from tetramark.cli.app import app
-
     data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    path = make_bare_database(workspace, "cliadopt", dolt_run)
+    path = make_bare_database(data, "cliadopt", dolt_run)
     create_legacy_schema(path, dolt_run)
     drop_legacy_schema(path, dolt_run)
     pre_head = head_hash(path, dolt_run)
@@ -1471,11 +1368,8 @@ def test_cli_init_adopt_formats_an_existing_database(
     result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
-            "init",
-            "cliadopt",
-            "--adopt",
+            "adopt",
+            str(path),
             "--preset",
             str(PRESETS / "base"),
             "--id-prefix",
@@ -1488,7 +1382,7 @@ def test_cli_init_adopt_formats_an_existing_database(
     assert "Adopted ledger cliadopt" in result.output
     assert f"adopted    : {pre_head}" in result.output
 
-    ledger = open_ledger(workspace, "cliadopt")
+    ledger = open_ledger(path)
     try:
         assert latest_commit(ledger)["message"] == "adopt(ledger): cliadopt"
         assert ledger.meta["adopted_from_commit"] == pre_head
@@ -1497,16 +1391,11 @@ def test_cli_init_adopt_formats_an_existing_database(
         ledger.close()
 
 
-def test_cli_init_adopt_uses_the_global_branch(
+def test_cli_adopt_uses_the_global_branch(
     cli_isolated: None, tmp_path: Path, dolt_run
 ) -> None:
-    from typer.testing import CliRunner
-
-    from tetramark.cli.app import app
-
     data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    path = make_bare_database(workspace, "clibranch", dolt_run)
+    path = make_bare_database(data, "clibranch", dolt_run)
     create_legacy_schema(path, dolt_run)
     main_head = head_hash(path, dolt_run)
     dolt_run("sql", "-q", "CALL DOLT_BRANCH('tetramark');", cwd=path)
@@ -1522,13 +1411,10 @@ def test_cli_init_adopt_uses_the_global_branch(
     result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
             "-b",
             "tetramark",
-            "init",
-            "clibranch",
-            "--adopt",
+            "adopt",
+            str(path),
             "--preset",
             str(PRESETS / "base"),
             "--author",
@@ -1550,27 +1436,19 @@ def test_cli_init_adopt_uses_the_global_branch(
     assert {row["name"] for row in branches} == {"main", "tetramark"}
 
 
-def test_cli_init_adopt_dry_run_prints_and_writes_nothing(
+def test_cli_adopt_dry_run_prints_and_writes_nothing(
     cli_isolated: None, tmp_path: Path, dolt_run
 ) -> None:
-    from typer.testing import CliRunner
-
-    from tetramark.cli.app import app
-
     data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    path = make_bare_database(workspace, "cliplanned", dolt_run)
+    path = make_bare_database(data, "cliplanned", dolt_run)
     head = head_hash(path, dolt_run)
 
     result = CliRunner().invoke(
         app,
         [
-            "--workspace",
-            str(data),
             "--dry-run",
-            "init",
-            "cliplanned",
-            "--adopt",
+            "adopt",
+            str(path),
             "--preset",
             str(PRESETS / "base"),
             "--author",
@@ -1586,20 +1464,15 @@ def test_cli_init_adopt_dry_run_prints_and_writes_nothing(
     assert object_names(path, dolt_run) == []
 
 
-def test_cli_init_adopt_refuses_a_legacy_schema(
+def test_cli_adopt_refuses_a_legacy_schema(
     cli_isolated: None,
     tmp_path: Path,
     dolt_run,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import sys
-
-    from tetramark.cli.app import main
-
     data = tmp_path / "data"
-    workspace = Workspace.create(data)
-    path = make_bare_database(workspace, "clirefused", dolt_run)
+    path = make_bare_database(data, "clirefused", dolt_run)
     create_legacy_schema(path, dolt_run)
     head = head_hash(path, dolt_run)
 
@@ -1608,11 +1481,8 @@ def test_cli_init_adopt_refuses_a_legacy_schema(
         "argv",
         [
             "tm",
-            "--workspace",
-            str(data),
-            "init",
-            "clirefused",
-            "--adopt",
+            "adopt",
+            str(path),
             "--preset",
             str(PRESETS / "base"),
             "--author",
@@ -1626,27 +1496,19 @@ def test_cli_init_adopt_refuses_a_legacy_schema(
     assert head_hash(path, dolt_run) == head
 
 
-def test_cli_force_config_requires_adopt(
+def test_cli_force_config_is_only_on_adopt(
     cli_isolated: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import sys
-
-    from tetramark.cli.app import main
-
-    data = tmp_path / "data"
-    Workspace.create(data)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "tm",
-            "--workspace",
-            str(data),
             "init",
-            "noadopt",
+            str(tmp_path / "data" / "noadopt"),
             "--preset",
             str(PRESETS / "base"),
             "--force-config",
@@ -1657,68 +1519,4 @@ def test_cli_force_config_requires_adopt(
     with pytest.raises(SystemExit) as excinfo:
         main()
     assert excinfo.value.code == EXIT_USAGE
-    assert "--force-config only applies to --adopt" in capsys.readouterr().err
-
-
-@pytest.mark.server
-def test_failed_adopt_on_a_server_database_rolls_back(
-    server_workspace: Workspace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The production path: the server database survives a failed adopt too."""
-    from tetramark.driver.server import ServerDriver
-
-    name = f"t_{worker_id()}_adopt_fail"
-    host, port = server_workspace.config.host, server_workspace.config.port
-    with admin_connection(server_workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(f"CREATE DATABASE `{name}`")
-    try:
-        driver = ServerDriver(host, port, name)
-        driver.execute("CREATE TABLE legacy_t (id BIGINT NOT NULL PRIMARY KEY)")
-        driver.commit("legacy schema", FACTORY_AUTHOR)
-        driver.execute("DROP TABLE legacy_t")
-        driver.commit("migrate: drop legacy schema", FACTORY_AUTHOR)
-        pre_head = str(driver.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"])
-        base_count = int(driver.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"])
-        driver.close()
-
-        def boom(*args: object, **kwargs: object) -> None:
-            raise RuntimeError("injected adopt failure")
-
-        with monkeypatch.context() as patcher:
-            patcher.setattr("tetramark.core.ledger.install_tests", boom)
-            with pytest.raises(RuntimeError, match="injected adopt failure"):
-                adopt_ledger(
-                    server_workspace,
-                    name,
-                    [PRESETS / "base"],
-                    author=FACTORY_AUTHOR,
-                )
-
-        assert (server_workspace.data_dir / name / ".dolt").is_dir()
-        check = ServerDriver(host, port, name)
-        try:
-            assert str(check.query("SELECT DOLT_HASHOF('HEAD') AS h")[0]["h"]) == (
-                pre_head
-            )
-            assert int(check.query("SELECT COUNT(*) AS n FROM dolt_log")[0]["n"]) == (
-                base_count
-            )
-            assert check.query(
-                "SELECT table_name AS name FROM information_schema.tables "
-                "WHERE table_schema = DATABASE()"
-            ) == []
-            assert check.query("SELECT * FROM dolt_status") == []
-        finally:
-            check.close()
-
-        # The rollback is complete, so the adopt can be retried as-is.
-        ledger = adopt_ledger(
-            server_workspace, name, [PRESETS / "base"], author=FACTORY_AUTHOR
-        )
-        try:
-            assert ledger.meta["adopted_from_commit"] == pre_head
-        finally:
-            ledger.close()
-    finally:
-        drop_database(server_workspace, name)
+    assert "No such option: --force-config" in capsys.readouterr().err

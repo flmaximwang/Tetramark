@@ -1,6 +1,6 @@
 """Remote, backup and author configuration (ticket 13, spec §6/§1.1).
 
-Every test drives the real ``dolt`` binary through the isolated workspace from
+Every test drives the real ``dolt`` binary through the isolated environment from
 ``conftest.py``; no Dolt behaviour is mocked.
 """
 
@@ -42,7 +42,6 @@ def cli_isolated(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -70,16 +69,16 @@ def table_names(ledger: Ledger) -> set[str]:
 
 
 def clone_ledger(ledger: Ledger, dolt_run, name: str = "clone") -> Ledger:
-    """Clone ``ledger`` from its pushed remote into the same workspace."""
+    """Clone ``ledger`` from its pushed remote next to it (a standalone ledger)."""
     url = remote.list_remotes(ledger)[0].url
-    target = ledger.workspace.ledger_path(name)
+    target = ledger.path.parent / name
     dolt_run("clone", url, str(target))
     # Dolt clones the database, not plain files: a ledger needs its config and
     # its own preset copies (ticket 20; they are not package data and not in
     # the database). A real clone copies them next to ledger.yaml as well.
     shutil.copy(ledger.path / LEDGER_FILE, target / LEDGER_FILE)
     shutil.copytree(ledger.path / "presets", target / "presets")
-    return open_ledger(ledger.workspace, name)
+    return open_ledger(target)
 
 
 # ---------------------------------------------------------------------------
@@ -193,35 +192,119 @@ def test_multiple_remotes_prefer_origin_unless_one_is_named(
 # ---------------------------------------------------------------------------
 
 
-def test_backup_default_directory_is_restorable(
+def test_backup_without_directory_or_configured_backup_fails(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """P10: no implicit destination next to the ledger; fail with the reason."""
+    ledger = ledger_factory([PRESETS / "base"])
+
+    with pytest.raises(UsageError, match="no default") as refused:
+        remote.backup(ledger)
+
+    message = str(refused.value)
+    assert "same disk" in message
+    assert "tm backup DIR" in message
+    assert "tm backup --name NAME" in message
+    # Nothing was configured and no directory was created next to the ledger.
+    assert not (ledger.path.parent / "backups").exists()
+    assert remote.list_backups(ledger) == []
+
+
+def test_backup_explicit_directory_is_restorable(
     ledger_factory, dolt_run, dolt_conf, tmp_path: Path
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"])
     add_entity(ledger, "e1", "one")
 
-    expected_dir = ledger.workspace.data_dir / "backups" / ledger.name
-    result = remote.backup(ledger)
+    backup_dir = tmp_path / "backups" / ledger.name
+    result = remote.backup(ledger, backup_dir)
 
     assert result.dry_run is False
     assert any("DOLT_BACKUP('add'" in statement for statement in result.statements)
     assert any("DOLT_BACKUP('sync'" in statement for statement in result.statements)
-    assert expected_dir.is_dir()
+    assert backup_dir.is_dir()
     assert remote.list_backups(ledger) == [
-        remote.Backup(name=ledger.name, url=expected_dir.resolve().as_uri())
+        remote.Backup(name=ledger.name, url=backup_dir.resolve().as_uri())
     ]
-    assert remote.default_backup_dir(ledger) == expected_dir
 
     restored_dir = tmp_path / "restored"
     dolt_run(
         "backup",
         "restore",
-        expected_dir.resolve().as_uri(),
+        backup_dir.resolve().as_uri(),
         restored_dir.name,
     )
     restored = EmbeddedDriver(restored_dir)
     assert restored.query(
         "SELECT `id`, `kind`, `name` FROM `entity` ORDER BY `id`"
     ) == [{"id": "e1", "kind": "item", "name": "one"}]
+
+
+def test_backup_without_directory_syncs_configured_backup(
+    ledger_factory, dolt_run, dolt_conf, tmp_path: Path
+) -> None:
+    """With a backup already configured, ``tm backup`` syncs it (no new add)."""
+    ledger = ledger_factory([PRESETS / "base"])
+    add_entity(ledger, "e1", "one")
+    target = tmp_path / "dest"
+    remote.backup(ledger, target)
+    add_entity(ledger, "e2", "two")
+    before = remote.list_backups(ledger)
+
+    dry = remote.backup(ledger, dry_run=True)
+    assert dry.dry_run is True
+    assert dry.statements == (f"CALL DOLT_BACKUP('sync', '{ledger.name}')",)
+    assert remote.list_backups(ledger) == before
+
+    synced = remote.backup(ledger)
+
+    assert synced.statements == (f"CALL DOLT_BACKUP('sync', '{ledger.name}')",)
+    assert "synced backup" in synced.message
+    assert target.resolve().as_uri() in synced.message
+    assert not (ledger.path.parent / "backups").exists()
+
+    # The sync really moved the new commit into the configured destination.
+    restored_dir = tmp_path / "restored"
+    dolt_run("backup", "restore", target.resolve().as_uri(), restored_dir.name)
+    restored = EmbeddedDriver(restored_dir)
+    assert [
+        row["id"]
+        for row in restored.query(
+            "SELECT `id`, `kind`, `name` FROM `entity` ORDER BY `id`"
+        )
+    ] == ["e1", "e2"]
+
+
+def test_backup_without_directory_selects_configured_backup(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """``--name`` picks a configured backup; the ledger-named one is default."""
+    ledger = ledger_factory([PRESETS / "base"], name="named")
+    primary = tmp_path / "primary"
+    archive = tmp_path / "archive"
+    remote.backup(ledger, primary)
+    remote.backup(ledger, archive, name="archive")
+
+    by_default = remote.backup(ledger)
+    assert by_default.statements == (f"CALL DOLT_BACKUP('sync', 'named')",)
+
+    by_name = remote.backup(ledger, name="archive")
+    assert by_name.statements == ("CALL DOLT_BACKUP('sync', 'archive')",)
+    assert archive.resolve().as_uri() in by_name.message
+
+    with pytest.raises(UsageError, match="no backup named 'absent'"):
+        remote.backup(ledger, name="absent")
+
+
+def test_backup_without_directory_requires_a_choice_among_custom_names(
+    ledger_factory, tmp_path: Path
+) -> None:
+    ledger = ledger_factory([PRESETS / "base"], name="custom")
+    remote.backup(ledger, tmp_path / "one", name="one")
+    remote.backup(ledger, tmp_path / "two", name="two")
+
+    with pytest.raises(UsageError, match="several backups are configured"):
+        remote.backup(ledger)
 
 
 def test_backup_explicit_directory_replaces_the_destination(
@@ -295,7 +378,7 @@ def test_set_author_updates_yaml_meta_and_commit_author(ledger_factory) -> None:
     assert latest["author"] == "New Author"
     assert latest["author_email"] == "new@tetramark.invalid"
     assert ledger.author == "New Author <new@tetramark.invalid>"
-    assert open_ledger(ledger.workspace, "authors").author == "New Author <new@tetramark.invalid>"
+    assert open_ledger(ledger.path.parent / "authors").author == "New Author <new@tetramark.invalid>"
 
 
 def test_set_author_dry_run_and_validation(ledger_factory) -> None:
@@ -326,9 +409,8 @@ def test_cli_remote_push_and_backup_workflow(
     ledger_factory, cli_isolated, tmp_path: Path
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="cli")
-    workspace = str(ledger.workspace.data_dir)
     remote_dir = tmp_path / "cli-remote"
-    prefix = ["--workspace", workspace, "--ledger", "cli"]
+    prefix = ["--ledger", str(ledger.path)]
 
     added = runner.invoke(app, [*prefix, "remote", "add", "origin", str(remote_dir)])
     assert added.exit_code == 0, added.output
@@ -348,23 +430,56 @@ def test_cli_remote_push_and_backup_workflow(
     empty = runner.invoke(app, [*prefix, "backup", "ls"])
     assert empty.exit_code == 0, empty.output
     assert "no backups configured" in empty.output
+    listed_option = runner.invoke(app, [*prefix, "backup", "--ls"])
+    assert listed_option.exit_code == 0, listed_option.output
+    assert "no backups configured" in listed_option.output
 
-    backed_up = runner.invoke(app, [*prefix, "backup"])
+    # P10: no DIR and no configured backup is a usage error; nothing is
+    # written, and in particular no implicit backups/ directory appears.
+    refused = runner.invoke(app, [*prefix, "backup"])
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert "no default" in str(refused.exception)
+    assert "tm backup DIR" in str(refused.exception)
+    assert not (ledger.path.parent / "backups").exists()
+
+    target = tmp_path / "cli-backup"
+    backed_up = runner.invoke(app, [*prefix, "backup", str(target)])
     assert backed_up.exit_code == 0, backed_up.output
-    expected_dir = ledger.workspace.data_dir / "backups" / "cli"
-    assert expected_dir.is_dir()
+    assert target.is_dir()
 
     backups = runner.invoke(app, [*prefix, "backup", "ls"])
     assert backups.exit_code == 0, backups.output
     assert "cli" in backups.output
-    assert expected_dir.resolve().as_uri() in backups.output
+    assert target.resolve().as_uri() in backups.output
+
+    # A configured backup is synced when DIR is omitted; still no implicit dir.
+    synced = runner.invoke(app, [*prefix, "backup"])
+    assert synced.exit_code == 0, synced.output
+    assert "synced backup 'cli'" in synced.output
+    assert not (ledger.path.parent / "backups").exists()
+
+    # --name selects a configured backup (and names a new destination).
+    archive = tmp_path / "cli-archive"
+    named = runner.invoke(
+        app, [*prefix, "backup", "--name", "archive", str(archive)]
+    )
+    assert named.exit_code == 0, named.output
+    synced_named = runner.invoke(app, [*prefix, "backup", "--name", "archive"])
+    assert synced_named.exit_code == 0, synced_named.output
+    assert "archive" in synced_named.output
+
+    # A real directory called 'ls' still works when written as ./ls.
+    local_ls = runner.invoke(app, [*prefix, "backup", "./ls"])
+    assert local_ls.exit_code == 0, local_ls.output
+    assert (tmp_path / "ls").is_dir()
 
 
 def test_cli_config_get_and_set_author(
     ledger_factory, cli_isolated
 ) -> None:
     ledger = ledger_factory([PRESETS / "base"], name="cli-author")
-    prefix = ["--workspace", str(ledger.workspace.data_dir), "--ledger", "cli-author"]
+    prefix = ["--ledger", str(ledger.path)]
 
     got = runner.invoke(app, [*prefix, "config", "get", "author"])
     assert got.exit_code == 0, got.output
@@ -378,7 +493,7 @@ def test_cli_config_get_and_set_author(
     got = runner.invoke(app, [*prefix, "config", "get", "author"])
     assert got.exit_code == 0, got.output
     assert new_author in got.output
-    assert open_ledger(ledger.workspace, "cli-author").author == new_author
+    assert open_ledger(ledger.path).author == new_author
 
     unknown = runner.invoke(app, [*prefix, "config", "get", "colour"])
     assert unknown.exit_code != 0

@@ -11,8 +11,10 @@ Responsibilities (spec §1.1, §2, §8):
 * build an :class:`~tetramark.schema.model.EffectiveSchema` with a stable
   :meth:`~tetramark.schema.model.EffectiveSchema.fingerprint`.
 
-Presets live in the repository's ``presets/`` directory (they are not package
-data).  ``tm init`` copies each selected preset and its include closure into
+Presets are repository data (``<repo>/presets``) that an installed wheel ships as
+package data (``<site-packages>/tetramark/presets``); a bare ``--preset NAME``
+resolves through ``$TETRAMARK_PRESETS_DIR`` and then those bundled presets (P8).
+``tm init`` copies each selected preset and its include closure into
 ``<ledger>/presets/``; a ledger then resolves presets from that copy only, so its
 schema cannot drift from the recorded ``preset_versions``.
 
@@ -29,6 +31,8 @@ Public entry points
     Resolve a config into an :class:`EffectiveSchema`.
 ``load_ledger_schema(ledger_dir)``
     Both of the above for a ledger directory, presets from its own copy.
+``resolve_local_dir(value, key=..., ledger_dir=...)``
+    Resolve ``kinds_dir`` / ``rules_dir`` inside the ledger (P13).
 ``resolve_preset_spec(spec, presets_dir=...)``
     One ``--preset`` argument (a name or a path) to a concrete preset.
 ``expand_presets(sources)``
@@ -41,7 +45,9 @@ Public entry points
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -69,6 +75,7 @@ from tetramark.schema.model import (
 __all__ = [
     "PresetCopy",
     "PresetFile",
+    "default_presets_dir",
     "expand_presets",
     "list_presets",
     "load_ledger_config",
@@ -999,6 +1006,46 @@ def _reference_name(raw: str | Path) -> str:
     return path.name
 
 
+def _bundled_presets_dirs() -> tuple[Path, ...]:
+    """Where the presets shipped with tetramark live, most specific first.
+
+    Two layouts are supported (P8):
+
+    * a **source checkout**: ``<repo>/presets`` next to ``src/`` (the preset
+      files are repository data, not Python code);
+    * an **installed wheel**: ``<site-packages>/tetramark/presets``, where
+      ``pyproject.toml`` force-includes the checkout's ``presets/`` so a plain
+      ``pip install tetramark`` still resolves bare preset names.
+
+    The wheel is checked second so a checkout (editable or ``PYTHONPATH``)
+    always uses its own presets.
+    """
+    here = Path(__file__).resolve()
+    return (
+        here.parents[3] / "presets",
+        here.parent.parent / "presets",
+    )
+
+
+def default_presets_dir(*, env: Mapping[str, str] | None = None) -> Path | None:
+    """The directory a bare ``--preset NAME`` resolves from (P8).
+
+    ``$TETRAMARK_PRESETS_DIR`` wins.  Otherwise the presets bundled with
+    tetramark are used: the source checkout's ``presets/`` when running from a
+    checkout, else the package data inside an installed wheel.  ``None`` means
+    the installation ships no presets (or a checkout lost them), so the caller
+    can report how to set the variable or pass a preset path.
+    """
+    environ = os.environ if env is None else env
+    override = environ.get("TETRAMARK_PRESETS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    for bundled in _bundled_presets_dirs():
+        if bundled.is_dir():
+            return bundled
+    return None
+
+
 def resolve_preset_spec(
     spec: str | Path,
     *,
@@ -1009,8 +1056,9 @@ def resolve_preset_spec(
 
     A value containing ``/`` (or ``\\``) or ending in ``.yaml``/``.yml`` is a
     path, resolved against ``base_dir`` (the caller's cwd).  Anything else is a
-    bare name resolved as ``<presets_dir>/<name>.yaml``; without a configured
-    ``presets_dir`` the error names that workspace-config key.
+    bare name resolved as ``<presets_dir>/<name>.yaml``; without a preset
+    directory the error points at ``$TETRAMARK_PRESETS_DIR`` and at passing a
+    path (P8).
     """
     text = str(spec).strip()
     if not text:
@@ -1032,7 +1080,9 @@ def resolve_preset_spec(
 
     if presets_dir is None:
         raise UsageError(
-            f"preset name {text!r} needs 'presets_dir' in workspace.yaml: set it "
+            f"preset name {text!r} is a bare name but no preset directory is "
+            "configured: the presets bundled with tetramark were not found "
+            "(broken installation?) and $TETRAMARK_PRESETS_DIR is unset. Set it "
             "to the directory that holds <name>.yaml (for example the Tetramark "
             "checkout's presets/), or pass --preset as a path instead"
         )
@@ -1206,9 +1256,9 @@ def resolve_ledger_presets(
 
     A ledger uses **only** the presets under ``<ledger>/presets/``: the
     recorded ``preset_versions`` must describe exactly the schema the ledger is
-    opened with, so there is no fallback to a workspace ``presets_dir`` or to a
-    path recorded in ``ledger.yaml``.  A missing copy is a hard error naming the
-    expected file.
+    opened with, so there is no fallback to ``$TETRAMARK_PRESETS_DIR``, the
+    bundled presets, or a path recorded in ``ledger.yaml``.  A missing copy is
+    a hard error naming the expected file.
     """
     root = Path(ledger_dir).expanduser()
     presets_dir = root / "presets"
@@ -1267,6 +1317,46 @@ def list_presets(directory: str | Path) -> list[str]:
     return sorted(names)
 
 
+def resolve_local_dir(value: str, *, key: str, ledger_dir: str | Path) -> Path:
+    """Resolve a local schema directory (``kinds_dir`` / ``rules_dir``).
+
+    A ledger is one self-contained directory (P13): its local kinds and rules
+    live *inside* it, so the ledger keeps working when the directory is copied
+    somewhere else.  The value is therefore resolved against the ledger
+    directory and refused when it leaves the ledger -- an absolute path, a
+    ``..`` escape, or a symlink that points outside.
+
+    The error is a :class:`~tetramark.errors.UsageError` (exit code 2): the
+    configuration is wrong, not the data.
+    """
+    ledger = Path(ledger_dir).expanduser()
+    root = ledger.resolve()
+    raw = str(value).strip()
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        raise UsageError(
+            _local_dir_message(key, raw, ledger, "it is an absolute path")
+        )
+    resolved = (root / candidate).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise UsageError(
+            _local_dir_message(
+                key, raw, ledger, "it points outside the ledger directory"
+            )
+        )
+    return resolved
+
+
+def _local_dir_message(key: str, value: str, ledger: Path, reason: str) -> str:
+    """The refusal for a ``kinds_dir`` / ``rules_dir`` that leaves the ledger."""
+    return (
+        f"invalid {key} {value!r} in {ledger / 'ledger.yaml'}: {reason}. "
+        f"{key} must be a relative path inside the ledger directory, so the "
+        "ledger stays self-contained when it is copied (P13); use a relative "
+        "path such as 'kinds' or 'rules'"
+    )
+
+
 def load_schema(
     config: LedgerConfig,
     *,
@@ -1295,16 +1385,16 @@ def load_schema(
             collector.add(doc, display)
 
     if config.kinds_dir:
-        directory = Path(config.kinds_dir).expanduser()
-        if not directory.is_absolute():
-            directory = root / directory
+        directory = resolve_local_dir(
+            config.kinds_dir, key="kinds_dir", ledger_dir=root
+        )
         for display, doc in _load_local_dir(directory, config.kinds_dir, rules=False):
             collector.add(doc, display, source="local")
 
     if config.rules_dir:
-        directory = Path(config.rules_dir).expanduser()
-        if not directory.is_absolute():
-            directory = root / directory
+        directory = resolve_local_dir(
+            config.rules_dir, key="rules_dir", ledger_dir=root
+        )
         for display, doc in _load_local_dir(directory, config.rules_dir, rules=True):
             collector.add(doc, display, source="local")
 

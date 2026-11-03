@@ -27,9 +27,10 @@ declares the counter, the tag name and its SQL:
 
 Everything goes through the :class:`~tetramark.driver.base.Driver` interface
 (:class:`~tetramark.core.ledger.Ledger` + its write session), never through a
-hand-written ``dolt`` command, so a step runs identically against an embedded
-ledger (``dolt sql`` subprocess) and one served by ``dolt sql-server`` — the
-latter is how ticket 24 migrates the real zsqlab10 ledger.
+hand-written ``dolt`` command, so a step runs against the ledger directory via
+the embedded driver (``dolt sql`` subprocess).  A user-run ``dolt sql-server``
+on the directory is auto-routed by ``dolt sql`` itself; Tetramark does not
+manage one.
 
 A preset step may ship ``renames.yaml`` next to its ``migrate.py``; load it with
 :func:`load_renames` and pass it to
@@ -98,7 +99,6 @@ from tetramark.core.ledger import (
     open as open_ledger,
 )
 from tetramark.driver.base import ensure_ascii, literal
-from tetramark.driver.workspace import WORKSPACE_FILE, Workspace
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.diff import RenameMap
 from tetramark.schema.model import EffectiveSchema
@@ -309,14 +309,15 @@ def open_target(
     dry_run: bool = False,
     allow_legacy_statuses: bool = True,
 ) -> Ledger:
-    """Open the ledger at ``path`` through its workspace, if it has one.
+    """Open the standalone ledger at ``path``.
 
-    ``path`` is the ledger directory (the Dolt database), e.g.
-    ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.  When the parent
-    directory has a ``workspace.yaml`` the workspace decides the driver — a
-    running ``dolt sql-server`` is used, otherwise the embedded driver — so the
-    same step works for a lab workspace and a bare checkout.  A bare Dolt
-    directory (no ``workspace.yaml``) is always opened embedded.
+    ``path`` is the ledger directory (the Dolt database plus its
+    ``ledger.yaml``), e.g. ``/Users/…/Dolt/zsqlab_10_gammaPFD-Fiber_2026.06.25``.
+    A ledger is self-contained in 0.5.0, so the path is opened directly: no
+    parent directory is searched and ``workspace.yaml`` is never read.  The
+    ledger is opened through the embedded driver (``dolt sql`` in the ledger
+    directory), so a user-run ``dolt sql-server`` is auto-routed by ``dolt
+    sql``, not managed here.
 
     ``allow_legacy_statuses`` defaults to true: a migration step must read the
     old shape it is about to change (a spec-3 ``ledger.yaml`` still carries the
@@ -329,18 +330,10 @@ def open_target(
     if not (target / ".dolt").is_dir() or not (target / LEDGER_FILE).is_file():
         raise UsageError(
             f"{target} is not a Tetramark ledger (it needs .dolt and "
-            f"{LEDGER_FILE}): pass the ledger directory itself, not the "
-            "workspace data directory"
+            f"{LEDGER_FILE}): pass the ledger directory itself"
         )
-    if (target.parent / WORKSPACE_FILE).is_file():
-        workspace = Workspace.load(target.parent)
-    else:
-        workspace = Workspace(target.parent)
-    if target.name not in workspace.list_ledgers():
-        raise UsageError(f"{target} is not a ledger of {workspace.data_dir}")
     return open_ledger(
-        workspace,
-        target.name,
+        target,
         branch=branch,
         dry_run=dry_run,
         allow_legacy_statuses=allow_legacy_statuses,
@@ -888,8 +881,6 @@ def _report_failure(
         "Dolt DDL is not transactional, so the statements above may have run "
         "partially. Discard the partial DDL with:\n"
         f"  dolt reset --hard {last_good}\n"
-        "  # or, while the workspace server is running:\n"
-        f"  CALL DOLT_RESET('--hard', {literal(last_good)})\n"
         f"restore-point tag (unchanged): {step.tag}\n"
     )
 
@@ -909,7 +900,7 @@ def main(step: MigrationStep, argv: Sequence[str] | None = None) -> None:
         "--ledger",
         required=True,
         metavar="PATH",
-        help="ledger directory (the Dolt database, not the workspace directory)",
+        help="ledger directory (the directory holding .dolt/ and ledger.yaml)",
     )
     parser.add_argument(
         "--branch",

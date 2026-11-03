@@ -191,7 +191,6 @@ def cli_env(
         "GIT_CONFIG_SYSTEM",
     ):
         monkeypatch.setenv(key, dolt_env[key])
-    monkeypatch.delenv("TETRAMARK_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -200,10 +199,10 @@ def cli_env(
 # ---------------------------------------------------------------------------
 
 
-def test_init_installs_every_generated_test(server_ledger_factory) -> None:
+def test_init_installs_every_generated_test(ledger_factory) -> None:
     # Install-on-init is exactly what this test asserts, so it opts out of the
     # session templates.
-    ledger = server_ledger_factory([FULL], name="installed", real_init=True)
+    ledger = ledger_factory([FULL], name="installed", real_init=True)
     definitions = generate_tests(ledger.schema)
     rows = installed_test_rows(ledger)
 
@@ -227,8 +226,8 @@ def test_init_installs_every_generated_test(server_ledger_factory) -> None:
     assert ledger.driver.query("SELECT * FROM dolt_status") == []
 
 
-def test_fresh_ledger_passes_and_core_groups_are_present(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="clean")
+def test_fresh_ledger_passes_and_core_groups_are_present(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="clean")
     report = ledger.check()
 
     assert report.passed
@@ -241,8 +240,8 @@ def test_fresh_ledger_passes_and_core_groups_are_present(server_ledger_factory) 
     assert {result.group for result in core.results} == {"core"}
 
 
-def test_group_filter_uses_group_prefixes(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="groups")
+def test_group_filter_uses_group_prefixes(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="groups")
     definitions = generate_tests(ledger.schema)
 
     schema = ledger.check(group="schema")
@@ -255,8 +254,8 @@ def test_group_filter_uses_group_prefixes(server_ledger_factory) -> None:
     assert empty.count == 0
 
 
-def test_install_tests_replaces_the_whole_table(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="replaced")
+def test_install_tests_replaces_the_whole_table(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="replaced")
     full_count = installed_test_count(ledger)
 
     base_schema = load_schema(LedgerConfig(name="base", presets=[str(BASE)]))
@@ -276,8 +275,8 @@ def test_install_tests_replaces_the_whole_table(server_ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_slot_capacity_violation_fails_with_details(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="capacity")
+def test_slot_capacity_violation_fails_with_details(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="capacity")
     add_everything(ledger)
     add_prep(ledger)
     add_box(ledger)  # grid9x9 has slot_capacity 2
@@ -300,8 +299,8 @@ def test_slot_capacity_violation_fails_with_details(server_ledger_factory) -> No
     assert plain.detail_rows == []
 
 
-def test_slot_exclusivity_violation_fails(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="exclusive")
+def test_slot_exclusivity_violation_fails(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="exclusive")
     add_everything(ledger)
     add_prep(ledger)
     add_box(ledger)
@@ -326,8 +325,8 @@ def test_slot_exclusivity_violation_fails(server_ledger_factory) -> None:
     assert children.detail_rows[0]["slot"] == "A1"
 
 
-def test_box_nesting_cycle_fails(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="cycle")
+def test_box_nesting_cycle_fails(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="cycle")
     add_box(ledger, "b1", "B1", "grid9x9")
     add_box(ledger, "b2", "B2", "grid9x9", parent="b1", parent_slot=None)
     ledger.driver.execute(
@@ -340,8 +339,8 @@ def test_box_nesting_cycle_fails(server_ledger_factory) -> None:
     assert {row["box"] for row in detail.detail_rows} == {"B1", "B2"}
 
 
-def test_bounded_acyclic_query_ignores_deep_non_cycles(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="deep")
+def test_bounded_acyclic_query_ignores_deep_non_cycles(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="deep")
     # A chain longer than the bound is not a cycle and must keep passing.  Use a
     # slotless kind: spec 5 forbids nesting a box inside a grid box, so the
     # chain must not be built out of grid boxes.
@@ -360,9 +359,9 @@ def test_bounded_acyclic_query_ignores_deep_non_cycles(server_ledger_factory) ->
     assert report.passed
 
 
-def test_in_stock_aliquot_requires_a_position(server_ledger_factory) -> None:
+def test_in_stock_aliquot_requires_a_position(ledger_factory) -> None:
     """Spec 5: in stock ⇔ placed; a not-in-stock aliquot carries no position."""
-    ledger = server_ledger_factory([FULL], name="stored")
+    ledger = ledger_factory([FULL], name="stored")
     add_everything(ledger)
     add_prep(ledger)
     add_box(ledger)
@@ -389,8 +388,8 @@ def test_in_stock_aliquot_requires_a_position(server_ledger_factory) -> None:
     assert [row["aliquot_id"] for row in placed.detail_rows] == ["s1.3"]
 
 
-def test_slotless_capacity_counts_aliquots_and_child_boxes(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="slotless")
+def test_slotless_capacity_counts_aliquots_and_child_boxes(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="slotless")
     assert ledger.schema.kinds["slotlessbox"].geometry.capacity == 5
 
     add_everything(ledger)
@@ -425,8 +424,8 @@ def test_slotless_capacity_counts_aliquots_and_child_boxes(server_ledger_factory
 # ---------------------------------------------------------------------------
 
 
-def test_pattern_test_accepts_valid_and_rejects_invalid_values(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="pattern")
+def test_pattern_test_accepts_valid_and_rejects_invalid_values(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="pattern")
     add_everything(ledger, "e1", code="ABC")
     assert ledger.check(group="schema:everything").passed
 
@@ -442,8 +441,8 @@ def test_pattern_test_accepts_valid_and_rejects_invalid_values(server_ledger_fac
     assert detail.detail_rows[0]["value"] == "abc"
 
 
-def test_entity_kinds_restriction_is_enforced(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="kinds")
+def test_entity_kinds_restriction_is_enforced(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="kinds")
     # bacterial accepts item and plasmid.
     add_item(ledger, "i1")
     ledger.driver.execute(
@@ -542,8 +541,8 @@ def test_empty_entity_kinds_forbids_the_stock_kind() -> None:
     assert "'orphan'" in test.query
 
 
-def test_rule_groups_distinguish_preset_and_local_and_info(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="rule-groups")
+def test_rule_groups_distinguish_preset_and_local_and_info(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="rule-groups")
     schema = write_local_rules(ledger, {"local.yaml": INFO_RULE + FAIL_RULE})
 
     assert schema.rule_sources["CH01"] == "preset"
@@ -557,8 +556,8 @@ def test_rule_groups_distinguish_preset_and_local_and_info(server_ledger_factory
     assert len(rows) == len(generate_tests(schema))
 
 
-def test_info_rule_is_reported_but_never_blocks(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="info")
+def test_info_rule_is_reported_but_never_blocks(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="info")
     add_everything(ledger)  # makes the local info rule report 1 row
     write_local_rules(ledger, {"local.yaml": INFO_RULE})
 
@@ -572,8 +571,8 @@ def test_info_rule_is_reported_but_never_blocks(server_ledger_factory) -> None:
     assert info.is_info
 
 
-def test_local_fail_rule_blocks(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="local-fail")
+def test_local_fail_rule_blocks(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="local-fail")
     add_everything(ledger)
     write_local_rules(ledger, {"local.yaml": FAIL_RULE})
 
@@ -588,17 +587,15 @@ def test_local_fail_rule_blocks(server_ledger_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cli_check_exit_codes_formats_and_verbose(server_ledger_factory, cli_env) -> None:
+def test_cli_check_exit_codes_formats_and_verbose(ledger_factory, cli_env) -> None:
     from typer.testing import CliRunner
 
     from tetramark.cli.app import app
 
-    ledger = server_ledger_factory([FULL], name="cli-check")
+    ledger = ledger_factory([FULL], name="cli-check")
     base = [
-        "--workspace",
-        str(ledger.workspace.data_dir),
         "--ledger",
-        "cli-check",
+        str(ledger.path),
         "check",
     ]
     runner = CliRunner()
@@ -636,12 +633,12 @@ def test_cli_check_exit_codes_formats_and_verbose(server_ledger_factory, cli_env
     assert "e1" in broken_csv.output
 
 
-def test_cli_info_failure_does_not_change_the_exit_code(server_ledger_factory, cli_env) -> None:
+def test_cli_info_failure_does_not_change_the_exit_code(ledger_factory, cli_env) -> None:
     from typer.testing import CliRunner
 
     from tetramark.cli.app import app
 
-    ledger = server_ledger_factory([FULL], name="cli-info")
+    ledger = ledger_factory([FULL], name="cli-info")
     add_everything(ledger)
     write_local_rules(ledger, {"local.yaml": INFO_RULE})
 
@@ -649,10 +646,8 @@ def test_cli_info_failure_does_not_change_the_exit_code(server_ledger_factory, c
     result = runner.invoke(
         app,
         [
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            "cli-info",
+            str(ledger.path),
             "check",
             "--json",
         ],
@@ -663,9 +658,9 @@ def test_cli_info_failure_does_not_change_the_exit_code(server_ledger_factory, c
     assert payload["info_failed"] == 1
 
 
-def test_check_python_api_matches_the_generated_tests(server_ledger_factory) -> None:
+def test_check_python_api_matches_the_generated_tests(ledger_factory) -> None:
     """``Ledger.check`` reports one result per installed test and stays read-only."""
-    ledger = server_ledger_factory([FULL], name="api")
+    ledger = ledger_factory([FULL], name="api")
     report = ledger.check(group="core")
     assert report.count == len(
         [d for d in generate_tests(ledger.schema) if d.group == "core"]
@@ -750,8 +745,8 @@ def test_handmade_status_rows_fail_check_and_a_forced_event_is_accepted(
 # ---------------------------------------------------------------------------
 
 
-def test_grid_box_holding_a_child_box_fails_check(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="grid-child")
+def test_grid_box_holding_a_child_box_fails_check(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="grid-child")
     add_box(ledger, "b1", "B1", "grid9x9")
     add_box(ledger, "b2", "B2", "grid9x9", parent="b1", parent_slot=None)
 
@@ -763,8 +758,8 @@ def test_grid_box_holding_a_child_box_fails_check(server_ledger_factory) -> None
     assert detail.detail_rows[0]["parent_kind"] == "grid9x9"
 
 
-def test_box_name_rule_lists_unsafe_names(server_ledger_factory) -> None:
-    ledger = server_ledger_factory([FULL], name="box-names")
+def test_box_name_rule_lists_unsafe_names(ledger_factory) -> None:
+    ledger = ledger_factory([FULL], name="box-names")
     # Raw SQL: the app refuses these names; the rule catches existing rows.
     ledger.driver.execute(
         "INSERT INTO `box` (`id`, `name`, `kind`) "
@@ -817,10 +812,8 @@ def test_hand_dropped_box_view_fails_check_and_schema_apply_recreates_it(
     applied = runner.invoke(
         app,
         [
-            "--workspace",
-            str(ledger.workspace.data_dir),
             "--ledger",
-            "view-drift",
+            str(ledger.path),
             "schema",
             "apply",
         ],

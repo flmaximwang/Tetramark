@@ -14,6 +14,7 @@ from tetramark.cli.options import (
     group,
     resolve_ledger,
     target_branch,
+    write_command,
 )
 from tetramark.core.ledger import (
     META_CREATED_WITH,
@@ -80,6 +81,7 @@ def plan_schema(
 
 
 @schema_app.command("apply")
+@write_command
 def apply_schema(
     ctx: typer.Context,
     allow_destructive: bool = typer.Option(

@@ -12,13 +12,15 @@ Two lanes:
 * ``uv run pytest -q -n 4`` — the full suite, every integration test against a
   real database. Run this before merging or releasing.
 
-The full suite is still real-Dolt end to end: ``ledger_factory``,
-``embedded_ledger_factory`` and ``server_ledger_factory`` hand out layouts of a
-*session template* (one real ``init_ledger``/``init_ledger_on_server`` per
-standard shape, then copies) so a fresh ledger costs a directory copy instead of
-a full ``tm init``. Anything that changes what ``init`` produces — a custom
-preset, several presets, another ``id_prefix``/``author`` — keeps
-the real init path; see :data:`TEMPLATE_SHAPES`.
+A ledger is one self-contained directory in 0.5.0: ``.dolt/`` plus
+``ledger.yaml``, created in ``tmp_path/<name>``.  There is no workspace layer
+and no server.  The full suite is still real-Dolt end to end:
+``ledger_factory`` and ``embedded_ledger_factory`` hand out layouts of a
+*session template* (one real ``init_ledger`` per standard shape, then copies)
+so a fresh ledger costs a directory copy instead of a full ``tm init``.
+Anything that changes what ``init`` produces — a custom preset, several
+presets, another ``id_prefix``/``author`` — keeps the real init path; see
+:data:`TEMPLATE_SHAPES`.
 """
 
 from __future__ import annotations
@@ -26,13 +28,10 @@ from __future__ import annotations
 import itertools
 import os
 import shutil
-import socket
 import subprocess
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
 from pathlib import Path
 
-import pymysql
 import pytest
 import yaml
 
@@ -40,20 +39,18 @@ from tetramark.core.ledger import (
     LEDGER_FILE,
     Ledger,
     init_ledger,
-    init_ledger_on_server,
     open as open_ledger,
 )
-from tetramark.driver.workspace import Workspace
 from tetramark.errors import LedgerError
-from tetramark.schema.loader import resolve_preset_spec
+from tetramark.schema.loader import default_presets_dir, resolve_preset_spec
 
 DOLT_BINARY = shutil.which("dolt")
 
 #: The presets from ticket 03's test data (directory presets, path-style).
 PRESETS = Path(__file__).parent / "data" / "presets"
 
-#: The repository's own presets; workspaces point `presets_dir` at it so
-#: ``tm init --preset NAME`` works (ticket 20: presets are not package data).
+#: The repository's own presets; bare preset names resolve here when
+#: ``$TETRAMARK_PRESETS_DIR`` is unset (the checkout keeps ``presets/``).
 REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 #: Author used by :func:`ledger_factory` so tests never read a global identity.
@@ -65,7 +62,11 @@ RunDolt = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def isolated_env(root: Path, home: Path) -> dict[str, str]:
-    """An environment whose global Dolt/Git config lives under ``root``/``home``."""
+    """An environment whose global Dolt/Git config lives under ``root``/``home``.
+
+    No ledger-selection environment variable exists in 0.5.0 (P3); the legacy
+    ones are removed so a developer's shell cannot influence a test.
+    """
     root.mkdir(parents=True, exist_ok=True)
     home.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -75,123 +76,9 @@ def isolated_env(root: Path, home: Path) -> dict[str, str]:
     env["GIT_CONFIG_GLOBAL"] = str(home / ".gitconfig")
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env.pop("GIT_CONFIG_NOSYSTEM", None)
-    env.pop("TETRAMARK_WORKSPACE", None)
+    for legacy in ("TETRAMARK_LEDGER", "TETRAMARK_WORKSPACE", "TETRAMARK_PRESETS_DIR"):
+        env.pop(legacy, None)
     return env
-
-
-def free_port() -> int:
-    """An unused TCP port on 127.0.0.1."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def worker_id() -> str:
-    """The xdist worker name (``gw0`` when not running under xdist)."""
-    return os.environ.get("PYTEST_XDIST_WORKER") or "gw0"
-
-
-@contextmanager
-def admin_connection(workspace: Workspace) -> Iterator[pymysql.connections.Connection]:
-    """A short-lived admin connection (no database selected); never leaks."""
-    connection = pymysql.connect(
-        host=workspace.config.host,
-        port=workspace.config.port,
-        user="root",
-        password="",
-        autocommit=True,
-        charset="utf8mb4",
-        connect_timeout=5,
-    )
-    try:
-        yield connection
-    finally:
-        connection.close()
-
-
-def database_names(workspace: Workspace) -> list[str]:
-    """Every database the workspace server currently knows about."""
-    with admin_connection(workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SHOW DATABASES")
-            return sorted(str(row[0]) for row in cursor.fetchall())
-
-
-def drop_database(workspace: Workspace, name: str, *, missing_ok: bool = True) -> None:
-    """``DROP DATABASE ``name`` (idempotent by default)."""
-    clause = "IF EXISTS " if missing_ok else ""
-    quoted = "`" + name.replace("`", "``") + "`"
-    with admin_connection(workspace) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE {clause}{quoted}")
-
-
-def _configure_dolt_identity(dolt_binary: str, env: dict[str, str]) -> None:
-    """Give the isolated global Dolt config a user name and email."""
-    for key, value in (
-        ("user.name", "Tetramark Tests"),
-        ("user.email", "tests@tetramark.invalid"),
-    ):
-        subprocess.run(
-            [dolt_binary, "config", "--global", "--add", key, value],
-            env=env,
-            capture_output=True,
-            check=True,
-        )
-
-
-def _test_server_pids(under: str, orphans_only: bool) -> list[int]:
-    """Pids of ``dolt sql-server`` processes whose data dir lies under ``under``."""
-    out = subprocess.run(
-        ["ps", "-eo", "pid=,ppid=,command="], capture_output=True, text=True
-    ).stdout
-    pids = []
-    for line in out.splitlines():
-        pid, ppid, command = line.split(None, 2)
-        if "dolt sql-server" in command and f"--data-dir {under}" in command:
-            if not orphans_only or ppid == "1":
-                pids.append(int(pid))
-    return pids
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _reap_test_servers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Never leak test ``dolt sql-server`` processes.
-
-    Servers are daemonised (own session), so they outlive a killed pytest.
-    At start, kill orphans (parent gone) left under the pytest temp root by
-    earlier runs; during the session, a watchdog shell kills this session's
-    servers as soon as this pytest process dies, however it dies.
-    """
-    basetemp = str(tmp_path_factory.getbasetemp().resolve())
-    temp_root = str(Path(basetemp).parent.parent)  # .../pytest-of-<user>
-    for pid in _test_server_pids(temp_root, orphans_only=True):
-        try:
-            os.kill(pid, 15)
-        except ProcessLookupError:
-            pass
-    watchdog = subprocess.Popen(
-        [
-            "/bin/sh",
-            "-c",
-            'while kill -0 "$1" 2>/dev/null; do sleep 1; done; '
-            'pkill -f "dolt sql-server --data-dir $2"',
-            "reaper",
-            str(os.getpid()),
-            basetemp,
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    yield
-    for pid in _test_server_pids(basetemp, orphans_only=False):
-        try:
-            os.kill(pid, 15)
-        except ProcessLookupError:
-            pass
-    watchdog.kill()
 
 
 @pytest.fixture(scope="session")
@@ -265,22 +152,18 @@ def make_ledger(dolt_run: RunDolt, dolt_conf: None) -> Callable[[Path], Path]:
 
 
 @pytest.fixture
-def port() -> int:
-    """A random free TCP port."""
-    return free_port()
-
-
-@pytest.fixture
 def embedded_ledger_factory(
     dolt_env: dict[str, str],
     tmp_path: Path,
     template_ledgers: LedgerTemplates,
 ) -> Iterator[Callable[..., Ledger]]:
-    """Create real ledgers in a ``tmp_path`` workspace (embedded driver).
+    """Create real standalone ledgers in ``tmp_path`` (embedded driver).
 
     ``embedded_ledger_factory(presets=[...], id_prefix="77")`` returns the
-    opened :class:`~tetramark.core.ledger.Ledger`.  The workspace is created
-    once and reused; every call gets a fresh ledger name unless one is given.
+    opened :class:`~tetramark.core.ledger.Ledger`.  One call creates one ledger
+    directory, ``tmp_path/<name>``; every call gets a fresh name unless one is
+    given.  Several ledgers can live next to each other, but nothing couples
+    them: each directory is complete on its own.
 
     A standard shape with the default options (see :data:`TEMPLATE_SHAPES`,
     :func:`template_matches_options`) is copied from the session template; any
@@ -298,30 +181,27 @@ def embedded_ledger_factory(
         author: str | None = FACTORY_AUTHOR,
         real_init: bool = False,
     ) -> Ledger:
-        workspace_dir = tmp_path / "workspace"
-        if (workspace_dir / "workspace.yaml").is_file():
-            workspace = Workspace.load(workspace_dir, env=dolt_env)
-        else:
-            workspace = Workspace.create(
-                workspace_dir, presets_dir=str(REPO_PRESETS), env=dolt_env
-            )
         ledger_name = name or f"ledger{next(counter)}"
+        target = tmp_path / ledger_name
         sources = list(presets) if presets else [PRESETS / "base"]
         key = None
         if not real_init and template_matches_options(
             id_prefix=id_prefix, author=author
         ):
-            key = template_key(sources, workspace)
+            key = template_key(sources)
         if key is None:
             ledger = init_ledger(
-                workspace,
+                target,
                 ledger_name,
                 sources,
                 id_prefix=id_prefix,
                 author=author,
+                env=dolt_env,
             )
         else:
-            ledger = template_ledgers.install(key, workspace, ledger_name)
+            ledger = template_ledgers.install(
+                key, target, ledger_name, env=dolt_env
+            )
         assert isinstance(ledger, Ledger)
         created.append(ledger)
         return ledger
@@ -337,113 +217,6 @@ def ledger_factory(
 ) -> Callable[..., Ledger]:
     """Alias kept for existing tests: the embedded factory (unchanged behaviour)."""
     return embedded_ledger_factory
-
-
-@pytest.fixture(scope="session")
-def _server_ledger_sequence() -> itertools.count:
-    """Worker-wide counter so default database names never repeat."""
-    return itertools.count(1)
-
-
-@pytest.fixture(scope="session")
-def server_workspace(
-    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
-) -> Iterator[Workspace]:
-    """One ``dolt sql-server`` per xdist worker, in an isolated environment.
-
-    ``Workspace.start()`` refuses an empty data dir, so the workspace contains
-    a bare bootstrap ledger that tests never use.  Database names are
-    ``t_<worker>_<n>``; leftovers from a crashed run are swept at start.
-    """
-    worker = worker_id()
-    base = tmp_path_factory.mktemp(f"server-ws-{worker}")
-    env = isolated_env(base / "dolt-root", base / "home")
-    _configure_dolt_identity(dolt_binary, env)
-
-    data_dir = base / "data"
-    bootstrap = data_dir / "bootstrap"
-    bootstrap.mkdir(parents=True)
-    subprocess.run(
-        [dolt_binary, "init"],
-        cwd=bootstrap,
-        env=env,
-        capture_output=True,
-        check=True,
-    )
-
-    workspace = Workspace.create(
-        data_dir, port=free_port(), presets_dir=str(REPO_PRESETS), env=env
-    )
-    try:
-        workspace.start(daemon=True)
-    except Exception as error:  # noqa: BLE001 - server flakiness must not fail the suite
-        pytest.skip(f"dolt sql-server unavailable ({workspace.data_dir}): {error}")
-
-    prefix = f"t_{worker}_"
-    try:
-        for stale in database_names(workspace):
-            if stale.startswith(prefix):
-                drop_database(workspace, stale)
-        yield workspace
-    finally:
-        workspace.stop()
-        assert workspace.running_pid() is None, (
-            f"dolt sql-server for {workspace.data_dir} is still running"
-        )
-
-
-@pytest.fixture
-def server_ledger_factory(
-    server_workspace: Workspace,
-    _server_ledger_sequence: itertools.count,
-    template_ledgers: LedgerTemplates,
-) -> Iterator[Callable[..., Ledger]]:
-    """Like :func:`embedded_ledger_factory`, but inside the worker's server.
-
-    Each call gets its own database; teardown closes the driver and drops every
-    database the fixture created.  A standard shape with the default options is
-    restored from the session template's Dolt backup (the server cannot pick up
-    a directory copied underneath it); anything else runs the real
-    ``init_ledger_on_server``.  ``real_init=True`` forces the latter.
-    """
-    created: list[Ledger] = []
-
-    def factory(
-        presets: list[str | Path] | None = None,
-        *,
-        name: str | None = None,
-        id_prefix: str | None = "77",
-        author: str | None = FACTORY_AUTHOR,
-        real_init: bool = False,
-    ) -> Ledger:
-        ledger_name = name or f"t_{worker_id()}_{next(_server_ledger_sequence)}"
-        sources = list(presets) if presets else [PRESETS / "base"]
-        key = None
-        if not real_init and template_matches_options(
-            id_prefix=id_prefix, author=author
-        ):
-            key = template_key(sources, server_workspace)
-        if key is None:
-            ledger = init_ledger_on_server(
-                server_workspace,
-                ledger_name,
-                sources,
-                id_prefix=id_prefix,
-                author=author,
-            )
-        else:
-            ledger = template_ledgers.restore_into_server(
-                key, server_workspace, ledger_name
-            )
-        created.append(ledger)
-        return ledger
-
-    yield factory
-    for ledger in reversed(created):
-        try:
-            ledger.close()
-        finally:
-            drop_database(server_workspace, ledger.name)
 
 
 # ---------------------------------------------------------------------------
@@ -468,22 +241,20 @@ TEMPLATE_SHAPES: dict[str, tuple[str, ...]] = {
 }
 
 
-def template_key(
-    presets: Sequence[str | Path], workspace: Workspace
-) -> str | None:
+def template_key(presets: Sequence[str | Path]) -> str | None:
     """The template covering this preset list, or ``None`` when init must run.
 
     Resolution goes through :func:`~tetramark.schema.loader.resolve_preset_spec`
-    with the workspace's ``presets_dir``, exactly like init does.  A bad preset
-    returns ``None`` (never raises) so the real ``init_ledger`` stays the one
-    that reports the error.
+    with the same preset directory init uses (P8), exactly like init does.  A
+    bad preset returns ``None`` (never raises) so the real ``init_ledger`` stays
+    the one that reports the error.
     """
     resolved: list[str] = []
     for preset in presets:
         try:
             found = resolve_preset_spec(
                 str(preset),
-                presets_dir=workspace.presets_dir_path,
+                presets_dir=default_presets_dir(),
                 base_dir=Path.cwd(),
             )
         except Exception:  # noqa: BLE001 - init must raise the real error
@@ -520,116 +291,47 @@ def _rewrite_ledger_name(ledger_dir: Path, name: str) -> None:
 class LedgerTemplates:
     """One real ``init_ledger`` per standard shape, then copies of it.
 
-    A template is built lazily in its own isolated workspace and is never
-    written to again: :meth:`install` copies the closed database directory into
-    the test's workspace (the ledgers are otherwise identical to a fresh init —
-    same schema, ``ledger_meta``, generated ``dolt_tests``, same two commits).
-
-    The server path cannot copy a directory into a running ``dolt sql-server``
-    (it only discovers databases at startup), so :meth:`restore_into_server`
-    exports the template to a Dolt backup once and restores it inside the
-    server — the same real restore ``dolt backup restore`` performs.
+    A template is built lazily in its own directory under the session root and
+    is never written to again: :meth:`install` copies the closed ledger
+    directory to the test's target path (the ledgers are otherwise identical to
+    a fresh init — same schema, ``ledger_meta``, generated ``dolt_tests``, same
+    two commits).  A ledger is one directory, so the copy needs no workspace.
     """
 
     def __init__(self, root: Path, env: dict[str, str]) -> None:
         self._root = root
         self._env = env
         self._ledgers: dict[str, Path] = {}
-        self._backup_urls: dict[str, str] = {}
 
     def ledger(self, key: str) -> Path:
         """The template ledger directory for ``key``, built on first use."""
         if key not in self._ledgers:
-            workspace = Workspace.create(
-                self._root / key, presets_dir=str(REPO_PRESETS), env=self._env
-            )
-            ledger = init_ledger(
-                workspace,
+            target = self._root / f"{key}-template"
+            init_ledger(
+                target,
                 TEMPLATE_LEDGER_NAME,
                 list(TEMPLATE_SHAPES[key]),
                 id_prefix=TEMPLATE_ID_PREFIX,
                 author=FACTORY_AUTHOR,
+                env=self._env,
             )
-            ledger.close()
-            self._ledgers[key] = workspace.ledger_path(TEMPLATE_LEDGER_NAME)
+            self._ledgers[key] = target
         return self._ledgers[key]
 
-    def install(self, key: str, workspace: Workspace, name: str) -> Ledger:
-        """Copy the template into ``workspace`` as ``name`` and open it."""
-        target = workspace.ledger_path(name)
+    def install(
+        self,
+        key: str,
+        target: Path,
+        name: str,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Ledger:
+        """Copy the template to ``target`` as ``name`` and open it."""
         if target.exists():
             raise LedgerError(f"ledger {name!r} already exists at {target}")
         shutil.copytree(self.ledger(key), target)
         _rewrite_ledger_name(target, name)
-        return open_ledger(workspace, name)
-
-    def backup_url(self, key: str) -> str:
-        """A Dolt backup of the template, exported once per session."""
-        if key not in self._backup_urls:
-            self.ledger(key)
-            # ``dolt_backup('add')`` records the backup inside the *source*
-            # repository, so sync from a throwaway copy: the template stays
-            # exactly what init produced (no invented `dolt_backups` rows).
-            source = self._root / f"{key}-backup-source"
-            shutil.copytree(self._ledgers[key], source)
-            backup_url = (self._root / f"{key}-backup").as_uri()
-            self._dolt_sql(source, f"CALL dolt_backup('add', 'template', '{backup_url}')")
-            self._dolt_sql(source, "CALL dolt_backup('sync', 'template')")
-            self._backup_urls[key] = backup_url
-        return self._backup_urls[key]
-
-    def restore_into_server(
-        self, key: str, workspace: Workspace, name: str
-    ) -> Ledger:
-        """Restore the template database into ``workspace``'s running server."""
-        target = workspace.ledger_path(name)
-        if target.exists():
-            raise LedgerError(f"ledger {name!r} already exists at {target}")
-        backup_url = self.backup_url(key).replace("'", "''")
-        quoted_name = "'" + str(name).replace("'", "''") + "'"
-        restored = False
-        try:
-            with admin_connection(workspace) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        f"CALL dolt_backup('restore', '{backup_url}', {quoted_name})"
-                    )
-            restored = True
-            # The database carries the schema and history; the ledger directory
-            # also needs the self-contained ``ledger.yaml`` + ``presets/`` that
-            # init writes next to it.
-            target.mkdir(parents=True, exist_ok=True)
-            for item in self.ledger(key).iterdir():
-                if item.name == ".dolt":
-                    continue
-                destination = target / item.name
-                if item.is_dir():
-                    shutil.copytree(item, destination, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(item, destination)
-            _rewrite_ledger_name(target, name)
-            return open_ledger(workspace, name)
-        except BaseException:
-            if restored:
-                with suppress(Exception):
-                    drop_database(workspace, name)
-            shutil.rmtree(target, ignore_errors=True)
-            raise
-
-    def _dolt_sql(self, cwd: Path, sql: str) -> None:
-        binary = DOLT_BINARY or shutil.which("dolt")
-        process = subprocess.run(
-            [binary, "sql", "-q", sql],
-            cwd=cwd,
-            env=self._env,
-            capture_output=True,
-            text=True,
-        )
-        output = "\n".join(
-            part for part in (process.stdout.strip(), process.stderr.strip()) if part
-        )
-        if process.returncode != 0 or "error" in output.lower():
-            raise LedgerError(f"template backup failed in {cwd}:\n{output}")
+        return open_ledger(target, env=env)
 
 
 @pytest.fixture(scope="session")

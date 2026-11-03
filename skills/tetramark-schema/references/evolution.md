@@ -89,7 +89,7 @@ Error: refusing to apply 1 destructive step(s) without --allow-destructive
 
 Safe procedure:
 
-1. `tm backup` (or push) first.
+1. `tm backup /path/to/archive/NAME` (or a configured backup / push) first.
 2. Make the field nullable, apply, and backfill (through `entity edit`, `import`, or a scripted
    export/edit/import).
 3. Make it `required` and run `tm schema apply --allow-destructive`.
@@ -150,7 +150,7 @@ It does not rewrite `ledger.yaml` itself; that is the source document you edit.
 
 ## Checklist before applying anything
 
-1. `tm backup` or `tm remote push`.
+1. `tm backup /path/to/archive/NAME` (or a configured backup) / `tm remote push`.
 2. `tm schema show` matches what you intended (includes/mixins resolved).
 3. `tm schema plan` read line by line; only expected tags.
 4. On a copy of the ledger if the change is big: restore a backup, apply, `tm check -v`,

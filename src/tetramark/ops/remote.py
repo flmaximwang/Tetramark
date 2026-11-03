@@ -39,13 +39,13 @@ __all__ = [
     "as_url",
     "backup",
     "current_branch",
-    "default_backup_dir",
     "default_backup_name",
     "list_backups",
     "list_remotes",
     "pull",
     "push",
     "remove_remote",
+    "resolve_backup",
     "resolve_remote",
 ]
 
@@ -301,11 +301,6 @@ def pull(
 # ---------------------------------------------------------------------------
 
 
-def default_backup_dir(ledger: Ledger) -> Path:
-    """``<data_dir>/backups/<ledger>`` (spec: ``tm backup`` default)."""
-    return Path(ledger.workspace.data_dir) / "backups" / ledger.name
-
-
 #: Dolt backup names reject ``.``, which ledger names allow.
 _BACKUP_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 
@@ -323,6 +318,49 @@ def list_backups(ledger: Ledger) -> list[Backup]:
     return [Backup(name=str(row["name"]), url=str(row["url"])) for row in rows]
 
 
+#: Why ``tm backup`` has no default directory (epic P10): a backup that sits
+#: next to the ledger is on the same disk and is lost with it.
+_NO_BACKUP_DIRECTORY = (
+    "tm backup needs a directory: there is no default, because a backup next "
+    "to the ledger lives on the same disk and is lost together with it, which "
+    "defeats the purpose of a backup. Pass a directory (tm backup DIR) or sync "
+    "an already configured backup (tm backup --name NAME; see tm backup ls)."
+)
+
+
+def resolve_backup(ledger: Ledger, name: str | None = None) -> Backup:
+    """Pick the configured backup to sync when no directory is given.
+
+    An explicit ``name`` must exist.  Without one, a single configured backup
+    is used; with several, the one named after the ledger wins (that is the
+    name ``tm backup DIR`` configures by default); otherwise the caller must
+    choose.  There is no implicit destination: see :data:`_NO_BACKUP_DIRECTORY`.
+    """
+    backups = list_backups(ledger)
+    if name:
+        wanted = _check_name(name, what="backup")
+        for item in backups:
+            if item.name == wanted:
+                return item
+        raise UsageError(
+            f"no backup named {wanted!r} is configured"
+            + (f" (have: {', '.join(b.name for b in backups)})" if backups else "")
+            + "; pass a directory to create it"
+        )
+    if not backups:
+        raise UsageError(_NO_BACKUP_DIRECTORY)
+    if len(backups) == 1:
+        return backups[0]
+    preferred = default_backup_name(ledger)
+    for item in backups:
+        if item.name == preferred:
+            return item
+    raise UsageError(
+        "several backups are configured; choose one with --name or pass a "
+        "directory: " + ", ".join(item.name for item in backups)
+    )
+
+
 def backup(
     ledger: Ledger,
     directory: str | Path | None = None,
@@ -330,14 +368,28 @@ def backup(
     name: str | None = None,
     dry_run: bool = False,
 ) -> Result:
-    """Sync the ledger to a ``file://`` backup directory.
+    """Sync the ledger to a Dolt backup directory or a configured backup.
 
-    A ledger has one backup destination per backup name (default: the ledger
-    name, with ``.`` replaced by ``_``), so running the command again with another directory replaces that
-    destination before syncing.  The backup itself is a Dolt backup, not a
-    filesystem copy: ``dolt backup restore`` can recreate the database.
+    With ``directory`` the backup named ``name`` (default: the ledger name,
+    with ``.`` replaced by ``_``) is added -- or re-pointed, if that name
+    already points elsewhere -- and synced.  Without one, an already
+    configured backup is synced instead: ``name`` selects it, and otherwise
+    the only configured backup, or the one named after the ledger, is used.
+    There is no default directory, because a backup next to the ledger shares
+    its disk and fate.  A backup is a Dolt backup, not a filesystem copy:
+    ``dolt backup restore`` can recreate the database.
     """
-    url = as_url(default_backup_dir(ledger) if directory is None else directory)
+    if directory is None:
+        target = resolve_backup(ledger, name)
+        statement = _call("DOLT_BACKUP", "sync", target.name)
+        result = _run(ledger, [statement], dry_run=dry_run)
+        return Result(
+            statements=result.statements,
+            message=f"synced backup {target.name!r} -> {target.url}",
+            dry_run=dry_run,
+        )
+
+    url = as_url(directory)
     backup_name = _check_name(name or default_backup_name(ledger), what="backup")
     existing = {item.name: item for item in list_backups(ledger)}
 

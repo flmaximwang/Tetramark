@@ -24,6 +24,7 @@ __all__ = [
     "EXIT_ERROR",
     "EXIT_USAGE",
     "EXIT_UNREACHABLE",
+    "LedgerBusyError",
     "LedgerError",
     "UsageError",
     "UnreachableError",
@@ -42,7 +43,16 @@ class UsageError(LedgerError):
     exit_code = EXIT_USAGE
 
 
+class LedgerBusyError(UsageError):
+    """Another process holds the ledger's write lock (P11). Exit code 2.
+
+    Raised when the per-ledger ``flock`` cannot be taken within
+    ``$TETRAMARK_LOCK_TIMEOUT`` seconds (10 s by default); the message names
+    the holder recorded in ``<ledger>/.dolt/tetramark.lock``.
+    """
+
+
 class UnreachableError(LedgerError):
-    """The Dolt database or workspace server cannot be reached. Exit code 3."""
+    """The Dolt database (or the dolt binary) cannot be reached. Exit code 3."""
 
     exit_code = EXIT_UNREACHABLE
