@@ -1,4 +1,4 @@
-"""``tm init`` and ``tm presets`` commands (spec §6)."""
+"""``tm init``, ``tm adopt`` and ``tm presets`` commands (spec §6)."""
 
 from __future__ import annotations
 
@@ -29,26 +29,47 @@ from tetramark.schema.model import EffectiveSchema, Kind, ObjectType, Preset, Ru
 
 presets_app = group("List and inspect the presets available for 'tm init --preset'.")
 
+#: Help of the ``--preset`` option, shared by ``init`` and ``adopt``.
+_PRESET_HELP = (
+    "Preset name (resolved through $TETRAMARK_PRESETS_DIR, then the presets "
+    "bundled with tetramark) or a path to a preset YAML file or directory; "
+    "repeat to combine presets (e.g. -p base -p molbio). The preset and its "
+    "includes are copied into the ledger, so it reopens without access to the "
+    "source."
+)
+
+
+def _target_path(path: Path) -> Path:
+    """The absolute ledger directory a positional PATH names (relative to cwd)."""
+    target = path.expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    return target.resolve()
+
+
+def _require_preset(preset: list[str]) -> None:
+    if not preset:
+        raise UsageError("at least one --preset is required (e.g. --preset base)")
+
 
 def init_command(
     ctx: typer.Context,
-    name: str = typer.Argument(
+    path: Path = typer.Argument(
         ...,
+        metavar="PATH",
         help=(
-            "Ledger directory to create in the current directory (its identity "
-            "in ledger.yaml; letters, digits, '_', '-' and '.')."
+            "Ledger directory to create, relative to the current directory or "
+            "absolute; '.dolt/' and 'ledger.yaml' end up in it. Its 'name:' in "
+            "ledger.yaml defaults to the directory basename."
         ),
     ),
-    preset: list[str] = typer.Option(
-        [],
-        "--preset",
-        "-p",
+    preset: list[str] = typer.Option([], "--preset", "-p", help=_PRESET_HELP),
+    name: str | None = typer.Option(
+        None,
+        "--name",
         help=(
-            "Preset name (resolved through $TETRAMARK_PRESETS_DIR, then the "
-            "bundled presets/) or a path to a preset YAML file or directory; "
-            "repeat to combine presets (e.g. -p base -p molbio). The preset and "
-            "its includes are copied into the ledger, so it reopens without "
-            "access to the source."
+            "Ledger identity written to ledger.yaml (default: the directory "
+            "basename). The path is not identity; rename or copy freely."
         ),
     ),
     id_prefix: str | None = typer.Option(
@@ -57,55 +78,11 @@ def init_command(
     author: str | None = typer.Option(
         None, "--author", help='"Name <email>" for commits (default: git config).'
     ),
-    adopt: bool = typer.Option(
-        False,
-        "--adopt",
-        help=(
-            "Format an existing bare Dolt database in the current directory "
-            "instead of creating one: same schema as init, existing history "
-            "kept. The database must be empty (no tables, views or dolt_tests "
-            "rows), have a clean working set and no ledger.yaml (or pass "
-            "--force-config)."
-        ),
-    ),
-    force_config: bool = typer.Option(
-        False,
-        "--force-config",
-        help="With --adopt: overwrite an existing ledger.yaml; nothing is deleted.",
-    ),
 ) -> None:
-    """Create one standalone ledger directory (or format an existing database)."""
+    """Create one standalone ledger directory (a Dolt database + ledger.yaml)."""
     options: GlobalOptions = ctx.obj
-    target = Path.cwd() / name
-    if not preset:
-        raise UsageError("at least one --preset is required (e.g. --preset base)")
-    if force_config and not adopt:
-        raise UsageError("--force-config only applies to --adopt")
-
-    if adopt:
-        adopted = adopt_ledger(
-            target,
-            name,
-            preset,
-            id_prefix=id_prefix,
-            author=author,
-            force_config=force_config,
-            branch=options.branch,
-            dry_run=options.dry_run,
-        )
-        if isinstance(adopted, AdoptPlan):
-            typer.echo(
-                f"Would adopt ledger {adopted.name} at {adopted.path} "
-                f"(branch {adopted.branch}, HEAD {adopted.adopted_from_commit})"
-            )
-            typer.echo(f"  presets : {', '.join(adopted.config.presets)}")
-            typer.echo(f"  schema  : {_describe_schema(adopted.schema)}")
-            typer.echo("  history : kept; nothing is deleted")
-            typer.echo("")
-            typer.echo(adopted.sql)
-            return
-        _print_adopted(adopted)
-        return
+    target = _target_path(path)
+    _require_preset(preset)
 
     result = init_ledger(
         target,
@@ -124,6 +101,71 @@ def init_command(
         return
 
     _print_created(result)
+
+
+def adopt_command(
+    ctx: typer.Context,
+    path: Path = typer.Argument(
+        ...,
+        metavar="PATH",
+        help=(
+            "Existing bare Dolt database directory to format in place: it holds "
+            "'.dolt/' and no 'ledger.yaml' (the 0.4 lab databases). Its history "
+            "is kept; its 'name:' in ledger.yaml defaults to the basename."
+        ),
+    ),
+    preset: list[str] = typer.Option([], "--preset", "-p", help=_PRESET_HELP),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help=(
+            "Ledger identity written to ledger.yaml (default: the directory "
+            "basename). The path is not identity; rename or copy freely."
+        ),
+    ),
+    id_prefix: str | None = typer.Option(
+        None, "--id-prefix", help="Prefix for date-code stock ids (e.g. 12)."
+    ),
+    author: str | None = typer.Option(
+        None, "--author", help='"Name <email>" for commits (default: git config).'
+    ),
+    force_config: bool = typer.Option(
+        False,
+        "--force-config",
+        help=(
+            "Overwrite an existing ledger.yaml left on an otherwise empty "
+            "database; nothing is deleted. The database must be empty and have "
+            "a clean working set."
+        ),
+    ),
+) -> None:
+    """Format an existing bare Dolt database as a ledger, in place (P9)."""
+    options: GlobalOptions = ctx.obj
+    target = _target_path(path)
+    _require_preset(preset)
+
+    adopted = adopt_ledger(
+        target,
+        name,
+        preset,
+        id_prefix=id_prefix,
+        author=author,
+        force_config=force_config,
+        branch=options.branch,
+        dry_run=options.dry_run,
+    )
+    if isinstance(adopted, AdoptPlan):
+        typer.echo(
+            f"Would adopt ledger {adopted.name} at {adopted.path} "
+            f"(branch {adopted.branch}, HEAD {adopted.adopted_from_commit})"
+        )
+        typer.echo(f"  presets : {', '.join(adopted.config.presets)}")
+        typer.echo(f"  schema  : {_describe_schema(adopted.schema)}")
+        typer.echo("  history : kept; nothing is deleted")
+        typer.echo("")
+        typer.echo(adopted.sql)
+        return
+    _print_adopted(adopted)
 
 
 def _print_adopted(ledger: Ledger) -> None:
@@ -167,9 +209,10 @@ def _presets_dir() -> Path:
     directory = default_presets_dir()
     if directory is None:
         raise UsageError(
-            "no preset directory: set $TETRAMARK_PRESETS_DIR to the directory "
-            "holding <name>.yaml presets (for example the Tetramark checkout's "
-            "presets/), or pass a preset path instead"
+            "no preset directory: the presets bundled with tetramark were not "
+            "found (broken installation?) and $TETRAMARK_PRESETS_DIR is unset. "
+            "Set it to the directory holding <name>.yaml presets (for example "
+            "the Tetramark checkout's presets/), or pass a preset path instead"
         )
     return directory
 

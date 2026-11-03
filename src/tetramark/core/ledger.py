@@ -68,7 +68,10 @@ from tetramark.driver.base import (
 )
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.driver.resolution import (
+    DOLT_DIR,
     LEDGER_FILE,
+    is_ledger_dir,
+    ledger_name,
     refuse_nested,
     resolve_ledger,
 )
@@ -119,8 +122,8 @@ __all__ = [
 META_SPEC_VERSION = "spec_version"
 META_TETRAMARK_VERSION = "tetramark_version"
 META_CREATED_WITH = "created_with"
-#: Only ``tm init --adopt`` writes this key (ticket TM-04); it is deliberately
-#: not part of :data:`META_ORDER`, so a plain init never records it.
+#: Only ``tm adopt`` writes this key (ticket TM-04); it is deliberately not part
+#: of :data:`META_ORDER`, so a plain init never records it.
 META_ADOPTED_FROM_COMMIT = "adopted_from_commit"
 META_FINGERPRINT = "fingerprint"
 META_PRESET_VERSIONS = "preset_versions"
@@ -563,6 +566,46 @@ def _ledger_plan(
     )
 
 
+def _existing_target_error(target: Path) -> str | None:
+    """Why ``target`` cannot become a new ledger, or ``None`` when it can.
+
+    A new ledger needs a path that does not exist (parents are created) or an
+    existing **empty** directory.  Everything else gets the hint that fits what
+    is already there, so ``tm init`` never masks an already-formatted ledger or
+    a bare 0.4 database behind a generic "already exists" (R2/P9).
+    """
+    if not target.exists():
+        return None
+    if not target.is_dir():
+        return (
+            f"cannot create a ledger at {target}: the path already exists and is "
+            "not a directory; pass a directory to create"
+        )
+    if is_ledger_dir(target):
+        try:
+            existing = ledger_name(target)
+        except UsageError:  # a broken ledger.yaml is still a ledger directory
+            existing = target.name
+        return (
+            f"cannot create a ledger at {target}: it is already the ledger "
+            f"{existing!r}. Use it directly ('tm --ledger {target} ...' or cd "
+            "into it), or choose another directory"
+        )
+    if (target / DOLT_DIR).is_dir():
+        return (
+            f"cannot create a ledger at {target}: the directory already holds a "
+            f"bare Dolt database ({DOLT_DIR}/) but no {LEDGER_FILE}. Format it in "
+            f"place with 'tm adopt {target}' instead"
+        )
+    if any(target.iterdir()):
+        return (
+            f"cannot create a ledger at {target}: the path already exists and is "
+            "not an empty directory; choose a new path (an existing empty "
+            "directory is allowed)"
+        )
+    return None
+
+
 def _prepare_init(
     path: str | Path,
     name: str | None,
@@ -573,12 +616,14 @@ def _prepare_init(
     env: Mapping[str, str] | None,
 ) -> InitPlan:
     target = Path(path).expanduser().resolve()
+    # Validate the requested identity first: a path-like name ("..") must never
+    # be turned into a target path before it is rejected.
     ledger = _check_name(name or target.name)
-
-    if target.exists():
-        raise LedgerError(f"ledger {ledger!r} already exists at {target}")
     # P5: a ledger is one self-contained directory; never create one inside one.
     refuse_nested(target)
+    problem = _existing_target_error(target)
+    if problem is not None:
+        raise LedgerError(problem)
 
     return _ledger_plan(
         target,
@@ -607,25 +652,37 @@ def _prepare_adopt(
     checked by :func:`_check_adoptable`.
     """
     target = Path(path).expanduser().resolve()
+    # Validate the requested identity first: a path-like name ("..") must never
+    # be turned into a target path before it is rejected.
     ledger = _check_name(name or target.name)
 
-    if not (target / ".dolt").is_dir():
+    if not (target / DOLT_DIR).is_dir():
         if target.exists():
             raise LedgerError(
-                f"cannot adopt {ledger!r}: {target} exists but is not a Dolt "
-                "database (no '.dolt' directory); use 'tm init' to create a "
-                "new ledger"
+                f"cannot adopt {target}: it is not a Dolt database (no "
+                f"{DOLT_DIR}/ directory); use 'tm init {target}' to create a new "
+                "ledger"
             )
         raise LedgerError(
-            f"cannot adopt {ledger!r}: no Dolt database at {target}; create a new "
-            "ledger with 'tm init' instead"
+            f"cannot adopt {target}: there is no Dolt database at that path; "
+            f"create a new ledger with 'tm init {target}' instead"
         )
     refuse_nested(target)
     config_path = target / LEDGER_FILE
     if config_path.is_file() and not force_config:
+        try:
+            existing = ledger_name(target)
+        except UsageError:  # an unreadable ledger.yaml is still in the way
+            existing = None
+        state = (
+            f"the ledger {existing!r}"
+            if existing is not None
+            else f"already formatted ({LEDGER_FILE} exists)"
+        )
         raise LedgerError(
-            f"cannot adopt {ledger!r}: {config_path} already exists; pass "
-            "--force-config to overwrite it"
+            f"cannot adopt {ledger!r}: {target} is {state}; there is nothing to "
+            "adopt. Pass --force-config to overwrite a ledger.yaml left on an "
+            "otherwise empty database"
         )
 
     return _ledger_plan(
@@ -688,10 +745,13 @@ def init_ledger(
     """Create one standalone ledger directory (spec §1.1, §3; R2).
 
     ``path`` is the ledger directory to create (``.dolt/`` and ``ledger.yaml``
-    end up in it).  ``name`` is the ledger's identity in ``ledger.yaml`` and
-    defaults to the directory basename (P2/R2); the basename is also the Dolt
-    database name.  Every enclosing directory is checked first: ledgers do not
-    nest (P5).
+    end up in it); missing parents are created and an existing **empty**
+    directory is used as-is.  ``name`` is the ledger's identity in
+    ``ledger.yaml`` and defaults to the directory basename (P2/R2); the basename
+    is also the Dolt database name.  An existing ledger, a bare Dolt database
+    (``.dolt/`` without ``ledger.yaml``) and a non-empty directory are refused
+    with the hint that fits (a bare database points at ``adopt_ledger``).  Every
+    enclosing directory is checked first: ledgers do not nest (P5).
 
     Returns the opened :class:`Ledger`; with ``dry_run=True`` returns an
     :class:`InitPlan` and writes nothing.  ``env`` overrides the environment of
@@ -709,7 +769,10 @@ def init_ledger(
         return plan
 
     target = plan.path
-    target.mkdir(parents=True, exist_ok=False)
+    # An existing empty directory is a valid target; a fresh path is created
+    # together with its parents.
+    pre_existed = target.exists()
+    target.mkdir(parents=True, exist_ok=pre_existed)
     try:
         identity_name, identity_email = split_author(plan.author)
         assert identity_name and identity_email  # _dolt_identity checked this
@@ -731,7 +794,18 @@ def init_ledger(
         driver.commit(f"init(ledger): {plan.name}", author=plan.author)
     except BaseException:
         # A half-initialised ledger is worse than none: never leave one behind.
-        shutil.rmtree(target, ignore_errors=True)
+        # A pre-existing empty directory stays, minus the artifacts this attempt
+        # wrote (anything else in it appeared concurrently and is not ours).
+        if pre_existed:
+            for name in (DOLT_DIR, "presets", LEDGER_FILE):
+                artifact = target / name
+                if artifact.is_dir():
+                    shutil.rmtree(artifact, ignore_errors=True)
+                else:
+                    with suppress(OSError):
+                        artifact.unlink()
+        else:
+            shutil.rmtree(target, ignore_errors=True)
         raise
 
     ledger = Ledger(

@@ -11,8 +11,10 @@ Responsibilities (spec §1.1, §2, §8):
 * build an :class:`~tetramark.schema.model.EffectiveSchema` with a stable
   :meth:`~tetramark.schema.model.EffectiveSchema.fingerprint`.
 
-Presets live in the repository's ``presets/`` directory (they are not package
-data).  ``tm init`` copies each selected preset and its include closure into
+Presets are repository data (``<repo>/presets``) that an installed wheel ships as
+package data (``<site-packages>/tetramark/presets``); a bare ``--preset NAME``
+resolves through ``$TETRAMARK_PRESETS_DIR`` and then those bundled presets (P8).
+``tm init`` copies each selected preset and its include closure into
 ``<ledger>/presets/``; a ledger then resolves presets from that copy only, so its
 schema cannot drift from the recorded ``preset_versions``.
 
@@ -1002,20 +1004,44 @@ def _reference_name(raw: str | Path) -> str:
     return path.name
 
 
+def _bundled_presets_dirs() -> tuple[Path, ...]:
+    """Where the presets shipped with tetramark live, most specific first.
+
+    Two layouts are supported (P8):
+
+    * a **source checkout**: ``<repo>/presets`` next to ``src/`` (the preset
+      files are repository data, not Python code);
+    * an **installed wheel**: ``<site-packages>/tetramark/presets``, where
+      ``pyproject.toml`` force-includes the checkout's ``presets/`` so a plain
+      ``pip install tetramark`` still resolves bare preset names.
+
+    The wheel is checked second so a checkout (editable or ``PYTHONPATH``)
+    always uses its own presets.
+    """
+    here = Path(__file__).resolve()
+    return (
+        here.parents[3] / "presets",
+        here.parent.parent / "presets",
+    )
+
+
 def default_presets_dir(*, env: Mapping[str, str] | None = None) -> Path | None:
     """The directory a bare ``--preset NAME`` resolves from (P8).
 
-    ``$TETRAMARK_PRESETS_DIR`` wins.  Otherwise the ``presets/`` directory of
-    the source checkout is used when present (the presets live outside the
-    Python package); an installed wheel without bundled presets returns
-    ``None`` so the caller can report how to set the variable.
+    ``$TETRAMARK_PRESETS_DIR`` wins.  Otherwise the presets bundled with
+    tetramark are used: the source checkout's ``presets/`` when running from a
+    checkout, else the package data inside an installed wheel.  ``None`` means
+    the installation ships no presets (or a checkout lost them), so the caller
+    can report how to set the variable or pass a preset path.
     """
     environ = os.environ if env is None else env
     override = environ.get("TETRAMARK_PRESETS_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    bundled = Path(__file__).resolve().parents[3] / "presets"
-    return bundled if bundled.is_dir() else None
+    for bundled in _bundled_presets_dirs():
+        if bundled.is_dir():
+            return bundled
+    return None
 
 
 def resolve_preset_spec(
@@ -1053,9 +1079,10 @@ def resolve_preset_spec(
     if presets_dir is None:
         raise UsageError(
             f"preset name {text!r} is a bare name but no preset directory is "
-            "configured: set $TETRAMARK_PRESETS_DIR to the directory that holds "
-            "<name>.yaml (for example the Tetramark checkout's presets/), or "
-            "pass --preset as a path instead"
+            "configured: the presets bundled with tetramark were not found "
+            "(broken installation?) and $TETRAMARK_PRESETS_DIR is unset. Set it "
+            "to the directory that holds <name>.yaml (for example the Tetramark "
+            "checkout's presets/), or pass --preset as a path instead"
         )
     directory = Path(presets_dir).expanduser()
     if not directory.is_absolute():
