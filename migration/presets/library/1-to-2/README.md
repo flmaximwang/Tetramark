@@ -16,8 +16,10 @@ regenerates the derived `dolt_tests` in the same commit.
 
 The `base` copy is the **frozen [`base-3.yaml`](base-3.yaml)** shipped next to `migrate.py`: the
 repository's `presets/base.yaml` is v4 since spec 5 (the `grid96` → `grid8x12` rename), and this
-wave-10 step must keep installing the base content its era reads. Freezing the old target copy into
-every earlier step that places the whole closure is the retrofit rule in
+wave-10 step must keep installing the base content its era reads. Ticket rq9 bumps `proteins` and
+`nucleic_acids` to v2, so the step also ships and places their frozen
+[`proteins-1.yaml`](proteins-1.yaml) / [`nucleic_acids-1.yaml`](nucleic_acids-1.yaml) copies. Freezing
+the old target copy into every earlier step that places the whole closure is the retrofit rule in
 [`migration/README.md`](../../../README.md).
 
 ## Preconditions
@@ -25,8 +27,9 @@ every earlier step that places the whole closure is the retrofit rule in
 - `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
   (the step refuses a spec-4 ledger). On a wave-11 upgrade the order is `spec/4-to-5`, then the
   preset steps (`base/2-to-3`, `library/1-to-2`), then
-  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) **last** — it renames the base v3
-  copy this step keeps, so do not run it before this step.
+  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) after them — it renames the base v3
+  copy this step keeps, so do not run it before this step (ticket rq9's pattern steps run after
+  `base/3-to-4`).
 - `ledger_meta.preset_versions.library = 1` (a second run refuses).
 - A clean working set.
 - `base` is installed from the frozen v3 copy here; its counter in `preset_versions` is bumped by

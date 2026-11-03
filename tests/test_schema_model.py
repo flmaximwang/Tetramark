@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
+from tetramark.schema.loader import load_schema
+from tetramark.schema.tests_gen import generate_tests
 from tetramark.schema.model import (
     BOX_NAME_MAX_LENGTH,
     BOX_VIEW_PREFIX,
@@ -739,3 +742,58 @@ def test_bundled_presets_mark_every_text_and_sequence_field_long() -> None:
                 if spec.get("long") is not True:
                     missing.append(f"{path.name}:{field_name}")
     assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# Pattern tests: the generated Dolt test is a full match, like re.fullmatch
+# ---------------------------------------------------------------------------
+
+#: ``REGEXP`` in Dolt (as in MySQL) *searches* the value, so the generated test
+#: has to anchor the preset's regex itself; otherwise an unanchored pattern
+#: accepts an invalid value that merely contains a valid run (``ACGTZ``).  The
+#: app checks the same pattern with ``re.fullmatch`` (core/objects.py).
+PATTERN_SQL = (
+    "REGEXP '^(?:[ACGTURYKMSWBDHVN]+)$'",
+    "REGEXP '^(?:[ACDEFGHIKLMNPQRSTVWYXBZUO*]+)$'",
+)
+
+
+def _generated_pattern_queries(preset: str) -> dict[str, str]:
+    schema = load_schema(
+        LedgerConfig(name="pattern", presets=[str(REPO_PRESETS / f"{preset}.yaml")])
+    )
+    return {
+        test.name: test.query
+        for test in generate_tests(schema)
+        if "_pattern_" in test.name
+    }
+
+
+def test_generated_pattern_test_anchors_the_preset_regex() -> None:
+    """Ticket rq9: wrapping makes the SQL test agree with the app's fullmatch."""
+    proteins = _generated_pattern_queries("proteins")
+    nucleic = _generated_pattern_queries("nucleic_acids")
+    library = _generated_pattern_queries("library")
+
+    # The three IUPAC fields: sequence_fields (protein_construct and plasmid)
+    # and the protein mature_sequence share the two exact preset regexes.
+    assert PATTERN_SQL[0] in proteins["schema_protein_construct_pattern_sequence"]
+    assert PATTERN_SQL[1] in proteins["schema_protein_construct_pattern_mature_sequence"]
+    # ``plasmid`` loads the same mixin through ``nucleic_acids``; the oligo has
+    # its own nucleotide ``sequence`` field.
+    assert PATTERN_SQL[0] in nucleic["schema_plasmid_pattern_sequence"]
+    assert PATTERN_SQL[0] in nucleic["schema_oligo_pattern_sequence"]
+    # An already-anchored preset pattern (library's ISBN) embeds unchanged.
+    assert "REGEXP '^(?:^[0-9Xx][0-9Xx-]{8,16}$)$'" in library[
+        "schema_book_pattern_isbn"
+    ]
+
+    # Dolt/MySQL REGEXP is a search: the raw regex would accept ``ACGTZ`` on its
+    # ``ACGT`` prefix, and the anchored form the generator emits rejects it.
+    raw = re.compile("[ACGTURYKMSWBDHVN]+")
+    wrapped = re.compile("^(?:[ACGTURYKMSWBDHVN]+)$")
+    assert raw.search("ACGTZ") is not None and wrapped.fullmatch("ACGTZ") is None
+    assert wrapped.fullmatch("ACGTN") is not None
+    protein_wrapped = re.compile("^(?:[ACDEFGHIKLMNPQRSTVWYXBZUO*]+)$")
+    assert protein_wrapped.fullmatch("MKWV*") is not None
+    assert protein_wrapped.fullmatch("MKW.") is None

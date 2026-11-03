@@ -26,9 +26,10 @@ The step
    **before** the runner opens the ledger — files are not Dolt content, and the spec-5 loader needs
    every stock kind's `statuses:` — then puts the **frozen copies** shipped next to `migrate.py` over
    their repository versions: **`cell_culture-2.yaml`** (the repository's `presets/` only holds the
-   current version) and **`base-3.yaml`** (the repository copy is v4 since spec 5's `grid96` →
+   current version), **`base-3.yaml`** (the repository copy is v4 since spec 5's `grid96` →
    `grid8x12` rename; this wave-10 step must keep installing the base content of its era, per the
-   retrofit rule in [`migration/README.md`](../../../README.md));
+   retrofit rule in [`migration/README.md`](../../../README.md)), and **`proteins-1.yaml`** /
+   **`nucleic_acids-1.yaml`** (ticket rq9 bumps those parts to v2; their own steps own the counters);
 2. applies the **additive** diff plan (three `stock_cell_vial` columns, the `stock_cell_biosample`
    table, their constraints and the regenerated views); a destructive plan is refused before
    anything is written;
@@ -42,8 +43,9 @@ The step
 - `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
   (the step refuses a spec-4 ledger). On a wave-11 upgrade the order is `spec/4-to-5`, then the
   preset steps (`base/2-to-3`, `molbio/2-to-3`, this step), then
-  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) **last** — it renames the base v3
-  copy this step keeps, so do not run it before this step.
+  [`migration/presets/base/3-to-4`](../../base/3-to-4/README.md) after them — it renames the base v3
+  copy this step keeps, so do not run it before this step (ticket rq9's pattern steps run after
+  `base/3-to-4`).
 - `ledger_meta.preset_versions.cell_culture = 1` (a second run refuses).
 - A clean working set.
 - The ledger already loads `cell_culture`, i.e. it lists `molbio` v3 (ticket 27) or `cellbio`. A

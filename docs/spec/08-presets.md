@@ -57,17 +57,25 @@ Preset catalogue:
   received_on, expires_on, `statuses: tube`); the status sets `tube`, `cryo` and `animal` (§2.4).
   Version 4 renames the `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the
   hand-run step is `migration/presets/base/3-to-4/`.
-- `proteins` (**version 1**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
+- `proteins` (**version 2**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
   molecular_weight_da, pI, extinction coefficients as computed, tag) and stock `protein_prep`
   (concentration_mg_ml, buffer, purification_id, purity_pct, `statuses: tube`). It also owns the
   `sequence_fields` mixin (sequence + `length_bp`), because it is the deepest part both
-  `protein_construct` and `plasmid` load. Included by the `molbio` bundle; `nucleic_acids` includes
-  it because a plasmid points at the protein design it expresses.
-- `nucleic_acids` (**version 1**, includes `base`, `proteins`) — entities `plasmid` (sequence,
+  `protein_construct` and `plasmid` load. Version 2 (ticket rq9) validates the alphabets: the
+  shared `sequence` carries `pattern: [ACGTURYKMSWBDHVN]+` (IUPAC nucleotide codes) and
+  `mature_sequence` carries `pattern: [ACDEFGHIKLMNPQRSTVWYXBZUO*]+` (IUPAC amino-acid codes plus
+  the ambiguity/stop symbols). Patterns are validation-only — the app checks them after sequence
+  normalisation and the generated `dolt_tests` mirror them — so the step
+  `migration/presets/proteins/1-to-2/` changes no DDL but makes `tm check` report existing rows
+  outside the alphabet. Included by the `molbio` bundle; `nucleic_acids` includes it because a
+  plasmid points at the protein design it expresses.
+- `nucleic_acids` (**version 2**, includes `base`, `proteins`) — entities `plasmid` (sequence,
   backbone, resistance, ref `construct` → protein_construct with `lineage: true`) and `oligo`
   (sequence, direction fwd/rev, target, modification, purification, tm_c, `length_nt`/`gc_pct`
   computed from the sequence); stocks `plasmid_prep` (concentration_ng_ul, prep_method,
-  elution_buffer) and `oligo_stock` (concentration_um, solvent), both `statuses: tube`. Included by
+  elution_buffer) and `oligo_stock` (concentration_um, solvent), both `statuses: tube`. Version 2
+  (ticket rq9) adds `pattern: [ACGTURYKMSWBDHVN]+` to `oligo.sequence`; its step is
+  `migration/presets/nucleic_acids/1-to-2/`, which requires proteins already at 2. Included by
   `molbio`, `cellbio` and `angenet`.
 - `bacteria` (**version 1**, includes `base`, `nucleic_acids`) — entity `bacterial_strain` (genotype,
   species, source); stocks `bacterial_glycerol` (entity_kinds plasmid|bacterial_strain; strain,
