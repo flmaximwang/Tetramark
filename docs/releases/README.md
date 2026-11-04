@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.7](v0.8.7.md) | `v0.8.7.md` | `tm alias add box` accepts the box's name |
 | [0.8.4](v0.8.4.md) | `v0.8.4.md` | `tm aliquot show` carries the tube's events; `tm aliquot label` |
 | [0.8.3](v0.8.3.md) | `v0.8.3.md` | explicit purge for entities, stocks and boxes; aliquot aliases/references |
 | [0.8.2](v0.8.2.md) | `v0.8.2.md` | box ids in `box list`/`box show`; aliquot help points at `move`/`use`/`status` |
