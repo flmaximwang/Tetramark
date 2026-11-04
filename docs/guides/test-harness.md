@@ -7,9 +7,10 @@ today's target.
 
 ## 1. Cost model
 
-Everything runs against the real `dolt` binary — no mocks — and every SQL statement is one `dolt sql`
-subprocess in the ledger directory. On an idle machine that is **60–100 ms per statement** (0.2–0.4 s
-under ten-worker load), because Dolt starts a process and opens the database for each batch.
+Everything runs against the real `dolt` binary — no mocks — and most SQL statements are one `dolt sql`
+subprocess in the ledger directory; an independent read batch such as `tm find` is one JSON process
+plus, when it returns rows, one CSV header pass. On an idle machine that is **60–100 ms per statement**
+(0.2–0.4 s under ten-worker load), because Dolt starts a process and opens the database for each batch.
 
 The consequence for tests is simple: **never run a full `tm init` per test**. A standard init executes
 100+ statements (roughly 10 s); a test that does that for every case makes the suite unusable.

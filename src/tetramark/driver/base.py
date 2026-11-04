@@ -264,6 +264,20 @@ class Driver(abc.ABC):
     def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
         """Run a read-only statement and return rows as dictionaries."""
 
+    def query_many(
+        self, statements: Sequence[tuple[str, Params]]
+    ) -> list[list[dict[str, Any]]]:
+        """Run several independent read-only statements, one result each.
+
+        The results are returned in statement order; a statement that matches no
+        rows yields an empty list (never a missing entry), so callers can index
+        the batch by position.  A backend may run the whole batch in one round
+        trip; this default implementation simply runs :meth:`query` per
+        statement.  The statements must be independent (a later statement cannot
+        read an earlier one's result) and must not write.
+        """
+        return [self.query(sql, params) for sql, params in statements]
+
     @abc.abstractmethod
     def execute(self, sql: str, params: Params = None) -> None:
         """Run a writing statement.  ``DML`` only inside :meth:`transaction`."""
