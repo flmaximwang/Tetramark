@@ -49,7 +49,7 @@ import re
 import shutil
 import subprocess
 import warnings
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date
@@ -1554,11 +1554,22 @@ class Ledger:
         )
 
     # -- reads ------------------------------------------------------------
-    def find(self, query: str) -> list[dict[str, Any]]:
-        """Search ids, aliases, names and kind string/text fields (ticket 11)."""
+    def find(
+        self,
+        query: str | None = None,
+        *,
+        regex: bool = False,
+        where: Iterable[str] | Mapping[str, Any] | None = (),
+    ) -> list[dict[str, Any]]:
+        """Search ids, aliases, names, kind text and ``--where`` filters.
+
+        ``regex`` treats the query as a case-insensitive database regex;
+        ``where`` takes the shared ``field=value`` / ``field~pattern`` filters
+        and applies them to every hit (aliquots are excluded when given).
+        """
         from tetramark.ops.find import find
 
-        return find(self, query)
+        return find(self, query, regex=regex, where=where)
 
     def history(self, ref: str) -> dict[str, Any]:
         """Aliquot events plus Dolt commits touching one object (ticket 11)."""
