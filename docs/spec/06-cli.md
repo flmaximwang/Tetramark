@@ -103,7 +103,7 @@ tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
-tm find [QUERY] [-E|--regex] [--where FILTER ...]   # §6.4: id → alias → name/text; regex; filters
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
 tm alias add OBJ_TYPE ID ALIAS ; tm alias remove ...
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
@@ -483,7 +483,7 @@ the patterns, so each `~` pattern is probed once up front), and an `=` filter on
 alias may be resolved). A listing that matches nothing prints `(none)` (an empty list in JSON) and
 exits 0.
 
-`tm find [QUERY] [-E|--regex] [--where FILTER ...]` searches the whole ledger. Without `-E`, `QUERY`
+`tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]` searches the whole ledger. Without `-E`, `QUERY`
 is a literal search: ids are matched exactly and case-sensitively, while aliases, names and
 `string`/`text` kind fields are matched case-insensitively by exact, prefix and substring text, with
 `%` and `_` as ordinary characters. The tiers are exact id, exact alias, exact name, name prefix,
@@ -514,9 +514,10 @@ with the rule named in the error (a bad pattern, a replacement that names a grou
 a missing or duplicate `name`, or an empty `rewrites:` list; exit 1). The rules rewrite `QUERY` only:
 `--where` filters are never rewritten (they still narrow every hit, rewrite hits included), `-E` is
 never rewritten, and single-object resolution (`show`, `history`, `lineage`, `--entity`, alias
-resolution) stays exact — when one of those misses, its error ends with `try tm find <REF>`, the
-command that does apply the rules. A rule that does not match, or whose expansion is the query itself
-or empty, is skipped silently; rules never chain.
+resolution) stays exact: a plain not-found there ends with `try tm find <REF>` (the command that
+does apply the rules), while wrong-type, ambiguous and empty refs keep their own error unchanged.
+A rule that does not match, or whose expansion is the query itself or empty, is skipped silently;
+rules never chain.
 
 By default the rules are a **zero-hit fallback**: a literal query with hits is searched normally and
 the rules are not used; only a query with zero hits tries every rule, in declaration order, and shows
@@ -528,7 +529,7 @@ found both ways keeps its original entry. Rewrite hits read `<tier> via <rule>` 
 (`id via type-code`) and carry `"rewrite": {"rule": "<NAME>", "query": "<REWRITTEN>"}` in JSON. A
 rewrite search rides in the same `query_many` batch as the original (`--with-rewrite` is one batch);
 the fallback costs one batch for the miss plus one batched rewrite search. When nothing is found, the
-exit-1 message stays `no match for '<QUERY>'` and appends `(also tried: '<REWRITTEN>' via '<NAME>',
+exit-1 message stays `no match for '<QUERY>'` and appends `(also tried: '<REWRITTEN>' via <NAME>,
 ...)` when rules produced rewrites.
 
 The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(), with_rewrite=False)`,

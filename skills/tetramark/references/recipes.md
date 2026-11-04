@@ -141,7 +141,8 @@ object type and excludes aliquots. The aliquot list's own `--where` is exact-onl
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (Python `re`): a literal query with no
 hits falls back to the first rule that hits (a stderr line names the rule), and `--with-rewrite` adds
 every rule's hits below the original ones. `-E`, `--where` and single-object commands never rewrite;
-a miss there ends with `try tm find <ref>`.
+a plain not-found there ends with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep
+their own error).
 
 Results show `object`, `kind`, `id`, a summary, the location (path plus slot) and why it matched
 (`id`, `alias`, `name`, `field`, or `filter` for a `--where`-only listing). Then:

@@ -410,8 +410,8 @@ A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, re
 QUERY only: a query with no hits falls back to the first rule that hits — a stderr line names the rule
 and the rewritten query — and `--with-rewrite` adds every rule's hits below the original ones (`match`
 reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where` patterns and single-object
-`show`/`history`/`lineage`/`--entity`/alias resolution never rewrite; those errors end with
-`try tm find <ref>`.
+`show`/`history`/`lineage`/`--entity`/alias resolution never rewrite; a plain not-found there ends
+with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep their own error).
 
 Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
 `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when
