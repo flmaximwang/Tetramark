@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.18](v0.8.18.md) | `v0.8.18.md` | wheel ships the skills; releases carry wheel+sdist; pinned install docs |
 | [0.8.17](v0.8.17.md) | `v0.8.17.md` | `tm` survives a foreign `PYTHONPATH`; `tm --version` warns on editable-install drift |
 | [0.8.16](v0.8.16.md) | `v0.8.16.md` | Dolt's global `~/.dolt` config is not mistaken for a ledger; `tm adopt` refuses it |
 | [0.8.15](v0.8.15.md) | `v0.8.15.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |
