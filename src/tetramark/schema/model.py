@@ -34,6 +34,9 @@ __all__ = [
     "BOX_NAME_MAX_LENGTH",
     "BOX_VIEW_PREFIX",
     "CORE_VIEW_NAMES",
+    "FIXED_STATUS_SET",
+    "FIXED_STATUSES",
+    "FIXED_TRANSITIONS",
     "SPEC_VERSION",
     "UNSET",
     "EffectiveSchema",
@@ -52,6 +55,7 @@ __all__ = [
     "SchemaError",
     "SqlType",
     "Status",
+    "StatusModel",
     "StatusSet",
     "box_name_problem",
     "parse_labels",
@@ -70,8 +74,11 @@ __all__ = [
 #: ``status`` ∈ {active, depleted, empty}; v5 replaced the per-box-kind
 #: ``v_box_<kind>`` views with one view per **existing box**
 #: (``v_box_<box name>``), so a box's contents are read by box rather than by
-#: kind.
-SPEC_VERSION = 5
+#: kind; v6 made the aliquot status one fixed, hardcoded set for every stock
+#: kind (no ``status_sets``/``statuses`` in a new preset), put a real DB
+#: ``CHECK`` back on ``aliquot.status``, and replaced the generated
+#: ``core_aliquot_status_known`` test with the fixed transition rules.
+SPEC_VERSION = 6
 
 #: Views that exist for every ledger, independent of the selected kinds.
 #: ``box_name_problem`` reserves the ``v_box_*`` ones: a per-box view must never
@@ -898,6 +905,48 @@ class StatusSet(RootModel[dict[str, Status]]):
         }
 
 
+# ---------------------------------------------------------------------------
+# The fixed status set (spec 1.1/6)
+# ---------------------------------------------------------------------------
+
+
+class StatusModel(StrEnum):
+    """How a loaded preset closure describes aliquot statuses.
+
+    ``legacy`` is the spec-4/5 model: presets declare ``status_sets:`` and each
+    stock kind names or gives one (an old ledger's own preset copies keep
+    loading unchanged).  ``fixed`` is the spec-6 model: presets declare no
+    status vocabulary at all and every stock kind shares
+    :data:`FIXED_STATUS_SET`.
+    """
+
+    fixed = "fixed"
+    legacy = "legacy"
+
+
+#: The one hardcoded status set every aliquot shares (spec 1.1).  It is part of
+#: the core model, never the schema: a new preset that declares
+#: ``status_sets:``/``statuses:`` is a load error.
+FIXED_STATUSES: tuple[str, ...] = ("pending", "stored", "missing", "consumed")
+
+#: Allowed unforced transitions of the fixed set.  ``stored`` is the only
+#: in-stock status; ``consumed`` is final.
+FIXED_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "pending": ("stored", "missing", "consumed"),
+    "stored": ("missing", "consumed"),
+    "missing": ("stored", "consumed"),
+    "consumed": (),
+}
+
+FIXED_STATUS_SET = StatusSet(
+    {
+        name: Status(
+            in_stock=name == "stored", to=list(FIXED_TRANSITIONS[name])
+        )
+        for name in FIXED_STATUSES
+    }
+)
+
 
 class Kind(BaseModel):
     """One kind (a table extension of entity, stock or box).
@@ -906,8 +955,10 @@ class Kind(BaseModel):
     (location, quantity, unit, status, label, notes) and every property of the
     material belongs on the stock kind (spec §3).
 
-    A **stock** kind must name the status set that applies to its aliquots
-    (``statuses: tube``) or give an inline set; entity and box kinds must not.
+    A **stock** kind may name the legacy status set that applies to its
+    aliquots (``statuses: tube``) or give an inline set; entity and box kinds
+    must not.  A spec-6 preset (the fixed status model) omits ``statuses``
+    entirely and every stock kind shares :data:`FIXED_STATUS_SET`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -944,17 +995,15 @@ class Kind(BaseModel):
         if self.object is not ObjectType.stock:
             if self.statuses is not None:
                 raise ValueError("'statuses' is only valid on stock kinds")
-        elif self.statuses is None:
-            raise ValueError(
-                "stock kinds require 'statuses': name a set from 'status_sets' "
-                "(e.g. 'statuses: tube') or give an inline set; a spec-3 preset "
-                "that predates status sets is upgraded with "
-                "migration/spec/3-to-4 and the wave-10 preset steps"
-            )
         return self
 
     def status_set(self) -> StatusSet | None:
-        """The kind's resolved status set (``None`` for entity/box kinds)."""
+        """The kind's **declared** status set (``None`` in the fixed model).
+
+        The loader resolves a named set to its content; in the fixed model a
+        stock kind declares nothing and the effective set comes from
+        :meth:`EffectiveSchema.status_set`.
+        """
         return self.statuses if isinstance(self.statuses, StatusSet) else None
 
     def normalised(self) -> dict[str, Any]:
@@ -968,9 +1017,10 @@ class Kind(BaseModel):
             out["entity_kinds"] = sorted(self.entity_kinds)
         if self.geometry is not None:
             out["geometry"] = self.geometry.normalised()
-        if self.object is ObjectType.stock:
+        if self.object is ObjectType.stock and self.statuses is not None:
             # A named set and an inline set with the same content describe the
-            # same ledger, so the fingerprint uses the resolved content.
+            # same ledger, so the fingerprint uses the resolved content.  A
+            # fixed-model kind declares nothing, so it contributes no key.
             assert isinstance(self.statuses, StatusSet)
             out["statuses"] = self.statuses.normalised()
         if self.object is ObjectType.box:
@@ -1193,12 +1243,22 @@ class EffectiveSchema(BaseModel):
     #: ``rules:<preset|local>`` group of the generated dolt_tests; excluded
     #: from the fingerprint because it does not change the physical schema.
     rule_sources: dict[str, str] = PydanticField(default_factory=dict)
-    #: Every declared status set, by global name (spec 4).  Stock kinds carry
-    #: their resolved set; this map is for introspection and drift checks.
+    #: Every **declared** status set, by global name (spec 4).  Stock kinds
+    #: carry their resolved set; this map is for introspection and drift
+    #: checks.  Empty in the fixed model (spec 6).
     status_sets: dict[str, StatusSet] = PydanticField(default_factory=dict)
+    #: Which status model the loaded preset closure uses.  The loader sets it
+    #: explicitly; the default keeps direct construction in tests and tools
+    #: (where kinds carry their own sets) on the legacy interpretation.
+    status_model: StatusModel = StatusModel.legacy
     preset_versions: dict[str, int] = PydanticField(default_factory=dict)
 
     # -- lookups ------------------------------------------------------------
+
+    @property
+    def uses_fixed_statuses(self) -> bool:
+        """True when every stock kind shares the hardcoded status set."""
+        return self.status_model is StatusModel.fixed
 
     @property
     def entity_kinds(self) -> dict[str, Kind]:
@@ -1231,8 +1291,18 @@ class EffectiveSchema(BaseModel):
             raise SchemaError(f"unknown kind {name!r}") from None
 
     def status_set(self, kind_name: str) -> StatusSet | None:
-        """The status set of a stock kind (``None`` for entity/box kinds)."""
+        """The **effective** status set of a stock kind.
+
+        ``None`` for entity/box kinds.  In the fixed model every stock kind
+        resolves to :data:`FIXED_STATUS_SET`; in the legacy model it is the set
+        the kind declared.  Core object code reads this one method so the two
+        models behave identically downstream.
+        """
         kind = self.kind(kind_name)
+        if kind.object is not ObjectType.stock:
+            return None
+        if self.uses_fixed_statuses:
+            return FIXED_STATUS_SET
         return kind.status_set()
 
     def statuses_for(self, kind_name: str) -> list[str]:

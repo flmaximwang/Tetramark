@@ -386,6 +386,7 @@ TEMPLATE_LEDGER_NAME = "template"
 TEMPLATE_SHAPES: dict[str, tuple[str, ...]] = {
     "presets-base": (str((PRESETS / "base").resolve()),),
     "presets-full": (str((PRESETS / "full").resolve()),),
+    "presets-fixed": (str((PRESETS / "fixed").resolve()),),
     "preset-base": (str((REPO_PRESETS / "base.yaml").resolve()),),
 }
 

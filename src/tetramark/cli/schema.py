@@ -27,7 +27,7 @@ from tetramark.schema.diff import (
     apply as apply_schema_plan,
     plan as schema_plan,
 )
-from tetramark.schema.model import EffectiveSchema, Field, Kind, Rule
+from tetramark.schema.model import EffectiveSchema, Field, Rule
 
 schema_app = group("Inspect, plan and apply the effective schema of a ledger.")
 
@@ -168,29 +168,34 @@ def schema_payload(
         "preset_versions": dict(sorted(schema.preset_versions.items())),
     }
     if kind is not None:
-        return {**header, "kind": kind, **_kind_payload(schema.kind(kind))}
+        return {**header, "kind": kind, **_kind_payload(schema, kind)}
 
     return {
         **header,
         "fingerprint": schema.fingerprint(),
+        # The declared sets: empty in the spec-6 fixed model, where the four
+        # statuses are core and a stock kind shows its effective set below.
         "status_sets": {
             name: schema.status_sets[name].normalised()
             for name in sorted(schema.status_sets)
         },
         "kinds": {
-            name: _kind_payload(schema.kinds[name]) for name in sorted(schema.kinds)
+            name: _kind_payload(schema, name) for name in sorted(schema.kinds)
         },
         "rules": [_rule_payload(rule) for rule in sorted(schema.rules, key=lambda r: r.id)],
     }
 
 
-def _kind_payload(kind: Kind) -> dict[str, Any]:
+def _kind_payload(schema: EffectiveSchema, kind_name: str) -> dict[str, Any]:
+    kind = schema.kind(kind_name)
     payload: dict[str, Any] = {"object": kind.object.value}
     if kind.description:
         payload["description"] = kind.description
     if kind.entity_kinds is not None:
         payload["entity_kinds"] = list(kind.entity_kinds)
-    status_set = kind.status_set()
+    # ``statuses`` is the effective set: the legacy kind's declared set, or the
+    # fixed set every stock kind shares in the spec-6 model.
+    status_set = schema.status_set(kind_name)
     if status_set is not None:
         payload["statuses"] = status_set.normalised()
     payload["fields"] = {

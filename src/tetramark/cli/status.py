@@ -9,7 +9,7 @@ Human output is one aligned label/value block::
     path            /Users/me/lab/zsqlab_10
     name            zsqlab_10
     branch          main
-    spec_version    5
+    spec_version    6
     presets         molbio
     author          Wang <wang@example.invalid>
     write lock      free
@@ -27,7 +27,7 @@ shape, with these stable types -- tests assert the key set and types verbatim::
       "path": "/abs/path/to/ledger",          str
       "name": "zsqlab_10",                    str   (ledger.yaml "name:")
       "branch": "main",                       str | null
-      "spec_version": 5,                      int | null  (ledger_meta)
+      "spec_version": 6,                      int | null  (ledger_meta)
       "presets": ["molbio"],                  list[str]   (ledger.yaml order)
       "author": "Name <email>",               str | null
       "lock": {                               object, always all five keys

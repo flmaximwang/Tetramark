@@ -51,6 +51,7 @@ from tetramark.driver.base import Driver, literal
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
     CORE_TABLES,
+    aliquot_status_check,
     box_view_statements,
     core_statements,
     field_sql_type,
@@ -61,6 +62,7 @@ from tetramark.schema.ddl import (
     view_statements,
 )
 from tetramark.schema.model import (
+    FIXED_STATUSES,
     SPEC_VERSION,
     UNSET,
     EffectiveSchema,
@@ -1201,7 +1203,7 @@ def build_plan(
     # -- core tables -------------------------------------------------------
     core_sql = {
         statement.name: statement.sql
-        for statement in core_statements()
+        for statement in core_statements(schema)
         if statement.object == "table"
     }
     for table in CORE_TABLES:
@@ -1295,10 +1297,35 @@ def build_plan(
             readded=readded_generated.get(name, set()),
         )
 
-    # Spec 4 removed the global ``aliquot.status`` CHECK: a status belongs to
-    # the stock kind's set, which a CHECK cannot express.  No desired CHECK for
-    # ``aliquot`` means a live spec-3 CHECK is planned as a (relaxing, additive)
-    # drop by ``_diff_constraints``' extra-check pass.
+    # The core ``aliquot.status`` CHECK (spec 1.1/6).  Legacy ledgers want
+    # none -- no desired CHECK means a live spec-3 CHECK is planned as a
+    # (relaxing, additive) drop by ``_diff_constraints``' extra-check pass --
+    # and the fixed model wants exactly the four statuses.  A missing core
+    # table is created with the CHECK inline above, so it is skipped here.
+    if "aliquot" in state.columns and "aliquot" not in created:
+        desired_aliquot_checks: list[_DesiredCheck] = []
+        status_check = aliquot_status_check(schema)
+        if status_check is not None:
+            name, clause = status_check
+            desired_aliquot_checks.append(
+                _DesiredCheck(
+                    name=name,
+                    column="status",
+                    clause=clause,
+                    values=FIXED_STATUSES,
+                )
+            )
+        _diff_constraints(
+            buckets,
+            "aliquot",
+            # The core table's PRIMARY KEY/UNIQUE are part of its CREATE TABLE:
+            # this call reconciles checks only.
+            desired_uniques=None,
+            desired_checks=desired_aliquot_checks,
+            live=state,
+            dropped=set(),
+            readded=set(),
+        )
 
     # -- renamed kinds keep their identities, not their discriminator ------
     for core, old_kind, new_kind, _old_table, new_table in renamed_kinds:
@@ -1974,52 +2001,59 @@ def _diff_constraints(
     buckets: _Buckets,
     table: str,
     *,
-    desired_uniques: Sequence[_DesiredUnique],
+    desired_uniques: Sequence[_DesiredUnique] | None,
     desired_checks: Sequence[_DesiredCheck],
     live: _LiveState,
     dropped: set[str],
     readded: set[str],
     drop_extras: bool = True,
 ) -> None:
-    live_uniques = live.uniques.get(table, [])
-    by_columns = {unique.columns: unique for unique in live_uniques}
-    wanted = {unique.column for unique in desired_uniques}
-    for unique in desired_uniques:
-        key = (unique.column,)
-        current = by_columns.get(key)
-        if current is not None and unique.column not in readded:
-            continue
-        if unique.column in dropped:
-            continue
-        buckets.constraint_adds.append(
-            _step(
-                "add_constraint",
-                DESTRUCTIVE,
-                f"ALTER TABLE {_ident(table)} ADD CONSTRAINT "
-                f"{_ident(unique.name)} UNIQUE ({_ident(unique.column)})",
-                object="constraint",
-                name=f"{table}.{unique.name}",
-                description="new UNIQUE constraint",
-            )
-        )
+    """Reconcile UNIQUE and CHECK constraints of one table.
 
-    if drop_extras:
-        for unique in live_uniques:
-            if any(column in dropped for column in unique.columns):
+    ``desired_uniques=None`` reconciles checks only: a core table (e.g.
+    ``aliquot``) owns its primary key and unique index inside ``CREATE TABLE``
+    and must never have them dropped by the generated-schema pass.
+    """
+    live_uniques = live.uniques.get(table, [])
+    if desired_uniques is not None:
+        by_columns = {unique.columns: unique for unique in live_uniques}
+        wanted = {unique.column for unique in desired_uniques}
+        for unique in desired_uniques:
+            key = (unique.column,)
+            current = by_columns.get(key)
+            if current is not None and unique.column not in readded:
                 continue
-            if any(column in wanted for column in unique.columns):
+            if unique.column in dropped:
                 continue
-            buckets.constraint_drops.append(
+            buckets.constraint_adds.append(
                 _step(
-                    "drop_constraint",
-                    ADDITIVE,
-                    f"ALTER TABLE {_ident(table)} "
-                    f"DROP INDEX {_ident(unique.name)}",
+                    "add_constraint",
+                    DESTRUCTIVE,
+                    f"ALTER TABLE {_ident(table)} ADD CONSTRAINT "
+                    f"{_ident(unique.name)} UNIQUE ({_ident(unique.column)})",
                     object="constraint",
                     name=f"{table}.{unique.name}",
-                    description="UNIQUE constraint no longer requested",
+                    description="new UNIQUE constraint",
                 )
             )
+
+        if drop_extras:
+            for unique in live_uniques:
+                if any(column in dropped for column in unique.columns):
+                    continue
+                if any(column in wanted for column in unique.columns):
+                    continue
+                buckets.constraint_drops.append(
+                    _step(
+                        "drop_constraint",
+                        ADDITIVE,
+                        f"ALTER TABLE {_ident(table)} "
+                        f"DROP INDEX {_ident(unique.name)}",
+                        object="constraint",
+                        name=f"{table}.{unique.name}",
+                        description="UNIQUE constraint no longer requested",
+                    )
+                )
     live_checks = list(live.checks.get(table, []))
     used: set[str] = set()
     for check in desired_checks:

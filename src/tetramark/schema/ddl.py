@@ -20,11 +20,15 @@ An aliquot has no kind table of its own: it is a **generic tube** (location,
 quantity, unit, status, label, notes) and every property of the material lives
 on the stock kind (spec §3).  ``aliquot_event`` stays one shared table.
 
-Spec 4 makes the status vocabulary a property of the **stock kind**
-(``status_sets``): there is no global ``aliquot.status`` CHECK, the stock views
-derive ``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock`` + ``unit``
-and a three-value ``status`` from the schema's in-stock statuses, and the
-transition rules become generated ``dolt_tests`` (``schema/tests_gen.py``).
+Spec 4 made the status vocabulary a property of the **stock kind**
+(``status_sets``); spec 6 replaces that with one fixed set shared by every
+stock kind (``aliquot.status`` gets a real DB ``CHECK``, generated only in the
+fixed model).  The stock views derive
+``aliquots_in_stock``/``aliquots_total``/``quantity_in_stock`` + ``unit`` and a
+three-value ``status`` from the effective in-stock statuses, and the transition
+rules become generated ``dolt_tests`` (``schema/tests_gen.py``).  A legacy
+ledger (its stored preset copies declare status sets) keeps the spec-4/5
+shape: no CHECK, per-kind sets, and the tests those presets generate.
 
 Foreign keys are emitted as separate ``ALTER TABLE ... ADD CONSTRAINT``
 statements, after *all* tables exist.  This is the only way to express the
@@ -49,6 +53,7 @@ from tetramark.errors import LedgerError
 from tetramark.schema.model import (
     BOX_VIEW_PREFIX,
     CORE_VIEW_NAMES,
+    FIXED_STATUSES,
     EffectiveSchema,
     Field,
     FieldType,
@@ -58,6 +63,7 @@ from tetramark.schema.model import (
     ObjectType,
     SchemaError,
     SqlType,
+    StatusModel,
     box_name_problem,
 )
 
@@ -67,6 +73,8 @@ __all__ = [
     "CORE_VIEWS",
     "STOCK_VIEW_COLUMNS",
     "Statement",
+    "ALIQUOT_STATUS_CONSTRAINT",
+    "aliquot_status_check",
     "box_view_name",
     "box_view_statements",
     "core_statements",
@@ -273,20 +281,48 @@ def field_sql_type(field: Field) -> str:
 # ---------------------------------------------------------------------------
 
 
-def core_statements() -> list[Statement]:
-    """DDL for the eight core tables and their foreign keys."""
+def core_statements(schema: EffectiveSchema | None = None) -> list[Statement]:
+    """DDL for the eight core tables and their foreign keys.
+
+    ``schema`` decides whether the fixed-model ``aliquot.status`` CHECK is
+    part of the ``aliquot`` table (spec 6).  ``None`` keeps the legacy shape:
+    callers that only want the shared core (tests, the spec-3/4 migration
+    machinery) get no CHECK.
+    """
     statements: list[Statement] = [
         _create_ledger_meta(),
         _create_entity(),
         _create_stock(),
         _create_box(),
         _create_slot(),
-        _create_aliquot(),
+        _create_aliquot(schema),
         _create_aliquot_event(),
         _create_alias(),
     ]
     statements.extend(_core_foreign_keys())
     return statements
+
+
+#: Name of the spec-6 ``aliquot.status`` CHECK.  The same name the spec-3
+#: format used, so a manual 5-to-6 upgrade can add exactly this constraint and
+#: the planner then sees it as already correct.
+ALIQUOT_STATUS_CONSTRAINT = "ck_aliquot_status"
+
+
+def aliquot_status_check(
+    schema: EffectiveSchema | None,
+) -> tuple[str, str] | None:
+    """``(constraint name, CHECK clause)`` of the fixed status set, if any.
+
+    ``None`` in the legacy model (and when no schema is given): the allowed
+    vocabulary then belongs to each stock kind and a table CHECK cannot
+    express it.  :mod:`tetramark.schema.diff` uses the same helper, so a
+    generated CHECK and a planned CHECK can never drift apart.
+    """
+    if schema is None or schema.status_model is not StatusModel.fixed:
+        return None
+    values = ", ".join(literal(name) for name in FIXED_STATUSES)
+    return ALIQUOT_STATUS_CONSTRAINT, f"({_ident('status')} IN ({values}))"
 
 
 def _create_ledger_meta() -> Statement:
@@ -383,11 +419,18 @@ def _create_slot() -> Statement:
     )
 
 
-def _create_aliquot() -> Statement:
-    # No CHECK on ``status``: since spec 4 the allowed vocabulary is the stock
-    # kind's status set, which a CHECK cannot express (Dolt has no cross-table
-    # CHECK).  The app refuses an unknown or illegal status, and the generated
-    # ``core_aliquot_status_known`` test catches rows written by hand.
+def _create_aliquot(schema: EffectiveSchema | None = None) -> Statement:
+    # Legacy model: no CHECK on ``status`` -- the allowed vocabulary is the
+    # stock kind's status set, which a CHECK cannot express (Dolt has no
+    # cross-table CHECK), so the generated ``core_aliquot_status_known`` test
+    # catches rows written by hand.  Fixed model (spec 6): the four statuses
+    # are core, so the database enforces them.
+    check = aliquot_status_check(schema)
+    constraint = (
+        ""
+        if check is None
+        else f",\n  CONSTRAINT {_ident(check[0])} CHECK {check[1]}"
+    )
     return Statement(
         sql=(
             f"CREATE TABLE {_ident('aliquot')} (\n"
@@ -404,7 +447,8 @@ def _create_aliquot() -> Statement:
             f"  {_ident('notes')} MEDIUMTEXT,\n"
             f"  CONSTRAINT {_ident(_pk('aliquot'))} PRIMARY KEY ({_ident('id')}),\n"
             f"  CONSTRAINT {_ident(_uq('aliquot', 'stock_id', 'seq'))} "
-            f"UNIQUE ({_ident('stock_id')}, {_ident('seq')})\n"
+            f"UNIQUE ({_ident('stock_id')}, {_ident('seq')})"
+            f"{constraint}\n"
             ")"
         ),
         object="table",
@@ -1321,7 +1365,7 @@ def slot_rows(box_id: str, geometry: Geometry) -> list[dict[str, Any]]:
 def schema_statements(schema: EffectiveSchema) -> list[Statement]:
     """The complete DDL of one ledger in dependency order."""
     return [
-        *core_statements(),
+        *core_statements(schema),
         *kind_statements(schema),
         *view_statements(schema),
     ]

@@ -15,10 +15,12 @@ from tetramark.schema.loader import (
     load_schema,
 )
 from tetramark.schema.model import (
+    FIXED_STATUS_SET,
     FieldType,
     LedgerConfig,
     ObjectType,
     SchemaError,
+    StatusModel,
     StatusSet,
 )
 
@@ -292,7 +294,7 @@ def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
         "viral_vectors",
         "zebrafish",
     ]
-    assert list_presets(PRESETS) == ["base", "chain", "extras", "full"]
+    assert list_presets(PRESETS) == ["base", "chain", "extras", "fixed", "full"]
     with pytest.raises(SchemaError, match="presets directory not found"):
         list_presets(tmp_path / "absent")
 
@@ -461,7 +463,8 @@ def _write_preset(directory: Path, name: str, text: str) -> Path:
     return path
 
 
-def test_stock_kind_without_statuses_fails_to_load(tmp_path: Path) -> None:
+def test_stock_kind_without_statuses_uses_the_fixed_model(tmp_path: Path) -> None:
+    """Spec 6: no status declaration anywhere means the fixed status set."""
     path = _write_preset(
         tmp_path,
         "nostatus",
@@ -471,10 +474,54 @@ kinds:
     object: stock
 """,
     )
-    with pytest.raises(SchemaError, match="stock kinds require 'statuses'") as caught:
-        load_schema(LedgerConfig(name="x", presets=[str(path)]))
-    assert caught.value.path == "kinds.lot"
-    assert "migration/spec/3-to-4" in caught.value.message
+    schema = load_schema(LedgerConfig(name="x", presets=[str(path)]))
+    assert schema.status_model is StatusModel.fixed
+    assert schema.status_sets == {}
+    assert schema.kinds["lot"].status_set() is None
+    assert schema.statuses_for("lot") == [
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    ]
+    assert schema.status_set("lot") is FIXED_STATUS_SET
+
+
+def test_a_closure_mixing_legacy_sets_and_fixed_kinds_is_a_load_error(
+    tmp_path: Path,
+) -> None:
+    """A ledger must use one status model; the error names the file and key."""
+    legacy = _write_preset(
+        tmp_path,
+        "legacy",
+        """preset: legacy
+status_sets:
+  tube:
+    stored: {in_stock: true}
+kinds:
+  lot:
+    object: stock
+    statuses: tube
+""",
+    )
+    fixed = _write_preset(
+        tmp_path,
+        "fixedpart",
+        """preset: fixedpart
+kinds:
+  prep:
+    object: stock
+""",
+    )
+    with pytest.raises(SchemaError, match="mix the legacy per-kind status sets") as caught:
+        load_schema(
+            LedgerConfig(name="x", presets=[str(legacy), str(fixed)]),
+            base_dir=tmp_path,
+        )
+    assert caught.value.path == "kinds.prep.statuses"
+    assert caught.value.file == str(fixed)
+    assert "status_sets" in caught.value.message
+    assert "migration/spec/5-to-6" in caught.value.message
 
 
 def test_entity_kind_with_statuses_fails_to_load(tmp_path: Path) -> None:

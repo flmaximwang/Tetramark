@@ -591,9 +591,11 @@ def test_status_set_validates_transitions() -> None:
         StatusSet({"stored": {"in_stock": True, "to": ["a", "a"]}, "a": {"in_stock": False}})
 
 
-def test_stock_kinds_require_statuses_and_entity_kinds_must_not_have_it() -> None:
-    with pytest.raises(ValidationError, match="stock kinds require 'statuses'"):
-        Kind(object="stock")
+def test_statuses_are_optional_on_stock_kinds_and_invalid_elsewhere() -> None:
+    # Spec 6: a stock kind may omit ``statuses`` (the fixed model); the model
+    # itself stays model-agnostic and the loader decides which model applies.
+    fixed_kind = Kind(object="stock")
+    assert fixed_kind.status_set() is None
     stock = Kind(object="stock", statuses=_status_set())
     assert stock.status_set() is not None
     with pytest.raises(ValidationError, match="only valid on stock kinds"):
@@ -655,8 +657,8 @@ def test_schema_error_renders_file_and_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_spec_version_is_5() -> None:
-    assert SPEC_VERSION == 5
+def test_spec_version_is_6() -> None:
+    assert SPEC_VERSION == 6
 
 
 def test_core_views_reserve_their_v_box_names() -> None:
@@ -719,7 +721,7 @@ def test_schema_show_payload_adds_long_only_when_set() -> None:
             "name": Field(type="string"),
         },
     )
-    payload = _kind_payload(kind)
+    payload = _kind_payload(EffectiveSchema(kinds={"thing": kind}), "thing")
     assert payload["fields"]["notes"]["long"] is True
     assert "long" not in payload["fields"]["name"]
     # The payload addition must not leak into the fingerprint input.

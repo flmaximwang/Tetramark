@@ -69,6 +69,7 @@ from tetramark.schema.model import (
     Preset,
     Rule,
     SchemaError,
+    StatusModel,
     StatusSet,
 )
 
@@ -558,8 +559,21 @@ class _Collector:
         self.mixins: dict[str, _MixinEntry] = {}
         self.rules: dict[str, _RuleEntry] = {}
         self.status_sets: dict[str, _StatusSetEntry] = {}
+        #: ``(display, dotted path)`` of every legacy status declaration the
+        #: closure makes: a top-level ``status_sets:`` key (even an empty one)
+        #: or a ``statuses:`` key on a kind.  The first entry names the file
+        #: and key in a mixed-closure error; an empty list means the fixed
+        #: model (spec 1.1/6).
+        self.status_declarations: list[tuple[str, str]] = []
 
     def add(self, doc: Preset, display: str, *, source: str = "preset") -> None:
+        if "status_sets" in doc.model_fields_set:
+            self.status_declarations.append((display, "status_sets"))
+        for kind_name, kind in doc.kinds.items():
+            if "statuses" in kind.model_fields_set:
+                self.status_declarations.append(
+                    (display, f"kinds.{kind_name}.statuses")
+                )
         for set_name, statuses in doc.status_sets.items():
             _check_identifier(set_name, display, f"status_sets.{set_name}")
             if set_name in self.status_sets:
@@ -690,6 +704,53 @@ def _apply_mixins(collector: _Collector) -> dict[str, Kind]:
             fields[field_name] = schema_field
         resolved[kind_name] = kind.model_copy(update={"fields": fields})
     return resolved
+
+
+def _status_model(collector: _Collector) -> StatusModel:
+    """The status model a loaded preset closure uses (spec 1.1/6).
+
+    The closure is the unit of interpretation, not one file: an old ledger's
+    preset copies (base v4 plus its includes) all belong to the legacy model
+    and keep loading exactly as they did.  A closure that makes **no** status
+    declaration at all is the spec-6 fixed model.  A closure that mixes both
+    is refused by :func:`_require_legacy_statuses` with a message naming the
+    file and key.
+    """
+    return (
+        StatusModel.legacy
+        if collector.status_declarations
+        else StatusModel.fixed
+    )
+
+
+def _require_legacy_statuses(collector: _Collector) -> None:
+    """Refuse a closure that mixes the legacy sets with the fixed model.
+
+    Legacy means every stock kind declares (or is given, by the spec-3
+    migration path) a ``statuses:`` set.  A stock kind without one in an
+    otherwise legacy closure is the mixed shape: the file that declares the
+    legacy vocabulary and the kind that relies on the fixed one are both
+    named, because the operator has to choose one model for the whole ledger.
+    """
+    missing = [
+        (name, entry)
+        for name, entry in collector.kinds.items()
+        if entry.kind.object is ObjectType.stock and entry.kind.statuses is None
+    ]
+    if not missing:
+        return
+    kind_name, entry = missing[0]
+    origin_display, origin_path = collector.status_declarations[0]
+    raise SchemaError(
+        "the loaded presets mix the legacy per-kind status sets with the "
+        f"fixed status set: {origin_display!r} declares {origin_path!r}, but "
+        f"stock kind {kind_name!r} declares no 'statuses'. A ledger uses one "
+        "model: give every stock kind a status set, or remove 'status_sets:' "
+        "and every 'statuses:' key so every aliquot uses the fixed set (see "
+        "migration/spec/5-to-6/README.md)",
+        file=entry.display,
+        path=f"kinds.{kind_name}.statuses",
+    )
 
 
 def _resolve_status_sets(
@@ -1370,6 +1431,13 @@ def load_schema(
     it.  Callers that open an existing ledger should use
     :func:`load_ledger_schema`, which resolves presets from the ledger's own
     ``presets/`` copy only.
+
+    The status vocabulary is resolved once for the whole closure (spec
+    1.1/6): a closure that declares ``status_sets:``/``statuses:`` loads with
+    the legacy per-kind sets (an old ledger's stored copies keep working,
+    unchanged); a closure that declares neither uses the fixed status model,
+    where every stock kind shares :data:`FIXED_STATUS_SET`.  A mixed closure
+    is an error naming the file and key.
     """
     root = Path(base_dir).expanduser().resolve() if base_dir is not None else Path.cwd()
     search = [Path(path).expanduser() for path in search_paths]
@@ -1399,7 +1467,10 @@ def load_schema(
             collector.add(doc, display, source="local")
 
     resolved_kinds = _apply_mixins(collector)
-    resolved_kinds = _resolve_status_sets(collector, resolved_kinds)
+    status_model = _status_model(collector)
+    if status_model is StatusModel.legacy:
+        _require_legacy_statuses(collector)
+        resolved_kinds = _resolve_status_sets(collector, resolved_kinds)
     _validate_references(resolved_kinds, collector.kinds)
 
     return EffectiveSchema(
@@ -1408,9 +1479,12 @@ def load_schema(
         rule_sources={
             rule_id: entry.source for rule_id, entry in collector.rules.items()
         },
+        # The declared sets, not the effective one: a fixed-model kind declares
+        # nothing, and the fixed set is part of the core model.
         status_sets={
             name: entry.statuses for name, entry in collector.status_sets.items()
         },
+        status_model=status_model,
         preset_versions=versions,
     )
 

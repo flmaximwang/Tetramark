@@ -169,18 +169,22 @@ def _kind_for(ledger: Ledger, object_type: str, kind_name: str) -> Kind:
 
 
 # ---------------------------------------------------------------------------
-# Status sets (spec 4)
+# Status sets (spec 4 legacy / spec 6 fixed)
 # ---------------------------------------------------------------------------
 
 
 def aliquot_status_set(ledger: Ledger, stock_kind: str) -> StatusSet:
-    """The status set of a stock kind (every stock kind has one, spec 4)."""
-    kind = ledger.schema.kind(stock_kind)
-    status_set = kind.status_set()
-    if status_set is None:  # pragma: no cover - the loader rejects this
+    """The **effective** status set of a stock kind.
+
+    Spec 6 hardcodes one fixed set for every stock kind; a legacy ledger (its
+    stored preset copies declare per-kind sets) keeps its kind's set.  The
+    schema resolves both cases, so every status path below is model-agnostic.
+    """
+    status_set = ledger.schema.status_set(stock_kind)
+    if status_set is None:  # pragma: no cover - callers pass a stock kind
         raise LedgerError(
-            f"stock kind {stock_kind!r} has no status set; reload the ledger "
-            "schema"
+            f"kind {stock_kind!r} is not a stock kind, so it has no aliquot "
+            "status set"
         )
     return status_set
 
