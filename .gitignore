@@ -21,3 +21,6 @@ dist/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Test-run logs (e.g. scripts/test-lanes.sh output)
+*.log
