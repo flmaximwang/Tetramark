@@ -11,7 +11,7 @@ box(id PK, name UNIQUE, kind, parent_box_id FK→box, parent_slot, created_at, n
 slot(box_id FK→box, label, row_label, col_label, ordinal, PK(box_id,label))
 aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status VARCHAR NOT NULL,
         quantity DECIMAL, unit, label, created_at, notes, UNIQUE(stock_id,seq),
-        FK(box_id,slot)→slot)                    -- status: its stock kind's set (app + tests)
+        FK(box_id,slot)→slot)                    -- status: CHECK in the four fixed statuses (§1.1)
 aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit), amount, unit,
               from_box_id, from_slot, to_box_id, to_slot, old_status, new_status,
               forced BOOLEAN NOT NULL DEFAULT FALSE, actor, purpose, note, at)
@@ -119,7 +119,7 @@ Views (generated):
 - `v_stock_status` — stock + derived status (`active` when at least one aliquot is in stock;
   `depleted` when it has aliquots but none in stock; `empty` when it has none) +
   `aliquots_in_stock`/`aliquots_total` + `quantity_in_stock` + `unit` + `alias_list`. "In stock" means
-  the aliquot's status has `in_stock: true` in its stock kind's status set (§2.4).
+  the aliquot's status is `stored`, the only in-stock status of the fixed set (§1.1).
 - `v_<object>_<kind>` — kind table joined with its core row (convenience for humans/Workbench), for
   every **entity** and **stock** kind. Every
   `v_stock_<kind>` additionally shows, in this order: `entity_kind`/`entity_name` (the owning design,
@@ -162,12 +162,13 @@ expose two columns with the same name. After a `tm stock renumber` the old stock
 aliases (§6), so these columns are how a view reader still sees the pre-renumber handles.
 
 What the DB enforces vs the app:
-- DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values.
+- DB: PK/UNIQUE/FK/CHECK/NOT NULL, discriminator FKs, slot existence (`FK(box_id,slot)→slot`), enum values,
+  the fixed aliquot status (§1.1).
 - App + Dolt tests (cannot be expressed as DB constraints): slot capacity & aliquot-vs-child-box exclusivity,
   nesting acyclicity, **grid boxes hold tubes only** (a child box in a grid is refused), stock→entity kind
   restriction, `pattern`, **position follows in stock** (an aliquot has `box_id` exactly when its status
-  has `in_stock: true`, and `slot` exactly when that box is slotted; a not-in-stock aliquot carries no
-  position), statuses belonging to their stock kind's set, transition rules for unforced `status` events,
+  is `stored`, and `slot` exactly when that box is slotted; a not-in-stock aliquot carries no
+  position), fixed status transitions for unforced `status` events,
   slotless box capacity, and **box names are view-safe**: `v_box_<name>` must not equal a core view,
   the name is at most 58 characters (64 − `v_box_`) and it must not differ only in case from another
   box name.

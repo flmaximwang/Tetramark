@@ -4,7 +4,7 @@
 |---|---|---|
 | **entity** | The abstract thing (a plasmid design, a protein construct, a book title, a chemical). | UUID v4 |
 | **stock** | A logical batch / preparation event of exactly one entity (a glycerol stock, a culture's pellet, a protein prep, a purchase lot). Carries lineage. | Configurable; default date code |
-| **aliquot** | A physical unit of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. A **generic** tube: location, quantity, unit, status, label, notes — it has no kind. | `<stock_id>.<n>`, n = 1, 2, … |
+| **aliquot** | One equal physical portion of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. A **generic** tube: location, quantity, unit, status, label, notes — it has no kind. | `<stock_id>.<n>`, n = 1, 2, … |
 | **box** | A container with a geometry. Boxes nest (rack in a freezer shelf). | UUID internally + unique human `name` (e.g. `WFL-08-01`) |
 
 Rules:
@@ -13,14 +13,52 @@ Rules:
 - A stock has 0..N aliquots. Commands that create a stock create one aliquot by default (`--aliquots N`
   to create more, `--aliquots 0` for none), so single-tube users never think about aliquots.
 - Stock status is **derived** from its aliquots (view), never stored.
-- **All aliquots of one stock are the same**: they differ only in location, quantity, unit, status and
-  label. Tubes that differ in a property (concentration, freeze-thaw cycles, glycerol %) are different
-  **stocks**; a property of the material belongs on the stock kind, never on a per-tube table.
+- **Aliquots are equal portions of one stock**: they differ only in location, quantity, unit, status
+  and label. Anything that needs per-unit tracking — one animal, one plant, a tube measured
+  separately — is its own **stock** (with one aliquot when it is a single physical unit); a property
+  of the material belongs on the stock kind, and a detailed life state (euthanized, starved,
+  contaminated) belongs in a stock property or an event message, never in a per-tube field or an
+  extra status. The fixed status set is abstract for exactly this reason (§1.1).
 - A slot holds either aliquots (up to the box kind's `slot_capacity`, default 1) or one child box —
   never both. Box nesting must be acyclic.
 - "Removing" a tube means status → `consumed` (soft). Hard delete only via explicit `--purge`.
 
-### 1.1 Ledger
+### 1.1 Aliquot status
+
+Every aliquot has exactly one status, from one **fixed, hardcoded set that every stock kind
+shares**. It is part of the core model, not the schema: no preset or ledger declares statuses (§2.4).
+
+| status | meaning | `in_stock` | allowed transitions |
+|---|---|---|---|
+| `pending` | ordered or planned; not physically here yet | no | `stored`, `missing`, `consumed` |
+| `stored` | physically here and usable | yes | `missing`, `consumed` |
+| `missing` | cannot be found now; may come back | no | `stored`, `consumed` |
+| `consumed` | gone for good; final | no | none |
+
+`stored` is the only in-stock status: the stock views count an aliquot in stock exactly when its
+status is `stored`. Creating an aliquot (`tm stock add`, `tm aliquot add`, `tm import`) accepts any
+of the four; changing one (`tm aliquot status`) must follow the table. `tm aliquot status ALQ NEW
+--force --note TEXT` overrides the transition check, records `aliquot_event.forced = TRUE`, and is
+the way to undo a wrong `consumed`; an unforced event that breaks a transition fails `tm check`
+(§4).
+
+**Upgrading older ledgers.** Earlier spec versions gave each stock kind its own status set (the
+`tube`, `cryo`, `animal`, `fly` and `worm` vocabularies). Their words map to the fixed set as
+follows; a word that already has a fixed-set name keeps it.
+
+| old status | new status |
+|---|---|
+| `planned` | `pending` |
+| `alive`, `crossed`, `growing`, `starved` | `stored` |
+| `lost` | `missing` |
+| `thawed`, `euthanized`, `found_dead`, `transferred`, `cancelled`, `discarded`, `contaminated` | `consumed` |
+
+`thawed` means the same as `consumed`: a thawed cryo vial is gone. A cryo vial is `stored` while it
+is in the freezer and `missing` or `consumed` after it leaves; there is no separate cryo vocabulary.
+The detailed states those old words carried are stock properties or event messages now, not
+statuses. The upgrade itself is a manual, documented step; it never rewrites past events.
+
+### 1.2 Ledger
 
 - **Ledger** = one self-contained directory. It holds the Dolt database (`.dolt/`), the
   human-editable configuration `ledger.yaml`, the preset copies `presets/` created at init, and —
@@ -60,7 +98,7 @@ Several ledgers can live next to each other (one project each, or a lab with a d
 nothing couples them — no shared `workspace.yaml`, no server, no registry. A command is always
 about exactly one ledger directory, selected by `-l/--ledger PATH` or the upward walk.
 
-### 1.2 Sharing and portability
+### 1.3 Sharing and portability
 
 A ledger is one self-contained directory, so **sharing a ledger means copying that directory** —
 `cp -a`, `rsync`, `dolt clone` or `dolt backup` — exactly like a git repository. Two machines writing

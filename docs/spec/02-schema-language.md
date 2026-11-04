@@ -7,14 +7,14 @@ collisions are an error.
 
 A preset meant to be shared is a **part**: it owns one slice of the model and includes only the
 parts it references — never a bundle. A preset whose only content is `include:` is a **bundle**
-(`molbio` is one): it adds no kinds, rules or status sets, and includes are loaded once each, so two
+(`molbio` is one): it adds no kinds, mixins or rules, and includes are loaded once each, so two
 bundles can list the same part and one ledger can list `presets: [molbio, cellbio]` without
 duplicate-kind errors. `presets/README.md` maps every part to the bundles that include it and
 records the include graph.
 
 ```yaml
 # presets/nucleic_acids.yaml (a part: proteins supplies protein_construct and
-# the sequence_fields mixin; base supplies named_fields and the status sets)
+# the sequence_fields mixin; base supplies named_fields)
 preset: nucleic_acids
 version: 1
 include: [base, proteins]
@@ -28,8 +28,7 @@ kinds:
       construct: {type: ref, to: protein_construct, lineage: true}  # FK → entity_protein_construct; a lineage edge
   plasmid_prep:
     object: stock
-    entity_kinds: [plasmid]
-    statuses: tube               # required on every stock kind
+    entity_kinds: [plasmid]      # no statuses: every aliquot uses the fixed set (§1.1)
     fields:
       concentration_ng_ul: {type: decimal, precision: 12, scale: 2}
       prep_method: {type: string}
@@ -94,33 +93,18 @@ Optional on box kind: `slot_capacity` (default 1).
 Custom rule = `id`, `description`, `severity: fail|info`, `sql` (read-only SELECT), `expect`:
 `{single_value: X}` | `{rows: 0}` | `{rows_at_most: N}`. Compiled into `dolt_tests` (§4).
 
-### 2.4 Status sets
+### 2.4 Aliquot status
 
-Statuses belong to **stock kinds**, not to the ledger (spec 4). A preset or a
-ledger `kinds/` file may declare top-level `status_sets`, and every stock kind
-names one with `statuses:` (or gives an inline set); entity and box kinds must
-not have it. Set names are global, like kind names; a duplicate name is a load
-error, and every `to:` target must be a status of the same set.
+Aliquot status is **not schema**: every aliquot uses one fixed, hardcoded set — `pending`,
+`stored`, `missing`, `consumed` — with the meaning, `in_stock` flag and transitions in §1.1. There
+are no per-kind status sets and no per-stock-kind status vocabulary.
 
-```yaml
-status_sets:
-  tube:
-    pending:  {in_stock: false, to: [stored, missing, consumed]}
-    stored:   {in_stock: true,  to: [missing, consumed]}   # on the shelf
-    missing:  {in_stock: false, to: [stored, consumed]}
-    consumed: {in_stock: false}                            # no to: = final
-```
+In the new spec version a top-level `status_sets:` key or a stock kind's `statuses:` key is a
+**load error**; entity and box kinds never carried one. Older schema versions still load: a ledger
+opens its own stored preset copies, so an old ledger's `status_sets:`/`statuses:` are read exactly
+as that version defines them. `tm check` does exactly what the ledger's stored presets say — an old
+ledger keeps passing, a new ledger enforces the fixed set — with no special-casing.
 
-`in_stock` decides what the stock views count as still in stock. Creating an
-aliquot (`tm stock add`, `tm aliquot add`, `tm import`) accepts any status of
-the stock kind's set; **changing** one must follow `to:`. `tm aliquot status …
---force --note TEXT` overrides a rule and records `aliquot_event.forced = TRUE`;
-an unforced event that breaks a rule fails `tm check` (§4).
-
-The bundled sets live in `base`: `tube` (general tubes: pending/stored/missing
-and a final consumed), `cryo` (frozen vials: stored/missing/thawed) and `animal`
-(living organisms: planned/alive/…), because zebrafish and mouse both use it.
-The organism parts add `fly` (`alive`/`crossed`/`discarded`/`lost`, in
-`drosophila`) and `worm` (`growing`/`starved`/`contaminated`/`discarded`, in
-`c_elegans`); see §8 for their transitions. Every other existing stock kind uses
-`tube`; `cell_culture`'s `cell_vial` and the cryo stocks use `cryo`.
+The stock views do not consult a schema set: `in_stock` is `status = 'stored'`, and `aliquot.status`
+carries a real DB `CHECK (status IN ('pending','stored','missing','consumed'))` (§3), replacing the
+generated `core_aliquot_status_known` test.
