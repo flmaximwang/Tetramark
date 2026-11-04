@@ -468,20 +468,24 @@ kinds have simply excludes the other kinds from the result.
 
 Every filter is ANDed; `--where` (also `-w`) is repeatable. The listings and `tm find` build all
 statements of the read first and fetch them in one `query_many` batch, so `--where` does not cost a
-process per kind; only naming an invalid pattern (the error path probes each pattern) and an `=`
-filter on a kind `ref` (the alias may be resolved) cost extra queries. A listing that matches nothing
-prints `(none)` (an empty list in JSON) and exits 0.
+process per kind. A few paths still cost extra queries: naming an invalid pattern (the error path
+probes the patterns to name the bad one), a field combination no kind can express (nothing compiles
+the patterns, so each `~` pattern is probed once up front), and an `=` filter on a kind `ref` (the
+alias may be resolved). A listing that matches nothing prints `(none)` (an empty list in JSON) and
+exits 0.
 
 `tm find [QUERY] [-E|--regex] [--where FILTER ...]` searches the whole ledger. Without `-E`, `QUERY`
-is a literal, case-insensitive search: the exact id, exact alias, exact name, name prefix, alias
-prefix, name substring, alias substring, exact field and field substring tiers, with `%` and `_` as
-ordinary characters. Its places are the ids of all four object types, aliases, names and the
-`string`/`text` fields of every kind. With `-E`/`--regex`, `QUERY` is a case-insensitive database
-regex over the same places (`(?i)` is added to the pattern): a regex has no exact/prefix/substring
-sub-tiers, so the ranks collapse to id > alias > name > field, with prefix and substring matches
-merged; ties are broken by object type, kind and id. An invalid `-E` pattern is a usage error
-(`invalid regex '[': the pattern is not a valid regular expression`) with no literal fallback — a
-pattern that does not compile never matches as if it were text.
+is a literal search: ids are matched exactly and case-sensitively, while aliases, names and
+`string`/`text` kind fields are matched case-insensitively by exact, prefix and substring text, with
+`%` and `_` as ordinary characters. The tiers are exact id, exact alias, exact name, name prefix,
+alias prefix, name substring, alias substring, exact field and field substring. Its places are the
+ids of all four object types, aliases, names and the `string`/`text` fields of every kind. With
+`-E`/`--regex`, `QUERY` is a case-insensitive database regex over the same places (`(?i)` is added to
+the pattern): a regex has no exact/prefix/substring sub-tiers, so the ranks collapse to id > alias >
+name > field, with prefix and substring matches merged; ties are broken by object type, kind and id.
+An invalid `-E` pattern is a usage error (`invalid regex '[': the pattern is not a valid regular
+expression`) with no literal fallback — a pattern that does not compile never matches as if it were
+text.
 
 `--where` applies to every hit after the search (AND), so even an id or alias hit must satisfy it.
 Aliquots are excluded whenever any `--where` is given (they have no kind row to filter);

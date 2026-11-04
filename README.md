@@ -139,7 +139,7 @@ tm --ledger ~/lab/lab101 find pZET035      # -l ~/lab/lab101 works too
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
 (exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and
 `--where` filters the entity/stock/box lists or `tm find` by `field=value` (exact) or
-`field~pattern` (ICU regex); see [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64-where-filters-and-tm-find).
+`field~pattern` (ICU regex); see [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
 Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.
