@@ -85,7 +85,7 @@ own limits:
 * **60 s per test** (`pytest-timeout`) — a hung Dolt server cannot stall the run;
 * **30 s** for `-m fast`.
 
-Measured on the reference machine (10-core macOS): **177–192 s, 1337 passed, 1 skipped**, zero leftover
+Measured on the reference machine (10-core macOS): **~212 s, 1351 passed, 1 skipped**, zero leftover
 `dolt sql-server`. The skip is the optional 0.4.2 lab-ledger snapshot, absent from this checkout.
 
 `tests/test_*_round_trips*.py` pin the embedded driver's process budgets, so batching cannot
