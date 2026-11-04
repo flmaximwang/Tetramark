@@ -16,18 +16,20 @@ compare the batched rows with the same operation run through per-statement
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
 
-from conftest import PRESETS
-from tetramark.core.ledger import Ledger
+from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import LedgerError
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
-#: processes; the opt-in server backend has no such per-statement process, so
-#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+#: processes; the ``embedded_driver`` marker makes conftest switch this test to
+#: that backend even though the rest of the session defaults to the server.
 pytestmark = pytest.mark.embedded_driver
 
 #: ``full`` includes ``chain`` includes ``base``: three entity kinds, three
@@ -36,10 +38,35 @@ pytestmark = pytest.mark.embedded_driver
 MANY_KINDS = [str(PRESETS / "full")]
 
 
-@pytest.fixture
-def read_ledger(ledger_factory: Any) -> Ledger:
-    """A ledger whose preset has many kinds (a copy of a session template)."""
-    return ledger_factory(MANY_KINDS, name="list-batch-many-kinds")
+@pytest.fixture(scope="module")
+def read_ledger(
+    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+) -> Iterator[tuple[Ledger, dict[str, Any]]]:
+    """A many-kind ledger with its rows, built once per worker.
+
+    The rows are fixture setup, not the read budget under test: they are built
+    through the server backend (cheap) and the ledger is then reopened with the
+    embedded driver the tests count.  Sharing it across the module is safe:
+    every test here only reads.
+    """
+    del dolt_binary  # the fixture only skips the module when dolt is missing
+    root = tmp_path_factory.mktemp("list-batch")
+    env = isolated_env(root / "dolt-root", root / "home")
+    ledger = init_ledger(
+        root / "ledger",
+        "list-batch",
+        MANY_KINDS,
+        id_prefix="77",
+        author=FACTORY_AUTHOR,
+        env={**env, "TETRAMARK_DRIVER": "server"},
+    )
+    built = build_rows(ledger)
+    ledger.close()
+    ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
+    try:
+        yield ledger, built
+    finally:
+        ledger.close()
 
 
 @pytest.fixture
@@ -100,6 +127,25 @@ def build_rows(ledger: Ledger) -> dict[str, Any]:
     }
 
 
+def per_query_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``query_many`` run one ``query`` per statement (the old path).
+
+    The statements are independent, so the historical path is replayed on a
+    small thread pool: the rows and the number of ``dolt sql`` processes are
+    identical, and the regression check does not spend a minute doing what the
+    batch does in one process.
+    """
+    def per_query(
+        self: EmbeddedDriver, statements: list[tuple[str, Any]], **kwargs: Any
+    ) -> list[list[dict[str, Any]]]:
+        def run(statement: tuple[str, Any]) -> list[dict[str, Any]]:
+            return self.query(statement[0], statement[1], **kwargs)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(run, statements))
+
+
+
 def clear(log: list[str]) -> list[str]:
     log.clear()
     return log
@@ -111,10 +157,9 @@ def clear(log: list[str]) -> list[str]:
 
 
 def test_entity_list_runs_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    built = build_rows(ledger)
+    ledger, built = read_ledger
 
     clear(invoke_log)
 
@@ -134,10 +179,9 @@ def test_entity_list_runs_one_batched_read(
 
 
 def test_entity_list_filtered_by_kind_runs_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    build_rows(ledger)
+    ledger, _ = read_ledger
     clear(invoke_log)
 
     rows = ledger.entities.ls("plasmid")
@@ -147,10 +191,9 @@ def test_entity_list_filtered_by_kind_runs_one_batched_read(
 
 
 def test_stock_list_runs_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    built = build_rows(ledger)
+    ledger, built = read_ledger
     clear(invoke_log)
 
     rows = ledger.stocks.ls()
@@ -167,10 +210,9 @@ def test_stock_list_runs_one_batched_read(
 
 
 def test_box_list_runs_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    build_rows(ledger)
+    ledger, _ = read_ledger
     clear(invoke_log)
 
     rows = ledger.boxes.ls()
@@ -183,10 +225,9 @@ def test_box_list_runs_one_batched_read(
 
 
 def test_box_show_runs_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    built = build_rows(ledger)
+    ledger, built = read_ledger
     box_id = built["grid"]["id"]
 
     for ref in ("BOX-1", box_id, "LEGACY-BOX"):
@@ -219,10 +260,9 @@ def test_box_show_runs_one_batched_read(
 
 
 def test_show_entity_and_stock_run_one_batched_read(
-    read_ledger: Ledger, invoke_log: list[str]
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
-    built = build_rows(ledger)
+    ledger, built = read_ledger
 
     clear(invoke_log)
     entity = ledger.entities.show(built["entities"][0]["id"])
@@ -236,9 +276,9 @@ def test_show_entity_and_stock_run_one_batched_read(
 
 
 def test_empty_list_does_not_start_a_process(
-    read_ledger: Ledger, invoke_log: list[str]
+    ledger_factory: Any, invoke_log: list[str]
 ) -> None:
-    ledger = read_ledger
+    ledger = ledger_factory(MANY_KINDS, name="list-batch-empty")
     clear(invoke_log)
 
     rows = ledger.entities.ls()
@@ -255,11 +295,10 @@ def test_empty_list_does_not_start_a_process(
 
 
 def test_list_and_show_rows_match_per_query_results(
-    read_ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+    read_ledger: tuple[Ledger, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Batching changes the process count, never the rows or their order."""
-    ledger = read_ledger
-    built = build_rows(ledger)
+    ledger, built = read_ledger
 
     batched = {
         "entities": ledger.entities.ls(),
@@ -273,12 +312,7 @@ def test_list_and_show_rows_match_per_query_results(
         "stock": ledger.stocks.show(built["lot"]["id"]),
     }
 
-    def per_query(
-        self: EmbeddedDriver, statements: list[tuple[str, Any]]
-    ) -> list[list[dict[str, Any]]]:
-        return [self.query(sql, params) for sql, params in statements]
-
-    monkeypatch.setattr(EmbeddedDriver, "query_many", per_query)
+    per_query_path(monkeypatch)
 
     assert ledger.entities.ls() == batched["entities"]
     assert ledger.entities.ls("item") == batched["entities_item"]
@@ -292,19 +326,13 @@ def test_list_and_show_rows_match_per_query_results(
 
 
 def test_unknown_refs_keep_their_errors(
-    read_ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+    read_ledger: tuple[Ledger, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ledger = read_ledger
-    build_rows(ledger)
-
-    def per_query(
-        self: EmbeddedDriver, statements: list[tuple[str, Any]]
-    ) -> list[list[dict[str, Any]]]:
-        return [self.query(sql, params) for sql, params in statements]
+    ledger, _ = read_ledger
 
     for batched in (False, True):
         if batched:
-            monkeypatch.setattr(EmbeddedDriver, "query_many", per_query)
+            per_query_path(monkeypatch)
         with pytest.raises(LedgerError, match="unknown box 'NOPE'"):
             ledger.boxes.show("NOPE")
         with pytest.raises(LedgerError, match="unknown entity 'NOPE'"):

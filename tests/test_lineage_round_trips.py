@@ -18,6 +18,7 @@ JSON payloads and text.  Real Dolt, never a mock, like the rest of the suite.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -25,15 +26,15 @@ import pytest
 import yaml
 
 from conftest import isolated_env
-from tetramark.core.ledger import Ledger, init_ledger
-from tetramark.driver.base import Driver
+from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.ops.history import history, history_rows, render_history_text
 from tetramark.ops.lineage import lineage, render_dot, render_text
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so
-#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+#: the ``embedded_driver`` marker makes conftest switch them to that
+#: backend even though the rest of the session defaults to the server.
 pytestmark = pytest.mark.embedded_driver
 
 #: A minimal status set for the custom preset's stock kind (spec 4 requires
@@ -107,6 +108,11 @@ def template(
     del dolt_binary  # the fixture only skips the module when dolt is missing
     root = tmp_path_factory.mktemp("lineage-batch")
     env = isolated_env(root / "dolt-root", root / "home")
+    # This module pins the embedded driver's process budget.  Module-scoped
+    # fixtures are set up before the per-test backend fixture can run, so the
+    # backend is forced here instead of inheriting the session default.  The
+    # fixture rows are setup, not the read under test: build them through the
+    # server backend, then reopen the same ledger embedded.
     preset_path = root / "lineage-batch.yaml"
     preset_path.write_text(
         yaml.safe_dump(PRESET, sort_keys=False), encoding="utf-8"
@@ -117,9 +123,13 @@ def template(
         [preset_path],
         id_prefix="77",
         author="Batch Tests <batch@tetramark.invalid>",
-        env=env,
+        env={**env, "TETRAMARK_DRIVER": "server"},
     )
     ids = build_rows(ledger)
+    ledger.close()
+    ledger = open_ledger(
+        root / "template", env={**env, "TETRAMARK_DRIVER": "embedded"}
+    )
     try:
         yield ledger, ids
     finally:
@@ -184,11 +194,22 @@ def invoke_log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def per_statement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every ``query_many`` run one ``query`` per statement.
 
-    ``Driver.query_many`` is the interface's own default implementation: the
-    same statements, one ``dolt sql`` process each.  Comparing against it is
-    the old per-query code path without keeping a copy of the old code.
+    This is the interface's historical one-process-per-statement path: the same
+    statements and the same number of ``dolt sql`` processes as
+    ``Driver.query_many``.  It runs on a small thread pool because the
+    statements are independent; the assertions are about the resulting rows and
+    error messages, not about wall time or execution order.
     """
-    monkeypatch.setattr(EmbeddedDriver, "query_many", Driver.query_many)
+    def per_query(
+        self: EmbeddedDriver, statements: list[tuple[str, Any]], **kwargs: Any
+    ) -> list[list[dict[str, Any]]]:
+        def run(statement: tuple[str, Any]) -> list[dict[str, Any]]:
+            return self.query(statement[0], statement[1], **kwargs)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(run, statements))
+
+    monkeypatch.setattr(EmbeddedDriver, "query_many", per_query)
 
 
 def clear(log: list[str]) -> list[str]:

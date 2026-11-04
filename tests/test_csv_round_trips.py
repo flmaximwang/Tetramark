@@ -21,20 +21,22 @@ import csv
 import hashlib
 import io
 import json
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from conftest import PRESETS
-from tetramark.core.ledger import Ledger
-from tetramark.driver import Driver, EmbeddedDriver
+from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
+from tetramark.driver import EmbeddedDriver
 from tetramark.errors import LedgerError
 from tetramark.ops.io_csv import CsvImportError, export_csv, import_csv
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
-#: processes; the opt-in server backend has no such per-statement process, so
-#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+#: processes; the ``embedded_driver`` marker makes conftest switch this test to
+#: that backend even though the rest of the session defaults to the server.
 pytestmark = pytest.mark.embedded_driver
 
 #: ``full`` has every field type and every geometry, so the export fans out
@@ -79,6 +81,43 @@ def write_boundary(
 
     monkeypatch.setattr(Ledger, "write", counting)
     return starts
+
+
+@pytest.fixture(scope="module")
+def source(
+    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+) -> Iterator[Ledger]:
+    """The one populated ledger these tests read, built once per worker.
+
+    Building the rows is fixture setup, not the export/import budget under
+    test: it runs through the server backend and the ledger is reopened with
+    the embedded driver the tests count.  No test mutates the source.
+    """
+    del dolt_binary  # the fixture only skips the module when dolt is missing
+    root = tmp_path_factory.mktemp("csv-source")
+    env = isolated_env(root / "dolt-root", root / "home")
+    ledger = init_ledger(
+        root / "ledger",
+        "csv-source",
+        FULL,
+        id_prefix="77",
+        author=FACTORY_AUTHOR,
+        env={**env, "TETRAMARK_DRIVER": "server"},
+    )
+    make_source(ledger)
+    ledger.close()
+    ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
+    try:
+        yield ledger
+    finally:
+        ledger.close()
+
+
+@pytest.fixture(scope="module")
+def exported(source: Ledger, tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """The source exported once; import tests reuse the same bytes."""
+    root = tmp_path_factory.mktemp("csv-export")
+    return export_csv(source, "all", out_dir=root / "export")
 
 
 def make_source(ledger: Ledger) -> None:
@@ -142,8 +181,22 @@ def export_bytes(directory: Path) -> dict[str, str]:
 
 
 def use_per_query_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``query_many`` run one ``driver.query`` per statement (the old path)."""
-    monkeypatch.setattr(EmbeddedDriver, "query_many", Driver.query_many)
+    """Make ``query_many`` run one ``driver.query`` per statement (the old path).
+
+    The statements are independent, so the old path is replayed on a small
+    thread pool: same rows and same number of processes, without spending the
+    whole regression test waiting for processes the batch does in one.
+    """
+    def per_query(
+        self: EmbeddedDriver, statements: list[tuple[str, Any]], **kwargs: Any
+    ) -> list[list[dict[str, Any]]]:
+        def run(statement: tuple[str, Any]) -> list[dict[str, Any]]:
+            return self.query(statement[0], statement[1], **kwargs)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(run, statements))
+
+    monkeypatch.setattr(EmbeddedDriver, "query_many", per_query)
 
 
 def fail_first_batch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,11 +236,10 @@ def import_error(ledger: Ledger, path: Path) -> str:
 
 
 def test_export_all_reads_every_file_in_one_batch(
-    ledger_factory: Any, tmp_path: Path, invoke_log: list[str]
+    source: Ledger, tmp_path: Path, invoke_log: list[str]
 ) -> None:
     """An ``export all`` is one JSON read batch plus one CSV header batch."""
-    ledger = ledger_factory(FULL, name="export-batch")
-    make_source(ledger)
+    ledger = source
     invoke_log.clear()
 
     exported = export_csv(ledger, "all", out_dir=tmp_path / "export")
@@ -212,11 +264,10 @@ def test_export_all_reads_every_file_in_one_batch(
 
 
 def test_export_one_kind_is_one_batch(
-    ledger_factory: Any, tmp_path: Path, invoke_log: list[str]
+    source: Ledger, tmp_path: Path, invoke_log: list[str]
 ) -> None:
     """Even a single-kind export shares its one read with the alias map."""
-    ledger = ledger_factory(FULL, name="export-one-batch")
-    make_source(ledger)
+    ledger = source
     invoke_log.clear()
 
     export_csv(ledger, "item", out_dir=tmp_path / "one")
@@ -233,7 +284,8 @@ def test_export_one_kind_is_one_batch(
 
 def test_planning_one_import_runs_one_read_batch(
     ledger_factory: Any,
-    tmp_path: Path,
+    exported: Any,
+    source: Ledger,
     invoke_log: list[str],
     write_boundary: list[int],
 ) -> None:
@@ -243,10 +295,6 @@ def test_planning_one_import_runs_one_read_batch(
     per row, so a clean import reads twice (JSON rows + CSV columns) and then
     writes.
     """
-    source = ledger_factory(FULL, name="import-batch-source")
-    make_source(source)
-    exported = export_csv(source, "all", out_dir=tmp_path / "export")
-
     target = ledger_factory(FULL, name="import-batch-target")
     invoke_log.clear()
     write_boundary.clear()
@@ -267,13 +315,9 @@ def test_planning_one_import_runs_one_read_batch(
 
 
 def test_dry_run_import_only_plans(
-    ledger_factory: Any, tmp_path: Path, invoke_log: list[str]
+    ledger_factory: Any, exported: Any, source: Ledger, invoke_log: list[str]
 ) -> None:
     """A dry run writes nothing, so its whole cost is the planning batch."""
-    source = ledger_factory(FULL, name="import-dry-source")
-    make_source(source)
-    exported = export_csv(source, "all", out_dir=tmp_path / "export")
-
     target = ledger_factory(FULL, name="import-dry-target")
     invoke_log.clear()
     import_csv(target, "all", exported.directory, dry_run=True)
@@ -289,15 +333,14 @@ def test_dry_run_import_only_plans(
 
 
 def test_batched_export_writes_the_per_query_bytes(
-    ledger_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    source: Ledger, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The export bytes must not depend on how the reads are batched.
 
     ``Driver.query_many`` is the historical one-``query``-per-statement path,
     i.e. exactly the reads ``export_csv`` made before it was batched.
     """
-    ledger = ledger_factory(FULL, name="export-bytes")
-    make_source(ledger)
+    ledger = source
 
     batched = tmp_path / "batched"
     export_csv(ledger, "all", out_dir=batched)
@@ -325,13 +368,9 @@ def test_batched_export_writes_the_per_query_bytes(
 
 
 def test_batched_import_leaves_the_per_query_state(
-    ledger_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ledger_factory: Any, exported: Any, source: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A reference resolved from the snapshot resolves to the same row."""
-    source = ledger_factory(FULL, name="import-state-source")
-    make_source(source)
-    exported = export_csv(source, "all", out_dir=tmp_path / "export")
-
     batched = ledger_factory(FULL, name="import-state-batched")
     import_csv(batched, "all", exported.directory)
 
@@ -358,11 +397,9 @@ def table_rows(ledger: Ledger, table: str) -> list[str]:
 
 
 def test_export_import_export_round_trips_the_same_bytes(
-    ledger_factory: Any, tmp_path: Path
+    ledger_factory: Any, source: Ledger, tmp_path: Path
 ) -> None:
     """What the export writes, the import reads back byte for byte."""
-    source = ledger_factory(FULL, name="round-trip-source")
-    make_source(source)
     first = tmp_path / "first"
     export_csv(source, "all", out_dir=first)
 
@@ -381,7 +418,10 @@ def test_export_import_export_round_trips_the_same_bytes(
 
 
 def test_a_failing_batch_falls_back_to_the_per_query_reads(
-    ledger_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ledger_factory: Any,
+    exported: Any,
+    source: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One failing read must not change the import, only its speed.
 
@@ -390,10 +430,6 @@ def test_a_failing_batch_falls_back_to_the_per_query_reads(
     planner re-reads everything one query at a time -- and resolves references
     against the live queries again instead of the snapshot.
     """
-    source = ledger_factory(FULL, name="fallback-source")
-    make_source(source)
-    exported = export_csv(source, "all", out_dir=tmp_path / "export")
-
     batched = ledger_factory(FULL, name="fallback-batched")
     import_csv(batched, "all", exported.directory)
 
