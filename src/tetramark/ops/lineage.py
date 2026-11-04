@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from tetramark.core.objects import OBJECT_TYPES
-from tetramark.errors import LedgerError, UsageError
+from tetramark.errors import LedgerError, UsageError, try_find_hint
 from tetramark.schema.ddl import table_name
 from tetramark.schema.model import EffectiveSchema, Field, FieldType, Kind, ObjectType
 
@@ -393,7 +393,10 @@ def _resolve_ref(snapshot: _Snapshot, ref: str) -> tuple[str, str]:
         raise UsageError(
             f"alias {text!r} is ambiguous: it names {kinds}; pass the object id"
         )
-    raise LedgerError(f"unknown object {text!r} (no such id, box name or alias)")
+    raise LedgerError(
+        f"unknown object {text!r} (no such id, box name or alias)"
+        f"{try_find_hint(text)}"
+    )
 
 
 def _build(

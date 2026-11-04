@@ -123,6 +123,8 @@ tm find pZET035              # name
 tm find 1226FP01             # exact id
 tm find "BL21"               # text in kind fields
 tm find 0826FP02 --json      # machine-readable result with score and location
+tm find 0506-2.1-01          # rewrite rules may map a handwritten handle to the stored one
+tm find 0506-2.1-01 --with-rewrite   # also show every rule's hits below the original ones
 
 tm find -E '^pZET'           # regex: ids, aliases, names and kind text, case-insensitive
 tm find --where 'resistance=kan'              # list every object with that field (no aliquots)
@@ -135,6 +137,12 @@ search with a case-insensitive ICU regex. Use `--where` when you know the column
 `=` is exact, `~` is an unanchored, case-sensitive regex search — anchor with `^`/`$`, use `(?i)` to
 ignore case. The same filters work on `tm entity|stock|box list`; `tm find --where` spans every
 object type and excludes aliquots. The aliquot list's own `--where` is exact-only.
+
+A ledger can declare `find.rewrites` rules in `ledger.yaml` (Python `re`): a literal query with no
+hits falls back to the first rule that hits (a stderr line names the rule), and `--with-rewrite` adds
+every rule's hits below the original ones. `-E`, `--where` and single-object commands never rewrite;
+a plain not-found there ends with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep
+their own error).
 
 Results show `object`, `kind`, `id`, a summary, the location (path plus slot) and why it matched
 (`id`, `alias`, `name`, `field`, or `filter` for a `--where`-only listing). Then:

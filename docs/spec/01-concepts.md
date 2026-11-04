@@ -97,7 +97,24 @@ ids:
   stock: {strategy: datecode, prefix: "12"}   # → 1226JT01
   entity: {strategy: uuid}
 rules_dir: rules/                # optional custom validation rules (YAML), relative to <ledger>
+find:                            # optional literal-query rewrites for tm find (§6.4)
+  rewrites:
+    - name: type-code            # unique per ledger; shown as "<tier> via type-code"
+      pattern: '^05(\d{2})-(.+)$'    # Python re; matched with re.fullmatch
+      replacement: '05PR\1-\2-FL1'   # match.expand; \1 and \g<name> back-references
 ```
+
+The optional `find:` section declares **rewrite rules** for literal `tm find` queries (§6.4): rules
+belong to the ledger, not to a preset. Each rule has a unique `name`, a `pattern` and a
+`replacement`. The pattern is a Python regular expression matched against the whole trimmed query with
+`re.fullmatch`, and the replacement is expanded with `re.Match.expand`, so `\1` and `\g<name>`
+back-references work. This is deliberately the Python `re` dialect, not the database (ICU) dialect of
+`--where ~` and `tm find -E`. Rules never chain: each rule sees the original query only.
+
+The rules are validated when the ledger opens. A bad pattern, a replacement that names a group the
+pattern lacks, a missing or duplicate `name`, or an empty `rewrites:` list is refused with the rule
+named (`find.rewrites[1] ('type-code'): invalid pattern ...`). A ledger that carries `find:` needs
+tm 0.9.0 or newer: older releases refuse the unknown key.
 
 Several ledgers can live next to each other (one project each, or a lab with a dozen projects);
 nothing couples them — no shared `workspace.yaml`, no server, no registry. A command is always

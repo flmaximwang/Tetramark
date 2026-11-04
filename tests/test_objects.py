@@ -1175,22 +1175,32 @@ def test_stock_show_of_an_aliquot_hints_at_aliquot_show(ledger_factory) -> None:
 
 
 def test_wrong_type_hints_stay_off_for_other_misses(ledger_factory) -> None:
-    """Only the other show type gets a hint; unknown, empty and third types don't."""
+    """Only another show type adds a type hint; a plain miss points at find."""
     ledger = make_ledger(ledger_factory)
     item = new_item(ledger)
 
-    with pytest.raises(LedgerError, match=r"^unknown aliquot 'nope'$"):
+    with pytest.raises(
+        LedgerError, match=r"^unknown aliquot 'nope'; try tm find nope$"
+    ):
         ledger.aliquots.show("nope")
     with pytest.raises(LedgerError, match=r"^unknown aliquot ''$"):
         ledger.aliquots.show("")
-    with pytest.raises(LedgerError, match=rf"^unknown aliquot {item['id']!r}$"):
+    with pytest.raises(
+        LedgerError,
+        match=rf"^unknown aliquot {item['id']!r}; try tm find {item['id']}$",
+    ):
         ledger.aliquots.show(item["id"])
 
-    with pytest.raises(LedgerError, match=r"^unknown stock 'nope'$"):
+    with pytest.raises(
+        LedgerError, match=r"^unknown stock 'nope'; try tm find nope$"
+    ):
         ledger.stocks.show("nope")
     with pytest.raises(LedgerError, match=r"^unknown stock ''$"):
         ledger.stocks.show("")
-    with pytest.raises(LedgerError, match=rf"^unknown stock {item['id']!r}$"):
+    with pytest.raises(
+        LedgerError,
+        match=rf"^unknown stock {item['id']!r}; try tm find {item['id']}$",
+    ):
         ledger.stocks.show(item["id"])
 
 

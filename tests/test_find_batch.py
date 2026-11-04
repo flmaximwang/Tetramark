@@ -17,9 +17,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import yaml
 
 from conftest import PRESETS
-from tetramark.core.ledger import Ledger
+from tetramark.core.ledger import Ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
@@ -105,4 +106,68 @@ def test_find_runs_one_batched_driver_round_trip(
     assert len(query_many_calls) == 1
     assert invoke_calls == ["json", "csv"], (
         f"empty find issued {len(invoke_calls)} dolt processes: {invoke_calls}"
+    )
+
+
+def test_find_rewrites_ride_in_the_same_batch(
+    find_ledger: Ledger,
+    dolt_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The original query and every rewrite share one query batch (53r.1)."""
+    ledger = find_ledger
+    alpha = add_item(ledger, "alpha")
+    demo = add_item(ledger, "demo-alpha")
+    path = ledger.path / "ledger.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload["find"] = {
+        "rewrites": [
+            {
+                "name": "prefix",
+                "pattern": r"^demo-(?P<rest>.+)$",
+                "replacement": r"\g<rest>",
+            },
+            # A second rule makes "one batch per rule" distinguishable from
+            # "one batch for all rules" (it must not add a query_many call).
+            {
+                "name": "suffix",
+                "pattern": r"^demo-(?P<rest>.+)$",
+                "replacement": r"\g<rest>-tube",
+            },
+        ]
+    }
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    ledger.close()
+    ledger = open_ledger(ledger.path, env=dolt_env)
+
+    query_many_calls: list[list[tuple[str, Any]]] = []
+    original_query_many = EmbeddedDriver.query_many
+
+    def counted_query_many(
+        self: EmbeddedDriver, statements: list[tuple[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        query_many_calls.append(list(statements))
+        return original_query_many(self, statements)
+
+    monkeypatch.setattr(EmbeddedDriver, "query_many", counted_query_many)
+
+    # --with-rewrite searches the original query and both rules' rewrites in
+    # one batch: one query_many call, two dolt processes.
+    results = ledger.find("demo-alpha", with_rewrite=True)
+    assert [row["id"] for row in results] == [demo["id"], alpha["id"]]
+    assert results[1]["match"] == "name via prefix"
+    assert len(query_many_calls) == 1, (
+        f"--with-rewrite issued {len(query_many_calls)} query_many calls"
+    )
+
+    # The default fallback cannot know it needs the rules before the first
+    # pass, so a miss costs one batch and both rules' rewrites a second one
+    # (not one batch per rule: with two rules that would be three calls).
+    query_many_calls.clear()
+    assert ledger.find("demo-nothing") == []
+    assert len(query_many_calls) == 2, (
+        f"the rewrite fallback issued {len(query_many_calls)} query_many calls"
     )

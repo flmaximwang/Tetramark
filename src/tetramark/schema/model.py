@@ -23,7 +23,7 @@ import json
 import re
 import string
 from enum import StrEnum
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 from pydantic import Field as PydanticField
@@ -42,6 +42,7 @@ __all__ = [
     "EffectiveSchema",
     "Field",
     "FieldType",
+    "FindConfig",
     "Geometry",
     "GeometryType",
     "IdStrategyConfig",
@@ -49,6 +50,8 @@ __all__ = [
     "LedgerConfig",
     "ObjectType",
     "Preset",
+    "Rewrite",
+    "RewriteRuleConfig",
     "Rule",
     "RuleExpect",
     "RuleSeverity",
@@ -1182,6 +1185,64 @@ class IdStrategyConfig(BaseModel):
         return value
 
 
+class RewriteRuleConfig(BaseModel):
+    """One ``find.rewrites`` rule from ``ledger.yaml`` (Tetramark-53r.1).
+
+    ``pattern`` is a Python regular expression matched with
+    :func:`re.fullmatch` against the *literal* ``tm find`` query, and
+    ``replacement`` is expanded with :meth:`re.Match.expand`, so ``\\1``-style
+    back-references work.  This dialect is deliberately separate from the
+    database (ICU) dialect of ``tm find -E`` and ``--where field~pattern``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    pattern: str
+    replacement: str
+
+
+class Rewrite(NamedTuple):
+    """One productive rewrite: the rule's name and the query it produced."""
+
+    rule: str
+    query: str
+
+
+class FindConfig(BaseModel):
+    """The optional ``find:`` section of ``ledger.yaml`` (Tetramark-53r.1).
+
+    ``rewrites`` belong to the ledger, not to a preset: they turn a
+    handwritten handle that is not stored (``0506-2.1-01``) into the stored one
+    (``05PR06-2.1-01-FL1``).  Rules never chain: every rule is matched against
+    the original query only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rewrites: list[RewriteRuleConfig] = PydanticField(default_factory=list)
+
+    def rewrites_for(self, query: str) -> list[Rewrite]:
+        """The productive rewrites of one literal query, in declaration order.
+
+        A rule that does not ``fullmatch`` the query, or whose expansion is the
+        query itself or an empty string, is skipped silently: it cannot turn a
+        miss into a hit.  The rules were validated when the ledger opened, so
+        every pattern compiles and every replacement expands.
+        """
+        text = str(query)
+        candidates: list[Rewrite] = []
+        for rule in self.rewrites:
+            match = re.fullmatch(rule.pattern, text)
+            if match is None:
+                continue
+            rewritten = match.expand(rule.replacement)
+            if not rewritten.strip() or rewritten == text:
+                continue
+            candidates.append(Rewrite(rule=rule.name, query=rewritten))
+        return candidates
+
+
 class LedgerConfig(BaseModel):
     """``ledger.yaml`` (spec §1.1)."""
 
@@ -1194,6 +1255,7 @@ class LedgerConfig(BaseModel):
     rules_dir: str | None = None
     author: str | None = None
     ids: dict[str, IdStrategyConfig] = PydanticField(default_factory=dict)
+    find: FindConfig = PydanticField(default_factory=FindConfig)
 
     @field_validator("name")
     @classmethod
@@ -1209,6 +1271,51 @@ class LedgerConfig(BaseModel):
                 raise ValueError(
                     f"unknown id strategy for {name!r} (expected 'entity' or 'stock')"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_find(self) -> LedgerConfig:
+        """Validate ``find.rewrites`` at ledger open (Tetramark-53r.1).
+
+        Every message names the offending rule as ``find.rewrites[<i>]
+        ('<name>')``; the loader prefixes it with the ``ledger.yaml`` path, so
+        a user can edit exactly one rule.  The Python ``re`` dialect is checked
+        by compiling the pattern and expanding the replacement against it.
+        """
+        section = self.find
+        if "rewrites" in section.model_fields_set and not section.rewrites:
+            raise ValueError(
+                "find.rewrites must not be empty: remove the key or list at "
+                "least one rewrite rule"
+            )
+        seen: dict[str, int] = {}
+        for index, rule in enumerate(section.rewrites):
+            if not rule.name.strip():
+                raise ValueError(
+                    f"find.rewrites[{index}]: every rewrite rule needs a name"
+                )
+            if rule.name in seen:
+                raise ValueError(
+                    f"find.rewrites[{index}] ({rule.name!r}): duplicate rewrite "
+                    f"name; find.rewrites[{seen[rule.name]}] already uses it"
+                )
+            seen[rule.name] = index
+            label = f"find.rewrites[{index}] ({rule.name!r})"
+            try:
+                compiled = re.compile(rule.pattern)
+            except re.error as error:
+                raise ValueError(
+                    f"{label}: invalid pattern {rule.pattern!r}: {error}"
+                ) from None
+            try:
+                # ``sub`` compiles the replacement template even when the
+                # pattern does not match the empty string.
+                compiled.sub(rule.replacement, "")
+            except (re.error, IndexError) as error:
+                raise ValueError(
+                    f"{label}: invalid replacement {rule.replacement!r}: "
+                    f"the pattern does not define that group ({error})"
+                ) from None
         return self
 
     def id_config(self, object_type: str | ObjectType) -> IdStrategyConfig:

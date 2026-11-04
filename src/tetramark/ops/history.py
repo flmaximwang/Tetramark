@@ -32,7 +32,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from tetramark.core.objects import OBJECT_TYPES
-from tetramark.errors import LedgerError, UsageError
+from tetramark.errors import LedgerError, UsageError, try_find_hint
 from tetramark.schema.ddl import table_name
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
@@ -227,7 +227,10 @@ def _resolve(
         raise UsageError(
             f"alias {text!r} is ambiguous: it names {kinds}; pass the object id"
         )
-    raise LedgerError(f"unknown object {text!r} (no such id, box name or alias)")
+    raise LedgerError(
+        f"unknown object {text!r} (no such id, box name or alias)"
+        f"{try_find_hint(text)}"
+    )
 
 
 # ---------------------------------------------------------------------------
