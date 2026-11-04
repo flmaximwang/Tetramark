@@ -585,19 +585,14 @@ def test_base_geometry_and_fields() -> None:
     assert rack is not None and rack.type is GeometryType.named
     assert rack.labels == [str(number) for number in range(1, 11)]
 
-    for name, capacity in (("shelf", 12), ("freezer", 6), ("drawer", 1)):
+    # Storage units are slotless and unbounded: how much a shelf, freezer,
+    # drawer or incubator holds depends on the lab's hardware, not the kind.
+    for name in ("shelf", "freezer", "drawer", "incubator"):
         geometry = schema.kinds[name].geometry
         assert geometry is not None
         assert geometry.type is GeometryType.slotless
         assert geometry.labels == []
-        assert geometry.capacity == capacity
-
-    # v3's incubator: slotless and unbounded (it holds racks, boxes or vials).
-    incubator = schema.kinds["incubator"].geometry
-    assert incubator is not None
-    assert incubator.type is GeometryType.slotless
-    assert incubator.labels == []
-    assert incubator.capacity is None
+        assert geometry.capacity is None
 
 
 def test_molbio_derives_construct_fields_from_zsqlab08() -> None:

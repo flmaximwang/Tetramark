@@ -310,7 +310,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
         "slots",
         "occupants",
     }
-    assert shelf["geometry"] == {"type": "slotless", "capacity": 12}
+    assert shelf["geometry"] == {"type": "slotless", "capacity": None}
     assert shelf["slots"] == []
     occupants = {occupant["type"]: occupant for occupant in shelf["occupants"]}
     assert occupants["box"]["name"] == "INNER"
