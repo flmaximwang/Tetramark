@@ -1,0 +1,3 @@
+id        kind  name                                         stocks_available  aliquots_in_stock
+11111111  item  alpha                                        1                 1
+22222222  item  a-rather-long-design-name-for-full-printing  0                 0

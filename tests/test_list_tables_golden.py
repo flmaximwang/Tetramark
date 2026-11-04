@@ -1,4 +1,4 @@
-"""Golden table for ``tm stock list`` (Tetramark-uue.1).
+"""Golden tables for ``tm stock list`` and ``tm entity list`` (Tetramark-uue).
 
 ``tests/data/golden/stock_list.table`` pins the default table of ``tm stock
 list``: the column set and order (``id kind entity_id entity_name
@@ -7,16 +7,24 @@ long enough to prove names print in full, and the derived ``status`` values --
 ``empty`` for a stock without aliquots, ``depleted`` when every aliquot has
 left stock and ``active`` while at least one is still in stock.
 
+``tests/data/golden/entity_list.table`` pins the default table of ``tm entity
+list``: the column set and order (``id kind name stocks_available
+aliquots_in_stock``), the shortened uuid ``id``, an entity name long enough to
+prove names print in full, and the two counts.  ``stocks_available`` counts the
+entity's stocks whose derived status is ``active``; depleted and empty stocks
+are not counted.  ``aliquots_in_stock`` sums the in-stock tubes of all the
+entity's stocks, so an entity with no stocks prints ``0 0``.
+
 The rows are built with explicit ids (uuid entities, datecode stocks) so the
-golden is stable run to run.  The comparison is line by line after ``rstrip``:
-rich pads the last column with trailing spaces, the golden file itself has no
-trailing whitespace.  Regenerate the file after an intended output change
-with::
+goldens are stable run to run.  The comparison is line by line after ``rstrip``:
+rich pads the last column with trailing spaces, the golden files themselves
+have no trailing whitespace.  Regenerate the files after an intended output
+change with::
 
     TETRAMARK_UPDATE_GOLDENS=1 uv run pytest tests/test_list_tables_golden.py
 
-The table is the same on both backends: ``list_stocks`` normalises the view's
-DOUBLE ``aliquots_in_stock`` SUM to an int, so the count prints ``0``/``1`` on
+The tables are the same on both backends: ``list_stocks``/``list_entities``
+normalise the view's DOUBLE SUM to an int, so the counts print ``0``/``1`` on
 the server and embedded lanes alike.  The module is deliberately **not**
 marked, like the other CLI tests: it runs on the session's default backend.
 """
@@ -54,14 +62,36 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, dolt_env: dict[str, str]) -> None:
         monkeypatch.setenv(key, value)
 
 
-def _stock_list_table(ledger) -> str:
-    """The default table ``tm stock list`` prints, without trailing spaces."""
+def _table(ledger, *args: str) -> str:
+    """The default table a list command prints, without trailing spaces."""
     result = CliRunner().invoke(
-        app, ["--ledger", str(ledger.path), "stock", "list"]
+        app, ["--ledger", str(ledger.path), *args]
     )
     assert result.exit_code == 0, result.output
     lines = [line.rstrip() for line in result.output.splitlines()]
     return "\n".join(lines) + "\n"
+
+
+def _assert_golden(rendered: str, golden_name: str) -> None:
+    """Compare a rendered table with its checked-in golden file."""
+    golden = GOLDEN / golden_name
+    if os.environ.get(UPDATE_GOLDENS_ENV, "").strip() not in ("", "0"):
+        golden.write_text(rendered, encoding="utf-8")
+    stored = golden.read_text(encoding="utf-8")
+    if stored != rendered:
+        diff = "".join(
+            difflib.unified_diff(
+                stored.splitlines(keepends=True),
+                rendered.splitlines(keepends=True),
+                fromfile=f"{golden_name} (stored)",
+                tofile=f"{golden_name} (printed)",
+            )
+        )
+        pytest.fail(
+            f"{golden_name} is out of date; regenerate it with "
+            f"{UPDATE_GOLDENS_ENV}=1 uv run pytest "
+            f"{Path(__file__).name}\n{diff}"
+        )
 
 
 def _build_stocks(ledger) -> None:
@@ -101,6 +131,31 @@ def _build_stocks(ledger) -> None:
     ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1")
 
 
+def _build_entities(ledger) -> None:
+    """One entity with an active lot, one with only depleted/empty lots."""
+    alpha = ledger.entities.add("item", id=ALPHA, name="alpha")
+    design = ledger.entities.add(
+        "item",
+        id=LONG_NAME,
+        name="a-rather-long-design-name-for-full-printing",
+    )
+    ledger.boxes.add("grid8x12", "G-1")
+
+    # active: two tubes, one of them moved into G-1 A1.
+    active = ledger.stocks.add(
+        "lot", entity=alpha["id"], values={"supplier": "acme"}, aliquots=2
+    )
+    ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1")
+    # depleted: two tubes, both unplaced, so neither is in stock.
+    ledger.stocks.add(
+        "lot", entity=design["id"], values={"supplier": "acme"}, aliquots=2
+    )
+    # empty: a lot with no aliquots yet.
+    ledger.stocks.add(
+        "lot", entity=design["id"], values={"supplier": "acme"}, aliquots=0
+    )
+
+
 def test_stock_list_golden_table(cli_env: None, ledger_factory) -> None:
     """The default list table: columns, full entity name, derived statuses."""
     ledger = ledger_factory(
@@ -108,22 +163,14 @@ def test_stock_list_golden_table(cli_env: None, ledger_factory) -> None:
     )
     _build_stocks(ledger)
 
-    rendered = _stock_list_table(ledger)
-    golden = GOLDEN / "stock_list.table"
-    if os.environ.get(UPDATE_GOLDENS_ENV, "").strip() not in ("", "0"):
-        golden.write_text(rendered, encoding="utf-8")
-    stored = golden.read_text(encoding="utf-8")
-    if stored != rendered:
-        diff = "".join(
-            difflib.unified_diff(
-                stored.splitlines(keepends=True),
-                rendered.splitlines(keepends=True),
-                fromfile="stock_list.table (stored)",
-                tofile="stock_list.table (printed)",
-            )
-        )
-        pytest.fail(
-            "stock_list.table is out of date; regenerate it with "
-            f"{UPDATE_GOLDENS_ENV}=1 uv run pytest "
-            f"{Path(__file__).name}\n{diff}"
-        )
+    _assert_golden(_table(ledger, "stock", "list"), "stock_list.table")
+
+
+def test_entity_list_golden_table(cli_env: None, ledger_factory) -> None:
+    """The default list table: columns, full name, per-entity stock counts."""
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml"], name="golden-entity-list", id_prefix="77"
+    )
+    _build_entities(ledger)
+
+    _assert_golden(_table(ledger, "entity", "list"), "entity_list.table")

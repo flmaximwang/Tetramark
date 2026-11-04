@@ -93,7 +93,13 @@ def list_entities_command(
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),
-            columns=["id", "kind", "name"],
+            columns=[
+                "id",
+                "kind",
+                "name",
+                "stocks_available",
+                "aliquots_in_stock",
+            ],
             short_uuid_columns=("id",),
         )
     finally:
