@@ -5,40 +5,50 @@ Tagging is not a step any more. **Merging a version bump is the release**: the m
 merge commit and publishes the GitHub release. An agent that forgets `git tag` can no longer produce an
 untagged release, because the agent never tags anything.
 
-## The version lives in three files
+## The version lives in four locations
 
 | File | What it holds | Why it matters |
 |---|---|---|
 | `pyproject.toml` | `[project] version` | the canonical value; the wheel and the trigger |
 | `src/tetramark/__init__.py` | `__version__` | what `tm --version` prints |
 | `uv.lock` | the `tetramark` package entry | what `uv run` and `uv tool install` resolve |
+| `skills/tetramark/SKILL.md`, `skills/tetramark-schema/SKILL.md` | quoted frontmatter `version:` plus the version in the visible first body line | the manual an agent reads; it claims to describe exactly this CLI |
 
-Bumping two of the three is the classic release bug: the wheel says 0.5.2, `tm --version` says 0.5.1.
-[`scripts/release_check.py`](../../scripts/release_check.py) proves they agree; the fast lane runs it and
-the workflow gates on it, so a mismatch blocks the tag instead of shipping.
+Bumping some but not all is the classic release bug: the wheel says 0.5.2, `tm --version` says
+0.5.1, or the shipped skill still describes the previous release.
+[`scripts/release_check.py`](../../scripts/release_check.py) proves they agree — including that each
+`SKILL.md` carries a version and that it equals `pyproject.toml`; the fast lane runs it and the
+workflow gates on it, so a mismatch blocks the tag instead of shipping.
 
 ```console
 $ python3 scripts/release_check.py
-version    0.5.1
-  pyproject  0.5.1    pyproject.toml
-  __init__   0.5.1    src/tetramark/__init__.py
-  uv.lock    0.5.1    uv.lock
-previous   0.5.0  -> moved
-tag        v0.5.1  present (matches, pushed)
-notes      docs/releases/v0.5.1.md  present
+version    0.8.14
+  pyproject    0.8.14   pyproject.toml
+  __init__     0.8.14   src/tetramark/__init__.py
+  uv.lock      0.8.14   uv.lock
+  skill        0.8.14   skills/tetramark/SKILL.md
+  skill-schema 0.8.14   skills/tetramark-schema/SKILL.md
+previous   0.8.13  -> moved
+tag        v0.8.14  absent -- the workflow will create it
+notes      docs/releases/v0.8.14.md  present
 checkout   main @ efd79e9  clean
 ready
 ```
 
 ## Cutting a release
 
-1. **Bump the version** in the two hand-edited places and let uv rewrite the third:
+1. **Bump the version** in the hand-edited files and let uv rewrite the lock:
 
    ```console
-   $EDITOR pyproject.toml src/tetramark/__init__.py
+   $EDITOR pyproject.toml src/tetramark/__init__.py \
+       skills/tetramark/SKILL.md skills/tetramark-schema/SKILL.md
    uv lock
    python3 scripts/release_check.py        # must say "ready"
    ```
+
+   In both `SKILL.md` files bump the quoted `version:`, bump the number in the visible first body
+   line, and set `updated:` to the release date. The frontmatter is the machine-readable claim; the
+   first body line is the copy a reader actually sees.
 
 2. **Write the notes** as `docs/releases/v<version>.md` — see [the notes README](../releases/README.md).
    The first `#` heading becomes the release title *and* the tag message; the body becomes the release
@@ -61,7 +71,7 @@ mistake the workflow cannot undo: it does not move tags.
 | Step | Detail |
 |---|---|
 | Trigger | a push to `main` that touches `pyproject.toml` or `src/tetramark/__init__.py`, or a manual `workflow_dispatch` |
-| Gate | `scripts/release_check.py` must report `ready`; the three versions must agree |
+| Gate | `scripts/release_check.py` must report `ready`; every version source must agree, both `SKILL.md` frontmatters included |
 | Change check | the version at the previous tip of `main` must differ from the version being merged; a dependency-only edit to `pyproject.toml` does not release |
 | Tag | annotated `v<version>` at `github.sha` — the merge commit for a PR merge — pushed to origin |
 | Release | `gh release create` with the notes file, or GitHub generated notes when it is missing |

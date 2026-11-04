@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,36 @@ REPO_PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
 #: Author used by :func:`ledger_factory` so tests never read a global identity.
 FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
+
+
+# ---------------------------------------------------------------------------
+# Skill body lines (the documentation contract)
+# ---------------------------------------------------------------------------
+
+#: Body-line ceilings for the shipped skills.  The body is every line *after*
+#: the closing frontmatter delimiter, including the blank line that separates
+#: it from the heading -- so the visible version line and its blank line count.
+#: ``tetramark-schema`` sits exactly at its ceiling; **171 may only go down**
+#: (the trim is Tetramark-0pj).  Do not raise a limit to fit new prose: move
+#: detail into ``references/`` instead.
+SKILL_BODY_LINE_LIMITS = {"tetramark": 150, "tetramark-schema": 171}
+
+#: ``---`` delimited YAML frontmatter at the very start of a SKILL.md.
+SKILL_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+
+
+def skill_body_lines(path: Path) -> list[str]:
+    """The lines of a ``SKILL.md`` after its YAML frontmatter.
+
+    Shared by ``tests/test_docs_commands.py`` (the documentation contract) and
+    ``tests/test_skill_version.py`` (the version stamp contract) so the two
+    cannot disagree about what "150 lines" means.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    match = SKILL_FRONTMATTER_RE.match(text)
+    if match is None:
+        raise AssertionError(f"{path} does not start with YAML frontmatter")
+    return text[match.end() :].splitlines()
 
 
 #: ``subprocess.run`` signature use in fixtures/tests: run_dolt("sql", "-q", "SELECT 1")
