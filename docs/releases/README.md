@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.3](v0.8.3.md) | `v0.8.3.md` | explicit purge for entities, stocks and boxes; aliquot aliases/references |
 | [0.8.2](v0.8.2.md) | `v0.8.2.md` | box ids in `box list`/`box show`; aliquot help points at `move`/`use`/`status` |
 | [0.8.1](v0.8.1.md) | `v0.8.1.md` | stock show cards in wrapping rows; regex find, shared filters, rewrite rules |
 | [0.8.0](v0.8.0.md) | `v0.8.0.md` | one fixed status set; `use`/`move` require `-m`; manual spec 5→6 upgrade |
