@@ -150,9 +150,9 @@ when that box is slotted), and changing to any other status clears `box_id`/`slo
 A `status`/`use` change that leaves stock records the old position in the event's
 `from_box_id`/`from_slot` (with `to_*` NULL), so `tm history` still shows where the tube was;
 changing to `stored` without a position is refused with a hint to run
-`tm aliquot move ALQ --box NAME --slot S`. `tm aliquot move` of an aliquot that is not `stored` also
-sets it to `stored`; a move with `--status` runs the normal transition check, and the result must be
-`stored`.
+`tm aliquot move ALQ --box NAME --slot S -m MSG`. `tm aliquot move` of an aliquot that is not
+`stored` also sets it to `stored`; a move with `--status` runs the normal transition check, and the
+result must be `stored`.
 
 `tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
 `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing

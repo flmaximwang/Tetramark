@@ -46,8 +46,8 @@ one Dolt commit; every read is a normal `tm` command.
 | Take a sample from a tube (lineage edge) | `tm stock add cell_biosample --entity LINE --source-aliquot ALQ` (cellbio; `animal_biosample` in angenet) |
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
 | See one tube, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
-| Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S]` (also restores a not-in-stock tube) |
-| Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |
+| Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG` (also restores a not-in-stock tube) |
+| Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
 | Mark lost / consumed / planned | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions) |
 | Record a detailed life state | `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event `--note` |
 | Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move`) |
@@ -77,9 +77,9 @@ Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 tm entity add plasmid --name pZET035 --set backbone=pZET035 --set resistance=kan --alias p035
 tm stock add bacterial_glycerol --entity p035 --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
-tm aliquot use 1226KO02.1 500 ml --purpose purification   # decrements; zero = consumed
+tm aliquot use 1226KO02.1 500 ml -m purification   # decrements; zero = consumed
 tm box move WFL-12-02 --in shelf-1
-tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3
+tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03"
 tm lineage p035 --up                                      # lineage:true edges + core links
 ```
 
@@ -139,12 +139,12 @@ tm check --group core
   are stock properties (`fate`, `condition`) or event messages.
 - **A tube has a position exactly when it is `stored`.** Changing to any other status clears its
   box/slot (the event keeps the old position); `stored` without a position is refused — place it with
-  `tm aliquot move ALQ --box NAME --slot S` (a move of a not-in-stock tube also restores `stored`).
+  `tm aliquot move ALQ --box NAME --slot S -m MSG` (a move of a not-in-stock tube also restores `stored`).
 - **Box names are view-safe and grid boxes hold tubes only.** A `box add` name must not collide with
   a core view, is at most 58 characters and must differ from existing names beyond letter case; a box
   can be nested in a named or slotless box, not in a grid.
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
   delete with no undo (only Dolt history can recover it).
 - **Do not move a tube by editing fields.** `aliquot move` records the event and checks slot capacity
-  and exclusivity; `stock edit` only changes stock metadata.
+  and exclusivity; `stock edit` only changes stock metadata. `use`/`move` need `-m/--message`.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.
