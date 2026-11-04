@@ -194,7 +194,9 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
 
     stock_csv = invoke(ledger, "--format", "csv", "stock", "list")
     assert stock_csv.exit_code == 0, stock_csv.output
-    assert f"{stock_id},lot,{entity_id}" in stock_csv.output.splitlines()
+    assert f"{stock_id},lot,{entity_id},alpha,0,depleted" in (
+        stock_csv.output.splitlines()
+    )
 
 
 def test_list_table_widens_colliding_uuid_prefixes(

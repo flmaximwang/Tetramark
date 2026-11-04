@@ -131,7 +131,14 @@ def list_stocks_command(
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),
-            columns=["id", "kind", "entity_id"],
+            columns=[
+                "id",
+                "kind",
+                "entity_id",
+                "entity_name",
+                "aliquots_in_stock",
+                "status",
+            ],
             short_uuid_columns=("id", "entity_id"),
         )
     finally:

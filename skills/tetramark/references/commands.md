@@ -127,6 +127,9 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
+- `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
+  owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),
+  `active` (at least one in stock) or `depleted` (every aliquot has left stock).
 - `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
   row in table output).
 

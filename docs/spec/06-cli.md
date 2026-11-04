@@ -287,6 +287,15 @@ that value is a uuid id, so a ledger with a `uuid` stock strategy gets short sto
 cross-command identifier, and datecode/sequence ids (`0826FP01`, `S00042`) and aliquot ids
 (`0826FP01.1`) are never shortened.
 
+**List table columns.** A list command's default table and its `--format csv` output print the same
+fixed, readable subset of the record; `--json` keeps the full record. The leading columns identify
+the row and the rest hold the values a person decides on, with long values (an entity name) printed
+in full, never truncated.
+
+- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. `entity_name` is
+  the owning design's name. `status` is derived from the aliquots: `empty` when the stock has none,
+  `active` when at least one is in stock, and `depleted` when every aliquot has left stock.
+
 ### 6.3 The interactive form — `tm <object> add-form`
 
 `tm entity add-form`, `tm stock add-form`, `tm aliquot add-form` and `tm box add-form` open an

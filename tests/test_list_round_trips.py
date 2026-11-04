@@ -98,7 +98,8 @@ def build_rows(ledger: Ledger) -> dict[str, Any]:
     bacterial = ledger.stocks.add(
         "bacterial", entity=plasmid["id"], values={"strain": "DH5a"}
     )
-    prep = ledger.stocks.add("prep", entity=everything["id"])
+    # No tubes: the list table reports this stock as empty.
+    prep = ledger.stocks.add("prep", entity=everything["id"], aliquots=0)
 
     grid = ledger.boxes.add("grid96", "BOX-1")
     shelf = ledger.boxes.add("shelf", "SHELF-1")
@@ -207,6 +208,19 @@ def test_stock_list_runs_one_batched_read(
         built["stocks"][2]["id"],
     ]
     assert invoke_log == ["json", "csv"]
+
+    # The columns the list table prints come from the same batched read: the
+    # owning design's name, how many tubes are still on the shelf and the
+    # status derived from them (a stock with no aliquots is empty).
+    by_id = {row["id"]: row for row in rows}
+    placed = by_id[built["stocks"][3]["id"]]
+    assert placed["entity_name"] == "alpha"
+    assert placed["aliquots_in_stock"] == 1
+    assert placed["status"] == "active"
+
+    prep = by_id[built["stocks"][2]["id"]]
+    assert prep["aliquots_in_stock"] == 0
+    assert prep["status"] == "empty"
 
 
 def test_box_list_runs_one_batched_read(
