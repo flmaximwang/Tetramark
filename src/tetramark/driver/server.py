@@ -89,6 +89,7 @@ from tetramark.driver.base import (
     commit_statements,
     is_ddl,
     is_nothing_to_commit,
+    render_statement,
 )
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 
@@ -485,8 +486,31 @@ def _borrow_server(path: Path, database: str) -> _Server | None:
     )
 
 
+def _await_borrow_server(
+    path: Path, database: str, *, timeout: float = 2.0
+) -> _Server | None:
+    """Borrow a server that a racing process is just finishing starting."""
+    deadline = time.monotonic() + timeout
+    while True:
+        borrowed = _borrow_server(path, database)
+        if borrowed is not None:
+            return borrowed
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.05)
+
+
 class _PortInUse(RuntimeError):
     """A parallel worker claimed the free port between probing and binding."""
+
+
+def _is_start_race(output: str) -> bool:
+    """Whether a failed start lost a race to another sql-server on the ledger."""
+    lowered = output.lower()
+    return (
+        "already in use" in lowered
+        or "locked by another dolt process" in lowered
+    )
 
 
 def _start_server(
@@ -500,7 +524,8 @@ def _start_server(
         except _PortInUse as error:
             last_error = error
             time.sleep(0.05 * (attempt + 1))
-    raise UnreachableError(str(last_error))
+    assert last_error is not None
+    raise last_error
 
 
 def _spawn_server(
@@ -561,7 +586,7 @@ def _spawn_server(
                 f"'dolt sql-server' exited with code {process.returncode} in "
                 f"{path}" + (f":\n{output}" if output else "")
             )
-            if "already in use" in output.lower():
+            if _is_start_race(output):
                 raise _PortInUse(message)
             raise UnreachableError(message)
         if _check_serves(port, path.name):
@@ -645,8 +670,18 @@ def _acquire(
             if borrowed is not None:
                 server = borrowed
             else:
-                server = _start_server(path, binary, env, fingerprint)
-                _OWNED.add(server)
+                try:
+                    server = _start_server(path, binary, env, fingerprint)
+                except _PortInUse as error:
+                    # Another process won the race for this database (the
+                    # same directory allows one sql-server): wait for its
+                    # sidecar and borrow it instead of failing.
+                    borrowed = _await_borrow_server(path, database)
+                    if borrowed is None:
+                        raise UnreachableError(str(error)) from error
+                    server = borrowed
+                else:
+                    _OWNED.add(server)
             server.cache_cap = cap
             if cap > 0:
                 _SERVERS[key] = server
@@ -918,12 +953,20 @@ class ServerDriver(Driver):
             return
         self._ensure_connection()
         ddl = False
-        for statement in ordered:
+        total = len(ordered)
+        for index, statement in enumerate(ordered, start=1):
             if isinstance(statement, tuple):
                 sql, params = statement
             else:
                 sql, params = statement, None
-            self._execute_statement(sql, params)
+            try:
+                self._execute_statement(sql, params)
+            except LedgerError as error:
+                rendered = " ".join(render_statement(statement).split())
+                if len(rendered) > 160:
+                    rendered = rendered[:157] + "..."
+                message = f"statement {index} of {total} failed: {rendered}"
+                raise LedgerError(f"{message}\n{error}") from error
             ddl = ddl or is_ddl(sql)
         if ddl and self._in_transaction:
             self._begin()

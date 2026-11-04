@@ -578,3 +578,56 @@ def test_shutdown_is_idempotent(dolt_repo: Path, server_env: dict[str, str]) -> 
     shutdown_all_servers()
     shutdown_all_servers()
     assert cached_server_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Startup races: a concurrent server for the same ledger
+# ---------------------------------------------------------------------------
+
+
+def test_a_database_lock_is_a_start_race() -> None:
+    """Dolt reports a lost race as a lock, not only as an occupied port."""
+    assert server_module._is_start_race(
+        "database 'repo' is locked by another dolt process"
+    )
+    assert server_module._is_start_race("port 12345 is already in use")
+    assert not server_module._is_start_race("unknown database 'nope'")
+
+
+def test_a_locked_start_borrows_the_winning_server(
+    dolt_repo: Path, server_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock during start retries the sidecar instead of failing the command."""
+    borrowed = server_module._Server(
+        dolt_repo,
+        12345,
+        process=None,
+        stderr=None,
+        fingerprint=None,
+        cache_cap=0,
+        identity=server_module._dir_identity(dolt_repo),
+    )
+    calls: list[int] = []
+
+    def locked(*_args: Any, **_kwargs: Any) -> Any:
+        raise server_module._PortInUse(
+            "database 'repo' is locked by another dolt process"
+        )
+
+    def borrow(_path: Path, _database: str) -> Any:
+        calls.append(1)
+        return borrowed if len(calls) >= 2 else None
+
+    monkeypatch.setattr(server_module, "_spawn_server", locked)
+    monkeypatch.setattr(server_module, "_borrow_server", borrow)
+
+    acquired = server_module._acquire(
+        dolt_repo, dolt_repo.name, server_env, "dolt"
+    )
+    try:
+        assert acquired is borrowed
+        assert len(calls) >= 2
+        assert acquired.refs == 1
+        assert acquired not in server_module._OWNED
+    finally:
+        server_module._release(acquired)
