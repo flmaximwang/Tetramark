@@ -27,8 +27,12 @@ walks up from the current directory and stops at the nearest directory containin
 
 - nothing up to the filesystem root → `no ledger found from <cwd> … Pass --ledger PATH, cd into a
   ledger directory, or create one with 'tm init'`;
-- a directory with `.dolt/` but no `ledger.yaml` → `is not a ledger … 'tm adopt' formats an existing
-  bare Dolt database in place` (P9);
+- a directory with a real Dolt database (`.dolt/noms/` or `.dolt/repo_state.json`) but no
+  `ledger.yaml` → `is not a ledger … 'tm adopt' formats an existing bare Dolt database in place` (P9);
+- a `.dolt/` that holds no Dolt database — Dolt's global `~/.dolt` configuration directory — is not a
+  ledger: the upward walk steps past it (the error is `no ledger found from <cwd> …`, never an
+  `tm adopt` hint), and passed explicitly with `-l/--ledger` it is a usage error that names it as
+  Dolt's global configuration directory. `tm adopt` refuses it the same way, before any `dolt` call;
 - **P4 migration guard** — a 0.4 `workspace.yaml` met before any ledger is an error that names the
   old workspace and tells you to `cd` into one of its ledger directories (or pass `--ledger`).
   Nothing is converted: `workspace.yaml` is not a ledger marker, and no setting has to move because
