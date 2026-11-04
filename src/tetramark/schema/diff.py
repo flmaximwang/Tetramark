@@ -578,6 +578,8 @@ def _live_boxes(
     live: _LiveState,
     schema: EffectiveSchema,
     renames: RenameMap | None,
+    *,
+    fetched: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The live ``box`` rows (``id``, ``name``, ``kind``) for view generation.
 
@@ -585,14 +587,16 @@ def _live_boxes(
     schema does not define (even after a planned kind rename) is a
     :class:`~tetramark.errors.LedgerError` naming the box: guessing the view
     shape would produce a view that does not match the box.
+
+    ``fetched`` carries the rows when :func:`_introspect` already read them in
+    its batch; ``None`` (the function's historical contract) queries them here.
     """
     if "box" not in live.columns:
         return []
     translation = _box_kind_translation(schema, renames)
     boxes: list[dict[str, Any]] = []
-    for row in driver.query(
-        "SELECT `id`, `name`, `kind` FROM `box` ORDER BY `name`"
-    ):
+    rows = fetched if fetched is not None else driver.query(_BOXES_SQL)
+    for row in rows:
         name = str(row["name"])
         kind = str(row["kind"])
         resolved = translation.get(kind, kind)
@@ -610,6 +614,71 @@ def _live_boxes(
 # ---------------------------------------------------------------------------
 # Live introspection
 # ---------------------------------------------------------------------------
+
+# Catalog reads.  None of them references a ledger table, so they are safe on a
+# database that was never initialised and can share one batch with the
+# per-table ``SHOW CREATE TABLE`` statements (which are not).
+_TABLES_SQL = (
+    "SELECT table_name AS name, table_type AS kind "
+    "FROM information_schema.tables WHERE table_schema = DATABASE()"
+)
+_COLUMNS_SQL = (
+    "SELECT table_name AS tbl, column_name AS name, "
+    "column_type AS ctype, is_nullable AS nullable, column_default AS def "
+    "FROM information_schema.columns "
+    "WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position"
+)
+_UNIQUES_SQL = (
+    "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
+    "kcu.column_name AS col, kcu.ordinal_position AS pos "
+    "FROM information_schema.table_constraints AS tc "
+    "JOIN information_schema.key_column_usage AS kcu "
+    "  ON kcu.constraint_schema = tc.constraint_schema "
+    " AND kcu.table_name = tc.table_name "
+    " AND kcu.constraint_name = tc.constraint_name "
+    "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'UNIQUE' "
+    "ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position"
+)
+_CHECKS_SQL = (
+    "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
+    "cc.check_clause AS clause "
+    "FROM information_schema.table_constraints AS tc "
+    "JOIN information_schema.check_constraints AS cc "
+    "  ON cc.constraint_schema = tc.constraint_schema "
+    " AND cc.constraint_name = tc.constraint_name "
+    "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'CHECK' "
+    "ORDER BY tc.table_name, tc.constraint_name"
+)
+_FOREIGN_KEYS_SQL = (
+    "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
+    "kcu.column_name AS col, kcu.ordinal_position AS pos, "
+    "kcu.referenced_table_name AS ref_tbl, "
+    "kcu.referenced_column_name AS ref_col "
+    "FROM information_schema.table_constraints AS tc "
+    "JOIN information_schema.key_column_usage AS kcu "
+    "  ON kcu.constraint_schema = tc.constraint_schema "
+    " AND kcu.table_name = tc.table_name "
+    " AND kcu.constraint_name = tc.constraint_name "
+    "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'FOREIGN KEY' "
+    "ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position"
+)
+_VIEWS_SQL = (
+    "SELECT table_name AS name, view_definition AS definition "
+    "FROM information_schema.views WHERE table_schema = DATABASE()"
+)
+#: The catalog reads, in the order :func:`_state_from` expects their results.
+_CATALOG_SQL = (
+    _TABLES_SQL,
+    _COLUMNS_SQL,
+    _UNIQUES_SQL,
+    _CHECKS_SQL,
+    _FOREIGN_KEYS_SQL,
+    _VIEWS_SQL,
+)
+#: Live ``box`` rows for the per-box views (spec 5); fails when ``box`` is absent.
+_BOXES_SQL = "SELECT `id`, `name`, `kind` FROM `box` ORDER BY `name`"
+#: Ledger metadata; fails when a database was never initialised.
+_META_SQL = "SELECT `key` AS k, `value` AS v FROM `ledger_meta`"
 
 
 @dataclass
@@ -654,22 +723,118 @@ class _LiveState:
     meta: dict[str, str]
 
 
-def _introspect(driver: Driver) -> _LiveState:
-    """Read tables, columns, constraints, views and ``ledger_meta``."""
-    table_rows = driver.query(
-        "SELECT table_name AS name, table_type AS kind "
-        "FROM information_schema.tables WHERE table_schema = DATABASE()"
-    )
-    tables = {str(row["name"]): str(row["kind"]) for row in table_rows}
+def _show_create_sql(table: str) -> str:
+    return f"SHOW CREATE TABLE `{table.replace('`', '``')}`"
 
-    column_rows = driver.query(
-        "SELECT table_name AS tbl, column_name AS name, "
-        "column_type AS ctype, is_nullable AS nullable, column_default AS def "
-        "FROM information_schema.columns "
-        "WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position"
+
+def _introspect(
+    driver: Driver, show_tables: Sequence[str] = ()
+) -> tuple[_LiveState, list[dict[str, Any]] | None]:
+    """Read tables, columns, constraints, views, boxes and ``ledger_meta``.
+
+    The common path is one :meth:`~tetramark.driver.base.Driver.query_many`
+    batch: the six catalog reads, one ``SHOW CREATE TABLE`` per table the loaded
+    schema defines (Dolt 2.3.5 does not expose generated columns in
+    ``information_schema``), the live ``box`` rows and ``ledger_meta``.  The
+    box rows come back from the same batch, so :func:`_live_boxes` needs no
+    second round trip.
+
+    Three of those reads assume the ledger is initialised: ``SHOW CREATE
+    TABLE`` fails when its table is absent, and ``box``/``ledger_meta`` fail on
+    a database that was never created.  One batch cannot skip a failing
+    statement, so in that case the introspection replays in two safe batches:
+    the catalog reads first, then only the reads whose objects the catalog
+    lists.  That is the historical per-query decision tree, so the result, the
+    parsing rules and the never-initialised behaviour cannot change.
+    """
+    hinted = list(show_tables)
+    batch: list[tuple[str, Any]] = [
+        *((sql, None) for sql in _CATALOG_SQL),
+        *((_show_create_sql(table), None) for table in hinted),
+        (_BOXES_SQL, None),
+        (_META_SQL, None),
+    ]
+    try:
+        fetched = driver.query_many(batch)
+    except LedgerError:
+        return _introspect_in_safe_batches(driver)
+
+    tables = _tables_from(fetched[0])
+    columns = _columns_from(fetched[1], tables)
+    # Generated columns are not visible in information_schema on 2.3.5;
+    # SHOW CREATE TABLE carries the expression and generated column names.
+    for offset, table in enumerate(hinted):
+        if table in columns:  # the SHOW CREATE positions follow the hints
+            _apply_generated_columns(columns[table], fetched[6 + offset])
+    state = _state_from(
+        tables,
+        columns,
+        fetched[2],
+        fetched[3],
+        fetched[4],
+        fetched[5],
+        fetched[7 + len(hinted)],
     )
+    return state, fetched[6 + len(hinted)]
+
+
+def _introspect_in_safe_batches(
+    driver: Driver,
+) -> tuple[_LiveState, list[dict[str, Any]] | None]:
+    """Introspect a database whose ledger tables may be missing.
+
+    ``SHOW CREATE TABLE``, ``box`` and ``ledger_meta`` cannot belong to a batch
+    when their object may not exist, so the catalog is read first and a second
+    batch asks only for objects that catalog lists.  The reads, parsing and the
+    ``ledger_meta`` fallback are the same as the historical per-query path.
+    """
+    fetched = driver.query_many([(sql, None) for sql in _CATALOG_SQL])
+
+    tables = _tables_from(fetched[0])
+    columns = _columns_from(fetched[1], tables)
+    # Same table set and order as the old per-table loop: every live base
+    # table except the core ones (a kind table may still be an extra one that
+    # the plan drops; parsing it is harmless).
+    show_tables = [table for table in columns if table not in CORE_TABLES]
+    with_boxes = "box" in columns
+    with_meta = "ledger_meta" in tables
+    statements: list[tuple[str, Any]] = [
+        (_show_create_sql(table), None) for table in show_tables
+    ]
+    if with_boxes:
+        statements.append((_BOXES_SQL, None))
+    if with_meta:
+        statements.append((_META_SQL, None))
+    extra = driver.query_many(statements) if statements else []
+
+    for offset, table in enumerate(show_tables):
+        _apply_generated_columns(columns[table], extra[offset])
+    position = len(show_tables)
+    boxes = extra[position] if with_boxes else None
+    if with_boxes:
+        position += 1
+    meta_rows = extra[position] if with_meta else []
+    state = _state_from(
+        tables,
+        columns,
+        fetched[2],
+        fetched[3],
+        fetched[4],
+        fetched[5],
+        meta_rows,
+    )
+    return state, boxes
+
+
+def _tables_from(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    return {str(row["name"]): str(row["kind"]) for row in rows}
+
+
+def _columns_from(
+    rows: Sequence[Mapping[str, Any]], tables: dict[str, str]
+) -> dict[str, dict[str, _Column]]:
     columns: dict[str, dict[str, _Column]] = {}
-    for row in column_rows:
+    for row in rows:
         table = str(row["tbl"])
         if tables.get(table) != "BASE TABLE":
             continue
@@ -681,57 +846,38 @@ def _introspect(driver: Driver) -> _LiveState:
             nullable=str(row["nullable"]).upper() == "YES",
             default=None if default is None else str(default),
         )
+    return columns
 
-    unique_rows = driver.query(
-        "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
-        "kcu.column_name AS col, kcu.ordinal_position AS pos "
-        "FROM information_schema.table_constraints AS tc "
-        "JOIN information_schema.key_column_usage AS kcu "
-        "  ON kcu.constraint_schema = tc.constraint_schema "
-        " AND kcu.table_name = tc.table_name "
-        " AND kcu.constraint_name = tc.constraint_name "
-        "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'UNIQUE' "
-        "ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position"
-    )
+
+def _uniques_from(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, list[_Unique]]:
     unique_parts: dict[tuple[str, str], list[str]] = {}
-    for row in unique_rows:
+    for row in rows:
         key = (str(row["tbl"]), str(row["name"]))
         unique_parts.setdefault(key, []).append(str(row["col"]))
     uniques: dict[str, list[_Unique]] = {}
     for (table, name), cols in unique_parts.items():
         uniques.setdefault(table, []).append(_Unique(name, tuple(cols)))
+    return uniques
 
-    check_rows = driver.query(
-        "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
-        "cc.check_clause AS clause "
-        "FROM information_schema.table_constraints AS tc "
-        "JOIN information_schema.check_constraints AS cc "
-        "  ON cc.constraint_schema = tc.constraint_schema "
-        " AND cc.constraint_name = tc.constraint_name "
-        "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'CHECK' "
-        "ORDER BY tc.table_name, tc.constraint_name"
-    )
+
+def _checks_from(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, list[_Check]]:
     checks: dict[str, list[_Check]] = {}
-    for row in check_rows:
+    for row in rows:
         checks.setdefault(str(row["tbl"]), []).append(
             _Check(str(row["name"]), str(row["clause"]))
         )
+    return checks
 
-    fk_rows = driver.query(
-        "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
-        "kcu.column_name AS col, kcu.ordinal_position AS pos, "
-        "kcu.referenced_table_name AS ref_tbl, "
-        "kcu.referenced_column_name AS ref_col "
-        "FROM information_schema.table_constraints AS tc "
-        "JOIN information_schema.key_column_usage AS kcu "
-        "  ON kcu.constraint_schema = tc.constraint_schema "
-        " AND kcu.table_name = tc.table_name "
-        " AND kcu.constraint_name = tc.constraint_name "
-        "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'FOREIGN KEY' "
-        "ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position"
-    )
+
+def _foreign_keys_from(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[_ForeignKey]:
     fk_parts: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in fk_rows:
+    for row in rows:
         key = (str(row["tbl"]), str(row["name"]))
         entry = fk_parts.setdefault(
             key,
@@ -743,7 +889,7 @@ def _introspect(driver: Driver) -> _LiveState:
         )
         entry["columns"].append(str(row["col"]))
         entry["target_columns"].append(str(row["ref_col"]))
-    foreign_keys = [
+    return [
         _ForeignKey(
             table=table,
             name=name,
@@ -754,49 +900,46 @@ def _introspect(driver: Driver) -> _LiveState:
         for (table, name), entry in fk_parts.items()
     ]
 
-    view_rows = driver.query(
-        "SELECT table_name AS name, view_definition AS definition "
-        "FROM information_schema.views WHERE table_schema = DATABASE()"
-    )
-    views = {
-        str(row["name"]): str(row["definition"] or "") for row in view_rows
-    }
 
-    # Generated columns are not visible in information_schema on 2.3.5;
-    # SHOW CREATE TABLE carries the expression and generated column names.
-    for table in columns:
-        if table in CORE_TABLES:
-            # Core tables have no generated columns.
+def _views_from(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    return {str(row["name"]): str(row["definition"] or "") for row in rows}
+
+
+def _meta_from(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    return {str(row["k"]): str(row["v"]) for row in rows}
+
+
+def _apply_generated_columns(
+    columns: dict[str, _Column], rows: Sequence[Mapping[str, Any]]
+) -> None:
+    """Mark the generated columns from one ``SHOW CREATE TABLE`` result set."""
+    if not rows:
+        return
+    create_sql = str(rows[0].get("Create Table") or "")
+    for name, expression in _parse_generated_columns(create_sql).items():
+        column = columns.get(name)
+        if column is None:  # pragma: no cover - inconsistent metadata
             continue
-        rows = driver.query(f"SHOW CREATE TABLE `{table.replace('`', '``')}`")
-        if not rows:
-            continue
-        create_sql = str(rows[0].get("Create Table") or "")
-        for name, expression in _parse_generated_columns(create_sql).items():
-            column = columns[table].get(name)
-            if column is None:  # pragma: no cover - inconsistent metadata
-                continue
-            columns[table][name] = replace(
-                column, generated=True, generation=expression
-            )
+        columns[name] = replace(column, generated=True, generation=expression)
 
-    try:
-        meta_rows = driver.query(
-            "SELECT `key` AS k, `value` AS v FROM `ledger_meta`"
-        )
-    except LedgerError:  # a database that was never initialised
-        meta = {}
-    else:
-        meta = {str(row["k"]): str(row["v"]) for row in meta_rows}
 
+def _state_from(
+    tables: dict[str, str],
+    columns: dict[str, dict[str, _Column]],
+    unique_rows: Sequence[Mapping[str, Any]],
+    check_rows: Sequence[Mapping[str, Any]],
+    fk_rows: Sequence[Mapping[str, Any]],
+    view_rows: Sequence[Mapping[str, Any]],
+    meta_rows: Sequence[Mapping[str, Any]],
+) -> _LiveState:
     return _LiveState(
         tables=tables,
         columns=columns,
-        uniques=uniques,
-        checks=checks,
-        foreign_keys=foreign_keys,
-        views=views,
-        meta=meta,
+        uniques=_uniques_from(unique_rows),
+        checks=_checks_from(check_rows),
+        foreign_keys=_foreign_keys_from(fk_rows),
+        views=_views_from(view_rows),
+        meta=_meta_from(meta_rows),
     )
 
 
@@ -1025,11 +1168,14 @@ def build_plan(
     desired = _desired_tables(schema)
     desired_fks = _desired_foreign_keys(schema)
 
-    live = _introspect(driver)
+    # ``desired`` is the table set whose generated columns matter: a live table
+    # outside it is dropped (or ignored) and its columns are never compared.
+    live, box_rows = _introspect(driver, tuple(desired))
     # Spec 5: one view per existing box, reconciled from the live ``box`` rows
     # in addition to the schema-derived views.  A ledger whose ``box`` table
-    # does not exist yet (a brand-new database) has no box views.
-    boxes = _live_boxes(driver, live, schema, rename_map)
+    # does not exist yet (a brand-new database) has no box views.  The rows were
+    # already read by the introspection batch.
+    boxes = _live_boxes(driver, live, schema, rename_map, fetched=box_rows)
     desired_views = _desired_views(schema, boxes)
 
     plan = SchemaPlan(

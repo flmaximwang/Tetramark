@@ -19,13 +19,13 @@ generated ``v_box_slots`` view exposes the same data as ``occupant_alias_list``.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from tetramark.core.objects import _box_paths, _object_aliases, _resolve_box
+from tetramark.core.objects import _read_box_rows
 from tetramark.schema.model import GeometryType, Kind
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
@@ -61,8 +61,15 @@ def box_view(ledger: Ledger, ref: str) -> dict[str, Any]:
     boxes list every slot (empty ones included) in ordinal order; a slotless
     box has ``slots: []`` and an ``occupants`` list of its direct aliquots and
     child boxes.  ``aliases`` is always present (empty when the box has none).
+
+    Everything the view renders — the resolution itself, the path rows, the
+    aliases and both occupant queries — is read by one ``query_many`` batch:
+    a box show must not pay a ``dolt sql`` process per lookup (the batch-only
+    rows the wrong geometry needs are simply ignored).
     """
-    box_row = _resolve_box(ledger.driver, ref)
+    box_row, paths, aliases, slot_rows, aliquot_rows, child_rows = _read_box_rows(
+        ledger, ref
+    )
     box_id = str(box_row["id"])
     kind_name = str(box_row["kind"])
     kind = ledger.schema.kind(kind_name)
@@ -70,23 +77,19 @@ def box_view(ledger: Ledger, ref: str) -> dict[str, Any]:
     if geometry is None:  # pragma: no cover - box kinds always have one
         raise ValueError(f"box kind {kind_name!r} has no geometry")
 
-    paths = _box_paths(
-        ledger.driver.query("SELECT `id`, `name`, `parent_box_id` FROM `box`")
-    )
-
     view: dict[str, Any] = {
         "box": str(box_row["name"]),
         "kind": kind_name,
         "geometry": _geometry_json(kind),
         "path": paths.get(box_id, str(box_row["name"])),
-        "aliases": _object_aliases(ledger.driver, "box", box_id),
+        "aliases": aliases,
         "slots": [],
     }
 
     if geometry.is_slotted:
-        view["slots"] = _slots(ledger, box_id)
+        view["slots"] = _slots(slot_rows)
     else:
-        view["occupants"] = _slotless_occupants(ledger, box_id)
+        view["occupants"] = _slotless_occupants(aliquot_rows, child_rows)
     return view
 
 
@@ -109,12 +112,8 @@ def _geometry_json(kind: Kind) -> dict[str, Any]:
     return {"type": "slotless", "capacity": geometry.capacity}
 
 
-def _slots(ledger: Ledger, box_id: str) -> list[dict[str, Any]]:
-    """Every slot of a slotted box, in ordinal order, with its occupants."""
-    rows = ledger.driver.query(
-        "SELECT * FROM `v_box_slots` WHERE `box_id` = %s ORDER BY `ordinal`",
-        (box_id,),
-    )
+def _slots(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group ``v_box_slots`` rows into every slot of a slotted box, in order."""
     slots: list[dict[str, Any]] = []
     by_label: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -154,15 +153,11 @@ def _slots(ledger: Ledger, box_id: str) -> list[dict[str, Any]]:
     return slots
 
 
-def _slotless_occupants(ledger: Ledger, box_id: str) -> list[dict[str, Any]]:
+def _slotless_occupants(
+    aliquots: Sequence[dict[str, Any]], children: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Direct aliquots and child boxes of a slotless box, in a stable order."""
     occupants: list[dict[str, Any]] = []
-    aliquots = ledger.driver.query(
-        "SELECT a.*, s.`entity_id` AS `entity_id` FROM `aliquot` a "
-        "JOIN `stock` s ON s.`id` = a.`stock_id` "
-        "WHERE a.`box_id` = %s AND a.`slot` IS NULL ORDER BY a.`id`",
-        (box_id,),
-    )
     for row in aliquots:
         occupants.append(
             {
@@ -177,11 +172,6 @@ def _slotless_occupants(ledger: Ledger, box_id: str) -> list[dict[str, Any]]:
                 "unit": row.get("unit"),
             }
         )
-    children = ledger.driver.query(
-        "SELECT `id`, `name` FROM `box` "
-        "WHERE `parent_box_id` = %s AND `parent_slot` IS NULL ORDER BY `name`",
-        (box_id,),
-    )
     for row in children:
         occupants.append(
             {

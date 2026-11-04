@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from tetramark.driver.base import Driver, literal
+from tetramark.driver.base import Driver, Params, literal
 from tetramark.errors import LedgerError
 from tetramark.ops.portability import PORTABILITY_GROUP, absolute_file_urls
 from tetramark.schema.ddl import (
@@ -999,6 +999,21 @@ def _group_matches(group: str, wanted: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: The live per-box-view state (spec 5): ``information_schema.views`` and the
+#: live ``box`` rows.  Independent reads, so they share one process.
+_VIEWS_SQL = (
+    "SELECT table_name AS name, view_definition AS definition "
+    "FROM information_schema.views WHERE table_schema = DATABASE()"
+)
+_BOXES_SQL = "SELECT `id`, `name`, `kind` FROM `box`"
+
+#: One ``dolt_test_run()`` result: every generated test's outcome.
+_TEST_RUN_SQL = (
+    "SELECT `test_name`, `test_group_name`, `query`, `status`, `message` "
+    "FROM `dolt_test_run`()"
+)
+
+
 def box_view_drift(
     driver: Driver, schema: EffectiveSchema
 ) -> list[dict[str, str]]:
@@ -1014,16 +1029,34 @@ def box_view_drift(
     A ledger whose ``box`` table does not exist yet (never initialised) has no
     per-box views to check; a box name that cannot become a view name is
     reported here instead of raising, so ``tm check`` can list it.
+
+    The two reads are independent, so they are one ``query_many`` (one
+    ``dolt sql`` process).  ``fill_columns=False`` is safe: ``table_name`` and
+    the box ``id``/``name``/``kind`` columns are ``NOT NULL``; a NULL
+    ``view_definition`` is read with ``.get`` as the empty string, exactly as
+    before.
     """
-    rows = driver.query(
-        "SELECT table_name AS name, view_definition AS definition "
-        "FROM information_schema.views WHERE table_schema = DATABASE()"
-    )
-    live = {str(row["name"]): str(row["definition"] or "") for row in rows}
     try:
-        boxes = driver.query("SELECT `id`, `name`, `kind` FROM `box`")
-    except LedgerError:  # a database that was never initialised
+        view_rows, boxes = driver.query_many(
+            [(_VIEWS_SQL, None), (_BOXES_SQL, None)], fill_columns=False
+        )
+    except LedgerError:
+        # Most likely the ``box`` table does not exist (a database that was
+        # never initialised): the views read on its own still works, and the
+        # documented answer is "no per-box views to check".  If the views read
+        # fails too, the real error is surfaced unchanged.
+        driver.query(_VIEWS_SQL, fill_columns=False)
         return []
+    return _box_view_drift(view_rows, boxes, schema)
+
+
+def _box_view_drift(
+    view_rows: Sequence[dict[str, Any]],
+    boxes: Sequence[dict[str, Any]],
+    schema: EffectiveSchema,
+) -> list[dict[str, str]]:
+    """Compare the pre-fetched live views/boxes with the generated views."""
+    live = {str(row["name"]): str(row.get("definition") or "") for row in view_rows}
     try:
         statements = box_view_statements(schema, boxes)
     except LedgerError as error:
@@ -1104,11 +1137,33 @@ def run_check(
     directory breaks when the ledger is copied somewhere else.  It is reported
     as an informational result (group ``portability:info``), so it never changes
     the exit code, and only when there is something to report.
+
+    The ``dolt_test_run()`` read and the two per-box-view reads are independent,
+    so they are fetched in ONE ``query_many``: ``tm check`` pays one
+    ``dolt sql`` process for all three instead of one each.  ``fill_columns``
+    is off for that batch: every ``dolt_test_run()`` field is read with
+    ``.get(...) or ""`` (so a NULL column is the empty string either way), and
+    the view/box columns are handled by :func:`_box_view_drift`.  If the batch
+    fails (e.g. a database that was never initialised has no ``box`` table),
+    the test read is re-run on its own so its error/result is exactly the
+    historical one and :func:`box_view_drift` takes its two-step fallback.
     """
-    rows = driver.query(
-        "SELECT `test_name`, `test_group_name`, `query`, `status`, `message` "
-        "FROM `dolt_test_run`()"
-    )
+    check_core_views = group is None or _group_matches(CORE_GROUP, group)
+    statements: list[tuple[str, Params]] = [(_TEST_RUN_SQL, None)]
+    if check_core_views:
+        statements.extend([(_VIEWS_SQL, None), (_BOXES_SQL, None)])
+    try:
+        batched = driver.query_many(statements, fill_columns=False)
+    except LedgerError:
+        rows = driver.query(_TEST_RUN_SQL, fill_columns=False)
+        problems = box_view_drift(driver, schema) if check_core_views else []
+    else:
+        rows = batched[0]
+        problems = (
+            _box_view_drift(batched[1], batched[2], schema)
+            if check_core_views
+            else []
+        )
     definitions = {definition.name: definition for definition in generate_tests(schema)}
 
     report = CheckReport()
@@ -1133,8 +1188,7 @@ def run_check(
                     result.detail_error = str(error)
         report.results.append(result)
 
-    if group is None or _group_matches(CORE_GROUP, group):
-        problems = box_view_drift(driver, schema)
+    if check_core_views:
         if problems:
             report.results.append(
                 TestResult(

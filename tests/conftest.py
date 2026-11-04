@@ -29,6 +29,7 @@ import itertools
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
@@ -59,6 +60,81 @@ FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
 
 #: ``subprocess.run`` signature use in fixtures/tests: run_dolt("sql", "-q", "SELECT 1")
 RunDolt = Callable[..., subprocess.CompletedProcess[str]]
+
+
+# ---------------------------------------------------------------------------
+# The server lane (default in tests, opt-in in the product)
+# ---------------------------------------------------------------------------
+
+#: Run the suite through the opt-in ``dolt sql-server`` backend by default.
+#: This is a *test harness* default only: the product's default backend is
+#: still the embedded driver (one ``dolt sql`` process per batch).  Set
+#: ``TETRAMARK_DRIVER=embedded`` (the ``embedded`` lane does) to exercise that
+#: default backend; the ``embedded_driver`` budget tests below only mean
+#: something there.  The suite is still real Dolt either way.
+os.environ.setdefault("TETRAMARK_DRIVER", "server")
+
+
+def _server_lane() -> bool:
+    """Whether this pytest process selected the ``dolt sql-server`` backend."""
+    return os.environ.get("TETRAMARK_DRIVER", "").strip().lower() == "server"
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip embedded-process budget tests when the server lane is selected.
+
+    ``tests/test_*_round_trips*.py``, ``test_find_batch.py`` and the driver
+    contract tests count ``EmbeddedDriver._invoke`` calls to pin "one dolt
+    process per batch".  Under ``TETRAMARK_DRIVER=server`` the ledger never uses
+    that driver, so the counts are zero and the budget is not the subject of the
+    lane.  They stay enforced whenever the backend is the default embedded one.
+    """
+    if not _server_lane():
+        return
+    skip = pytest.mark.skip(
+        reason="TETRAMARK_DRIVER=server: budget test for the embedded driver"
+    )
+    for item in items:
+        if item.get_closest_marker("embedded_driver") is not None:
+            item.add_marker(skip)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Kill every ``dolt sql-server`` this worker started and report its starts.
+
+    The driver keeps servers alive between commands (that cache is what makes
+    the lane fast), so a pytest run must not leave one behind for the next
+    process on the machine.
+    """
+    try:
+        from tetramark.driver.server import (
+            server_start_count,
+            shutdown_all_servers,
+        )
+    except Exception:  # pragma: no cover - PyMySQL absent or module not imported
+        return
+    shutdown_all_servers()
+    stats_path = os.environ.get("TETRAMARK_SERVER_STATS")
+    if _server_lane() and stats_path:
+        line = f"tetramark-server-stats: starts={server_start_count()}\n"
+        try:
+            # The lane script points this at a file so every xdist worker's
+            # count can be summed after the run.
+            with open(stats_path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:  # pragma: no cover - unusable stats path
+            print(line, end="", file=sys.stderr, flush=True)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Second cleanup point: xdist workers and early exits still stop servers."""
+    try:
+        from tetramark.driver.server import shutdown_all_servers
+    except Exception:  # pragma: no cover - PyMySQL absent or module not imported
+        return
+    shutdown_all_servers()
 
 
 def isolated_env(root: Path, home: Path) -> dict[str, str]:
@@ -288,6 +364,15 @@ def _rewrite_ledger_name(ledger_dir: Path, name: str) -> None:
     )
 
 
+def _discard_server(path: Path) -> None:
+    """Stop a cached ``dolt sql-server`` for ``path`` (a no-op on the embedded lane)."""
+    try:
+        from tetramark.driver.server import discard_server
+    except Exception:  # pragma: no cover - pymysql not installed
+        return
+    discard_server(path)
+
+
 class LedgerTemplates:
     """One real ``init_ledger`` per standard shape, then copies of it.
 
@@ -304,10 +389,17 @@ class LedgerTemplates:
         self._ledgers: dict[str, Path] = {}
 
     def ledger(self, key: str) -> Path:
-        """The template ledger directory for ``key``, built on first use."""
+        """The template ledger directory for ``key``, built on first use.
+
+        The directory is copied for every ``install``, so the ``Ledger`` init
+        returns is closed and (in the opt-in server lane) its cached
+        ``dolt sql-server`` is stopped before the path is published: a template
+        must be a closed directory, not one a server is mutating or whose
+        discovery files point at a live process.
+        """
         if key not in self._ledgers:
             target = self._root / f"{key}-template"
-            init_ledger(
+            ledger = init_ledger(
                 target,
                 TEMPLATE_LEDGER_NAME,
                 list(TEMPLATE_SHAPES[key]),
@@ -315,6 +407,11 @@ class LedgerTemplates:
                 author=FACTORY_AUTHOR,
                 env=self._env,
             )
+            try:
+                assert isinstance(ledger, Ledger)
+            finally:
+                ledger.close()
+                _discard_server(target)
             self._ledgers[key] = target
         return self._ledgers[key]
 

@@ -1054,6 +1054,229 @@ def _box_paths(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return paths
 
 
+#: The rows a box path needs.  ``box list``/``box show`` read them in the same
+#: :meth:`Driver.query_many` batch as everything else (never a round trip more).
+_BOX_PATH_ROWS_SQL = "SELECT `id`, `name`, `parent_box_id` FROM `box`"
+
+
+# ---------------------------------------------------------------------------
+# Batched read helpers (list/show)
+# ---------------------------------------------------------------------------
+#
+# ``tm entity list`` / ``stock list`` / ``box list`` / ``box show`` and the
+# ``show`` commands must not pay one ``dolt sql`` process per kind or per
+# lookup.  A read batch is built up front and executed by one
+# :meth:`Driver.query_many` call; only statements whose *SQL* depends on a
+# resolved row are written with a scalar subquery that repeats the resolution
+# the write side (:func:`_resolve_core` / :func:`_resolve_box`) performs, so
+# name-before-id-before-alias precedence and the error messages stay identical.
+
+
+def _resolved_id_sql(object_type: str, *, by_name: bool = False) -> str:
+    """A SQL scalar for the id :func:`_resolve_core`/:func:`_resolve_box` picks.
+
+    The precedence is the write-side one: a box is resolved by human name
+    first (``by_name``), then by id, then by alias.  The alias branch checks
+    that the object still exists, exactly as the resolver's per-alias fetch
+    does.  ``LIMIT 1`` mirrors the resolver returning the first row (ids and
+    box names are unique, so it is belt and braces against corrupt data).
+    """
+    table = _quote(object_type)
+    key = _quote("id")
+    parts: list[str] = []
+    if by_name:
+        parts.append(f"(SELECT {key} FROM {table} WHERE {_quote('name')} = %s LIMIT 1)")
+    parts.append(f"(SELECT {key} FROM {table} WHERE {key} = %s LIMIT 1)")
+    parts.append(
+        f"(SELECT a.{_quote('object_id')} FROM {_quote('alias')} a "
+        f"WHERE a.{_quote('object_type')} = '{object_type}' "
+        f"AND a.{_quote('alias')} = %s "
+        f"AND EXISTS (SELECT 1 FROM {table} o "
+        f"WHERE o.{key} = a.{_quote('object_id')}) LIMIT 1)"
+    )
+    # Tetramark-o4u: an incomplete id is accepted when exactly one object
+    # matches.  The HAVING clause yields no row for zero or several matches;
+    # the caller turns "several" into the UsageError that names candidates.
+    parts.append(
+        f"(SELECT MIN({key}) FROM {table} "
+        f"WHERE LEFT({key}, LENGTH(%s)) = %s HAVING COUNT(*) = 1)"
+    )
+    return "COALESCE(" + ", ".join(parts) + ")"
+
+
+def _resolved_id_params(sql: str, ref: str) -> tuple[str, ...]:
+    """The parameters for :func:`_resolved_id_sql` (one per placeholder)."""
+    return (ref,) * sql.count("%s")
+
+
+def _prefix_matches(ledger: Ledger, object_type: str, ref: str) -> list[dict[str, Any]]:
+    """Rows whose id starts with ``ref`` (the o4u incomplete-id candidates)."""
+    if not ref:
+        return []
+    table = _quote(object_type)
+    return ledger.driver.query(
+        f"SELECT {_quote('id')} FROM {table} "
+        f"WHERE LEFT({_quote('id')}, %s) = %s ORDER BY {_quote('id')}",
+        (len(ref), ref),
+    )
+
+
+def _raise_ambiguous_prefix(
+    object_type: str, ref: str, matches: Sequence[Mapping[str, Any]]
+) -> None:
+    """The exact ``_resolve_core`` error for a prefix that hits several objects."""
+    shown = ", ".join(str(match["id"]) for match in matches[:10])
+    more = f" and {len(matches) - 10} more" if len(matches) > 10 else ""
+    raise UsageError(
+        f"{object_type} id {ref!r} is ambiguous: it prefixes "
+        f"{len(matches)} objects ({shown}{more}); use a longer prefix "
+        "or the full id"
+    )
+
+
+def _read_record_batch(
+    ledger: Ledger,
+    object_type: str,
+    ref: str,
+    *,
+    extras: Sequence[tuple[str, Any]] = (),
+) -> tuple[dict[str, Any], list[str], list[list[dict[str, Any]]]]:
+    """Read one object's core row, kind row and aliases in one batch.
+
+    Returns ``(record, aliases, extra_result_sets)``.  ``record`` has the same
+    shape :func:`_load_record` builds: the core columns, then the resolved
+    kind row's fields except ``id``, then ``object``.  ``extras`` are further
+    independent statements that need the same resolved id (``show_stock``'s
+    aliquots); their result sets are returned in order.  An unknown ``ref``
+    raises the resolver's error after the batch (the reads are side-effect
+    free, so a miss costs one process instead of one per lookup).
+    """
+    id_sql = _resolved_id_sql(object_type)
+    params = _resolved_id_params(id_sql, ref)
+    table = _quote(object_type)
+    batch: list[tuple[str, Any]] = [
+        (f"SELECT * FROM {table} WHERE {_quote('id')} = {id_sql}", params),
+        (
+            f"SELECT {_quote('object_id')}, {_quote('alias')} "
+            f"FROM {_quote('alias')} "
+            f"WHERE {_quote('object_type')} = '{object_type}' "
+            f"AND {_quote('object_id')} = {id_sql} "
+            f"ORDER BY {_quote('alias')}",
+            params,
+        ),
+    ]
+    kind_positions: dict[str, int] = {}
+    for kind_name in sorted(ledger.schema.kinds_for(object_type)):
+        kind_positions[kind_name] = len(batch)
+        batch.append(
+            (
+                f"SELECT * FROM {_quote(table_name(object_type, kind_name))} "
+                f"WHERE {_quote('id')} = {id_sql}",
+                params,
+            )
+        )
+    extra_start = len(batch)
+    batch.extend(extras)
+    fetched = ledger.driver.query_many(batch)
+
+    core_rows = fetched[0]
+    if not core_rows:
+        matches = _prefix_matches(ledger, object_type, ref)
+        if len(matches) > 1:
+            _raise_ambiguous_prefix(object_type, ref, matches)
+        if len(matches) == 1:
+            # The unique prefix branch normally resolved this inside the batch;
+            # retry once with the full id if Dolt returned no row (defensive).
+            return _read_record_batch(
+                ledger, object_type, str(matches[0]["id"]), extras=extras
+            )
+        raise LedgerError(f"unknown {object_type} {ref!r}")
+    core = dict(core_rows[0])
+    kind_name = str(core["kind"])
+    record = dict(core)
+    position = kind_positions.get(kind_name)
+    if position is None:  # pragma: no cover - schema and row disagree
+        kind_row = _fetch_kind_row(
+            ledger.driver, kind_name, object_type, str(core["id"])
+        )
+    else:
+        kind_row = dict(fetched[position][0]) if fetched[position] else {}
+    for key, value in kind_row.items():
+        if key != "id":
+            record[key] = value
+    record["object"] = object_type
+    aliases = [str(row["alias"]) for row in fetched[1]]
+    return record, aliases, fetched[extra_start:]
+
+
+def _read_box_rows(
+    ledger: Ledger, ref: str
+) -> tuple[
+    dict[str, Any],
+    dict[str, str],
+    list[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """One box and everything ``box show`` renders, in one read batch.
+
+    Returns ``(box_row, paths, aliases, slot_rows, aliquot_rows, child_rows)``.
+    The view rows are fetched for every box (a slotless box matches none of the
+    slotted rows), so the batch does not depend on the resolved kind; the
+    caller picks the ones its geometry needs.
+    """
+    id_sql = _resolved_id_sql("box", by_name=True)
+    params = _resolved_id_params(id_sql, ref)
+    batch: list[tuple[str, Any]] = [
+        (f"SELECT * FROM {_quote('box')} WHERE {_quote('id')} = {id_sql}", params),
+        (_BOX_PATH_ROWS_SQL, None),
+        (
+            f"SELECT {_quote('alias')} FROM {_quote('alias')} "
+            f"WHERE {_quote('object_type')} = 'box' "
+            f"AND {_quote('object_id')} = {id_sql} "
+            f"ORDER BY {_quote('alias')}",
+            params,
+        ),
+        (
+            "SELECT * FROM `v_box_slots` "
+            f"WHERE `box_id` = {id_sql} ORDER BY `ordinal`",
+            params,
+        ),
+        (
+            "SELECT a.*, s.`entity_id` AS `entity_id` FROM `aliquot` a "
+            "JOIN `stock` s ON s.`id` = a.`stock_id` "
+            f"WHERE a.`box_id` = {id_sql} AND a.`slot` IS NULL "
+            "ORDER BY a.`id`",
+            params,
+        ),
+        (
+            "SELECT `id`, `name` FROM `box` "
+            f"WHERE `parent_box_id` = {id_sql} AND `parent_slot` IS NULL "
+            "ORDER BY `name`",
+            params,
+        ),
+    ]
+    fetched = ledger.driver.query_many(batch)
+    box_rows = fetched[0]
+    if not box_rows:
+        matches = _prefix_matches(ledger, "box", ref)
+        if len(matches) > 1:
+            _raise_ambiguous_prefix("box", ref, matches)
+        if len(matches) == 1:
+            return _read_box_rows(ledger, str(matches[0]["id"]))
+        # ``_resolve_box`` falls through to ``_resolve_core``'s error.
+        raise LedgerError(f"unknown box {ref!r}")
+    return (
+        dict(box_rows[0]),
+        _box_paths(fetched[1]),
+        [str(row["alias"]) for row in fetched[2]],
+        fetched[3],
+        fetched[4],
+        fetched[5],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Alias rows (used by entity add and the alias command group)
 # ---------------------------------------------------------------------------
@@ -1106,7 +1329,20 @@ def _list_records(
     object_type: str,
     kind_name: str | None,
     where: Iterable[str] | Mapping[str, Any] | None,
-) -> list[dict[str, Any]]:
+    *,
+    extra: Sequence[tuple[str, Any]] = (),
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    """Every row of every matching kind, fetched in one read batch.
+
+    Returns ``(records, extra_result_sets)``: one SELECT per kind whose columns
+    can express the filters (same SQL, order and parameters as the old
+    per-kind queries) is built first and run by a single
+    :meth:`Driver.query_many`, so the fan-out costs one process instead of one
+    per kind.  ``extra`` statements are appended to the same batch (``box
+    list`` uses that for the path rows); their results come back in order.
+    Empty kinds still contribute nothing, and the records keep the kind order
+    plus each query's ``ORDER BY``.
+    """
     if kind_name is not None:
         _kind_for(ledger, object_type, kind_name)
         kinds = [kind_name]
@@ -1125,6 +1361,7 @@ def _list_records(
         )
 
     records: list[dict[str, Any]] = []
+    batch: list[tuple[str, Any]] = []
     for name in kinds:
         kind = ledger.schema.kinds[name]
         columns = set(_CORE_FILTERS[object_type]) | set(kind.fields)
@@ -1171,11 +1408,19 @@ def _list_records(
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += f" ORDER BY {order}"
-        for row in ledger.driver.query(sql, tuple(params)):
+        batch.append((sql, tuple(params)))
+
+    extra_start = len(batch)
+    batch.extend(extra)
+    # One process for every kind (plus the batch-only ``extra`` reads); an
+    # empty batch must not start one at all.
+    fetched = ledger.driver.query_many(batch) if batch else []
+    for rows in fetched[:extra_start]:
+        for row in rows:
             record = dict(row)
             record["object"] = object_type
             records.append(record)
-    return records
+    return records, fetched[extra_start:]
 
 
 # ---------------------------------------------------------------------------
@@ -1273,10 +1518,8 @@ def show_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
     ``aliases`` is the object's sorted alias list (spec §6); the generated
     views expose the same data as ``alias_list``.
     """
-    row = _resolve_core(ledger.driver, "entity", ref)
-    object_id = str(row["id"])
-    record = _load_record(ledger.driver, ledger, "entity", object_id)
-    record["aliases"] = _object_aliases(ledger.driver, "entity", object_id)
+    record, aliases, _ = _read_record_batch(ledger, "entity", ref)
+    record["aliases"] = aliases
     return record
 
 
@@ -1286,7 +1529,8 @@ def list_entities(
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    return _list_records(ledger, "entity", kind_name, where)
+    records, _ = _list_records(ledger, "entity", kind_name, where)
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -1513,15 +1757,22 @@ def edit_stock(
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
     """One stock, its sorted aliases (``aliases``) and its aliquots."""
-    row = _resolve_core(ledger.driver, "stock", ref)
-    object_id = str(row["id"])
-    record = _load_record(ledger.driver, ledger, "stock", object_id)
-    record["aliases"] = _object_aliases(ledger.driver, "stock", object_id)
-    record["aliquots"] = ledger.driver.query(
-        "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
-        "FROM `aliquot` WHERE `stock_id` = %s ORDER BY `seq`",
-        (row["id"],),
+    id_sql = _resolved_id_sql("stock")
+    params = _resolved_id_params(id_sql, ref)
+    record, aliases, extra = _read_record_batch(
+        ledger,
+        "stock",
+        ref,
+        extras=[
+            (
+                "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
+                f"FROM `aliquot` WHERE `stock_id` = {id_sql} ORDER BY `seq`",
+                params,
+            )
+        ],
     )
+    record["aliases"] = aliases
+    record["aliquots"] = extra[0]
     return record
 
 
@@ -1531,7 +1782,8 @@ def list_stocks(
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    return _list_records(ledger, "stock", kind_name, where)
+    records, _ = _list_records(ledger, "stock", kind_name, where)
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -2024,11 +2276,12 @@ def list_boxes(
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    records = _list_records(ledger, "box", kind_name, where)
-    all_rows = ledger.driver.query(
-        "SELECT `id`, `name`, `parent_box_id` FROM `box`"
+    # The path rows ride in the same batch as the per-kind listings, so the
+    # nested path costs no extra round trip.
+    records, extra = _list_records(
+        ledger, "box", kind_name, where, extra=[(_BOX_PATH_ROWS_SQL, None)]
     )
-    paths = _box_paths(all_rows)
+    paths = _box_paths(extra[0])
     for record in records:
         record["path"] = paths.get(str(record["id"]), str(record.get("name")))
     return records

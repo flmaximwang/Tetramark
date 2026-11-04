@@ -760,8 +760,9 @@ def _apply(
     # preset copy and verify that reality, not just the statements we ran.
     if step.after_commit is not None:
         _run_after_commit(step, ledger, state, stdout=stdout, stderr=stderr)
-    ledger.read_meta()
     try:
+        # ``_verify_after`` refreshes ``ledger.meta`` and checks the commit
+        # message; it reads both in one batch (see _read_commit_and_meta).
         _verify_after(step, ledger, state)
     except MigrationError as error:
         # This failure happens after the commit, where no other report is
@@ -811,10 +812,37 @@ def _run_after_commit(
         stdout.write(f"post-commit: {note}\n")
 
 
+def _read_commit_and_meta(ledger: Ledger, commit_hash: str) -> str:
+    """Refresh ``ledger.meta`` and return a commit's message, in one batch.
+
+    The post-commit verification needs the new ``ledger_meta`` rows and the
+    commit message; ``query_many`` costs one ``dolt sql`` run for the rows and
+    one for the CSV column lists, where two separate ``query`` calls cost four.
+    A read error leaves ``meta`` empty, exactly like :meth:`Ledger.read_meta`,
+    so the verification (not this helper) reports the failed migration.
+    """
+    try:
+        meta_rows, log_rows = ledger.driver.query_many(
+            [
+                ("SELECT `key`, `value` FROM `ledger_meta` ORDER BY `key`", None),
+                (
+                    "SELECT `message` FROM `dolt_log` WHERE `commit_hash` = %s",
+                    (commit_hash,),
+                ),
+            ]
+        )
+    except LedgerError:  # pragma: no cover - a missing meta table is corruption
+        ledger.meta = {}
+        return ""
+    ledger.meta = {str(row["key"]): str(row["value"]) for row in meta_rows}
+    return str(log_rows[0]["message"]) if log_rows else ""
+
+
 def _verify_after(step: MigrationStep, ledger: Ledger, state: MigrationResult) -> None:
     """Refuse to report success when the commit did not do what it promised."""
     if state.commit_hash is None:  # pragma: no cover - defensive
         raise MigrationError(f"{step.title}: no Dolt commit was created")
+    message = _read_commit_and_meta(ledger, state.commit_hash)
     current = counter(step, ledger)
     if current != step.to_version:
         raise MigrationError(
@@ -849,11 +877,6 @@ def _verify_after(step: MigrationStep, ledger: Ledger, state: MigrationResult) -
                 f"preset copy) while the commit recorded {recorded}"
             )
     expected = f"migrate(ledger): {step.commit_summary}"
-    rows = ledger.driver.query(
-        "SELECT `message` FROM `dolt_log` WHERE `commit_hash` = %s",
-        (state.commit_hash,),
-    )
-    message = str(rows[0]["message"]) if rows else ""
     if message.strip() != expected:
         raise MigrationError(
             f"{step.title}: commit {state.commit_hash} has message "

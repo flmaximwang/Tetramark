@@ -30,6 +30,13 @@ NOTHING_TO_COMMIT = "nothing to commit"
 #: error in captured output even when ``dolt`` exited 0.
 _ERROR_LINE = re.compile(r"(?im)^\s*(?:error|fatal|panic)\b")
 
+#: Statements Dolt commits regardless of the surrounding transaction.  They are
+#: the ones a driver may send as one batch (:meth:`Driver.execute_many`).
+_DDL = re.compile(
+    r"(?is)^\s*(?:/\*.*?\*/\s*|--[^\n]*\n\s*|#[^\n]*\n\s*)*"
+    r"(?:CREATE|ALTER|DROP|RENAME|TRUNCATE|GRANT|REVOKE|COMMENT)\b"
+)
+
 __all__ = [
     "Driver",
     "Params",
@@ -37,10 +44,12 @@ __all__ = [
     "check_branch_name",
     "commit_statements",
     "ensure_ascii",
+    "is_ddl",
     "is_nothing_to_commit",
     "literal",
     "looks_like_error",
     "render_sql",
+    "render_statement",
     "revision_database",
 ]
 
@@ -115,6 +124,18 @@ def quote(text: str) -> str:
         .replace("\x1a", "\\Z")
     )
     return "'" + escaped + "'"
+
+
+def render_statement(statement: str | tuple[str, Params]) -> str:
+    """Render one entry of an :meth:`Driver.execute_many` batch as SQL.
+
+    A batch entry is either a plain statement or a ``(sql, params)`` pair; both
+    forms end up as one parameter-free statement, in the batch's order.
+    """
+    if isinstance(statement, tuple):
+        sql, params = statement
+        return render_sql(sql, params)
+    return render_sql(statement, None)
 
 
 def render_sql(sql: str, params: Params) -> str:
@@ -244,6 +265,18 @@ def looks_like_error(text: str) -> bool:
     return bool(_ERROR_LINE.search(text))
 
 
+def is_ddl(sql: str) -> bool:
+    """True when ``sql`` is a statement Dolt commits immediately.
+
+    Dolt cannot roll DDL back inside a transaction, so drivers and the write
+    session run these outside one; a batch of them may share a single process
+    (:meth:`Driver.execute_many`).  ``CREATE``/``ALTER``/``DROP``/``RENAME``/
+    ``TRUNCATE``/``GRANT``/``REVOKE``/``COMMENT`` cover every generated
+    statement; a leading comment is skipped.
+    """
+    return bool(_DDL.match(sql))
+
+
 class Driver(abc.ABC):
     """Uniform access to one Dolt database.
 
@@ -261,11 +294,26 @@ class Driver(abc.ABC):
         """Name of the Dolt database this driver talks to."""
 
     @abc.abstractmethod
-    def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
-        """Run a read-only statement and return rows as dictionaries."""
+    def query(
+        self, sql: str, params: Params = None, *, fill_columns: bool = True
+    ) -> list[dict[str, Any]]:
+        """Run a read-only statement and return rows as dictionaries.
+
+        ``fill_columns`` is part of the contract: with the default ``True``
+        every column key is present in every row, even when its value is
+        ``NULL``.  A caller that has established -- from the schema it just
+        loaded -- that every selected column is ``NOT NULL`` may pass ``False``
+        to opt out of that guarantee; a backend can then skip the extra
+        metadata read it needs to discover NULL columns.  With ``False`` a
+        ``NULL`` value is simply absent from the row, so the caller must not
+        rely on the key being there.
+        """
 
     def query_many(
-        self, statements: Sequence[tuple[str, Params]]
+        self,
+        statements: Sequence[tuple[str, Params]],
+        *,
+        fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
         """Run several independent read-only statements, one result each.
 
@@ -275,12 +323,40 @@ class Driver(abc.ABC):
         trip; this default implementation simply runs :meth:`query` per
         statement.  The statements must be independent (a later statement cannot
         read an earlier one's result) and must not write.
+
+        ``fill_columns`` is forwarded to every statement's :meth:`query`; the
+        default ``True`` keeps the all-columns-present contract.  Pass ``False``
+        only when every selected column of every statement is ``NOT NULL`` (see
+        :meth:`query`): the batch then never needs the NULL-column metadata read.
         """
-        return [self.query(sql, params) for sql, params in statements]
+        return [
+            self.query(sql, params, fill_columns=fill_columns)
+            for sql, params in statements
+        ]
 
     @abc.abstractmethod
     def execute(self, sql: str, params: Params = None) -> None:
         """Run a writing statement.  ``DML`` only inside :meth:`transaction`."""
+
+    def execute_many(self, statements: Sequence[str | tuple[str, Params]]) -> None:
+        """Run several writing statements in order, as one logical batch.
+
+        Each entry is a statement or a ``(sql, params)`` pair, exactly like one
+        :meth:`execute` call.  The batch keeps its order, and a backend may run
+        the whole batch in one round trip; this default implementation simply
+        calls :meth:`execute` per statement, which is always correct.
+
+        The batch is meant for statements Dolt applies immediately (DDL, see
+        :func:`is_ddl`): a backend that defers DML in :meth:`transaction` must
+        flush it first rather than fold it into the batch.  When a statement
+        fails, the error names the statement that failed without re-running the
+        ones that already ran.
+        """
+        for statement in statements:
+            if isinstance(statement, tuple):
+                self.execute(statement[0], statement[1])
+            else:
+                self.execute(statement)
 
     @abc.abstractmethod
     def transaction(self) -> AbstractContextManager[Driver]:
@@ -289,3 +365,27 @@ class Driver(abc.ABC):
     @abc.abstractmethod
     def commit(self, message: str, author: str | None = None) -> str | None:
         """Create one Dolt commit; return its hash, or ``None`` if nothing changed."""
+
+    def commit_pending(
+        self,
+        transaction: AbstractContextManager[Driver],
+        message: str,
+        author: str | None = None,
+    ) -> str | None:
+        """End the entered write transaction and create the Dolt commit.
+
+        ``transaction`` is the already-entered context manager returned by
+        :meth:`transaction`; this call closes it exactly once, so a
+        :class:`~tetramark.core.ledger.WriteSession` uses this instead of
+        ``transaction.__exit__`` followed by :meth:`commit`.  The default
+        implementation is exactly that pair (two round trips); a backend that
+        defers its writes may flush them and commit in one round trip as long
+        as the contract is kept:
+
+        * the transaction is closed on success *and* on failure;
+        * the return value is the same as :meth:`commit` would return (the
+          commit hash, or ``None`` when there was nothing to commit);
+        * a failure still surfaces as :class:`~tetramark.errors.LedgerError`.
+        """
+        transaction.__exit__(None, None, None)
+        return self.commit(message, author)

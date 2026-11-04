@@ -27,7 +27,7 @@ import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 import pytest
 import yaml
@@ -163,6 +163,38 @@ def row_count(ledger: Ledger, table: str) -> int:
     return int(rows[0]["n"])
 
 
+def columns_by_table(ledger: Ledger, tables: Iterable[str]) -> dict[str, set[str]]:
+    """Column names for many tables from one batched read.
+
+    A migration test checks many tables/views at once; asking Dolt once per
+    table is one process per check, which dominates the test cost.
+    """
+    names = list(tables)
+    results = ledger.driver.query_many(
+        [
+            (
+                "SELECT `column_name` AS `name` FROM `information_schema`.`columns` "
+                "WHERE `table_schema` = DATABASE() AND `table_name` = %s",
+                (table,),
+            )
+            for table in names
+        ]
+    )
+    return {
+        table: {str(row["name"]) for row in rows}
+        for table, rows in zip(names, results)
+    }
+
+
+def row_counts(ledger: Ledger, tables: Iterable[str]) -> dict[str, int]:
+    """``COUNT(*)`` for many tables from one batched read."""
+    names = list(tables)
+    results = ledger.driver.query_many(
+        [(f"SELECT COUNT(*) AS `n` FROM `{table}`", None) for table in names]
+    )
+    return {table: int(rows[0]["n"]) for table, rows in zip(names, results)}
+
+
 def v1_view_sql(statement_sql: str) -> str:
     """The spec-1 definition of a generated view: spec 2 minus its alias column.
 
@@ -192,21 +224,24 @@ def spec1_fingerprint(ledger: Ledger) -> str:
 
 def downgrade_to_spec1(ledger: Ledger) -> None:
     """Turn a fresh ledger into a genuine spec-1 one and commit the change."""
+    statements: list[str | tuple[str, Any]] = []
     for statement in view_statements(ledger.schema):
-        ledger.driver.execute(f"DROP VIEW `{statement.name}`")
-        ledger.driver.execute(v1_view_sql(statement.sql))
+        statements.append(f"DROP VIEW `{statement.name}`")
+        statements.append(v1_view_sql(statement.sql))
     fingerprint = spec1_fingerprint(ledger)
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = '1' WHERE `key` = 'spec_version'"
+    statements.extend(
+        [
+            "UPDATE `ledger_meta` SET `value` = '1' WHERE `key` = 'spec_version'",
+            "UPDATE `ledger_meta` SET `value` = '0.1.1' "
+            "WHERE `key` = 'tetramark_version'",
+            (
+                "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
+                (fingerprint,),
+            ),
+        ]
     )
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = '0.1.1' "
-        "WHERE `key` = 'tetramark_version'"
-    )
-    ledger.driver.execute(
-        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
-        (fingerprint,),
-    )
+    # One dolt process for the whole downgrade instead of one per view DDL.
+    ledger.driver.execute_many(statements)
     ledger.driver.commit("test: simulate a spec-1 ledger")
     ledger.read_meta()
 
@@ -332,13 +367,15 @@ def test_spec_1_to_2_migrates_views_meta_tag_in_one_commit(
     assert "pre-migrate-spec-1" in result.stdout
 
     # -- the views now carry the alias columns --------------------------
-    for statement in view_statements(ledger.schema):
+    views = list(view_statements(ledger.schema))
+    columns = columns_by_table(ledger, [statement.name for statement in views])
+    for statement in views:
         expected = (
             "occupant_alias_list"
             if statement.name == "v_box_slots"
             else "alias_list"
         )
-        assert expected in column_names(ledger, statement.name), statement.name
+        assert expected in columns[statement.name], statement.name
     rows = ledger.driver.query("SELECT `alias_list` FROM `v_entity_item`")
     assert [row["alias_list"] for row in rows] == ["ALPHA-AC;ZED-ALIAS"]
 
@@ -1376,9 +1413,7 @@ def _create_widgets_kind(ledger: Ledger) -> None:
         if statement.name == "v_entity_widget"
     ]
     assert statements, "the widgets preset produced no entity_widget DDL"
-    with ledger.driver.transaction():
-        for statement in statements:
-            ledger.driver.execute(statement.sql)
+    ledger.driver.execute_many([statement.sql for statement in statements])
     ledger.driver.commit("test: create the widgets kind")
 
 
@@ -2455,7 +2490,7 @@ MOLBIO_TABLES = (
 
 
 def molbio_row_counts(ledger: Ledger) -> dict[str, int]:
-    return {table: row_count(ledger, table) for table in MOLBIO_TABLES}
+    return row_counts(ledger, MOLBIO_TABLES)
 
 
 def downgrade_to_spec3(ledger: Ledger) -> None:
@@ -2467,23 +2502,32 @@ def downgrade_to_spec3(ledger: Ledger) -> None:
     ``spec_version = 3``.
     """
     driver = ledger.driver
-    for statement in view_statements(ledger.schema):
-        driver.execute(f"DROP VIEW `{statement.name}`")
-    driver.execute("ALTER TABLE `aliquot_event` DROP COLUMN `forced`")
-    driver.execute(
-        "ALTER TABLE `aliquot` ADD CONSTRAINT `ck_aliquot_status` "
-        "CHECK (`status` IN ('pending', 'stored', 'missing', 'consumed'))"
+    statements: list[str | tuple[str, Any]] = [
+        f"DROP VIEW `{statement.name}`"
+        for statement in view_statements(ledger.schema)
+    ]
+    statements.extend(
+        [
+            "ALTER TABLE `aliquot_event` DROP COLUMN `forced`",
+            "ALTER TABLE `aliquot` ADD CONSTRAINT `ck_aliquot_status` "
+            "CHECK (`status` IN ('pending', 'stored', 'missing', 'consumed'))",
+        ]
     )
     config_path = ledger.path / "ledger.yaml"
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     payload["statuses"] = list(SPEC3_STATUSES)
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
     config_path.write_text(text, encoding="utf-8")
-    driver.execute(
-        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'ledger_yaml'",
-        (text,),
+    statements.extend(
+        [
+            (
+                "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'ledger_yaml'",
+                (text,),
+            ),
+            "UPDATE `ledger_meta` SET `value` = '3' WHERE `key` = 'spec_version'",
+        ]
     )
-    driver.execute("UPDATE `ledger_meta` SET `value` = '3' WHERE `key` = 'spec_version'")
+    driver.execute_many(statements)
     driver.commit("test: simulate a spec-3 molbio-v2 ledger")
     ledger.read_meta()
 
