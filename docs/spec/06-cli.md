@@ -210,9 +210,9 @@ NULL. The stock kind's own fields stay in `tm stock show`, and the tube's events
 ledger format — `spec_version` is untouched.
 
 `tm aliquot list` enumerates tubes. With no filter it prints the tubes an experiment can use — the
-statuses whose set entry has `in_stock: true` (§2.4) — not the whole history, because a list answers
-"what is available"; `--all` adds every status and `--not-in-stock` shows only the complement (the
-missing/consumed/thawed audit). An explicit `--status S` (repeatable, OR) is already a deliberate
+aliquots whose status is `stored` (§1.1) — not the whole history, because a list answers "what is
+available"; `--all` adds every status and `--not-in-stock` shows only the complement (the
+missing/consumed audit). An explicit `--status S` (repeatable, OR) is already a deliberate
 choice, so it turns the implicit in-stock scope off; combined with `--not-in-stock` it intersects.
 `STOCK` (one stock id or alias; the incomplete-id rule applies) limits the listing to one stock and
 never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
