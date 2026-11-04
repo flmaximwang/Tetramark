@@ -123,10 +123,21 @@ tm find pZET035              # name
 tm find 1226FP01             # exact id
 tm find "BL21"               # text in kind fields
 tm find 0826FP02 --json      # machine-readable result with score and location
+
+tm find -E '^pZET'           # regex: ids, aliases, names and kind text, case-insensitive
+tm find --where 'resistance=kan'              # list every object with that field (no aliquots)
+tm entity list --where 'name~(?i)^pzet'       # filter one object type by one column
+tm stock list --where 'strain~BL21' --where 'medium=LB'   # filters AND
 ```
 
+Use `tm find` when you have a handle (id, alias, name or a piece of kind text); `-E` is the same
+search with a case-insensitive ICU regex. Use `--where` when you know the column and want a set:
+`=` is exact, `~` is an unanchored, case-sensitive regex search — anchor with `^`/`$`, use `(?i)` to
+ignore case. The same filters work on `tm entity|stock|box list`; `tm find --where` spans every
+object type and excludes aliquots. The aliquot list's own `--where` is exact-only.
+
 Results show `object`, `kind`, `id`, a summary, the location (path plus slot) and why it matched
-(`id`, `alias`, `name` or `text`). Then:
+(`id`, `alias`, `name`, `field`, or `filter` for a `--where`-only listing). Then:
 
 ```sh
 tm history 1226FP01
