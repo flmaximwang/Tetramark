@@ -82,7 +82,11 @@ def list_entities_command(
     ctx: typer.Context,
     kind: str | None = typer.Argument(None, help="Only this entity kind."),
     where: list[str] = typer.Option(
-        [], "--where", "-w", help="Filter as field=value; repeat to AND filters."
+        [],
+        "--where",
+        "-w",
+        help="Filter as field=value (exact) or field~pattern (regex); repeat to "
+        "AND filters. A regex is case-sensitive; (?i) ignores case.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
