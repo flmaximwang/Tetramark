@@ -191,6 +191,11 @@ tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 ```
 
+`box list` prints `name kind path occupied capacity`. `occupied` counts the aliquots and the immediate
+child boxes directly in the box (items, not slots; nested contents do not roll up), and `capacity` is
+slots × `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, or
+blank when unlimited.
+
 `box add` materialises the slots implied by the geometry (`grid8x12` → 96, `grid9x9` → 81, `rack` →
 the named positions, `shelf`/`freezer`/`drawer` → none). `--slot` is only valid for a slotted parent;
 slotless parents take one child box each (up to `capacity`). Nesting must stay acyclic, and a **grid

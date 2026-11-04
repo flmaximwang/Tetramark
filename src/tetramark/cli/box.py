@@ -92,14 +92,14 @@ def list_boxes_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """List boxes with their nested path."""
+    """List boxes with their nested path, occupancy and capacity."""
     ledger = resolve_ledger(ctx)
     try:
         rows = ledger.boxes.ls(kind, where=where)
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),
-            columns=["name", "kind", "path"],
+            columns=["name", "kind", "path", "occupied", "capacity"],
         )
     finally:
         ledger.close()
