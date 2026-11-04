@@ -284,15 +284,21 @@ tm aliquot purge ALQ [--json]
   rest; it is the aliquot's own exact-only `FIELD=VALUE` filter, not the shared `field~pattern` syntax
   of **Filters** above. Filter status with `--status`, never `--where status=…`. The table and CSV print
   `id stock_kind status quantity unit label path` (path is empty when not in stock); `--json` prints
-  the same record `show` prints, one per tube, ordered by stock id and numeric seq.
+  the same record `show` prints without `events` (a list never reads a tube's event trail), one per
+  tube, ordered by stock id and numeric seq.
 - `show` prints one tube: the aliquot row, its sorted `aliases`, the owning stock's `stock_kind` and
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
-  printed on its own line) and the derived `in_stock` flag (true exactly when the status is `stored`).
-  `ALQ` is the full `<stock>.<seq>` id or one of the tube's aliases, including the old ids
-  `tm stock renumber` keeps; `--json` prints the
-  same record with the full ids. A tube that is not in stock has no position (`box_id`, `slot` and
-  `path` are empty; `null` in JSON). The tube's events are in `tm history ALQ`; the stock kind's own
-  fields are in `tm stock show`, and `list STOCK` is the rich per-stock tube listing.
+  printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
+  and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
+  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
+  ids), the `old_status`/`new_status`, `forced` and `actor`/`purpose`/`note`. The text output ends
+  with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
+  `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
+  single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
+  full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
+  keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
+  in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
+  and `list STOCK` is the rich per-stock tube listing.
 - `use` consumes part or all of a tube. `AMOUNT` and `UNIT` come together: passing only one of them
   is a usage error, and with an amount the unit must match the tube's unit and the amount may not
   exceed what remains. Leaving both out means "use everything left" — the event records the tube's

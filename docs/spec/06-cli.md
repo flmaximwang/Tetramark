@@ -91,7 +91,7 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
-tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
+tm aliquot show ALQ                          # one tube: status, quantity, stock, box path, events
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
                 [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
@@ -219,19 +219,28 @@ grid rules above, in the same commit as the rows.
 `tm entity show`, `tm stock show`, `tm aliquot show` and `tm box show` include the object's aliases as
 a sorted `aliases` list in JSON output and print an `aliases` row or line in table output; `list`
 **table** output stays narrow. `tm aliquot list --json` is the exception among lists: an aliquot has
-no per-kind view to project, so its items are the full `tm aliquot show` record and carry `aliases`
-too. The generated views expose the same data as `alias_list` / `occupant_alias_list` (§3).
+no per-kind view to project, so its items are the `tm aliquot show` record without `events` (a list
+must not read every tube's event trail) and carry `aliases` too. The generated views expose the same
+data as `alias_list` / `occupant_alias_list` (§3).
 
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
 `notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the
 tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
-`Freezer-1/Shelf-2/Box:A3`) and the derived `in_stock` flag (true exactly when the status is
-`stored`, §1.1). A tube that is not in stock has `box_id`, `slot` and `path`
-NULL. The stock kind's own fields stay in `tm stock show`, and the tube's events stay in
-`tm history ALQ`: `show` carries no event timeline. The command is read-only and changes no
-ledger format — `spec_version` is untouched.
+`Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly when the status is
+`stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the tube has none). Each
+event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`, `from_slot`,
+`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor`, `purpose`
+and `note`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
+gone. `events` is not a key/value row: text output prints the field block, then the `path:` line
+(when the tube has a position), then `events  N` (two spaces before the count) and one line per
+event, oldest first, rendered by the same `event_line` helper `tm history` uses. `--json` prints
+the whole record, events included; `--format csv` stays the flat single-row record and drops
+`events` (event rows are `tm history ALQ --format csv`). The Dolt commits stay in `tm history`:
+show carries events only. A tube that is not in stock has `box_id`, `slot` and `path` NULL. The
+stock kind's own fields stay in `tm stock show`. The command is read-only and changes no ledger
+format — `spec_version` is untouched.
 
 `tm aliquot list` enumerates tubes. With no filter it prints the tubes an experiment can use — the
 aliquots whose status is `stored` (§1.1) — not the whole history, because a list answers "what is
@@ -246,8 +255,8 @@ aliquot core columns exactly, except `status` (`--where status=…` is a usage e
 syntax of §6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
 rows `id stock_kind status quantity unit label path`
 (`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
-prints, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only and changes no
-ledger format — `spec_version` is untouched.
+prints without `events`, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only
+and changes no ledger format — `spec_version` is untouched.
 
 `tm stock show` embeds the stock's tubes. Each row carries `id`, `seq`, `status`, `quantity`, `unit`,
 `label`, `box_id`, `slot`, the slot-inclusive `path` (`NULL` when the tube is not in stock), the
