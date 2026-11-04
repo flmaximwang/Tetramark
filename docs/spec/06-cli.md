@@ -18,7 +18,7 @@ tm [-l|--ledger PATH] [-b|--branch BRANCH] [--dry-run] [--no-commit]
 | `--no-commit` | Execute the write but leave it uncommitted (advanced). |
 | `--json` | Print reads and write results as JSON. |
 | `--format table\|json\|csv` | Read output format (default `table`). |
-| `--version` | Print the version. |
+| `--version` | Print `tetramark <version>` on stdout. When the installed package metadata disagrees with the code (an editable checkout), also print one warning on stderr naming both versions, the checkout and the pinned reinstall command. |
 
 **Resolution** (P3): an explicit `-l/--ledger PATH` wins and is validated directly; otherwise the CLI
 walks up from the current directory and stops at the nearest directory containing both `.dolt/` and
