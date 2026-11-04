@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal
 
 import pytest
 from typer.testing import CliRunner
@@ -1915,3 +1916,365 @@ def test_cli_aliquot_label(cli_env: None, ledger_factory) -> None:
     )
     assert third["old_label"] == "T-2"
     assert third["aliases"] == ["T-1", "T-2"]
+
+
+# ---------------------------------------------------------------------------
+# tm stock aliquot (Tetramark-til)
+# ---------------------------------------------------------------------------
+
+
+def process_exit_code(result) -> int:
+    """The exit status ``main()`` would produce for a CliRunner invocation.
+
+    A core ``UsageError``/``LedgerError`` escapes the in-process runner as the
+    exception itself, with its own ``exit_code``; Click's own usage errors
+    already set ``result.exit_code``.  The command-level tests below want the
+    process status, so they use this one helper.
+    """
+    return int(getattr(result.exception, "exit_code", result.exit_code))
+
+
+def make_one_tube_stock(ledger, entity_id: str) -> dict:
+    """Create a stock the same way in every case: one default tube."""
+    return json.loads(
+        write(ledger, "stock", "add", "lot", "--entity", entity_id, "--json").output
+    )
+
+
+def aliquot_count(ledger) -> int:
+    return int(ledger.driver.query("SELECT COUNT(*) AS n FROM `aliquot`")[0]["n"])
+
+
+def test_cli_stock_aliquot_is_the_same_write_as_aliquot_add(
+    cli_env: None, ledger_factory
+) -> None:
+    """AMOUNT UNIT is sugar: same JSON, rows, create events and commits."""
+    ledger = ledger_factory([BASE], name="cli-stock-aliquot-same", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "B")
+    direct_stock = make_one_tube_stock(ledger, entity["id"])
+    sugared_stock = make_one_tube_stock(ledger, entity["id"])
+
+    direct = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "add",
+            direct_stock["id"],
+            "-n",
+            "2",
+            "--quantity",
+            "50",
+            "--unit",
+            "ul",
+            "--box",
+            "B",
+            "--slot",
+            "A2",
+            "--slot",
+            "A3",
+            "--json",
+        ).output
+    )
+    sugared = json.loads(
+        write(
+            ledger,
+            "stock",
+            "aliquot",
+            sugared_stock["id"],
+            "50",
+            "ul",
+            "-n",
+            "2",
+            "--box",
+            "B",
+            "--slot",
+            "A4",
+            "--slot",
+            "A5",
+            "--json",
+        ).output
+    )
+
+    # The JSON documents have the same keys, and the ids the same suffixes.
+    assert set(direct) == set(sugared) == {"object", "stock_id", "ids"}
+    assert [alq.rsplit(".", 1)[1] for alq in direct["ids"]] == ["2", "3"]
+    assert [alq.rsplit(".", 1)[1] for alq in sugared["ids"]] == ["2", "3"]
+
+    # The rows are equal on every column except the ones that identify the
+    # tube or its slot (and the timestamp).
+    skip = {"id", "stock_id", "slot", "created_at"}
+
+    def rows(ids: list[str]) -> list[dict[str, object]]:
+        found = []
+        for alq in ids:
+            row = ledger.driver.query(
+                "SELECT * FROM `aliquot` WHERE `id` = %s", (alq,)
+            )[0]
+            found.append({key: value for key, value in row.items() if key not in skip})
+        return found
+
+    assert rows(direct["ids"]) == rows(sugared["ids"])
+
+    # The create events carry the same amount, unit and creation status.
+    def create_events(ids: list[str]) -> list[dict[str, object]]:
+        placeholders = ", ".join(["%s"] * len(ids))
+        return [
+            {
+                "amount": row["amount"],
+                "unit": row["unit"],
+                "new_status": row["new_status"],
+            }
+            for row in ledger.driver.query(
+                "SELECT `amount`, `unit`, `new_status` FROM `aliquot_event` "
+                f"WHERE `aliquot_id` IN ({placeholders}) AND `event` = 'create' "
+                "ORDER BY `aliquot_id`",
+                tuple(ids),
+            )
+        ]
+
+    assert create_events(direct["ids"]) == create_events(sugared["ids"])
+
+    # Each command is one commit and the message names only its own stock.
+    commits = [
+        row["message"]
+        for row in ledger.driver.query(
+            "SELECT `message` FROM `dolt_log` "
+            "ORDER BY `date` DESC, `commit_order` DESC LIMIT 2"
+        )
+    ]
+    assert commits == [
+        f"add(aliquot): {sugared_stock['id']} x2",
+        f"add(aliquot): {direct_stock['id']} x2",
+    ]
+
+
+def test_cli_stock_aliquot_unplaced_is_pending_and_the_line_matches_aliquot_add(
+    cli_env: None, ledger_factory
+) -> None:
+    """No --box: one pending tube, one commit, and add's exact human line."""
+    ledger = ledger_factory([BASE], name="cli-stock-aliquot-line", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    sugared_stock = make_one_tube_stock(ledger, entity["id"])
+    direct_stock = make_one_tube_stock(ledger, entity["id"])
+
+    before = commit_count(ledger)
+    sugared = invoke(ledger, "stock", "aliquot", sugared_stock["id"], "50", "ul")
+    assert sugared.exit_code == 0, sugared.output
+    assert commit_count(ledger) == before + 1
+    assert sugared.output.strip() == (
+        f"Added 1 aliquot(s) to {sugared_stock['id']}: {sugared_stock['id']}.2"
+    )
+
+    row = ledger.driver.query(
+        "SELECT `status`, `quantity`, `unit`, `box_id`, `slot` FROM `aliquot` "
+        "WHERE `id` = %s",
+        (f"{sugared_stock['id']}.2",),
+    )[0]
+    assert row["status"] == "pending"
+    assert Decimal(str(row["quantity"])) == Decimal("50")
+    assert row["unit"] == "ul"
+    assert row["box_id"] is None and row["slot"] is None
+    latest = ledger.driver.query(
+        "SELECT `message` FROM `dolt_log` "
+        "ORDER BY `date` DESC, `commit_order` DESC LIMIT 1"
+    )[0]
+    assert latest["message"] == f"add(aliquot): {sugared_stock['id']} x1"
+
+    # The same write through `tm aliquot add` prints the same line template.
+    direct = write(
+        ledger,
+        "aliquot",
+        "add",
+        direct_stock["id"],
+        "--quantity",
+        "50",
+        "--unit",
+        "ul",
+    )
+    assert direct.output.strip() == (
+        f"Added 1 aliquot(s) to {direct_stock['id']}: {direct_stock['id']}.2"
+    )
+    assert sugared.output.strip().replace(sugared_stock["id"], "S") == (
+        direct.output.strip().replace(direct_stock["id"], "S")
+    )
+    direct_row = ledger.driver.query(
+        "SELECT `status`, `quantity`, `unit`, `box_id`, `slot` FROM `aliquot` "
+        "WHERE `id` = %s",
+        (f"{direct_stock['id']}.2",),
+    )[0]
+    assert direct_row == row
+
+
+#: (case id, arguments after the stock): every usage error AC 4 names.
+STOCK_ALIQUOT_USAGE_ERRORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("missing-unit", ("50",)),
+    ("missing-amount-and-unit", ()),
+    ("amount-not-a-decimal", ("abc", "ul")),
+    ("negative-amount", ("-5", "ul")),
+    ("empty-unit", ("50", "")),
+    ("unit-too-long", ("50", "x" * 33)),
+    ("count-zero", ("50", "ul", "--count", "0")),
+    ("slot-without-box", ("50", "ul", "--slot", "A1")),
+)
+
+
+@pytest.mark.parametrize(
+    "case, args",
+    STOCK_ALIQUOT_USAGE_ERRORS,
+    ids=[case for case, _ in STOCK_ALIQUOT_USAGE_ERRORS],
+)
+def test_cli_stock_aliquot_usage_errors_exit_2_and_write_nothing(
+    cli_env: None, ledger_factory, case: str, args: tuple[str, ...]
+) -> None:
+    """Every bad invocation is Click's/core's usage error (exit 2), no write."""
+    ledger = ledger_factory(
+        [BASE], name=f"cli-stock-aliquot-{case}", id_prefix="77"
+    )
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    stock = make_one_tube_stock(ledger, entity["id"])
+    before_commits = commit_count(ledger)
+    before_aliquots = aliquot_count(ledger)
+
+    result = invoke(ledger, "stock", "aliquot", stock["id"], *args)
+
+    assert process_exit_code(result) == 2, result.output
+    assert commit_count(ledger) == before_commits
+    assert aliquot_count(ledger) == before_aliquots
+
+
+def test_cli_stock_aliquot_unknown_stock_exits_1_and_writes_nothing(
+    cli_env: None, ledger_factory
+) -> None:
+    """A stock that does not resolve is the same business error as add (exit 1)."""
+    ledger = ledger_factory([BASE], name="cli-stock-aliquot-unknown", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    make_one_tube_stock(ledger, entity["id"])
+    before_commits = commit_count(ledger)
+    before_aliquots = aliquot_count(ledger)
+
+    result = invoke(ledger, "stock", "aliquot", "NOPE", "50", "ul")
+
+    assert process_exit_code(result) == 1
+    assert isinstance(result.exception, LedgerError)
+    assert "NOPE" in str(result.exception)
+    assert commit_count(ledger) == before_commits
+    assert aliquot_count(ledger) == before_aliquots
+
+
+def test_cli_stock_aliquot_accepts_amount_zero(
+    cli_env: None, ledger_factory
+) -> None:
+    """Zero is a valid amount (core's non-negative rule stands)."""
+    ledger = ledger_factory([BASE], name="cli-stock-aliquot-zero", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    stock = make_one_tube_stock(ledger, entity["id"])
+
+    created = json.loads(
+        write(
+            ledger, "stock", "aliquot", stock["id"], "0", "ul", "--json"
+        ).output
+    )
+    assert created["ids"] == [f"{stock['id']}.2"]
+    row = ledger.driver.query(
+        "SELECT `quantity`, `unit` FROM `aliquot` WHERE `id` = %s",
+        (created["ids"][0],),
+    )[0]
+    assert Decimal(str(row["quantity"])) == Decimal(0)
+    assert row["unit"] == "ul"
+
+
+def test_cli_stock_aliquot_dry_run_and_too_few_slots_match_aliquot_add(
+    cli_env: None, ledger_factory
+) -> None:
+    """--dry-run prints the same SQL and writes nothing; slot errors match."""
+    ledger = ledger_factory([BASE], name="cli-stock-aliquot-dry", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    stock = make_one_tube_stock(ledger, entity["id"])
+    before_commits = commit_count(ledger)
+    before_aliquots = aliquot_count(ledger)
+
+    sugared = invoke(
+        ledger, "--dry-run", "stock", "aliquot", stock["id"], "50", "ul"
+    )
+    direct = invoke(
+        ledger,
+        "--dry-run",
+        "aliquot",
+        "add",
+        stock["id"],
+        "--quantity",
+        "50",
+        "--unit",
+        "ul",
+    )
+    assert sugared.exit_code == 0, sugared.output
+    assert direct.exit_code == 0, direct.output
+    assert sugared.output == direct.output
+    assert commit_count(ledger) == before_commits
+    assert aliquot_count(ledger) == before_aliquots
+
+    # A slotted box needs one --slot per aliquot, whichever command is used.
+    write(ledger, "box", "add", "grid96", "G")
+    before_commits = commit_count(ledger)
+    before_aliquots = aliquot_count(ledger)
+    sugared = invoke(
+        ledger,
+        "stock",
+        "aliquot",
+        stock["id"],
+        "50",
+        "ul",
+        "--count",
+        "2",
+        "--box",
+        "G",
+        "--slot",
+        "A1",
+    )
+    direct = invoke(
+        ledger,
+        "aliquot",
+        "add",
+        stock["id"],
+        "--count",
+        "2",
+        "--quantity",
+        "50",
+        "--unit",
+        "ul",
+        "--box",
+        "G",
+        "--slot",
+        "A1",
+    )
+    assert process_exit_code(sugared) == process_exit_code(direct) == 1
+    assert str(sugared.exception) == str(direct.exception)
+    assert commit_count(ledger) == before_commits
+    assert aliquot_count(ledger) == before_aliquots
+
+
+@pytest.mark.fast
+def test_cli_stock_aliquot_help_names_amount_unit_and_aliquot_add() -> None:
+    """The command's help shows the two positionals and names the equivalence."""
+    short = CliRunner().invoke(app, ["stock", "aliquot", "-h"])
+    long = CliRunner().invoke(app, ["stock", "aliquot", "--help"])
+    assert short.exit_code == 0, short.output
+    assert long.exit_code == 0, long.output
+    assert short.output == long.output
+    text = " ".join(short.output.split())
+    assert "STOCK AMOUNT UNIT" in text
+    assert "AMOUNT" in text and "UNIT" in text
+    assert "tm aliquot add" in text

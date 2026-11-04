@@ -70,6 +70,14 @@ tm aliquot add 1226FP01 --count 3 \
 tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03 C3"
 ```
 
+When every new tube has the same known amount, the equivalent one-liner is:
+
+```sh
+tm stock aliquot 1226FP01 500 ul --count 3 --box WFL-12-02 --slot B1 --slot B2 --slot B3
+```
+
+The two forms are the same write (one `add(aliquot): 1226FP01 x3` commit).
+
 The slots are consumed in the order given; one slot per new aliquot. A move keeps the aliquot's
 status and quantity and records a `move` event with the old and new positions. It requires
 `-m/--message` too: say why the tube moved.

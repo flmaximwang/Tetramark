@@ -8,6 +8,7 @@ from typing import Any
 import typer
 from rich.console import Console
 
+from tetramark.cli.aliquot import run_add_aliquots
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import stock_add_message
 from tetramark.cli.objects_common import emit_write
@@ -99,6 +100,55 @@ def add_stock_form_command(
 ) -> None:
     """Interactively create a stock (for people; agents use 'add')."""
     run_add_form_command(ctx, "stock", as_json=as_json)
+
+
+@stock_app.command("aliquot")
+@write_command
+def aliquot_stock_command(
+    ctx: typer.Context,
+    stock: str = typer.Argument(..., help="Stock id or alias."),
+    amount: str = typer.Argument(
+        ...,
+        help="Quantity of each new aliquot (decimal); it comes with UNIT.",
+    ),
+    unit: str = typer.Argument(..., help="Unit of AMOUNT."),
+    count: int = typer.Option(1, "--count", "-n", help="How many aliquots to add."),
+    box: str | None = typer.Option(
+        None, "--box", "-b", help="Box name (or id/alias) to place aliquots in."
+    ),
+    slot: list[str] = typer.Option(
+        [], "--slot", help="Slot per aliquot, in order; repeat for several."
+    ),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Status at creation: any status of the stock kind's set (creation "
+            "is not a transition). Default: stored when --box is given, else "
+            "pending (or the set's first in-stock status)."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the created objects as JSON."),
+) -> None:
+    """Add aliquots of AMOUNT UNIT each to an existing stock.
+
+    `tm stock aliquot STOCK AMOUNT UNIT [opts]` is exactly
+    `tm aliquot add STOCK --quantity AMOUNT --unit UNIT [opts]`: AMOUNT is the
+    quantity of each new tube and --count still sets how many tubes to add.
+    Both commands share one write, so the output, the Dolt commit and the exit
+    codes are identical.
+    """
+    run_add_aliquots(
+        ctx,
+        stock,
+        count=count,
+        box=box,
+        slots=slot,
+        quantity=amount,
+        unit=unit,
+        status=status,
+        as_json=as_json,
+    )
 
 
 @stock_app.command("show")

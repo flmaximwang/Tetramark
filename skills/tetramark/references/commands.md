@@ -215,6 +215,7 @@ tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm stock list [KIND] [--where FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 tm stock purge ID|ALIAS [--json]
+tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...] [--json]
 ```
 
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
@@ -222,6 +223,12 @@ tm stock purge ID|ALIAS [--json]
   §1.1); the default is `stored`.
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
+- `stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]` is
+  positional sugar for `tm aliquot add STOCK --quantity AMOUNT --unit UNIT`: `AMOUNT` is the
+  quantity of **each** new tube and both positionals are required (the core rejects a unit
+  without a quantity, so the amount and its unit always come together). Output, JSON, the single
+  `add(aliquot): <stock_id> x<N>` commit and the exit codes are the same as `aliquot add` (see
+  **Aliquots** below).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
   owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),

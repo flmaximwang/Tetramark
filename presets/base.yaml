@@ -75,24 +75,21 @@ kinds:
 
   shelf:
     object: box
-    description: A freezer shelf; holds up to twelve racks or boxes and has no slots.
+    description: A freezer shelf; racks or boxes sit on it directly and it has no slots.
     geometry:
       type: slotless
-      capacity: 12
 
   freezer:
     object: box
-    description: A freezer; holds up to six shelves and has no slots.
+    description: A freezer; shelves, racks or boxes sit in it directly and it has no slots.
     geometry:
       type: slotless
-      capacity: 6
 
   drawer:
     object: box
-    description: A single-container drawer; holds one box or rack and has no slots.
+    description: A drawer; boxes or racks sit in it directly and it has no slots.
     geometry:
       type: slotless
-      capacity: 1
 
   incubator:
     object: box

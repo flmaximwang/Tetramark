@@ -109,6 +109,45 @@ def _use_line(result: dict[str, Any]) -> str:
     )
 
 
+def run_add_aliquots(
+    ctx: typer.Context,
+    stock: str,
+    *,
+    count: int,
+    box: str | None,
+    slots: list[str],
+    quantity: str | None,
+    unit: str | None,
+    status: str | None,
+    as_json: bool,
+) -> None:
+    """The one write behind ``tm aliquot add`` and ``tm stock aliquot``.
+
+    Both commands are CLI sugar over ``ledger.aliquots.add``; sharing this body
+    is what keeps their human line, JSON, Dolt commit and exit codes identical.
+    The caller holds the ledger's write lock through ``@write_command``.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.aliquots.add(
+            stock,
+            count=count,
+            box=box,
+            slots=slots,
+            quantity=quantity,
+            unit=unit,
+            status=status,
+        )
+        emit_write(
+            ledger,
+            result,
+            aliquots_add_message(result),
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()
+
+
 @aliquot_app.command("add")
 @write_command
 def add_aliquots_command(
@@ -137,25 +176,17 @@ def add_aliquots_command(
     as_json: bool = typer.Option(False, "--json", help="Print the created objects as JSON."),
 ) -> None:
     """Add aliquots to an existing stock."""
-    ledger = resolve_ledger(ctx)
-    try:
-        result = ledger.aliquots.add(
-            stock,
-            count=count,
-            box=box,
-            slots=slot,
-            quantity=quantity,
-            unit=unit,
-            status=status,
-        )
-        emit_write(
-            ledger,
-            result,
-            aliquots_add_message(result),
-            as_json=json_output(ctx, as_json),
-        )
-    finally:
-        ledger.close()
+    run_add_aliquots(
+        ctx,
+        stock,
+        count=count,
+        box=box,
+        slots=slot,
+        quantity=quantity,
+        unit=unit,
+        status=status,
+        as_json=as_json,
+    )
 
 
 @aliquot_app.command("add-form")

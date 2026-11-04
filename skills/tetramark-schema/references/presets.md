@@ -46,9 +46,9 @@ organism line kinds in `animal_biosample.entity_kinds`, so it is loaded only wit
 | `grid9x9` | box | Rows `A-J` excluding `I`, columns `1-9` → 81 slots. |
 | `grid8x12` | box | Rows `A-H`, columns `1-12` → 96 slots (was `grid96` before base v4; spec 5 renamed it). |
 | `rack` | box | Named slots `1` … `10`. |
-| `shelf` | box | Slotless, capacity 12. |
-| `freezer` | box | Slotless, capacity 6. |
-| `drawer` | box | Slotless, capacity 1. |
+| `shelf` | box | Slotless, unbounded. |
+| `freezer` | box | Slotless, unbounded. |
+| `drawer` | box | Slotless, unbounded. |
 | `incubator` | box | Slotless, unbounded. |
 
 `named_fields` is the reusable entity identity: `name` (string, required, unique, 255) and
