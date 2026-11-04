@@ -28,6 +28,7 @@ from tetramark.cli.app import app
 from tetramark.errors import LedgerError
 from tetramark.schema.loader import load_schema
 from tetramark.schema.model import (
+    FIXED_STATUSES,
     FieldType,
     LedgerConfig,
     ObjectType,
@@ -102,12 +103,12 @@ def test_cellbio_is_a_bundle_of_shared_parts() -> None:
 
     schema = load_repo_preset("cellbio")
     assert schema.preset_versions == {
-        "base": 4,
-        "proteins": 2,
-        "nucleic_acids": 2,
-        "cell_culture": 2,
-        "immuno": 1,
-        "viral_vectors": 1,
+        "base": 5,
+        "proteins": 3,
+        "nucleic_acids": 3,
+        "cell_culture": 3,
+        "immuno": 2,
+        "viral_vectors": 2,
         "cellbio": 1,
     }
     assert NEW_KINDS <= set(schema.kinds)
@@ -152,12 +153,9 @@ def test_immuno_follows_the_design() -> None:
     lot = schema.kinds["antibody_lot"]
     assert lot.object is ObjectType.stock
     assert lot.entity_kinds == ["antibody"]
-    assert schema.statuses_for("antibody_lot") == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-    ]
+    # Spec 6: the lot's own ``tube`` set is gone; every aliquot uses the
+    # fixed status set.
+    assert schema.statuses_for("antibody_lot") == list(FIXED_STATUSES)
     assert set(lot.fields) == {
         "supplier",
         "catalog_no",
@@ -200,36 +198,28 @@ def test_viral_vectors_follow_the_design() -> None:
     prep = schema.kinds["virus_prep"]
     assert prep.object is ObjectType.stock
     assert prep.entity_kinds == ["virus"]
-    assert schema.statuses_for("virus_prep") == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-    ]
+    assert schema.statuses_for("virus_prep") == list(FIXED_STATUSES)
     assert set(prep.fields) == {"titer", "titer_unit", "made_on", "made_by"}
     assert prep.fields["titer_unit"].values == ["vg_ml", "tu_ml", "pfu_ml"]
     assert {"VIR01"} <= {rule.id for rule in schema.rules}
 
 
 def test_cell_culture_v2_adds_the_vial_extras_and_cell_biosample() -> None:
-    """Ticket 28: cell_culture 1 -> 2 content, ``statuses: cryo`` unchanged."""
+    """Ticket 28: cell_culture 1 -> 2 content (the extras and the biosample)."""
     schema = load_repo_preset("cellbio")
     vial = schema.kinds["cell_vial"]
     assert {"selection", "mycoplasma", "mycoplasma_tested_on"} <= set(vial.fields)
     mycoplasma = vial.fields["mycoplasma"]
     assert mycoplasma.values == ["not_tested", "negative", "positive"]
     assert mycoplasma.default == "not_tested"
-    assert schema.statuses_for("cell_vial") == ["stored", "missing", "thawed"]
+    # Spec 6: the cryo set is gone - a vial is stored in the freezer and
+    # consumed once it is thawed, like every other aliquot.
+    assert schema.statuses_for("cell_vial") == list(FIXED_STATUSES)
 
     biosample = schema.kinds["cell_biosample"]
     assert biosample.object is ObjectType.stock
     assert biosample.entity_kinds == ["cell_line"]
-    assert schema.statuses_for("cell_biosample") == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-    ]
+    assert schema.statuses_for("cell_biosample") == list(FIXED_STATUSES)
     assert set(biosample.fields) == {
         "sample_type",
         "tissue",
@@ -312,12 +302,7 @@ kinds:
         "fish_line",
         "mouse_strain",
     ]
-    assert schema.statuses_for("animal_biosample") == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-    ]
+    assert schema.statuses_for("animal_biosample") == list(FIXED_STATUSES)
     assert set(biosample.fields) == {
         "sample_type",
         "tissue",

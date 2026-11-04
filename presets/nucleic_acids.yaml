@@ -1,5 +1,5 @@
 preset: nucleic_acids
-version: 2
+version: 3
 description: >-
   Nucleic-acid designs and the tubes that hold them: plasmids and their
   preparations, plus synthetic oligos and their stock tubes. Included by the
@@ -8,7 +8,7 @@ description: >-
 # proteins is included because ``plasmid.construct`` points at a
 # ``protein_construct`` (and its ``sequence_fields`` mixin supplies the shared
 # sequence/length fields); the include runs proteins -> base, so this part also
-# reaches the base kinds and status sets it uses.
+# reaches the base kinds it uses.
 include: [base, proteins]
 
 kinds:
@@ -47,7 +47,6 @@ kinds:
 
   plasmid_prep:
     object: stock
-    statuses: tube
     description: A plasmid DNA preparation made from a bacterial culture.
     entity_kinds: [plasmid]
     fields:
@@ -124,7 +123,6 @@ kinds:
 
   oligo_stock:
     object: stock
-    statuses: tube
     description: >-
       A physical tube of a synthesized oligo, with its resuspension
       concentration and solvent. Adapted from BioManager (MIT).

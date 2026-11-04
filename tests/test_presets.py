@@ -33,11 +33,14 @@ from tetramark.schema.loader import (
     resolve_preset_spec,
 )
 from tetramark.schema.model import (
+    FIXED_STATUS_SET,
+    FIXED_STATUSES,
     FieldType,
     GeometryType,
     LedgerConfig,
     ObjectType,
     SchemaError,
+    StatusModel,
 )
 
 from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
@@ -67,27 +70,30 @@ PARTS = (
 #: The parts whose ``include:`` closure loads without any organism part.
 LOADABLE_PARTS = tuple(part for part in PARTS if part != "biosamples")
 
-#: Current preset versions: base 4 (the grid96 -> grid8x12 rename, ticket 30),
-#: molbio 3 (a bundle of parts, ticket 27), cellbio 1 (ticket 28),
-#: cell_culture 2 (cell_vial extras and cell_biosample, ticket 28), proteins 2
-#: and nucleic_acids 2 (IUPAC sequence patterns, ticket rq9), the other parts
-#: at 1 and library 2 (spec 4 status sets, ticket 25).
+#: Current preset versions.  Tetramark-epn.4 dropped the status vocabulary from
+#: every part that declared one, so those parts are one version further on:
+#: base 5 (the grid96 -> grid8x12 rename of v4 plus the spec-6 status change),
+#: library 3, nucleic_acids 3, proteins 3, cell_culture 3, bacteria 2, immuno 2,
+#: viral_vectors 2, biosamples 2, drosophila 2, c_elegans 2, zebrafish 2 and
+#: mouse 2.  The bundles keep their versions (molbio 3, a bundle of parts,
+#: ticket 27; cellbio 1, ticket 28; angenet 1) because their ``include:`` lists
+#: did not change.
 EXPECTED_VERSIONS = {
-    "base": 4,
+    "base": 5,
     "molbio": 3,
-    "library": 2,
+    "library": 3,
     "cellbio": 1,
-    "nucleic_acids": 2,
-    "bacteria": 1,
-    "proteins": 2,
-    "cell_culture": 2,
-    "immuno": 1,
-    "viral_vectors": 1,
-    "biosamples": 1,
-    "drosophila": 1,
-    "c_elegans": 1,
-    "zebrafish": 1,
-    "mouse": 1,
+    "nucleic_acids": 3,
+    "bacteria": 2,
+    "proteins": 3,
+    "cell_culture": 3,
+    "immuno": 2,
+    "viral_vectors": 2,
+    "biosamples": 2,
+    "drosophila": 2,
+    "c_elegans": 2,
+    "zebrafish": 2,
+    "mouse": 2,
     "angenet": 1,
 }
 
@@ -182,22 +188,22 @@ PART_KINDS = {
 
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
 MOLBIO_VERSIONS = {
-    "base": 4,
-    "proteins": 2,
-    "nucleic_acids": 2,
-    "bacteria": 1,
-    "cell_culture": 2,
+    "base": 5,
+    "proteins": 3,
+    "nucleic_acids": 3,
+    "bacteria": 2,
+    "cell_culture": 3,
     "molbio": 3,
 }
 
 #: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
 CELLBIO_VERSIONS = {
-    "base": 4,
-    "proteins": 2,
-    "nucleic_acids": 2,
-    "cell_culture": 2,
-    "immuno": 1,
-    "viral_vectors": 1,
+    "base": 5,
+    "proteins": 3,
+    "nucleic_acids": 3,
+    "cell_culture": 3,
+    "immuno": 2,
+    "viral_vectors": 2,
     "cellbio": 1,
 }
 
@@ -319,9 +325,9 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
 
     assert set(schema.kinds) == EXPECTED_KINDS[name]
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
-    # A bundle owns no kinds, rules or status sets of its own; its parts do.
+    # A bundle owns no kinds or rules of its own; its parts do.
     if name != "base":
-        assert schema.preset_versions["base"] == 4
+        assert schema.preset_versions["base"] == 5
     if name in ("molbio", "cellbio", "angenet"):
         document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
         for key in ("kinds", "mixins", "rules", "status_sets"):
@@ -366,13 +372,36 @@ def test_part_loads_with_its_kinds_version_and_owner_rules(name: str) -> None:
 
     assert set(schema.kinds) == PART_KINDS[name]
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
-    assert schema.preset_versions["base"] == 4
+    assert schema.preset_versions["base"] == 5
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
     # Each part's description says what it covers and which bundles include it.
     document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
     description = document["description"]
     assert "Included by the" in description
     assert description.strip().endswith("Adapted from BioManager (MIT).")
+
+
+def test_no_shipped_preset_declares_a_status_vocabulary() -> None:
+    """Spec 6: the repository presets are the fixed model, with no exceptions.
+
+    A preset that still carried a ``status_sets:`` block or a ``statuses:``
+    key would put the whole closure back into the legacy model, so none of
+    them may.
+    """
+    for name in EXPECTED_VERSIONS:
+        document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
+        assert "status_sets" not in document, name
+        for kind_name, kind in (document.get("kinds") or {}).items():
+            assert "statuses" not in kind, (name, kind_name)
+
+    # ... and the closure of every bundle loads with the fixed model.
+    for name in BUNDLED:
+        schema = load_repo_preset(name)
+        assert schema.status_model is StatusModel.fixed, name
+        assert schema.status_sets == {}, name
+        for kind_name, kind in schema.kinds.items():
+            if kind.object is ObjectType.stock:
+                assert schema.status_set(kind_name) is FIXED_STATUS_SET, kind_name
 
 
 def test_oligo_and_oligo_stock_follow_the_design() -> None:
@@ -411,12 +440,9 @@ def test_oligo_and_oligo_stock_follow_the_design() -> None:
     stock = schema.kinds["oligo_stock"]
     assert stock.object is ObjectType.stock
     assert stock.entity_kinds == ["oligo"]
-    assert schema.statuses_for("oligo_stock") == [
-        "pending",
-        "stored",
-        "missing",
-        "consumed",
-    ]
+    # Spec 6: the tube's own status set is gone; every aliquot uses the fixed
+    # set, so an oligo tube has the same four statuses as any other tube.
+    assert schema.statuses_for("oligo_stock") == list(FIXED_STATUSES)
     assert set(stock.fields) == {"concentration_um", "solvent"}
     assert stock.description.strip().endswith("Adapted from BioManager (MIT).")
 
@@ -440,8 +466,8 @@ def test_bundled_sequence_fields_carry_the_iupac_patterns() -> None:
     )["mixins"]
     assert nucleic.kinds["plasmid"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
     assert nucleic.kinds["oligo"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
-    assert proteins.preset_versions["proteins"] == 2
-    assert nucleic.preset_versions["nucleic_acids"] == 2
+    assert proteins.preset_versions["proteins"] == 3
+    assert nucleic.preset_versions["nucleic_acids"] == 3
 
 
 def test_iupac_patterns_validate_rows_in_a_new_ledger(ledger_factory) -> None:
@@ -1144,7 +1170,7 @@ kinds:
     reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
-        assert reopened.schema.preset_versions == {"base": 4, "custom": 1}
+        assert reopened.schema.preset_versions == {"base": 5, "custom": 1}
     finally:
         reopened.close()
 

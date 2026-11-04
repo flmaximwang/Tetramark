@@ -1,8 +1,10 @@
 # Presets: parts and bundles
 
 A **part** is an ordinary preset file in this directory (`presets/<name>.yaml`): it has its own
-`version:`, `kinds:`, `mixins:`, `rules:` and `status_sets:`, and it includes only the parts it
-references. A **bundle** is a preset whose only content is `include:`; it adds no kinds and no rules.
+`version:`, `kinds:`, `mixins:` and `rules:`, and it includes only the parts it references. A
+**bundle** is a preset whose only content is `include:`; it adds no kinds and no rules.
+No part and no bundle declares a status vocabulary: every aliquot uses the one fixed status set
+(`pending`, `stored`, `missing`, `consumed`) of `docs/spec/01-concepts.md` §1.1.
 Includes are loaded **once each** (`schema/loader.py`), so two bundles can share a part and one
 ledger can list two bundles (`presets: [molbio, cellbio]`) without duplicate-kind errors. Kind names
 stay one global namespace.
@@ -12,20 +14,20 @@ stay one global namespace.
 
 ## The catalogue
 
-| part | kinds | molbio | cellbio | angenet |
-|---|---|:-:|:-:|:-:|
-| `base` | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator; status sets `tube`, `cryo`, `animal` | ✓ | ✓ | ✓ |
-| `nucleic_acids` | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
-| `bacteria` | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
-| `proteins` | protein_construct, protein_prep | ✓ | ✓ | ✓ |
-| `cell_culture` | cell_line, cell_vial, cell_pellet, cell_biosample | ✓ | ✓ | |
-| `immuno` | antibody, antibody_lot | | ✓ | |
-| `viral_vectors` | virus, virus_prep | | ✓ | |
-| `biosamples` | animal_biosample (the angenet side; cell samples are `cell_biosample` in `cell_culture`) | | | ✓ |
-| `drosophila` | fly_line; fly_culture; status set `fly` | | | ✓ |
-| `c_elegans` | worm_strain; worm_culture, worm_cryo; status set `worm` | | | ✓ |
-| `zebrafish` | fish_line; fish_group, fish_clutch, fish_sperm_cryo | | | ✓ |
-| `mouse` | mouse_strain; mouse_cohort, mouse_sperm_cryo, mouse_embryo_cryo; box kind `cage` (slotless, capacity 5) | | | ✓ |
+| part | version | kinds | molbio | cellbio | angenet |
+|---|---|:-:|:-:|:-:|:-:|
+| `base` | 5 | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator | ✓ | ✓ | ✓ |
+| `nucleic_acids` | 3 | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
+| `bacteria` | 2 | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
+| `proteins` | 3 | protein_construct, protein_prep | ✓ | ✓ | ✓ |
+| `cell_culture` | 3 | cell_line, cell_vial, cell_pellet, cell_biosample | ✓ | ✓ | |
+| `immuno` | 2 | antibody, antibody_lot | | ✓ | |
+| `viral_vectors` | 2 | virus, virus_prep | | ✓ | |
+| `biosamples` | 2 | animal_biosample (the angenet side; cell samples are `cell_biosample` in `cell_culture`) | | | ✓ |
+| `drosophila` | 2 | fly_line; fly_culture (with the optional `fate` property) | | | ✓ |
+| `c_elegans` | 2 | worm_strain; worm_culture (with the optional `condition` property), worm_cryo | | | ✓ |
+| `zebrafish` | 2 | fish_line; fish_group, fish_clutch (with the optional `fate` property), fish_sperm_cryo | | | ✓ |
+| `mouse` | 2 | mouse_strain; mouse_cohort (with the optional `fate` property), mouse_sperm_cryo, mouse_embryo_cryo; box kind `cage` (slotless, capacity 5) | | | ✓ |
 
 The bundles:
 
@@ -37,22 +39,31 @@ The bundles:
   `biosamples` is listed because it names the organism line kinds, and only this union loads them
   all. The four organism parts follow the organism model in `docs/spec/08-presets.md`.
 
+A bundle's own version counts only its `include:` list, so a bundle that keeps the same parts keeps
+its version; every part it includes carries its own counter (the table above). A `molbio` ledger at
+version 3 therefore records `base: 5`, `proteins: 3`, `nucleic_acids: 3`, `bacteria: 2`,
+`cell_culture: 3` and `molbio: 3` in `ledger_meta.preset_versions`.
+
 Each part's `description:` says what it covers and which bundles include it. New parts start at
 `version: 1` and grow through `migration/presets/<name>/N-to-N+1/`, never by editing a shipped
 version in place. Every part that adds kinds adapted from [BioManager](https://github.com/gaspolymerase/biomanager)
 (MIT) ends its description with "Adapted from BioManager (MIT)." and its new kinds do the same.
 
-`base` is at **version 4**: v4 renames the `grid96` box kind to `grid8x12` (same A–H × 1–12
-geometry), because spec 5 drops the per-kind `v_box_<kind>` views and names one generated view after
-each box instead, so the kind name no longer has to be a view name (`v_box_grid96` was one).
-A base-3 ledger moves to 4 with
+`base` is at **version 5**: v5 drops the `status_sets:` block (`tube`, `cryo`, `animal`) and the
+per-kind `statuses:` key, because spec 6 gives every aliquot the one fixed status set
+(`pending`, `stored`, `missing`, `consumed`) — see `docs/spec/01-concepts.md` §1.1. v4 renamed the
+`grid96` box kind to `grid8x12` (same A–H × 1–12 geometry), because spec 5 drops the per-kind
+`v_box_<kind>` views and names one generated view after each box instead, so the kind name no
+longer has to be a view name (`v_box_grid96` was one).
+A base-4 ledger moves to 5 with `migration/presets/base/4-to-5/`. A base-3 ledger moves to 4 with
 `migration/presets/base/3-to-4/`; that step runs **after** `migration/spec/4-to-5/` and after the
 older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) — it renames the base
 v3 copies those steps install. A spec-4/base-2 ledger (e.g. molbio-2) follows: `spec/4-to-5`, then
 `base/2-to-3` and `molbio/2-to-3`, then `base/3-to-4`.
 
-`proteins` and `nucleic_acids` are at **version 2**: the bundled sequence fields validate their
-alphabet (ticket rq9). `sequence_fields.sequence` and `oligo.sequence` take IUPAC nucleotide codes
+`proteins` and `nucleic_acids` are at **version 3**: v3 drops their `statuses:` key, so their
+aliquots use the fixed status set like every other tube. v2 made the bundled sequence fields
+validate their alphabet (ticket rq9). `sequence_fields.sequence` and `oligo.sequence` take IUPAC nucleotide codes
 (`[ACGTURYKMSWBDHVN]+`), and `protein_construct.mature_sequence` takes IUPAC amino-acid codes
 (`[ACDEFGHIKLMNPQRSTVWYXBZUO*]+`). Patterns are validation-only, so the steps
 `migration/presets/proteins/1-to-2/` and then `migration/presets/nucleic_acids/1-to-2/` change no
@@ -66,8 +77,8 @@ base 4, and the nucleic step requires proteins already at 2. They run **after**
 base
 ├── immuno                 (antibody, antibody_lot)
 ├── biosamples             (animal_biosample; loaded with the organism parts, not by include)
-├── drosophila             (fly_line, fly_culture; status set fly)
-├── c_elegans              (worm_strain, worm_culture, worm_cryo; status set worm)
+├── drosophila             (fly_line, fly_culture)
+├── c_elegans              (worm_strain, worm_culture, worm_cryo)
 ├── zebrafish              (fish_line, fish_group, fish_clutch, fish_sperm_cryo)
 ├── mouse                  (mouse_strain, mouse_cohort, mouse_sperm_cryo,
 │                           mouse_embryo_cryo; box cage)
@@ -95,9 +106,9 @@ base
   `cellbio`, `molbio` or any other bundle, and do not `tm presets show biosamples` on its own.
 - **A part includes only base when it references nothing else.** The organism parts name the core
   `aliquot` table in their `dam`/`sire` refs (core objects need no include) and use `named_fields`
-  and the status sets from `base`; `cage` lives in `mouse`, because no other part uses it. Set names
-  are global, so `fly` and `worm` are declared in their own parts while `animal` and `cryo` stay in
-  `base` (shared by zebrafish/mouse and by every frozen stock).
+  from `base`; `cage` lives in `mouse`, because no other part uses it. No part declares a status
+  set: the status vocabulary is the core's one fixed set (spec §1.1), so there is nothing to share
+  and nothing to keep in step between parts.
 
 ## The biosamples split (ticket 28)
 
@@ -108,12 +119,12 @@ loaded is a load error (`kinds.<kind>.entity_kinds: '<name>' is not an entity ki
 `entity_kinds_optional` switch. Ticket 28 therefore chose the option that needs **no core change**
 (design §2.1, option (a)) and split the model by the entities it references:
 
-- **`cell_biosample`** lives in `cell_culture` (`entity_kinds: [cell_line]`, `statuses: tube`), so
+- **`cell_biosample`** lives in `cell_culture` (`entity_kinds: [cell_line]`), so
   `molbio` and `cellbio` get a cell-side biosample through the part that already defines the cell
   kinds. Fields: `sample_type` (tissue/blood/dna/rna/serum/other), `tissue`, `collected_on`,
   `storage_temp_c`.
-- **`animal_biosample`** lives in `biosamples` (`entity_kinds` = the four organism line kinds,
-  `statuses: tube`) and is used by `angenet` only. Same four fields.
+- **`animal_biosample`** lives in `biosamples` (`entity_kinds` = the four organism line kinds) and
+  is used by `angenet` only. Same four fields.
 
 A sample's **origin is the core stock column** `source_aliquot_id`, exposed as
 `tm stock add KIND --entity E --source-aliquot ALQ` — not a schema field. `tm lineage` follows it
@@ -135,8 +146,13 @@ The model is the one in `docs/spec/08-presets.md`, and it needs no core change:
   (`incubator`, `rack`, `shelf`, or the mouse `cage`);
 - a **cross is its progeny stock**: `fly_culture`/`fish_group`/`fish_clutch`/`mouse_cohort` carry
   `dam` and `sire` refs to **aliquots** (a mouse or a virgins vial), both `lineage: true`;
-- **statuses come from the stock kind**: `fly` (alive/crossed/discarded/lost), `worm`
-  (growing/starved/contaminated/discarded), `animal` and `cryo` from `base`.
+- **every aliquot uses the same fixed status set** (`pending`, `stored`, `missing`, `consumed`,
+  spec §1.1): a plate, a vial, a tank and a frozen cryo stock are no different. The detailed life
+  state is a **stock property** instead: `fate` on the mouse cohort and the fish group/clutch
+  (euthanized, found_dead, transferred, cancelled), `fate` on the fly culture (discarded, lost) and
+  `condition` on the worm culture (growing, starved, contaminated). All three are optional, and a
+  frozen vial has no life-state property at all — it is `stored` in the freezer and `consumed`
+  once it is thawed.
 
 ### Recipe: register a litter, then split it at genotyping
 
@@ -152,9 +168,9 @@ ledger with `--id-prefix 77`); substitute the ones `tm` prints.
 tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J --alias b6j
 tm box add cage MC-01
 tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
-  --quantity 1 --unit mouse --box MC-01 --status alive
+  --quantity 1 --unit mouse --box MC-01
 tm stock add mouse_cohort --entity b6j --set sex=m --set birth_on=2026-05-01 \
-  --quantity 1 --unit mouse --box MC-01 --status alive
+  --quantity 1 --unit mouse --box MC-01
 
 # The litter: one stock with genotype NULL (omit --set genotype) and one group
 # aliquot of 7 pups, whose parents are the two breeder aliquots.
@@ -171,8 +187,10 @@ tm stock add mouse_cohort --entity b6j --parent 7726KU03 --box MC-04 --aliquots 
   --quantity 1 --unit mouse --set genotype=Apobec-/- --set sex=m \
   --set birth_on=2026-07-01
 
-# The litter aliquot is done, and the pedigree is one command away.
-tm aliquot status 7726KU03.1 euthanized
+# The litter aliquot is done (a fixed status) and the detail is a stock
+# property, not a status.  The pedigree is one command away.
+tm aliquot status 7726KU03.1 consumed
+tm stock edit 7726KU03 --set fate=euthanized
 tm lineage 7726KU04 --up        # pup stock -> litter -> dam + sire aliquots -> breeders
 tm lineage <strain_id> --down   # strain -> breeders -> litter -> the split stocks
 ```
@@ -190,8 +208,9 @@ even though a stock has one `parent_stock_id` column.
 - A **stock kind** is one physical form of it: `plasmid_prep` (DNA in a tube), `oligo_stock` (a
   resuspended primer), `bacterial_glycerol` (frozen cells), `cell_vial` (frozen cells of a line),
   `cell_pellet` (harvested cells), `antibody_lot` (a vial of one lot), `virus_prep` (one production
-  batch), `cell_biosample`/`animal_biosample` (material taken from a line). Every stock kind sets
-  `statuses:` (spec §2.4) and names the `entity_kinds:` it can hold; the aliquots are the tubes.
+  batch), `cell_biosample`/`animal_biosample` (material taken from a line). Every stock kind names
+  the `entity_kinds:` it can hold; the aliquots are the tubes and they all use the one fixed status
+  set (spec §2.4).
 
 The sugars in the names are deliberate: `bacterial_glycerol`, not `bacterial`; `plasmid_prep`, not
 `plasmid`; `antibody_lot`, not `antibody`. A short kind name must never be mistaken for the old
@@ -208,8 +227,10 @@ zsqlab table or the entity.
    are two kinds (see above).
 3. Give every kind and field a `description:`; end new BioManager-adapted kinds with
    "Adapted from BioManager (MIT).".
-4. Give every **stock** kind `statuses:` (a name from `base`'s sets or an inline set) and
-   `entity_kinds:`; entity and box kinds get neither.
+4. Give every **stock** kind its `entity_kinds:` (entity and box kinds get none). A stock kind
+   declares **no** status vocabulary: every aliquot uses the fixed status set of spec §1.1, and a
+   detailed life state is an optional enum stock property (`fate`, `condition`) or an event
+   message.
 5. Move the rules that query the part's tables into the same part, keeping their ids
    (`MB01`, `IMM01`, `VIR01`, …).
 6. Add the part to every bundle that should load it (`include:`), and add a line to the table above.

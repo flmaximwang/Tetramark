@@ -74,6 +74,22 @@ MOLBIO_V2 = ROOT / "migration" / "presets" / "molbio" / "1-to-2" / "molbio-2.yam
 #: the closure to base 3 ships ``base-3.yaml`` next to its ``migrate.py``.
 MOLBIO_V3 = REPO_PRESETS / "molbio.yaml"
 BASE_V3 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-3.yaml"
+#: The last legacy base (v4: ``status_sets`` tube/cryo/animal and the per-kind
+#: ``statuses:`` keys).  Tetramark-epn.4 made the repository copy the spec-6
+#: fixed model, so the pre-spec-4 fixtures start from this frozen copy - the
+#: content the repository shipped before that bump.
+LEGACY_BASE_V4 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-4.yaml"
+#: The frozen bacteria v1 and library v2 the old preset steps keep installing
+#: after Tetramark-epn.4 bumped those parts (the repository copies are v2/v3).
+FROZEN_BACTERIA_1 = (
+    ROOT / "migration" / "presets" / "molbio" / "2-to-3" / "bacteria-1.yaml"
+)
+FROZEN_LIBRARY_2 = (
+    ROOT / "migration" / "presets" / "library" / "1-to-2" / "library-2.yaml"
+)
+FROZEN_CELL_CULTURE_2 = (
+    ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "cell_culture-2.yaml"
+)
 PARTS_V3 = ("proteins", "nucleic_acids", "bacteria", "cell_culture")
 
 
@@ -1873,7 +1889,7 @@ def spec2_ledger(factory, *, populated: bool):
     ``dolt_tests`` is emptied as well, so the step's regenerated tests are
     visibly restored.
     """
-    ledger = factory([REPO_PRESETS / "base.yaml"], name="spec2", id_prefix="77")
+    ledger = factory([LEGACY_BASE_V4], name="spec2", id_prefix="77")
     item = ledger.entities.add("item", name="alpha")
     stock = ledger.stocks.add(
         "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=2
@@ -2044,7 +2060,7 @@ def spec3_ledger(factory, *, statuses: list[str] | None = None):
     The old views are dropped (the step recreates every generated view) and the
     spec-3 status CHECK is put back so the step has something to drop.
     """
-    ledger = factory([REPO_PRESETS / "base.yaml"], name="spec3", id_prefix="77")
+    ledger = factory([LEGACY_BASE_V4], name="spec3", id_prefix="77")
     item = ledger.entities.add("item", name="alpha")
     stock = ledger.stocks.add(
         "lot",
@@ -2221,13 +2237,14 @@ def test_base_1_to_2_bumps_the_counter_and_recreates_the_views(
 def write_library_v1_presets(directory: Path) -> Path:
     """Materialise a library-v1 closure on the frozen base v3.
 
-    The repository's ``presets/base.yaml`` is v4 since spec 5 (the
-    ``grid96`` -> ``grid8x12`` rename), so a ledger that reproduces the wave-10
-    content must start from the frozen base v3 copy the preset steps install.
+    The repository's ``presets/base.yaml`` is v5 since Tetramark-epn.4 (spec 6),
+    so a ledger that reproduces the wave-10 content must start from the frozen
+    base v3 copy the preset steps install.  The library copy is the frozen v2
+    the step's own counter stops at (the repository copy is v3).
     """
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(BASE_V3, directory / "base.yaml")
-    shutil.copyfile(REPO_PRESETS / "library.yaml", directory / "library.yaml")
+    shutil.copyfile(FROZEN_LIBRARY_2, directory / "library.yaml")
     return directory / "library.yaml"
 
 
@@ -2357,7 +2374,8 @@ MOLBIO_V3_VERSIONS = {
 }
 
 #: Every preset copy a molbio ledger needs after the step.  ``cell_culture`` is
-#: the frozen v1 (ticket 28 bumped the repository copy to v2), ``proteins`` /
+#: the frozen v1 (ticket 28 bumped the repository copy to v2), ``bacteria`` the
+#: frozen v1 (Tetramark-epn.4 bumped the repository copy to v2), ``proteins`` /
 #: ``nucleic_acids`` are the frozen v1s (ticket rq9 bumped the repository copies
 #: to v2) and ``base`` is the frozen v3 (the repository copy is v4 with the
 #: ``grid96`` -> ``grid8x12`` rename since spec 5); all are compared separately
@@ -2367,7 +2385,7 @@ MOLBIO_V3_FILES = (
     *[
         f"{part}.yaml"
         for part in PARTS_V3
-        if part not in ("cell_culture", "proteins", "nucleic_acids")
+        if part not in ("bacteria", "cell_culture", "proteins", "nucleic_acids")
     ],
 )
 
@@ -2641,6 +2659,11 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
         assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
             CELL_CULTURE_V1.read_bytes()
         )
+        # Tetramark-epn.4 bumps the repository bacteria copy to v2; this step
+        # records bacteria 1, so it ships the frozen v1.
+        assert (reopened.path / "presets" / "bacteria.yaml").read_bytes() == (
+            MOLBIO_2_TO_3_DIR / "bacteria-1.yaml"
+        ).read_bytes()
         # Ticket rq9's parts stay at v1: the step ships their frozen copies.
         assert (reopened.path / "presets" / "proteins.yaml").read_bytes() == (
             MOLBIO_2_TO_3_DIR / "proteins-1.yaml"
@@ -3175,14 +3198,17 @@ PATTERN_V1_VERSIONS = {
 def write_pattern_v1_presets(directory: Path) -> Path:
     """A molbio-v3 closure before ticket rq9 (proteins/nucleic_acids at v1).
 
-    The repository ships proteins 2 / nucleic_acids 2 now, so the ledger's own
+    The repository ships proteins 3 / nucleic_acids 3 now, so the ledger's own
     copies come from the frozen v1 files the retrofit steps place; base is the
-    repository v4 (ticket 30's rename already ran) and the other parts are the
-    current repository content.
+    frozen v4 (ticket 30's rename already ran), bacteria the frozen v1 and
+    cell_culture the frozen v2, the versions the repository shipped before
+    Tetramark-epn.4 bumped them.  ``molbio`` itself is unchanged.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    for name in ("base", "bacteria", "cell_culture", "molbio"):
-        shutil.copyfile(REPO_PRESETS / f"{name}.yaml", directory / f"{name}.yaml")
+    shutil.copyfile(LEGACY_BASE_V4, directory / "base.yaml")
+    shutil.copyfile(FROZEN_BACTERIA_1, directory / "bacteria.yaml")
+    shutil.copyfile(FROZEN_CELL_CULTURE_2, directory / "cell_culture.yaml")
+    shutil.copyfile(REPO_PRESETS / "molbio.yaml", directory / "molbio.yaml")
     shutil.copyfile(FROZEN_PROTEINS_1, directory / "proteins.yaml")
     shutil.copyfile(FROZEN_NUCLEIC_ACIDS_1, directory / "nucleic_acids.yaml")
     return directory / "molbio.yaml"
@@ -3352,9 +3378,11 @@ def test_pattern_presets_1_to_2_migration_chain(
         assert (
             proteins_era.path / "presets" / "nucleic_acids.yaml"
         ).read_bytes() == FROZEN_NUCLEIC_ACIDS_1.read_bytes()
+        # The step places the frozen base v4 it reads (spec 6 made the
+        # repository base the fixed model, so the era copy is the frozen one).
         assert (proteins_era.path / "presets" / "base.yaml").read_bytes() == (
-            REPO_PRESETS / "base.yaml"
-        ).read_bytes()
+            LEGACY_BASE_V4.read_bytes()
+        )
         # One commit with the contract message, tagged at the pre-step commit.
         assert commit_count(proteins_era) == commits_before + 1
         head_after = head(proteins_era)

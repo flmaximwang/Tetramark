@@ -93,6 +93,20 @@ FROZEN_PROTEINS = Path(__file__).with_name("proteins-2.yaml")
 #: part's counter is still 1 here, and its own step owns the bump to 2.
 FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-1.yaml")
 
+#: The frozen bacteria v1 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/bacteria.yaml`` to v2 by dropping
+#: its ``statuses:`` keys; a historical step that places the whole closure and
+#: records the part counters must keep installing the v1 content whose counter
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_BACTERIA = Path(__file__).with_name("bacteria-1.yaml")
+
+#: The frozen base v4 and cell_culture v2 these rq9-era steps read.  Spec 6
+#: (Tetramark-epn.4) makes the repository base the fixed model and bumps
+#: cell_culture to v3, so the steps that place the whole closure keep the
+#: content their era (spec 5, base 4) reads.
+FROZEN_BASE = Path(__file__).with_name("base-4.yaml")
+FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-2.yaml")
+
 
 def _recorded_versions(ledger: Ledger) -> dict[str, int]:
     """The counters recorded in ``ledger_meta`` (not the loaded copies)."""
@@ -233,6 +247,9 @@ def main(argv: list[str] | None = None) -> None:
         {
             PRESET: FROZEN_PROTEINS,
             "nucleic_acids": FROZEN_NUCLEIC_ACIDS,
+            "bacteria": FROZEN_BACTERIA,
+            "base": FROZEN_BASE,
+            "cell_culture": FROZEN_CELL_CULTURE,
         },
     )
     try:

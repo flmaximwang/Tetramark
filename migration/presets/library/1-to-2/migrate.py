@@ -85,6 +85,12 @@ TO_VERSION = 2
 #: content its era reads.  ``migration/README.md`` requires the retrofit.
 FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
 
+#: The frozen library v2 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/library.yaml`` to v3 by dropping its
+#: ``statuses:`` key; this step's counter stops at 2, so it ships the content
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_LIBRARY = Path(__file__).with_name("library-2.yaml")
+
 
 def _require_ready(ledger: Ledger) -> None:
     """The ledger must be spec 5 and carry the v2 base copy this step bumps to."""
@@ -158,7 +164,9 @@ def main(argv: list[str] | None = None) -> None:
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
-    saved += vendor_preset_files(arguments.ledger, {"base": FROZEN_BASE})
+    saved += vendor_preset_files(
+        arguments.ledger, {"base": FROZEN_BASE, "library": FROZEN_LIBRARY}
+    )
     saved += vendor_preset_files(
         arguments.ledger,
         {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},

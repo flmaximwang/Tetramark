@@ -82,6 +82,25 @@ NUCLEOTIDE_PATTERN = "[ACGTURYKMSWBDHVN]+"
 #: what this historical step places).
 FROZEN_NUCLEIC_ACIDS = Path(__file__).with_name("nucleic_acids-2.yaml")
 
+#: The frozen bacteria v1 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/bacteria.yaml`` to v2 by dropping
+#: its ``statuses:`` keys; a historical step that places the whole closure and
+#: records the part counters must keep installing the v1 content whose counter
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_BACTERIA = Path(__file__).with_name("bacteria-1.yaml")
+
+#: The frozen base v4 and cell_culture v2 these rq9-era steps read.  Spec 6
+#: (Tetramark-epn.4) makes the repository base the fixed model and bumps
+#: cell_culture to v3, so the steps that place the whole closure keep the
+#: content their era (spec 5, base 4) reads.
+FROZEN_BASE = Path(__file__).with_name("base-4.yaml")
+FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-2.yaml")
+
+#: The frozen proteins v2 this step requires: it runs after
+#: ``migration/presets/proteins/1-to-2`` (the repository copy is v3 since
+#: Tetramark-epn.4), so it keeps installing the v2 content it reads.
+FROZEN_PROTEINS = Path(__file__).with_name("proteins-2.yaml")
+
 
 def _recorded_versions(ledger: Ledger) -> dict[str, int]:
     """The counters recorded in ``ledger_meta`` (not the loaded copies)."""
@@ -215,7 +234,16 @@ def main(argv: list[str] | None = None) -> None:
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
-    saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_NUCLEIC_ACIDS})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {
+            PRESET: FROZEN_NUCLEIC_ACIDS,
+            "bacteria": FROZEN_BACTERIA,
+            "base": FROZEN_BASE,
+            "cell_culture": FROZEN_CELL_CULTURE,
+            "proteins": FROZEN_PROTEINS,
+        },
+    )
     try:
         run(
             step,

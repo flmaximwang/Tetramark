@@ -706,11 +706,12 @@ def test_aliquot_move_requires_and_records_a_trimmed_message(
 def test_aliquot_move_with_several_in_stock_statuses_needs_status(
     ledger_factory,
 ) -> None:
-    from conftest import REPO_PRESETS
+    # The repository presets are the spec-6 fixed model (one in-stock status),
+    # so a kind with two in-stock statuses only exists in a legacy closure.
+    from conftest import PRESETS
 
     ledger = ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "c_elegans.yaml"],
-        name="worm-statuses",
+        [PRESETS / "legacy"], name="worm-statuses"
     )
     strain = ledger.entities.add("worm_strain", name="N2")
     new_box(ledger, "GRID", "grid9x9")
@@ -1202,9 +1203,9 @@ def test_aliquot_list_status_validation_follows_the_pinned_stock_kind(
     ledger_factory,
 ) -> None:
     """A pinned stock/kind validates against its own set, not the whole ledger."""
-    ledger = ledger_factory(
-        [REPO_PRESETS / "cell_culture.yaml"], name="list-status", id_prefix="77"
-    )
+    # A legacy closure: the fixed model gives every kind the same set, so the
+    # per-kind restriction this test pins only exists in a spec-4/5 preset.
+    ledger = ledger_factory([PRESETS / "legacy"], name="list-status", id_prefix="77")
     entity = ledger.entities.add("cell_line", name="HeLa")
     new_box(ledger, "BOX", "grid8x12")
     vial = ledger.stocks.add("cell_vial", entity=entity["id"], status="missing")
@@ -1232,9 +1233,8 @@ def test_aliquot_list_status_validation_follows_the_pinned_stock_kind(
 
 def test_aliquot_list_scope_covers_every_stock_kind(ledger_factory) -> None:
     """The in-stock scope ORs each kind's set: `alive` counts for an animal."""
-    ledger = ledger_factory(
-        [REPO_PRESETS / "zebrafish.yaml"], name="list-animal", id_prefix="77"
-    )
+    # Legacy per-kind sets again (see the fixed-model note above).
+    ledger = ledger_factory([PRESETS / "legacy"], name="list-animal", id_prefix="77")
     line = ledger.entities.add("fish_line", name="AB")
     ledger.boxes.add("rack", "R-1")
     ledger.boxes.add("freezer", "FR-1")
@@ -1842,11 +1842,11 @@ def test_creation_accepts_any_status_in_the_set(ledger_factory) -> None:
 
 
 def test_cryo_set_uses_stored_on_creation_and_has_no_consumed(ledger_factory) -> None:
-    from conftest import REPO_PRESETS
+    # A legacy ``cryo`` set (no ``pending``, no ``consumed``) - the fixed model
+    # replaced it, so the fixture comes from tests/data/presets/legacy.
+    from conftest import PRESETS
 
-    ledger = ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "molbio.yaml"], name="cryo"
-    )
+    ledger = ledger_factory([PRESETS / "legacy"], name="cryo")
     line = ledger.entities.add("cell_line", name="HEK293T")
     new_box(ledger, "CRYO", "freezer")
     # The cryo set has no ``pending``: creation without a box would default to

@@ -101,6 +101,13 @@ FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
 #: install a later preset version behind its own step's back.
 FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-1.yaml")
 
+#: The frozen bacteria v1 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/bacteria.yaml`` to v2 by dropping
+#: its ``statuses:`` keys; a historical step that places the whole closure and
+#: records the part counters must keep installing the v1 content whose counter
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_BACTERIA = Path(__file__).with_name("bacteria-1.yaml")
+
 
 def _require_ready(ledger: Ledger) -> None:
     """The ledger must be at least spec 5 and carry the v3 base copy this step bumps to."""
@@ -201,7 +208,11 @@ def main(argv: list[str] | None = None) -> None:
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(
         arguments.ledger,
-        {"base": FROZEN_BASE, "cell_culture": FROZEN_CELL_CULTURE},
+        {
+            "base": FROZEN_BASE,
+            "cell_culture": FROZEN_CELL_CULTURE,
+            "bacteria": FROZEN_BACTERIA,
+        },
     )
     saved += vendor_preset_files(
         arguments.ledger,

@@ -1,5 +1,5 @@
 preset: biosamples
-version: 1
+version: 2
 description: >-
   Biosamples taken from animal lines (the angenet bundle): one stock per sample
   with its sample type, tissue, collection date and storage temperature. The
@@ -18,7 +18,6 @@ include: [base]
 kinds:
   animal_biosample:
     object: stock
-    statuses: tube
     description: >-
       A physical sample taken from an animal line - tissue, blood, DNA, RNA,
       serum or other material - kept as an ordinary tube. Its origin is the core

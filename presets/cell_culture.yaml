@@ -1,5 +1,5 @@
 preset: cell_culture
-version: 2
+version: 3
 description: >-
   Eukaryotic cell lines and the material frozen or harvested from them: cryo
   vials, cell pellets (a pellet may also record a transient transfection or
@@ -43,7 +43,6 @@ kinds:
 
   cell_vial:
     object: stock
-    statuses: cryo
     description: >-
       A cryovial of a cell line, with its passage, freezing medium and the
       selection agent and mycoplasma test it was kept under (BioManager's
@@ -85,7 +84,6 @@ kinds:
 
   cell_pellet:
     object: stock
-    statuses: tube
     description: >-
       A harvested cell pellet; a plasmid instead of a cell line records a
       transient-transfection / transduction harvest.
@@ -107,7 +105,6 @@ kinds:
 
   cell_biosample:
     object: stock
-    statuses: tube
     description: >-
       A biosample taken from a cultured cell line: a pellet, DNA/RNA, blood or
       serum sample kept as an ordinary tube. It is the cell-side half of the

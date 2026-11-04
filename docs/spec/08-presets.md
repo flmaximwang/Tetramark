@@ -52,17 +52,22 @@ part/bundle table, the include graph and the rule for adding a part.
 Every stock kind uses the same fixed aliquot status set (§1.1); a preset never declares `statuses:`
 or a status set. Life-cycle detail that used to be a status — an animal's fate, a culture's
 condition — is an optional enum stock property (for example `fate` or `condition`) or an event
-message.
+message. The shipped organism parts carry `fate` (euthanized, found_dead, transferred, cancelled)
+on the mouse cohort and the fish group/clutch, `fate` (discarded, lost) on the fly culture and
+`condition` (growing, starved, contaminated) on the worm culture. Each of them is **optional**: no
+`required:` flag and no default, so a stock that has not recorded the detail simply leaves it NULL.
 
 Preset catalogue:
 
-- `base` (**version 4**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
+- `base` (**version 5**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
   `shelf`/`freezer`/`drawer` (slotless, with a capacity) and `incubator` (slotless, unbounded);
   entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
   received_on, expires_on).
-  Version 4 renames the `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the
-  hand-run step is `migration/presets/base/3-to-4/`.
-- `proteins` (**version 2**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
+  Version 5 drops the `status_sets:` block and the per-kind `statuses:` keys: every aliquot now
+  uses the fixed status set of §1.1, so `base` declares no status vocabulary. Version 4 renamed the
+  `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the hand-run step is
+  `migration/presets/base/3-to-4/`.
+- `proteins` (**version 3**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
   molecular_weight_da, pI, extinction coefficients as computed, tag) and stock `protein_prep`
   (concentration_mg_ml, buffer, purification_id, purity_pct). It also owns the
   `sequence_fields` mixin (sequence + `length_bp`), because it is the deepest part both
@@ -72,40 +77,47 @@ Preset catalogue:
   the ambiguity/stop symbols). Patterns are validation-only — the app checks them after sequence
   normalisation and the generated `dolt_tests` mirror them — so the step
   `migration/presets/proteins/1-to-2/` changes no DDL but makes `tm check` report existing rows
-  outside the alphabet. Included by the `molbio` bundle; `nucleic_acids` includes it because a
-  plasmid points at the protein design it expresses.
-- `nucleic_acids` (**version 2**, includes `base`, `proteins`) — entities `plasmid` (sequence,
+  outside the alphabet. Version 3 drops the `statuses:` key: the prep's aliquots use the fixed
+  status set. Included by the `molbio` bundle; `nucleic_acids` includes it because a plasmid points
+  at the protein design it expresses.
+- `nucleic_acids` (**version 3**, includes `base`, `proteins`) — entities `plasmid` (sequence,
   backbone, resistance, ref `construct` → protein_construct with `lineage: true`) and `oligo`
   (sequence, direction fwd/rev, target, modification, purification, tm_c, `length_nt`/`gc_pct`
   computed from the sequence); stocks `plasmid_prep` (concentration_ng_ul, prep_method,
   elution_buffer) and `oligo_stock` (concentration_um, solvent). Version 2
   (ticket rq9) adds `pattern: [ACGTURYKMSWBDHVN]+` to `oligo.sequence`; its step is
-  `migration/presets/nucleic_acids/1-to-2/`, which requires proteins already at 2. Included by
-  `molbio`, `cellbio` and `angenet`.
-- `bacteria` (**version 1**, includes `base`, `nucleic_acids`) — entity `bacterial_strain` (genotype,
+  `migration/presets/nucleic_acids/1-to-2/`, which requires proteins already at 2. Version 3 drops
+  the `statuses:` keys: the preps and oligo tubes use the fixed status set. Included by `molbio`,
+  `cellbio` and `angenet`.
+- `bacteria` (**version 2**, includes `base`, `nucleic_acids`) — entity `bacterial_strain` (genotype,
   species, source); stocks `bacterial_glycerol` (entity_kinds plasmid|bacterial_strain; strain,
   medium, batch, glycerol_pct **on the stock**) and `bacterial_pellet` (culture volume, OD600,
-  induction; aliquots carry volume via core quantity). Included by `molbio`.
-- `cell_culture` (**version 2**, includes `base`, `nucleic_acids`) — entity `cell_line` (species,
+  induction; aliquots carry volume via core quantity). Version 2 drops the `statuses:` keys: both
+  stocks use the fixed status set. Included by `molbio`.
+- `cell_culture` (**version 3**, includes `base`, `nucleic_acids`) — entity `cell_line` (species,
   cell_type, source, genotype, `parental` ref → cell_line with `lineage: true`); stocks `cell_vial`
   (passage, medium, freezing_medium, cells_per_vial, dmso_pct, and since v2 `selection`, `mycoplasma`
   enum not_tested/negative/positive default not_tested, `mycoplasma_tested_on`),
   `cell_pellet` (cell_count, passage, transfection, harvested_on; a plasmid records a transient
   transfection) and `cell_biosample` (a biosample taken from a cell line; `entity_kinds: [cell_line]`;
   `sample_type` enum tissue/blood/dna/rna/serum/other,
-  tissue, collected_on, storage_temp_c; the origin is the core `source_aliquot_id`). Included by
-  `molbio` and `cellbio`. The v1 → v2 step is `migration/presets/cell_culture/1-to-2/`.
-- `immuno` (**version 1**, includes `base`) — entity `antibody` (`named_fields`; host, clonality enum
+  tissue, collected_on, storage_temp_c; the origin is the core `source_aliquot_id`). Version 3
+  drops the `statuses:` keys — a cryovial is `stored` in the freezer and `consumed` once thawed,
+  like every other aliquot; there is no cryo vocabulary. Included by `molbio` and `cellbio`. The
+  v1 → v2 step is `migration/presets/cell_culture/1-to-2/`.
+- `immuno` (**version 2**, includes `base`) — entity `antibody` (`named_fields`; host, clonality enum
   monoclonal/polyclonal/recombinant, clone, isotype, reactivity, conjugate, applications, rrid) and
   stock `antibody_lot` (supplier, catalog_no, lot_no, concentration_mg_ml, recommended_dilution,
   received_on, expires_on). Rule `IMM01`: a lot cannot expire before it was
-  received. Included by `cellbio`.
-- `viral_vectors` (**version 1**, includes `base`, `nucleic_acids`) — entity `virus` (`named_fields`;
+  received. Version 2 drops the `statuses:` key: the lot uses the fixed status set. Included by
+  `cellbio`.
+- `viral_vectors` (**version 2**, includes `base`, `nucleic_acids`) — entity `virus` (`named_fields`;
   virus_type enum aav/lentivirus/retrovirus/adenovirus/other, serotype, `payload` ref → plasmid
   **without** `lineage: true` — a plain field, not a descent edge, promoter, biosafety_level) and stock
   `virus_prep` (titer, titer_unit enum vg_ml/tu_ml/pfu_ml, made_on, made_by). Rule
-  `VIR01`: a recorded titer is positive. Included by `cellbio`.
-- `biosamples` (**version 1**, includes `base`) — stock `animal_biosample` (`sample_type` enum
+  `VIR01`: a recorded titer is positive. Version 2 drops the `statuses:` key: the prep uses the
+  fixed status set. Included by `cellbio`.
+- `biosamples` (**version 2**, includes `base`) — stock `animal_biosample` (`sample_type` enum
   tissue/blood/dna/rna/serum/other, tissue, collected_on, storage_temp_c; the
   origin is the core `source_aliquot_id`), `entity_kinds` = the organism line kinds
   (`fly_line`, `worm_strain`, `fish_line`, `mouse_strain`). It is the **animal side** of the biosample
@@ -113,7 +125,8 @@ Preset catalogue:
   entity kinds: a stock's `entity_kinds` may name only entity kinds the same ledger loads, and the
   loader refuses any other (`'<name>' is not an entity kind`) — there is no optional switch. The
   **cell side** is `cell_biosample` in `cell_culture`, which is why `cellbio` needs no biosamples
-  part (design §2.1, ticket 28 option (a), no core change).
+  part (design §2.1, ticket 28 option (a), no core change). Version 2 drops the `statuses:` key:
+  the sample uses the fixed status set.
 - `molbio` (a **bundle**, **version 3**) — `include: [base, nucleic_acids, bacteria, proteins,
   cell_culture]`, no kinds or rules of its own. It keeps the name existing ledgers already list,
   and every kind/table name of a molbio ledger is unchanged by the parts split; the new tables of
@@ -127,37 +140,41 @@ Preset catalogue:
   per-stock-kind tube-field schema key entirely, so a molbio-1 ledger is upgraded by
   `migration/presets/molbio/1-to-2/` (and then `migration/spec/2-to-3/`), and a molbio-2 ledger by
   `migration/presets/molbio/2-to-3/` (plus `migration/presets/base/2-to-3/` for base's counter).
-- `library` (**version 2**, includes `base`) — entity `book` (title, authors, isbn pattern, year);
+- `library` (**version 3**, includes `base`) — entity `book` (title, authors, isbn pattern, year);
   stock `copy` (acquired_on, condition enum). Exists to prove generality; used in
-  tests.
+  tests. Version 3 drops the `statuses:` key: the copy uses the fixed status set.
 
 - `cellbio` (a **bundle**, **version 1**) — `include: [base, nucleic_acids, cell_culture, immuno,
   viral_vectors]`, no kinds/mixins/rules of its own. `proteins` arrives through
   `nucleic_acids`; `biosamples` is deliberately absent (it names the organism line kinds of the
   `angenet` parts). One ledger can list `presets: [molbio, cellbio]`: the shared parts load once, and
   the kind set is the union (molbio brings `bacteria`, cellbio brings `immuno`/`viral_vectors`).
-- `drosophila` (**version 1**, includes `base`) — entity `fly_line` (`named_fields`; balancers,
+- `drosophila` (**version 2**, includes `base`) — entity `fly_line` (`named_fields`; balancers,
   stock_centre, stock_number, flybase_id, `parental` ref → fly_line with `lineage: true`); stock
   `fly_culture` (a vial or cross vial with temperature_c, generation, food_type,
-  virgins_collected_on, selection_marker and `dam`/`sire` ref → aliquot with `lineage: true`).
+  virgins_collected_on, selection_marker, the optional `fate` enum (discarded, lost) and
+  `dam`/`sire` ref → aliquot with `lineage: true`).
   Fly detail (crossed, discarded, lost) is a stock property or event message, not a status.
   Included by `angenet`.
-- `c_elegans` (**version 1**, includes `base`) — entity `worm_strain` (`named_fields`; allele,
+- `c_elegans` (**version 2**, includes `base`) — entity `worm_strain` (`named_fields`; allele,
   lab_prefix, wormbase_id, source, `parental` → worm_strain with `lineage: true`); stocks
-  `worm_culture` (a plate with temperature_c, plate_type, generation, stage) and
+  `worm_culture` (a plate with temperature_c, plate_type, generation, stage and the optional
+  `condition` enum (growing, starved, contaminated)) and
   `worm_cryo` (frozen_on, method, recovery_tested_on, recovery_ok). Worm detail (growing, starved,
   contaminated, discarded) is a stock property or event message, not a status. Worm selfers keep a
   single-parent strain lineage, so a culture has no `dam`/`sire`. Included by `angenet`.
-- `zebrafish` (**version 1**, includes `base`) — entity `fish_line` (`named_fields`; zfin_name,
+- `zebrafish` (**version 2**, includes `base`) — entity `fish_line` (`named_fields`; zfin_name,
   allele, background, `parental` → fish_line with `lineage: true`); stocks `fish_group`
   (a tank or a tagged fish with birth_on, sex enum f/m/u, genotype,
-  density_per_l and `dam`/`sire` → aliquot), `fish_clutch` (set_up_on,
-  embryo_count, larvae_count, `dam`/`sire`) and `fish_sperm_cryo` (frozen_on,
-  method, recovery_tested_on, recovery_ok). There is no fish embryo cryo kind. Included by
-  `angenet`.
-- `mouse` (**version 1**, includes `base`) — entity `mouse_strain` (`named_fields`; background,
+  density_per_l, the optional `fate` enum (euthanized, found_dead, transferred, cancelled)
+  and `dam`/`sire` → aliquot), `fish_clutch` (set_up_on,
+  embryo_count, larvae_count, the same optional `fate` enum, `dam`/`sire`) and `fish_sperm_cryo`
+  (frozen_on, method, recovery_tested_on, recovery_ok). There is no fish embryo cryo kind.
+  Included by `angenet`.
+- `mouse` (**version 2**, includes `base`) — entity `mouse_strain` (`named_fields`; background,
   supplier, mgi_id, `parental` → mouse_strain with `lineage: true`); stocks `mouse_cohort`
-  (one individually tracked mouse per stock: birth_on, sex enum f/m/u, genotype and `dam`/`sire` →
+  (one individually tracked mouse per stock: birth_on, sex enum f/m/u, genotype, the optional
+  `fate` enum (euthanized, found_dead, transferred, cancelled) and `dam`/`sire` →
   aliquot), `mouse_sperm_cryo` and `mouse_embryo_cryo` (frozen_on, method,
   recovery_tested_on, recovery_ok; the embryo kind also has `embryo_stage`); box kind `cage`
   (slotless, capacity 5). Included by `angenet`.

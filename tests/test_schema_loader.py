@@ -294,7 +294,14 @@ def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
         "viral_vectors",
         "zebrafish",
     ]
-    assert list_presets(PRESETS) == ["base", "chain", "extras", "fixed", "full"]
+    assert list_presets(PRESETS) == [
+        "base",
+        "chain",
+        "extras",
+        "fixed",
+        "full",
+        "legacy",
+    ]
     with pytest.raises(SchemaError, match="presets directory not found"):
         list_presets(tmp_path / "absent")
 

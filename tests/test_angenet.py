@@ -56,14 +56,14 @@ ORGANISM_PARTS = ("drosophila", "c_elegans", "zebrafish", "mouse")
 #: ``preset_versions`` a ``--preset angenet`` ledger records (loader order: the
 #: parts come before the bundle that lists them, depth first).
 ANGENET_VERSIONS = {
-    "base": 4,
-    "proteins": 2,
-    "nucleic_acids": 2,
-    "biosamples": 1,
-    "drosophila": 1,
-    "c_elegans": 1,
-    "zebrafish": 1,
-    "mouse": 1,
+    "base": 5,
+    "proteins": 3,
+    "nucleic_acids": 3,
+    "biosamples": 2,
+    "drosophila": 2,
+    "c_elegans": 2,
+    "zebrafish": 2,
+    "mouse": 2,
     "angenet": 1,
 }
 
@@ -109,17 +109,15 @@ ANGENET_KINDS = {
     "cage",
 }
 
-FLY_STATUSES = ["alive", "crossed", "discarded", "lost"]
-WORM_STATUSES = ["growing", "starved", "contaminated", "discarded"]
-ANIMAL_STATUSES = [
-    "planned",
-    "alive",
-    "cancelled",
-    "euthanized",
-    "found_dead",
-    "transferred",
-]
-CRYO_STATUSES = ["stored", "missing", "thawed"]
+#: Spec 6: every aliquot of every organism kind uses the one fixed status
+#: set (spec 1.1).  The detailed life state is a stock property instead:
+#: ``fate`` on the mouse/fish/fly stocks, ``condition`` on the worm culture.
+FIXED_STATUSES = ["pending", "stored", "missing", "consumed"]
+
+#: The optional life-cycle properties the organism parts carry.
+ANIMAL_FATE = ["euthanized", "found_dead", "transferred", "cancelled"]
+FLY_FATE = ["discarded", "lost"]
+WORM_CONDITION = ["growing", "starved", "contaminated"]
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +201,7 @@ def test_angenet_is_a_bundle_of_organism_parts() -> None:
     assert schema.preset_versions == ANGENET_VERSIONS
     assert set(schema.kinds) == ANGENET_KINDS
     # The organism entity and stock kinds live in the organism parts (design
-    # §3); base keeps the inventory, the status sets and the shared box kinds.
+    # §3); base keeps the inventory and the shared box kinds.
     base = preset_document("base")
     for name in (
         "fly_line",
@@ -222,23 +220,16 @@ def test_angenet_is_a_bundle_of_organism_parts() -> None:
         "cage",
     ):
         assert name not in base["kinds"], name
-    # Sets are global but declared once: animal/cryo in base, fly/worm in their
-    # organism part.
-    assert set(schema.status_sets) == {
-        "tube",
-        "cryo",
-        "animal",
-        "fly",
-        "worm",
-    }
-    assert "fly" not in base["status_sets"] and "worm" not in base["status_sets"]
-    for part, own_set in (("drosophila", "fly"), ("c_elegans", "worm")):
+    # Spec 6: no part declares a status set any more, so the whole closure
+    # loads with the fixed status set.
+    assert schema.status_sets == {}
+    assert "status_sets" not in base
+    for part in ("drosophila", "c_elegans", "zebrafish", "mouse", "biosamples"):
         part_doc = preset_document(part)
         assert part_doc["include"] == ["base"], part
-        assert set(part_doc["status_sets"]) == {own_set}, part
-    for part in ("zebrafish", "mouse", "biosamples"):
-        assert preset_document(part)["include"] == ["base"], part
-        assert "status_sets" not in preset_document(part), part
+        assert "status_sets" not in part_doc, part
+        for kind_name, kind in part_doc["kinds"].items():
+            assert "statuses" not in kind, (part, kind_name)
 
 
 def test_organism_parts_credit_biomanager_and_name_their_bundle() -> None:
@@ -279,7 +270,7 @@ def test_each_organism_part_loads_alone_with_its_kinds() -> None:
     for part, kinds in expected.items():
         schema = load_repo_preset(part)
         assert set(schema.kinds) == base_kinds | kinds, part
-        assert schema.preset_versions == {"base": 4, part: 1}
+        assert schema.preset_versions == {"base": 5, part: 2}
         assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
 
 
@@ -309,17 +300,18 @@ def test_organism_kinds_match_the_design() -> None:
         assert parental.to == kind_name, kind_name
         assert parental.lineage is True, kind_name
 
-    # -- fly culture: the fly set, a vial with the cross fields ----------------
+    # -- fly culture: a vial with the cross fields and its fate ---------------
     fly = schema.kinds["fly_culture"]
     assert fly.object is ObjectType.stock
     assert fly.entity_kinds == ["fly_line"]
-    assert statuses_for(schema, "fly_culture") == FLY_STATUSES
+    assert statuses_for(schema, "fly_culture") == FIXED_STATUSES
     assert set(fly.fields) == {
         "temperature_c",
         "generation",
         "food_type",
         "virgins_collected_on",
         "selection_marker",
+        "fate",
         "dam",
         "sire",
     }
@@ -331,21 +323,22 @@ def test_organism_kinds_match_the_design() -> None:
         assert field.type is FieldType.ref and field.to == "aliquot", parent
         assert field.lineage is True, parent
 
-    # -- worm strain: a plate culture with the worm set and a cryo stock -------
+    # -- worm strain: a plate culture with its condition and a cryo stock ------
     worm = schema.kinds["worm_culture"]
     assert worm.entity_kinds == ["worm_strain"]
-    assert statuses_for(schema, "worm_culture") == WORM_STATUSES
+    assert statuses_for(schema, "worm_culture") == FIXED_STATUSES
     assert set(worm.fields) == {
         "temperature_c",
         "plate_type",
         "generation",
         "stage",
+        "condition",
     }
     # C. elegans selfers have a single-parent strain lineage, not dam/sire.
     assert "dam" not in worm.fields and "sire" not in worm.fields
     worm_cryo = schema.kinds["worm_cryo"]
     assert worm_cryo.entity_kinds == ["worm_strain"]
-    assert statuses_for(schema, "worm_cryo") == CRYO_STATUSES
+    assert statuses_for(schema, "worm_cryo") == FIXED_STATUSES
     assert set(worm_cryo.fields) == {
         "frozen_on",
         "method",
@@ -360,6 +353,7 @@ def test_organism_kinds_match_the_design() -> None:
         "sex",
         "genotype",
         "density_per_l",
+        "fate",
         "dam",
         "sire",
     }
@@ -367,26 +361,28 @@ def test_organism_kinds_match_the_design() -> None:
         "set_up_on",
         "embryo_count",
         "larvae_count",
+        "fate",
         "dam",
         "sire",
     }
     for kind_name in ("fish_group", "fish_clutch"):
-        assert statuses_for(schema, kind_name) == ANIMAL_STATUSES, kind_name
+        assert statuses_for(schema, kind_name) == FIXED_STATUSES, kind_name
         assert schema.kinds[kind_name].entity_kinds == ["fish_line"], kind_name
     assert schema.kinds["fish_group"].fields["density_per_l"].type is FieldType.decimal
     assert schema.kinds["fish_clutch"].fields["embryo_count"].type is FieldType.int
     assert schema.kinds["fish_clutch"].fields["larvae_count"].type is FieldType.int
-    assert statuses_for(schema, "fish_sperm_cryo") == CRYO_STATUSES
+    assert statuses_for(schema, "fish_sperm_cryo") == FIXED_STATUSES
     assert "fish_embryo_cryo" not in schema.kinds
 
     # -- mouse: cohorts, sperm + embryo cryo, and the cage box kind -----------
     cohort = schema.kinds["mouse_cohort"]
     assert cohort.entity_kinds == ["mouse_strain"]
-    assert statuses_for(schema, "mouse_cohort") == ANIMAL_STATUSES
+    assert statuses_for(schema, "mouse_cohort") == FIXED_STATUSES
     assert set(cohort.fields) == {
         "birth_on",
         "sex",
         "genotype",
+        "fate",
         "dam",
         "sire",
     }
@@ -397,7 +393,7 @@ def test_organism_kinds_match_the_design() -> None:
         assert sex.values == ["f", "m", "u"], kind_name
         assert kind.fields["genotype"].type is FieldType.text, kind_name
     for kind_name in ("mouse_sperm_cryo", "mouse_embryo_cryo"):
-        assert statuses_for(schema, kind_name) == CRYO_STATUSES, kind_name
+        assert statuses_for(schema, kind_name) == FIXED_STATUSES, kind_name
         assert schema.kinds[kind_name].entity_kinds == ["mouse_strain"], kind_name
     assert "embryo_stage" in schema.kinds["mouse_embryo_cryo"].fields
     assert "embryo_stage" not in schema.kinds["mouse_sperm_cryo"].fields
@@ -410,41 +406,42 @@ def test_organism_kinds_match_the_design() -> None:
     assert cage.geometry.labels == []
 
 
-def test_organism_status_sets_follow_the_design() -> None:
-    """Design §4: the two new sets and their in-stock/final transitions."""
+def test_organism_life_state_lives_in_optional_stock_properties() -> None:
+    """Spec 6: the old per-kind vocabularies are optional enum properties."""
     schema = load_repo_preset("angenet")
 
-    fly = schema.status_sets["fly"]
-    assert fly.names == FLY_STATUSES
-    assert fly.in_stock_names == ["alive", "crossed"]
-    assert fly.final_names == ["discarded", "lost"]
-    assert fly.allows("alive", "crossed")
-    assert fly.allows("alive", "discarded") and fly.allows("alive", "lost")
-    assert fly.allows("crossed", "discarded") and fly.allows("crossed", "lost")
-    assert not fly.allows("discarded", "alive")
-    assert not fly.allows("lost", "crossed")
-    assert not fly.allows("alive", "alive")  # a change, never a no-op transition
+    # The animals: ``fate`` on the mouse cohort and the fish group/clutch.
+    for kind_name in ("mouse_cohort", "fish_group", "fish_clutch"):
+        fate = schema.kinds[kind_name].fields["fate"]
+        assert fate.type is FieldType.enum, kind_name
+        assert fate.values == ANIMAL_FATE, kind_name
+        # Optional: no default and not required.
+        assert not fate.required, kind_name
+        assert not fate.has_default, kind_name
 
-    worm = schema.status_sets["worm"]
-    assert worm.names == WORM_STATUSES
-    assert worm.in_stock_names == ["growing", "starved"]
-    assert worm.final_names == ["discarded"]
-    assert worm.allows("growing", "starved") and worm.allows("starved", "growing")
-    assert worm.allows("growing", "contaminated") and worm.allows("starved", "discarded")
-    assert worm.allows("contaminated", "discarded")
-    assert not worm.allows("contaminated", "growing")
-    assert not worm.allows("discarded", "growing")
+    # The fly: ``fate`` with its own two words.
+    fly_fate = schema.kinds["fly_culture"].fields["fate"]
+    assert fly_fate.type is FieldType.enum
+    assert fly_fate.values == FLY_FATE
+    assert not fly_fate.required and not fly_fate.has_default
 
-    # animal and cryo are the sets base owns, not copies declared here.
-    base = load_repo_preset("base")
-    for name in ("animal", "cryo"):
-        assert (
-            schema.status_sets[name].normalised()
-            == base.status_sets[name].normalised()
-        ), name
-    assert schema.status_sets["animal"].in_stock_names == ["alive"]
-    assert schema.status_sets["cryo"].in_stock_names == ["stored"]
-    assert schema.status_sets["cryo"].final_names == ["thawed"]
+    # The worm: ``condition`` instead of ``fate``.
+    condition = schema.kinds["worm_culture"].fields["condition"]
+    assert condition.type is FieldType.enum
+    assert condition.values == WORM_CONDITION
+    assert not condition.required and not condition.has_default
+    assert "fate" not in schema.kinds["worm_culture"].fields
+
+    # A frozen stock has no life-state property at all: it is stored in the
+    # freezer and consumed once it is thawed.
+    for kind_name in (
+        "mouse_sperm_cryo",
+        "mouse_embryo_cryo",
+        "fish_sperm_cryo",
+        "worm_cryo",
+    ):
+        assert "fate" not in schema.kinds[kind_name].fields, kind_name
+        assert "condition" not in schema.kinds[kind_name].fields, kind_name
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +631,7 @@ def test_mouse_litter_workflow_and_lineage(ledger_factory) -> None:
     )[0]
     assert float(litter_aliquot_row["quantity"]) == 7.0
     assert litter_aliquot_row["unit"] == "individuals"
-    assert litter_aliquot_row["status"] == "alive"
+    assert litter_aliquot_row["status"] == "stored"
 
     # Genotyping: one stock per genotype × sex, each pup an aliquot, linked to
     # the litter through the core parent_stock_id.
@@ -684,9 +681,14 @@ def test_mouse_litter_workflow_and_lineage(ledger_factory) -> None:
     for pup in pups:
         assert len(pup["aliquots"]) == 2
 
-    # The litter aliquot is finished once the litter is split.
-    status = ok(ledger, "aliquot", "status", litter_aliquot, "euthanized")
-    assert "alive -> euthanized" in status.output
+    # The litter aliquot is finished once the litter is split: the fixed
+    # status says the material is gone, the detail is a stock property.
+    status = ok(ledger, "aliquot", "status", litter_aliquot, "consumed")
+    assert "stored -> consumed" in status.output
+    ok(ledger, "stock", "edit", litter["id"], "--set", "fate=euthanized")
+    assert ledger.driver.query(
+        "SELECT `fate` FROM `stock_mouse_cohort` WHERE `id` = %s", (litter["id"],)
+    ) == [{"fate": "euthanized"}]
 
     # Descendants of the strain: breeders -> their aliquots -> litter -> pups.
     down = ok(ledger, "lineage", strain["id"], "--down").output
@@ -723,12 +725,12 @@ def test_mouse_litter_workflow_and_lineage(ledger_factory) -> None:
     assert ledger.check().passed
 
 
-def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
-    """Verify bullet 3: alive -> euthanized works; the reverse needs --force."""
+def test_animal_transitions_follow_the_fixed_set(ledger_factory) -> None:
+    """Spec 6: stored -> consumed works; the reverse needs --force."""
     ledger = ledger_factory(["angenet"], name="angenet_animal_status")
     strain = ok_json(ledger, "entity", "add", "mouse_strain", "--name", "C57BL/6J")
-    # Spec 5: an in-stock animal sits in a cage; euthanizing it clears the
-    # position and restoring ``alive`` means placing it again.
+    # An in-stock animal sits in a cage; consuming it clears the position and
+    # restoring it means placing it again.
     ok_json(ledger, "box", "add", "cage", "CAGE-1")
     cohort = ok_json(
         ledger,
@@ -749,28 +751,28 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
         "mouse",
     )
     aliquot = cohort["aliquots"][0]
-    assert "alive -> euthanized" in ok(
-        ledger, "aliquot", "status", aliquot, "euthanized"
+    assert "stored -> consumed" in ok(
+        ledger, "aliquot", "status", aliquot, "consumed"
     ).output
     assert ledger.driver.query(
         "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (aliquot,)
     ) == [{"box_id": None, "slot": None}]
 
-    message = refused(run(ledger, "aliquot", "status", aliquot, "alive"))
+    message = refused(run(ledger, "aliquot", "status", aliquot, "stored"))
     assert "cannot change an aliquot" in message
-    assert "euthanized" in message and "alive" in message
+    assert "consumed" in message and "stored" in message
 
-    # Forcing the status does not bypass the position rule: ``alive`` is in
+    # Forcing the status does not bypass the position rule: ``stored`` is in
     # stock, so the mouse needs a cage first.
     forced = run(
         ledger,
         "aliquot",
         "status",
         aliquot,
-        "alive",
+        "stored",
         "--force",
         "--note",
-        "euthanasia was recorded on the wrong mouse",
+        "the consumption was recorded on the wrong mouse",
     )
     assert forced.exit_code == 1
     assert "tm aliquot move" in str(forced.exception)
@@ -780,13 +782,13 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
         ledger, "aliquot", "move", aliquot, "--box", "CAGE-1",
         "-m", "placed back in CAGE-1",
     )
-    assert "alive" in restored.output
+    assert "stored" in restored.output
     row = ledger.driver.query(
         "SELECT `old_status`, `new_status` FROM `aliquot_event` "
         "WHERE `aliquot_id` = %s AND `event` = 'move' ORDER BY `id` DESC LIMIT 1",
         (aliquot,),
     )[0]
-    assert (row["old_status"], row["new_status"]) == ("euthanized", "alive")
+    assert (row["old_status"], row["new_status"]) == ("consumed", "stored")
     assert ledger.check().passed
 
 
@@ -825,11 +827,11 @@ def test_mouse_cohort_view_counts_drop_as_mice_are_euthanized(ledger_factory) ->
         return int(row["aliquots_in_stock"]), int(row["aliquots_total"]), str(row["status"])
 
     assert counts() == (3, 3, "active")
-    ok(ledger, "aliquot", "status", cohort["aliquots"][0], "euthanized")
+    ok(ledger, "aliquot", "status", cohort["aliquots"][0], "consumed")
     assert counts() == (2, 3, "active")
-    ok(ledger, "aliquot", "status", cohort["aliquots"][1], "euthanized")
+    ok(ledger, "aliquot", "status", cohort["aliquots"][1], "consumed")
     assert counts() == (1, 3, "active")
-    ok(ledger, "aliquot", "status", cohort["aliquots"][2], "euthanized")
+    ok(ledger, "aliquot", "status", cohort["aliquots"][2], "consumed")
     assert counts() == (0, 3, "depleted")
     assert ledger.check().passed
 
@@ -938,15 +940,16 @@ def test_fly_cross_vial_names_the_virgins_aliquot(ledger_factory) -> None:
     assert f"↑ fly_culture.dam aliquot {virgins_aliquot}" in up
     assert f"fly_culture {virgins['id']}" in up
     assert f"fly_culture.sire aliquot {males['aliquots'][0]}" in up
-    # A cross culture is in stock while alive or crossed (the fly set).
-    assert "alive -> crossed" in ok(
-        ledger, "aliquot", "status", cross["aliquots"][0], "crossed"
+    # The cross is recorded by its dam/sire refs, not by a status; the vial
+    # itself follows the fixed set like every other aliquot.
+    assert "stored -> consumed" in ok(
+        ledger, "aliquot", "status", cross["aliquots"][0], "consumed"
     ).output
     assert ledger.check().passed
 
 
-def test_worm_cryo_stored_thawed_is_final(ledger_factory) -> None:
-    """Verify bullet 4: worm_cryo stored -> thawed, then thawed -> stored refused."""
+def test_worm_cryo_stored_consumed_is_final(ledger_factory) -> None:
+    """Spec 6: a thawed cryo vial is consumed, and consumed is final."""
     ledger = ledger_factory(["angenet"], name="angenet_worm")
     strain = ok_json(
         ledger,
@@ -995,11 +998,11 @@ def test_worm_cryo_stored_thawed_is_final(ledger_factory) -> None:
     assert row["status"] == "stored"  # cryo has no pending: created in stock
     assert int(row["recovery_ok"]) == 1
 
-    assert "stored -> thawed" in ok(
-        ledger, "aliquot", "status", vial, "thawed"
+    assert "stored -> consumed" in ok(
+        ledger, "aliquot", "status", vial, "consumed"
     ).output
     message = refused(run(ledger, "aliquot", "status", vial, "stored"))
-    assert "thawed" in message and "stored" in message
+    assert "consumed" in message and "stored" in message
     assert "final status" in message
     assert ledger.check().passed
 
