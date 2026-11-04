@@ -11,9 +11,10 @@ long-lived process, no data directory, no server to start before the first comma
 real `dolt sql-server` per ledger and speaks MySQL through PyMySQL. It is selected **only** when the
 effective environment sets `TETRAMARK_DRIVER=server`; the default installation and every `tm`
 command keep using the embedded driver, and an install without `pymysql` never imports the module.
-The server backend exists for the test lane: the same real-Dolt tests run through it so the full
-suite fits under five minutes without mocking Dolt. `scripts/test-lanes.sh full` is that lane and
-`scripts/test-lanes.sh embedded` is the default-backend regression run; see
+The server backend exists for the test suite: the ledger tests run through it so the full real-Dolt
+suite fits under five minutes without mocking Dolt, while the `embedded_driver` budget tests switch
+to the embedded driver in the same session. Plain `uv run pytest` is that run; `scripts/test-lanes.sh
+embedded` is the default-backend regression run; see
 `docs/guides/test-harness.md`. Server sessions still make exactly one `DOLT_COMMIT` per write
 command, and DDL keeps Dolt's implicit-commit semantics.
 

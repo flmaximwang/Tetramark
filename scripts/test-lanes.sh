@@ -1,51 +1,43 @@
 #!/bin/sh
-# Run the pytest lanes, print their wall times, and enforce the budgets.
+# Convenience runner around the ONE authoritative command: `uv run pytest`.
 #
 # Usage:
-#   scripts/test-lanes.sh            # fast lane, then the full lane
-#   scripts/test-lanes.sh fast       # fast lane only (seconds; safe in a loop)
-#   scripts/test-lanes.sh full       # full lane through dolt sql-server (TETRAMARK_DRIVER=server)
-#   scripts/test-lanes.sh embedded   # full lane through per-statement `dolt sql` subprocesses
+#   uv run pytest                  # the full real-Dolt suite (the requirement)
+#   uv run pytest -q -m fast       # fast lane, no Dolt
+#   scripts/test-lanes.sh          # fast lane, then the full suite, with stats
+#   scripts/test-lanes.sh fast     # fast lane only
+#   scripts/test-lanes.sh full     # the full suite via the same plain command
+#   scripts/test-lanes.sh embedded # full suite on the default embedded backend
 #
-# The repository has no CI: this script is the measurement and enforcement
-# point before a merge/release. The default `full` lane is the *server* lane:
-# every ledger test still runs against real Dolt, but through the opt-in
-# `dolt sql-server` driver, so the suite is expected far below five minutes.
-# `embedded` runs the same tests against the original one-`dolt sql`-process
-# backend (~13 min on the reference machine); use it to prove the default
-# backend is still green, not as the everyday lane.
+# The test suite enforces its own wall-clock budgets in tests/conftest.py:
+#   * the full run fails when it takes more than 300 s
+#     (TETRAMARK_SUITE_BUDGET_SECONDS=<seconds> overrides, empty disables);
+#   * `-m fast` fails after 30 s.
+# pytest-timeout fails a hung test after 60 s.  This script does not set
+# TETRAMARK_DRIVER: the harness itself runs ledger tests through the real
+# `dolt sql-server` backend and the `embedded_driver` budget tests through the
+# embedded driver in the same session.  What the script adds is only:
+#   * a second wall-clock report,
+#   * the number of `dolt sql-server` processes the workers started,
+#   * a check that none survived the run,
+#   * an optional full-suite run on the embedded backend (`embedded`), to prove
+#     the product's default driver is still green.
 #
-# It fails (exit 1) when
-#   * a lane fails, or
-#   * the fast lane exceeds FAST_LANE_BUDGET_SECONDS (default 10 s), or
-#   * the server full lane exceeds SERVER_LANE_BUDGET_SECONDS (default 300 s =
-#     the user's hard five-minute ceiling), or
-#   * EMBEDDED_LANE_BUDGET_SECONDS is set and the embedded lane exceeds it
-#     (unset by default: that lane is expected to be slow), or
-#   * the server lane leaves a `dolt sql-server` process behind
-#     (LEFTOVER_CHECK=0 disables the check for a machine with unrelated servers).
-#
-# The server lane sets TETRAMARK_SERVER_STATS so each pytest worker records how
-# many `dolt sql-server` processes it started; the script sums them and prints
-# the total next to the wall time.
-#
+# The repository has no CI: this script is the manual measurement/release check.
 # Eligible environments: `uv run pytest` when uv is installed, otherwise
-# $PYTEST (default `python3 -m pytest`). In sandboxes where `uv run` does not
-# work, point $PYTEST at a venv pytest:
+# $PYTEST (default `python3 -m pytest`), e.g.
 #   PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh full
-#   PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh embedded
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
 cd "$ROOT" || exit 1
 
 LANE=${1:-all}
-FAST_LANE_BUDGET_SECONDS=${FAST_LANE_BUDGET_SECONDS:-10}
-# Hard ceiling for the default full lane: the real-Dolt server suite must stay
-# under five minutes. An explicitly empty value disables the gate.
-SERVER_LANE_BUDGET_SECONDS=${SERVER_LANE_BUDGET_SECONDS-300}
-# The embedded lane is the historical slow path; only gate it when asked to.
-EMBEDDED_LANE_BUDGET_SECONDS=${EMBEDDED_LANE_BUDGET_SECONDS-}
+# The pytest-side guards are authoritative; these values only mirror them so
+# this script's report uses the same numbers.  Override the pytest guard with
+# TETRAMARK_SUITE_BUDGET_SECONDS, not with these.
+FULL_LANE_BUDGET_SECONDS=${FULL_LANE_BUDGET_SECONDS-300}
+FAST_LANE_BUDGET_SECONDS=${FAST_LANE_BUDGET_SECONDS-30}
 LEFTOVER_CHECK=${LEFTOVER_CHECK:-1}
 DURATIONS=${DURATIONS:-25}
 
@@ -58,17 +50,17 @@ else
 fi
 
 # A bare `python -m pytest`/venv pytest does not install the project; put the
-# worktree's own src first so the lanes test this checkout, not a global install.
+# checkout's own src first so the run tests this checkout, not a global install.
 PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
 
 failures=0
 fast_seconds=0
-server_seconds=0
-embedded_seconds=0
+full_seconds=0
 STATS_FILE=$(mktemp "${TMPDIR:-/tmp}/tetramark-server-stats.XXXXXX") || exit 1
 trap 'rm -f "$STATS_FILE"' EXIT INT TERM
 
+# run_lane <name> <mode: plain|embedded> <pytest args...>
 run_lane() {
     name=$1
     mode=$2
@@ -77,30 +69,27 @@ run_lane() {
     started=$(date +%s)
     # Word splitting of $RUN_PYTEST is intentional (e.g. `uv run pytest`).
     # shellcheck disable=SC2086
-    if [ "$mode" = server ]; then
-        TETRAMARK_DRIVER=server TETRAMARK_SERVER_STATS="$STATS_FILE" \
+    if [ "$mode" = embedded ]; then
+        TETRAMARK_DRIVER=embedded TETRAMARK_SERVER_STATS="$STATS_FILE" \
             $RUN_PYTEST "$@" || { echo "!! $name lane failed" >&2; failures=$((failures + 1)); }
-    elif [ "$mode" = embedded ]; then
-        TETRAMARK_DRIVER= $RUN_PYTEST "$@" \
-            || { echo "!! $name lane failed" >&2; failures=$((failures + 1)); }
     else
-        $RUN_PYTEST "$@" || { echo "!! $name lane failed" >&2; failures=$((failures + 1)); }
+        TETRAMARK_SERVER_STATS="$STATS_FILE" \
+            $RUN_PYTEST "$@" || { echo "!! $name lane failed" >&2; failures=$((failures + 1)); }
     fi
     finished=$(date +%s)
     printf '== %s lane wall time: %ss\n' "$name" "$((finished - started))"
     case $name in
         fast) fast_seconds=$((finished - started)) ;;
-        full) server_seconds=$((finished - started)) ;;
-        embedded) embedded_seconds=$((finished - started)) ;;
+        full) full_seconds=$((finished - started)) ;;
     esac
 }
 
 report_server_starts() {
     if [ -s "$STATS_FILE" ]; then
         starts=$(awk -F'=' '/starts=/{total += $2} END {print total + 0}' "$STATS_FILE")
-        printf '== server lane dolt sql-server starts: %s\n' "$starts"
+        printf '== dolt sql-server starts reported by the workers: %s\n' "$starts"
     else
-        echo "== server lane dolt sql-server starts: (no worker reported; was the lane skipped?)"
+        echo "== dolt sql-server starts: (no worker reported; server backend not used?)"
     fi
 }
 
@@ -109,18 +98,16 @@ check_leftover_servers() {
         echo "== leftover dolt sql-server check disabled (LEFTOVER_CHECK=$LEFTOVER_CHECK)"
         return
     fi
-    # Match only an actual `dolt sql-server` process: argv[0] must be the dolt
-    # binary and argv[1] the sql-server subcommand.  A plain
-    # `pgrep -f 'dolt sql-server'` also matches every shell whose command line
-    # merely mentions the words (monitoring commands, this script's own
-    # documentation), which is a false positive.
+    # Match only a real `dolt sql-server` process: argv[0] the dolt binary,
+    # argv[1] the sql-server subcommand.  `pgrep -f 'dolt sql-server'` also
+    # matches every shell whose command line merely mentions the words.
     leftover=$(ps -axo command= 2>/dev/null | awk '
         $1 ~ /(^|\/)dolt$/ && $2 == "sql-server" { count += 1 }
         END { print count + 0 }
     ')
     printf '== leftover dolt sql-server processes: %s\n' "$leftover"
     if [ "$leftover" -ne 0 ]; then
-        echo "!! the server lane left ${leftover} dolt sql-server process(es) behind" >&2
+        echo "!! the run left ${leftover} dolt sql-server process(es) behind" >&2
         failures=$((failures + 1))
     fi
 }
@@ -128,34 +115,26 @@ check_leftover_servers() {
 if [ "$LANE" = all ] || [ "$LANE" = fast ]; then
     run_lane fast plain -q -m fast --durations=10
     if [ "$fast_seconds" -gt "$FAST_LANE_BUDGET_SECONDS" ]; then
-        echo "!! fast lane took ${fast_seconds}s > ${FAST_LANE_BUDGET_SECONDS}s budget:" \
-             "a Dolt-free test got slow or a DB test was marked fast" >&2
+        echo "!! fast lane took ${fast_seconds}s > ${FAST_LANE_BUDGET_SECONDS}s" \
+             "(pytest also enforces this; a fast test may have became a DB test)" >&2
         failures=$((failures + 1))
     fi
 fi
 
 if [ "$LANE" = all ] || [ "$LANE" = full ]; then
-    run_lane full server -q --durations="$DURATIONS"
+    run_lane full plain -q --durations="$DURATIONS"
     report_server_starts
     check_leftover_servers
-    if [ -z "$SERVER_LANE_BUDGET_SECONDS" ]; then
-        echo "== server full lane budget not enforced: set SERVER_LANE_BUDGET_SECONDS" \
-             "to a number (300 = the five-minute ceiling)"
-    elif [ "$server_seconds" -gt "$SERVER_LANE_BUDGET_SECONDS" ]; then
-        echo "!! server full lane took ${server_seconds}s > ${SERVER_LANE_BUDGET_SECONDS}s" \
-             "budget (TETRAMARK_DRIVER=server, the default full lane)" >&2
+    if [ "$full_seconds" -gt "$FULL_LANE_BUDGET_SECONDS" ]; then
+        echo "!! full suite took ${full_seconds}s > ${FULL_LANE_BUDGET_SECONDS}s" \
+             "(pytest also enforces this; see the budget report above)" >&2
         failures=$((failures + 1))
     fi
 fi
 
 if [ "$LANE" = embedded ] || [ "$LANE" = full-embedded ]; then
     run_lane embedded embedded -q --durations="$DURATIONS"
-    if [ -n "$EMBEDDED_LANE_BUDGET_SECONDS" ] &&
-       [ "$embedded_seconds" -gt "$EMBEDDED_LANE_BUDGET_SECONDS" ]; then
-        echo "!! embedded full lane took ${embedded_seconds}s >" \
-             "${EMBEDDED_LANE_BUDGET_SECONDS}s budget" >&2
-        failures=$((failures + 1))
-    fi
+    check_leftover_servers
 fi
 
 if [ "$failures" -ne 0 ]; then

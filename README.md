@@ -67,31 +67,32 @@ uv run tm --help
 
 ### Testing
 
-The suite runs against a real `dolt` binary (no mocks of Dolt). The default runtime backend is the
-embedded driver: SQL runs through `dolt sql` subprocesses in the ledger directory, and independent
-batches (such as `tm find`, a list command or one write session) share one process. A ledger fixture
-builds each standard shape once per session and hands out directory copies, so a fresh test ledger
-costs a copy rather than a full init.
-
-The **full lane runs the same tests through an opt-in `dolt sql-server`** (the test harness
-defaults `TETRAMARK_DRIVER=server`) so the real-Dolt suite fits in the five-minute budget; the
-contract, data and SQL are unchanged. `TETRAMARK_DRIVER=embedded pytest` (or
-`scripts/test-lanes.sh embedded`) runs the same tests on the product's default subprocess backend
-(~12 min) and is the release check that the default path is still green.
+The suite runs against a real `dolt` binary (no mocks of Dolt). **One command runs everything**:
 
 ```sh
-uv run pytest -q -m fast                         # Dolt-free unit tests: seconds; the inner loop
-uv run pytest                                    # full real-Dolt suite via dolt sql-server (server lane)
-scripts/test-lanes.sh full                       # same + hard 300 s gate, leftover-server check
-scripts/test-lanes.sh embedded                   # same suite via dolt sql subprocesses (default backend)
-TETRAMARK_DRIVER=embedded uv run pytest          # explicit default-backend run
-uv run pytest tests/test_objects.py -n0          # focused loop (server backend unless overridden)
+uv run pytest                    # full real-Dolt suite (including the embedded-driver budget tests)
+uv run pytest -q -m fast         # Dolt-free unit tests: seconds, 30 s session budget
 ```
 
-`scripts/test-lanes.sh` is the measurement and enforcement point (this repo has no CI): it runs the
-lanes, prints their wall times (and the number of server starts), and fails when the fast lane
-exceeds 10 s or the full lane exceeds 300 s, or when a `dolt sql-server` is left behind. The cost
-model, the server lifecycle, the embedded budget marker and the rules for new real-Dolt tests are in
+The full run is a single pytest session with both real backends: ledger tests use a managed
+`dolt sql-server` (the test harness default; the product itself still defaults to the embedded
+driver), and the `embedded_driver` process-budget tests switch to the embedded
+one-`dolt sql`-process backend per test. Nothing is skipped to save time. The session enforces its
+own limits:
+
+* **300 s wall clock** — a slower run fails with the elapsed time and the slowest tests
+  (`TETRAMARK_SUITE_BUDGET_SECONDS=600` overrides for profiling; an empty value disables the guard);
+* **60 s per test** (`pytest-timeout`) — a hung Dolt server cannot stall the run;
+* **30 s** for `-m fast`.
+
+Measured on the reference machine (10-core macOS): **177–189 s, 1337 passed, 1 skipped**, zero leftover
+`dolt sql-server`. The skip is the optional 0.4.2 lab-ledger snapshot, absent from this checkout.
+
+`tests/test_*_round_trips*.py` pin the embedded driver's process budgets, so batching cannot
+regress. `scripts/test-lanes.sh` runs the same plain commands (fast + full) and adds the
+`dolt sql-server` start count and leftover-process check; `scripts/test-lanes.sh embedded` runs the
+whole suite on the product's default backend as a release check. The cost model, the server
+lifecycle and the rules for new real-Dolt tests are in
 [`docs/guides/test-harness.md`](docs/guides/test-harness.md).
 
 ## Quickstart
