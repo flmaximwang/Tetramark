@@ -158,9 +158,9 @@ def test_a_bare_name_uses_the_env_dir_at_init_plan_time(
     # A distinguishable preset with the same name: its version proves which
     # file the plan loaded.
     text = (REPO_PRESETS / "base.yaml").read_text(encoding="utf-8")
-    assert "version: 4" in text.splitlines()[1]
+    assert "version: 5" in text.splitlines()[1]
     (env_dir / "base.yaml").write_text(
-        text.replace("version: 4", "version: 99", 1), encoding="utf-8"
+        text.replace("version: 5", "version: 99", 1), encoding="utf-8"
     )
     target = tmp_path / "lab"
     plan = init_ledger(

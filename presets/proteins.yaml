@@ -1,5 +1,5 @@
 preset: proteins
-version: 2
+version: 3
 description: >-
   Protein designs and their purified preparations: one entity per amino-acid
   sequence, with the extinction-coefficient formulas from zsqlab08, and the
@@ -90,7 +90,6 @@ kinds:
 
   protein_prep:
     object: stock
-    statuses: tube
     description: A purified protein preparation derived from a pellet or culture.
     entity_kinds: [protein_construct]
     fields:

@@ -1,34 +1,10 @@
 preset: base
-version: 4
+version: 5
 description: >-
-  Domain-neutral inventory: a generic item, a purchase lot, the status sets
-  every stock kind names, and the box geometries used by the sample-oriented
-  presets (a freezer, an incubator, racks and grids).
-
-status_sets:
-  # General tube / vial inventory (spec 4, design §4).  ``stored`` is the only
-  # status that counts as physically on the shelf; ``missing`` can come back.
-  tube:
-    pending: {in_stock: false, to: [stored, missing, consumed]}
-    stored: {in_stock: true, to: [missing, consumed]}
-    missing: {in_stock: false, to: [stored, consumed]}
-    consumed: {in_stock: false}
-  # Frozen cell vials: they are either in the cryo box or thawed, and a missing
-  # vial can be found again.  There is no ``consumed``: a thawed vial left zero
-  # volume is set to ``thawed``.
-  cryo:
-    stored: {in_stock: true, to: [thawed, missing]}
-    missing: {in_stock: false, to: [stored, thawed]}
-    thawed: {in_stock: false}
-  # Living animals / individually or group-counted organisms.  Lives in base
-  # because the zebrafish and mouse parts both use it and set names are global.
-  animal:
-    planned: {in_stock: false, to: [alive, cancelled]}
-    alive: {in_stock: true, to: [euthanized, found_dead, transferred]}
-    cancelled: {in_stock: false}
-    euthanized: {in_stock: false}
-    found_dead: {in_stock: false}
-    transferred: {in_stock: false}
+  Domain-neutral inventory: a generic item, a purchase lot, and the box
+  geometries used by the sample-oriented presets (a freezer, an incubator,
+  racks and grids). Every aliquot uses the one fixed status set of the core
+  model (spec 1.1), so this part declares no status vocabulary at all.
 
 mixins:
   named_fields:
@@ -57,7 +33,6 @@ kinds:
     object: stock
     description: A purchase or delivery lot of one item, with supplier and shelf life.
     entity_kinds: [item]
-    statuses: tube
     fields:
       supplier:
         type: string

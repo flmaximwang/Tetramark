@@ -1,5 +1,5 @@
 preset: viral_vectors
-version: 1
+version: 2
 description: >-
   Viral vector designs and the preparations made from them: one entity per virus
   (AAV/lentivirus/retrovirus/adenovirus, serotype, the plasmid it packages, its
@@ -8,7 +8,7 @@ description: >-
 
 # ``nucleic_acids`` is included because ``virus.payload`` points at a
 # ``plasmid``; the include runs nucleic_acids -> proteins -> base, so this part
-# also reaches the base kinds and status sets it uses.
+# also reaches the base kinds it uses.
 include: [base, nucleic_acids]
 
 kinds:
@@ -45,7 +45,6 @@ kinds:
 
   virus_prep:
     object: stock
-    statuses: tube
     description: >-
       A produced viral vector preparation: one batch of virus with its measured
       titer and production details. Adapted from BioManager (MIT).

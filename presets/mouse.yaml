@@ -1,5 +1,5 @@
 preset: mouse
-version: 1
+version: 2
 description: >-
   Mouse genetics: a mouse strain as the genetic design (background, supplier,
   MGI id), individually tracked mice in cages, and frozen sperm and embryos.
@@ -8,11 +8,14 @@ description: >-
   with genotype NULL and one group aliquot (quantity = pups). Crosses are
   recorded as the progeny stock's dam and sire refs. The parent_stock_id
   column links a split litter back to the litter stock, so no cross object and
-  no core change are needed. The box kind cage is here because only the mouse
-  part uses it. Included by the angenet bundle. Adapted from BioManager (MIT).
+  no core change are needed. A cohort's fate (euthanized, found_dead,
+  transferred, cancelled) is an optional stock property; every aliquot uses the
+  one fixed status set of the core model (spec 1.1), so this part declares no
+  status vocabulary. The box kind cage is here because only the mouse part uses
+  it. Included by the angenet bundle. Adapted from BioManager (MIT).
 
-# A cage is a housing unit: base supplies named_fields, the animal/cryo status
-# sets and the box kinds; the dam/sire refs point at the core aliquot table.
+# A cage is a housing unit: base supplies named_fields and the box kinds; the
+# dam/sire refs point at the core aliquot table.
 include: [base]
 
 kinds:
@@ -44,7 +47,6 @@ kinds:
 
   mouse_cohort:
     object: stock
-    statuses: animal
     description: >-
       A mouse cohort: mice of one strain that are identical in every recorded
       property (cohort/cross, birth date, sex, genotype), so one mouse is one
@@ -66,6 +68,10 @@ kinds:
         type: text
         long: true
         description: Genotype / modifications of the cohort; NULL means untyped (e.g. a litter before genotyping).
+      fate:
+        type: enum
+        values: [euthanized, found_dead, transferred, cancelled]
+        description: Fate of the mice in the cohort (euthanized, found_dead, transferred or cancelled).
       dam:
         type: ref
         to: aliquot
@@ -79,7 +85,6 @@ kinds:
 
   mouse_sperm_cryo:
     object: stock
-    statuses: cryo
     description: >-
       Frozen mouse sperm - a strain kept as a cryo vial - with its freezing
       date, method and thaw-recovery check. Adapted from BioManager (MIT).
@@ -101,7 +106,6 @@ kinds:
 
   mouse_embryo_cryo:
     object: stock
-    statuses: cryo
     description: >-
       Frozen mouse embryos - a strain kept as cryo vials of a given
       developmental stage - with its freezing date, method and thaw-recovery

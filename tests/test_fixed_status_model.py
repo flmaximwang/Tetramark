@@ -8,8 +8,11 @@ the legacy closure that must keep loading unchanged, and plan idempotency in
 both models.
 
 The fixture ``tests/data/presets/fixed`` declares no status vocabulary, so it
-loads with the fixed model.  The legacy fixtures (``base`` and the repository
-presets) stay untouched and keep proving backward compatibility.
+loads with the fixed model.  The legacy fixtures (``base`` and the frozen base
+v4 of the ``base/3-to-4`` step) stay untouched and keep proving backward
+compatibility: the repository's own ``presets/base.yaml`` is the spec-6 fixed
+model since Tetramark-epn.4, so a legacy closure has to come from a frozen
+copy.
 """
 
 from __future__ import annotations
@@ -38,11 +41,17 @@ from tetramark.schema.model import (
 )
 from tetramark.schema.tests_gen import generate_tests
 
-from conftest import PRESETS, REPO_PRESETS
+from conftest import PRESETS
 
 FIXED = PRESETS / "fixed"
 BASE = PRESETS / "base"
-REPO_BASE = REPO_PRESETS / "base.yaml"
+
+#: The frozen legacy base v4 (it still declares ``status_sets``).  The
+#: repository's ``presets/base.yaml`` is the spec-6 fixed model since
+#: Tetramark-epn.4, so the legacy closure this module needs is the copy the
+#: ``base/3-to-4`` step shipped.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_BASE = REPO_ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-4.yaml"
 
 #: A manual 5-to-6 migration adds exactly this constraint (the README SQL).
 MIGRATION_CHECK = (
@@ -395,7 +404,7 @@ def test_spec5_legacy_ledger_opens_with_the_hint_and_stays_green(
     ledger_factory, dolt_env: dict[str, str]
 ) -> None:
     """The tool is newer: the ledger warns, but nothing refuses or rewrites."""
-    ledger = ledger_factory([REPO_BASE], name="spec5-legacy", id_prefix="77")
+    ledger = ledger_factory([LEGACY_BASE], name="spec5-legacy", id_prefix="77")
     # The stored copies are the legacy ones (base v4: status_sets tube/cryo/
     # animal).  Pretend the tool that wrote the ledger was spec 5.
     ledger.driver.execute(

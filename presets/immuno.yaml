@@ -1,5 +1,5 @@
 preset: immuno
-version: 1
+version: 2
 description: >-
   Antibody reagents and the lots in the freezer: one entity per antibody design
   (host, clonality, clone, isotype, reactivity, conjugate, applications, RRID)
@@ -53,7 +53,6 @@ kinds:
 
   antibody_lot:
     object: stock
-    statuses: tube
     description: >-
       One physical lot of an antibody in the freezer, with the supplier,
       catalogue and lot numbers, its concentration, the recommended working
