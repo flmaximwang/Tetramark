@@ -173,7 +173,7 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
 
     listed_csv = invoke(ledger, "--format", "csv", "entity", "list")
     assert listed_csv.exit_code == 0, listed_csv.output
-    assert f"{entity_id},item,alpha" in listed_csv.output.splitlines()
+    assert f"{entity_id},item,alpha,0,0" in listed_csv.output.splitlines()
 
     stock = json.loads(
         invoke(

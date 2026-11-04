@@ -1059,6 +1059,16 @@ def _box_paths(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
 #: :meth:`Driver.query_many` batch as everything else (never a round trip more).
 _BOX_PATH_ROWS_SQL = "SELECT `id`, `name`, `parent_box_id` FROM `box`"
 
+#: The per-entity stock counts ``entity list`` prints: one aggregate over the
+#: rows of the already-derived ``v_stock_status`` view, so the in-stock
+#: statuses are not re-derived here.  It rides the list's read batch.
+_ENTITY_STOCK_COUNTS_SQL = (
+    "SELECT `entity_id`, "
+    "SUM(CASE WHEN `status` = 'active' THEN 1 ELSE 0 END) AS `stocks_available`, "
+    "SUM(`aliquots_in_stock`) AS `aliquots_in_stock` "
+    "FROM `v_stock_status` GROUP BY `entity_id`"
+)
+
 
 # ---------------------------------------------------------------------------
 # Batched read helpers (list/show)
@@ -1653,7 +1663,22 @@ def list_entities(
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    records, _ = _list_records(ledger, "entity", kind_name, where)
+    # The stock counts ride in the same batch as the per-kind listings, so the
+    # per-entity aggregate costs no extra round trip.
+    records, extra = _list_records(
+        ledger,
+        "entity",
+        kind_name,
+        where,
+        extra=[(_ENTITY_STOCK_COUNTS_SQL, None)],
+    )
+    counts = {str(row["entity_id"]): row for row in extra[0]}
+    for record in records:
+        row = counts.get(str(record["id"]), {})
+        # Dolt/pymysql may return the SUM as a float on the opt-in server
+        # driver; counts are ints on every backend (like ``list_stocks``).
+        record["stocks_available"] = int(row.get("stocks_available") or 0)
+        record["aliquots_in_stock"] = int(row.get("aliquots_in_stock") or 0)
     return records
 
 

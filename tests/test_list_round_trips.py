@@ -173,6 +173,14 @@ def test_entity_list_runs_one_batched_read(
         built["entities"][0]["id"],
         built["entities"][1]["id"],
     ]
+    # The stock counts come from the same batch: item/alpha has two active
+    # stocks (lot and placed) and two in-stock tubes; everything's prep has no
+    # aliquots (empty) and plasmid's bacterial stock is depleted, so both are
+    # 0/0.
+    assert [
+        (row["name"], row["stocks_available"], row["aliquots_in_stock"])
+        for row in rows
+    ] == [("thing", 0, 0), ("alpha", 2, 2), ("pUC19", 0, 0)]
     # One JSON batch for every kind's rows, one CSV batch for the column
     # names JSON omits for NULL values.  The kinds are all in one process.
     assert invoke_log == ["json", "csv"]

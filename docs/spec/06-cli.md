@@ -292,6 +292,10 @@ fixed, readable subset of the record; `--json` keeps the full record. The leadin
 the row and the rest hold the values a person decides on, with long values (an entity name) printed
 in full, never truncated.
 
+- `tm entity list` prints `id kind name stocks_available aliquots_in_stock`. `stocks_available` is
+  the number of the entity's stocks whose derived status is `active` (at least one aliquot in stock);
+  depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots of all the
+  entity's stocks. Both are `0` for an entity without stocks.
 - `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. `entity_name` is
   the owning design's name. `status` is derived from the aliquots: `empty` when the stock has none,
   `active` when at least one is in stock, and `depleted` when every aliquot has left stock.

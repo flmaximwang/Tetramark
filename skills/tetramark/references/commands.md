@@ -107,6 +107,9 @@ already another entity's alias.
 The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
 (at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
 always print the full 36-character id, and datecode/sequence/aliquot ids are never shortened.
+`entity list` prints `id kind name stocks_available aliquots_in_stock`: the number of the entity's
+stocks whose derived status is `active`, and the in-stock aliquots summed over its stocks. Both are
+`0` for an entity without stocks; depleted and empty stocks are not counted.
 
 ## Stocks
 
