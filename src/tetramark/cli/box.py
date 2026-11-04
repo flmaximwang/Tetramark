@@ -110,6 +110,34 @@ def list_boxes_command(
         ledger.close()
 
 
+@box_app.command("edit")
+@write_command
+def edit_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    set_values: list[str] = typer.Option(
+        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed box as JSON."),
+) -> None:
+    """Update notes or kind fields of an existing box.
+
+    A name changes only through `tm box rename`; a box moves only through
+    `tm box move`.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.boxes.edit(ref, values=set_values)
+        emit_write(
+            ledger,
+            result,
+            f"Edited box {result['name']} ({result['kind']})",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()
+
+
 @box_app.command("move")
 @write_command
 def move_box_command(

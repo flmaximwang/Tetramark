@@ -104,6 +104,7 @@ tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless bo
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
 tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
+tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rename-only; one commit; structural fields refused
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
@@ -223,6 +224,17 @@ box's own name). **Grid boxes hold tubes only**, so
 `tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box nests only in a
 named or slotless box — for example a freezer, `tm box move WFL-12-02 --in FR-1` — and a box never
 nests in a grid box.
+
+`tm entity edit`, `tm stock edit` and `tm box edit` change the editable fields of one object and
+nothing else: `notes` plus the fields the object's kind declares, coerced and validated exactly as
+at add time. A **name changes only through `tm <object> rename`** — `--set name=…` is refused with
+an error that names the rename command, because a rename keeps the old name as an alias (and
+rebuilds a box's view) and a plain column update cannot. Structural fields are refused as well:
+`id`, `kind` and `created_at` are identity and creation data, and a box's `parent_box_id` and
+`parent_slot` change through `tm box move REF --in PARENT [--slot S]`. `--set field=` (the value
+exactly empty) clears an optional column to NULL, a required field cannot be cleared, and a
+whitespace-only value is not empty: it is coerced like any other value, never cleared. One edit is
+one Dolt commit, `--json` returns the loaded record and `--dry-run` writes nothing.
 
 `tm export` reads a box from `box` joined with `box_<kind>` — the per-kind `v_box_<kind>` views are
 gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and
