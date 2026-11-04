@@ -126,3 +126,26 @@ def move_box_command(
         )
     finally:
         ledger.close()
+
+
+@box_app.command("rename")
+@write_command
+def rename_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    new_name: str = typer.Argument(..., help="New box name (view-safe, unique ignoring case)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the renamed box as JSON."),
+) -> None:
+    """Rename a box; the old name stays as an alias and its view follows."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.boxes.rename(ref, new_name)
+        emit_write(
+            ledger,
+            result,
+            f"Renamed box {result['old_name']} -> {result['name']} "
+            f"(old name kept as alias)",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()

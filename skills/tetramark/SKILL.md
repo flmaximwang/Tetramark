@@ -55,6 +55,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
+| Rename an entity or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias) |
 | Find anything | `tm find ID\|ALIAS\|TEXT` |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
 | Register an organism line and its colony | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse` |

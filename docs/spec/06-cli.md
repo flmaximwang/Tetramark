@@ -81,6 +81,7 @@ tm status [--json]                        # one ledger at a glance (6.1)
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity list [KIND] [--where f=v] ; tm entity edit ID --set f=v
+tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
@@ -96,6 +97,7 @@ tm aliquot purge ALQ                                  # hard delete, explicit on
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
 tm box list ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
+tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
@@ -154,7 +156,8 @@ refuses and lists them unless `--status` names one. If the aliquot is already in
 A box name must be **view-safe**, because each existing box gets a generated view (§3):
 `v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters
 (64 − `v_box_`), and it must not differ only in case from another box's name. `tm box add` and CSV
-box import refuse such a name; there is no rename command yet. **Grid boxes hold tubes only**, so
+box import refuse such a name, and so does `tm box rename` (which may change only the case of the
+box's own name). **Grid boxes hold tubes only**, so
 `tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box nests only in a
 named or slotless box — for example a freezer, `tm box move WFL-12-02 --in FR-1` — and a box never
 nests in a grid box.

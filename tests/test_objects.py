@@ -1072,6 +1072,116 @@ def test_box_add_creates_its_view_and_refuses_view_unsafe_names(
     assert box["id"]
 
 
+def _view_names(ledger) -> set[str]:
+    return {
+        str(row["name"]).lower()
+        for row in ledger.driver.query(
+            "SELECT table_name AS name FROM information_schema.views "
+            "WHERE table_schema = DATABASE()"
+        )
+    }
+
+
+def test_entity_rename_keeps_the_old_name_as_an_alias(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="rename-entity")
+    created = new_item(ledger, "alpha", alias="A")
+    other = new_item(ledger, "other", alias="gamma")
+
+    before = commit_count(ledger)
+    renamed = ledger.entities.rename("A", "beta")
+    assert commit_count(ledger) == before + 1
+    assert dirty(ledger) == []
+    assert renamed == {
+        "object": "entity",
+        "kind": "item",
+        "id": created["id"],
+        "name": "beta",
+        "old_name": "alpha",
+        "aliases": ["A", "alpha"],
+    }
+    shown = ledger.entities.show("alpha")
+    assert shown["id"] == created["id"]
+    assert shown["name"] == "beta"
+    # Core and kind-table names stay in sync.
+    assert ledger.driver.query(
+        "SELECT `name` FROM `entity_item` WHERE `id` = %s", (created["id"],)
+    ) == [{"name": "beta"}]
+    assert ledger.entities.ls("item", where={"name": "beta"})[0]["id"] == created["id"]
+    message = ledger.driver.query("SELECT message FROM dolt_log LIMIT 1")[0]["message"]
+    assert message == "rename(entity): alpha -> beta"
+
+    # Renaming back reuses the existing alias instead of failing on it.
+    again = ledger.entities.rename(created["id"], "alpha")
+    assert again["aliases"] == ["A", "alpha", "beta"]
+    assert ledger.entities.show("beta")["name"] == "alpha"
+
+    # Same name, empty name, an old name owned by another entity: refused, no commit.
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="already named"):
+        ledger.entities.rename(created["id"], "alpha")
+    with pytest.raises(UsageError, match="must not be empty"):
+        ledger.entities.rename(created["id"], "  ")
+    ledger.entities.rename(other["id"], "gamma-2")  # 'other' -> alias of other
+    before = commit_count(ledger)
+    third = new_item(ledger, "gamma")
+    with pytest.raises(LedgerError, match="already an alias of entity"):
+        ledger.entities.rename(third["id"], "delta")
+    assert ledger.entities.show(third["id"])["name"] == "gamma"
+    assert commit_count(ledger) == before + 1  # only the add committed
+    assert dirty(ledger) == []
+
+
+def test_box_rename_moves_its_view_and_keeps_the_old_name(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="rename-box")
+    box = new_box(ledger, "WFL-10-01")
+    other = new_box(ledger, "OTHER", kind="rack")
+    ledger.aliases.add("box", other["id"], "taken")
+    entity = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=entity["id"], box="WFL-10-01", slots=["A1"])
+    tube = stock["aliquots"][0]
+
+    before = commit_count(ledger)
+    renamed = ledger.boxes.rename("WFL-10-01", "WFL-20-01")
+    assert commit_count(ledger) == before + 1
+    assert dirty(ledger) == []
+    assert renamed["id"] == box["id"]
+    assert renamed["old_name"] == "WFL-10-01"
+    assert renamed["aliases"] == ["WFL-10-01"]
+    views = _view_names(ledger)
+    assert "v_box_wfl-20-01" in views
+    assert "v_box_wfl-10-01" not in views
+    # The new view shows the same contents, read by box id.
+    assert ledger.driver.query(
+        "SELECT `1` FROM `v_box_WFL-20-01` WHERE `row` = 'A'"
+    ) == [{"1": tube}]
+    # The old name still resolves (as an alias); the new one is the name.
+    shown = ledger.boxes.show("WFL-10-01")
+    assert shown["box"] == "WFL-20-01"
+    assert shown["aliases"] == ["WFL-10-01"]
+    assert box["id"] in {row["id"] for row in ledger.find("WFL-10-01")}
+    assert ledger.check().passed
+
+    # A case-only change of its own name is allowed and keeps one view.
+    ledger.boxes.rename(box["id"], "wfl-20-01")
+    assert "v_box_wfl-20-01" in _view_names(ledger)
+    assert ledger.check().passed
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="already in use"):
+        ledger.boxes.rename(box["id"], "OTHER")
+    with pytest.raises(LedgerError, match="already an alias of box"):
+        ledger.boxes.rename(box["id"], "taken")
+    with pytest.raises(UsageError, match="differs only in case"):
+        ledger.boxes.rename(box["id"], "other")
+    with pytest.raises(UsageError, match="core view"):
+        ledger.boxes.rename(box["id"], "slots")
+    with pytest.raises(UsageError, match="already named"):
+        ledger.boxes.rename(box["id"], "wfl-20-01")
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+    assert "v_box_wfl-20-01" in _view_names(ledger)
+
+
 def test_box_nesting_exclusivity_acyclicity_and_slotless_capacity(
     ledger_factory,
 ) -> None:
