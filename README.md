@@ -68,10 +68,10 @@ uv run tm --help
 ### Testing
 
 The suite runs against a real `dolt` binary (no mocks of Dolt) and is **embedded-only**: SQL runs
-through `dolt sql` subprocesses in the ledger directory, and independent read batches (such as
-`tm find`) share one process. There is no server harness. A ledger
-fixture builds each standard shape once per session and hands out directory copies, so a fresh test
-ledger costs a copy rather than a full init.
+through `dolt sql` subprocesses in the ledger directory; an independent read batch such as `tm find`
+is one JSON process plus, when it returns rows, one CSV header pass. There is no server harness. A
+ledger fixture builds each standard shape once per session and hands out directory copies, so a fresh
+test ledger costs a copy rather than a full init.
 
 ```sh
 uv run pytest -q -m fast                  # Dolt-free unit tests: seconds; the inner loop
