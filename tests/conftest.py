@@ -90,6 +90,11 @@ FAST_SUITE_BUDGET_SECONDS = 30.0
 #: plain ``uv run pytest`` still executes the process-budget tests on the
 #: embedded driver in the same session.  The suite is real Dolt either way.
 os.environ.setdefault(DRIVER_ENV, "server")
+#: The backend unmarked tests use: server by default, embedded when the whole
+#: session was explicitly started with TETRAMARK_DRIVER=embedded.
+SESSION_DEFAULT_BACKEND = (
+    os.environ.get(DRIVER_ENV, "").strip().lower() or "embedded"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -100,15 +105,15 @@ def _backend_for_test(
 
     Ledger tests default to the server driver (fast, same real Dolt); tests
     marked ``embedded_driver`` pin the per-statement embedded driver's process
-    budget and must run on that backend.  The fixture runs before the
+    budget, and tests marked ``embedded`` promise the embedded driver
+    explicitly, so both run on that backend.  The fixture runs before the
     function-scoped ``dolt_env`` fixture, so every env mapping a test passes to
     ``init_ledger``/``open``/a CLI subprocess carries the right value.
     """
-    mode = (
-        "embedded"
-        if request.node.get_closest_marker("embedded_driver") is not None
-        else "server"
-    )
+    marker = request.node.get_closest_marker("embedded_driver")
+    if marker is None:
+        marker = request.node.get_closest_marker("embedded")
+    mode = "embedded" if marker is not None else SESSION_DEFAULT_BACKEND
     monkeypatch.setenv(DRIVER_ENV, mode)
 
 
