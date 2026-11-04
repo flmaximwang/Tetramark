@@ -31,14 +31,20 @@ sequence patterns are the same as in proteins 2.
 
 ## Manual procedure
 
-1. Replace the ledger's stored copy of this preset with this checkout's copy
-   (files, not Dolt content). Run it from the root of the Tetramark checkout
-   that has the new presets:
+1. Replace the ledger's stored copy of this preset with the **frozen v3 copy**
+   in this folder (files, not Dolt content). Do **not** use the checkout's
+   `presets/proteins.yaml`: proteins is at v4 now, and this manual step must
+   keep installing the content whose counter it writes
+   (`migration/README.md`'s retrofit rule). Run it from the root of the
+   Tetramark checkout:
 
    ```sh
    LEDGER=/path/to/ledger
-   cp presets/proteins.yaml "$LEDGER/presets/proteins.yaml"
+   cp migration/presets/proteins/2-to-3/proteins-3.yaml "$LEDGER/presets/proteins.yaml"
    ```
+
+   The v4 step ([`../3-to-4/README.md`](../3-to-4/README.md)) runs **after**
+   the spec step's `tm schema apply`, once the counter says 3.
 
 2. Replace **every** other preset copy the ledger holds in the same go — a
    closure that mixes the old and the new model does not load. The spec step's

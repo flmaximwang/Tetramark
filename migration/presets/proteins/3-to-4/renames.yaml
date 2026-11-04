@@ -1,0 +1,8 @@
+# proteins 3 -> 4: a protein construct's length column counts amino acids.
+#
+# ``protein_construct.sequence`` is the construct's full-length amino-acid
+# sequence, so the computed length it carried as ``length_bp`` ("base pairs")
+# is renamed to ``length_aa``.  The diff planner renames the generated column in
+# place: no drop, no retype, no data movement (the value is recomputed from
+# ``sequence`` anyway).
+fields: {entity.protein_construct: {length_bp: length_aa}}

@@ -777,12 +777,11 @@ def test_generated_pattern_test_anchors_the_preset_regex() -> None:
     nucleic = _generated_pattern_queries("nucleic_acids")
     library = _generated_pattern_queries("library")
 
-    # The three IUPAC fields: sequence_fields (protein_construct and plasmid)
-    # and the protein mature_sequence share the two exact preset regexes.
-    assert PATTERN_SQL[0] in proteins["schema_protein_construct_pattern_sequence"]
+    # proteins 4 splits the shared mixin: the construct's ``sequence`` is amino
+    # acids (the same alphabet as ``mature_sequence``), while ``plasmid`` and
+    # the oligo keep the nucleotide pattern.
+    assert PATTERN_SQL[1] in proteins["schema_protein_construct_pattern_sequence"]
     assert PATTERN_SQL[1] in proteins["schema_protein_construct_pattern_mature_sequence"]
-    # ``plasmid`` loads the same mixin through ``nucleic_acids``; the oligo has
-    # its own nucleotide ``sequence`` field.
     assert PATTERN_SQL[0] in nucleic["schema_plasmid_pattern_sequence"]
     assert PATTERN_SQL[0] in nucleic["schema_oligo_pattern_sequence"]
     # An already-anchored preset pattern (library's ISBN) embeds unchanged.

@@ -19,7 +19,7 @@ stay one global namespace.
 | `base` | 5 | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator | ✓ | ✓ | ✓ |
 | `nucleic_acids` | 3 | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
 | `bacteria` | 2 | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
-| `proteins` | 3 | protein_construct, protein_prep | ✓ | ✓ | ✓ |
+| `proteins` | 4 | protein_construct, protein_prep | ✓ | ✓ | ✓ |
 | `cell_culture` | 3 | cell_line, cell_vial, cell_pellet, cell_biosample | ✓ | ✓ | |
 | `immuno` | 2 | antibody, antibody_lot | | ✓ | |
 | `viral_vectors` | 2 | virus, virus_prep | | ✓ | |
@@ -41,7 +41,7 @@ The bundles:
 
 A bundle's own version counts only its `include:` list, so a bundle that keeps the same parts keeps
 its version; every part it includes carries its own counter (the table above). A `molbio` ledger at
-version 3 therefore records `base: 5`, `proteins: 3`, `nucleic_acids: 3`, `bacteria: 2`,
+version 3 therefore records `base: 5`, `proteins: 4`, `nucleic_acids: 3`, `bacteria: 2`,
 `cell_culture: 3` and `molbio: 3` in `ledger_meta.preset_versions`.
 
 Each part's `description:` says what it covers and which bundles include it. New parts start at
@@ -61,15 +61,22 @@ older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) �
 v3 copies those steps install. A spec-4/base-2 ledger (e.g. molbio-2) follows: `spec/4-to-5`, then
 `base/2-to-3` and `molbio/2-to-3`, then `base/3-to-4`.
 
-`proteins` and `nucleic_acids` are at **version 3**: v3 drops their `statuses:` key, so their
-aliquots use the fixed status set like every other tube. v2 made the bundled sequence fields
-validate their alphabet (ticket rq9). `sequence_fields.sequence` and `oligo.sequence` take IUPAC nucleotide codes
-(`[ACGTURYKMSWBDHVN]+`), and `protein_construct.mature_sequence` takes IUPAC amino-acid codes
+`proteins` is at **version 4** and `nucleic_acids` at **version 3**. Their v2/v3 lineage dropped
+the `statuses:` key (the fixed status set) and made the bundled sequence fields validate their
+alphabet (ticket rq9): `sequence_fields.sequence` (a plasmid's DNA) and `oligo.sequence` take IUPAC
+nucleotide codes (`[ACGTURYKMSWBDHVN]+`), and `mature_sequence` takes IUPAC amino-acid codes
 (`[ACDEFGHIKLMNPQRSTVWYXBZUO*]+`). Patterns are validation-only, so the steps
 `migration/presets/proteins/1-to-2/` and then `migration/presets/nucleic_acids/1-to-2/` change no
 DDL but regenerate the `dolt_tests` that `tm check` runs; both refuse a ledger below spec 5 or
 base 4, and the nucleic step requires proteins already at 2. They run **after**
 `migration/presets/base/3-to-4/`, because they install repository base v4 copies.
+
+`proteins` v4 (ticket `Tetramark-3ht`) fixes the alphabet for the protein construct: its
+`sequence` is the full-length amino-acid sequence it was imported from, so `protein_construct` no
+longer loads the nucleotide `sequence_fields` mixin — it carries the amino-acid pattern itself —
+and its computed length column is `length_aa` (renamed from `length_bp`). `plasmid` keeps the
+nucleotide `sequence_fields`. The step `migration/presets/proteins/3-to-4/` applies the rename and
+runs **after** `migration/spec/5-to-6/` (the preset belongs to the spec-6 closure).
 
 ## The include graph
 

@@ -67,18 +67,23 @@ Preset catalogue:
   uses the fixed status set of §1.1, so `base` declares no status vocabulary. Version 4 renamed the
   `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the hand-run step is
   `migration/presets/base/3-to-4/`.
-- `proteins` (**version 3**, includes `base`) — entity `protein_construct` (sequence, mature_sequence,
-  molecular_weight_da, pI, extinction coefficients as computed, tag) and stock `protein_prep`
-  (concentration_mg_ml, buffer, purification_id, purity_pct). It also owns the
-  `sequence_fields` mixin (sequence + `length_bp`), because it is the deepest part both
-  `protein_construct` and `plasmid` load. Version 2 (ticket rq9) validates the alphabets: the
-  shared `sequence` carries `pattern: [ACGTURYKMSWBDHVN]+` (IUPAC nucleotide codes) and
+- `proteins` (**version 4**, includes `base`) — entity `protein_construct` (sequence, length_aa,
+  mature_sequence, molecular_weight_da, pI, extinction coefficients as computed, tag) and stock
+  `protein_prep` (concentration_mg_ml, buffer, purification_id, purity_pct). It also owns the
+  `sequence_fields` mixin (nucleotide `sequence` + `length_bp`), which `plasmid` (`nucleic_acids`)
+  loads through this part. Version 2 (ticket rq9) validates the alphabets: `protein_construct`'s
   `mature_sequence` carries `pattern: [ACDEFGHIKLMNPQRSTVWYXBZUO*]+` (IUPAC amino-acid codes plus
-  the ambiguity/stop symbols). Patterns are validation-only — the app checks them after sequence
+  the ambiguity/stop symbols) and the mixin's nucleotide `sequence` carries
+  `pattern: [ACGTURYKMSWBDHVN]+`. Patterns are validation-only — the app checks them after sequence
   normalisation and the generated `dolt_tests` mirror them — so the step
   `migration/presets/proteins/1-to-2/` changes no DDL but makes `tm check` report existing rows
   outside the alphabet. Version 3 drops the `statuses:` key: the prep's aliquots use the fixed
-  status set. Included by the `molbio` bundle; `nucleic_acids` includes it because a plasmid points
+  status set. Version 4 (ticket `Tetramark-3ht`) stops `protein_construct` from loading the
+  nucleotide mixin: a construct's `sequence` is its full-length **amino-acid** sequence (the legacy
+  `entity_constructs.sequence`), so it gets its own `sequence` with the amino-acid pattern and the
+  computed length column is renamed `length_bp` → `length_aa`; `plasmid` keeps the nucleotide
+  `sequence_fields`. The step is `migration/presets/proteins/3-to-4/` (an in-place rename, no data
+  change). Included by the `molbio` bundle; `nucleic_acids` includes it because a plasmid points
   at the protein design it expresses.
 - `nucleic_acids` (**version 3**, includes `base`, `proteins`) — entities `plasmid` (sequence,
   backbone, resistance, ref `construct` → protein_construct with `lineage: true`) and `oligo`

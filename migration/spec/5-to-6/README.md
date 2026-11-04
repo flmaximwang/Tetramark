@@ -131,6 +131,23 @@ The ledger's `ledger.yaml` names the presets it loads (a bundle names its
 parts too, through `include:`); every one of them has a copy in
 `<ledger>/presets/`.
 
+**A part that bumped again after spec 6.** The loop installs this checkout's
+current copy, which is right for every part whose counter the spec step writes.
+A part with a *newer* preset step must first land the version that step moves
+from — otherwise the step's rename never runs. Today that is `proteins`: v4
+(`migration/presets/proteins/3-to-4/README.md`) splits the sequence mixin and
+renames `length_bp` to `length_aa`. Place the frozen v3 copy after the loop,
+let step 5 write `proteins: 3`, then run the v4 step:
+
+```sh
+cp migration/presets/proteins/2-to-3/proteins-3.yaml \
+   "$LEDGER/presets/proteins.yaml"
+uv run migration/presets/proteins/3-to-4/migrate.py --ledger "$LEDGER"
+```
+
+The v4 step runs **after** step 5 (`tm schema apply`): it refuses a ledger
+whose spec is still 5.
+
 Check the result — the expected output is empty:
 
 ```sh
