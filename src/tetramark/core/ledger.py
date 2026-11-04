@@ -1560,16 +1560,26 @@ class Ledger:
         *,
         regex: bool = False,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        with_rewrite: bool = False,
     ) -> list[dict[str, Any]]:
         """Search ids, aliases, names, kind text and ``--where`` filters.
 
         ``regex`` treats the query as a case-insensitive database regex;
         ``where`` takes the shared ``field=value`` / ``field~pattern`` filters
         and applies them to every hit (aliquots are excluded when given).
+        ``with_rewrite`` runs the ledger's ``find.rewrites`` rules next to the
+        literal query (the default is a zero-hit fallback only); rewrite hits
+        carry ``match == "<tier> via <rule>"`` and a ``rewrite`` object.
         """
         from tetramark.ops.find import find
 
-        return find(self, query, regex=regex, where=where)
+        return find(
+            self,
+            query,
+            regex=regex,
+            where=where,
+            with_rewrite=with_rewrite,
+        )
 
     def history(self, ref: str) -> dict[str, Any]:
         """Aliquot events plus Dolt commits touching one object (ticket 11)."""

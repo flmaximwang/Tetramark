@@ -52,7 +52,7 @@ from tetramark.core.filters import (
     validate_patterns,
 )
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
-from tetramark.errors import LedgerError, UsageError
+from tetramark.errors import LedgerError, UsageError, try_find_hint
 from tetramark.schema.ddl import (
     CORE_COLUMNS,
     box_view_name,
@@ -793,6 +793,24 @@ def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
     raise LedgerError(f"unknown {object_type} {ref!r}")
 
 
+def _resolve_core_with_hint(
+    session: Any, object_type: str, ref: str
+) -> dict[str, Any]:
+    """``_resolve_core`` plus a ``try tm find`` suffix on a plain miss.
+
+    Single-object resolution never applies ``find.rewrites`` (Tetramark-53r.1),
+    so the user-facing ``--entity`` and ``tm alias add`` resolvers point at
+    ``tm find``, the command that does.  An ambiguous id prefix stays a usage
+    error and gets no hint.
+    """
+    try:
+        return _resolve_core(session, object_type, ref)
+    except UsageError:
+        raise
+    except LedgerError as error:
+        raise LedgerError(f"{error}{try_find_hint(ref)}") from error
+
+
 def _resolve_box(session: Any, ref: str) -> dict[str, Any]:
     """Find a box by its human name (preferred), then id, then alias."""
     rows = session.query(
@@ -1296,8 +1314,8 @@ def _wrong_type_hint(ledger: Ledger, object_type: str, ref: str) -> str:
     ``ops.find`` imports this module at module level.
 
     A ref that names nothing, an empty or ambiguous ref (``UsageError``) and a
-    ref of a third object type keep the plain not-found message and get no
-    hint.
+    ref of a third object type get no type hint; the callers append the
+    plain ``try tm find`` hint instead (Tetramark-53r.1).
     """
     text = str(ref).strip()
     if not text:
@@ -1379,7 +1397,7 @@ def _read_box_rows(
         if len(matches) == 1:
             return _read_box_rows(ledger, str(matches[0]["id"]))
         # ``_resolve_box`` falls through to ``_resolve_core``'s error.
-        raise LedgerError(f"unknown box {ref!r}")
+        raise LedgerError(f"unknown box {ref!r}{try_find_hint(ref)}")
     return (
         dict(box_rows[0]),
         _box_paths(fetched[1]),
@@ -1721,9 +1739,16 @@ def show_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
     """One entity (core + kind fields), accepting an ID or an alias.
 
     ``aliases`` is the object's sorted alias list (spec §6); the generated
-    views expose the same data as ``alias_list``.
+    views expose the same data as ``alias_list``.  A miss is a not-found
+    error that points at ``tm find`` (which applies ``find.rewrites``).
     """
-    record, aliases, _ = _read_record_batch(ledger, "entity", ref)
+    try:
+        record, aliases, _ = _read_record_batch(ledger, "entity", ref)
+    except UsageError:
+        # An ambiguous id prefix is a usage error; it keeps its exit code.
+        raise
+    except LedgerError as error:
+        raise LedgerError(f"{error}{try_find_hint(ref)}") from error
     record["aliases"] = aliases
     return record
 
@@ -1855,7 +1880,7 @@ def add_stock(
     with ledger.write(
         f"{kind_name} {stock_id} x{count}", verb="add", object="stock"
     ) as session:
-        entity_row = _resolve_core(session, "entity", entity)
+        entity_row = _resolve_core_with_hint(session, "entity", entity)
         if kind.entity_kinds is not None and entity_row["kind"] not in kind.entity_kinds:
             allowed = ", ".join(kind.entity_kinds)
             raise LedgerError(
@@ -1979,7 +2004,8 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
     """One stock, its sorted aliases (``aliases``) and its aliquots.
 
     A ref that names an aliquot is a not-found error that points at
-    ``tm aliquot show`` (spec §6); any other miss keeps the plain message.
+    ``tm aliquot show`` (spec §6); any other miss points at ``tm find``,
+    which applies the ledger's ``find.rewrites`` rules.
     """
     id_sql = _resolved_id_sql("stock")
     params = _resolved_id_params(id_sql, ref)
@@ -2002,7 +2028,8 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
     except LedgerError as error:
         hint = _wrong_type_hint(ledger, "stock", ref)
         if not hint:
-            raise
+            # A plain miss points at ``tm find`` (rewrite rules live there).
+            raise LedgerError(f"{error}{try_find_hint(ref)}") from error
         raise LedgerError(f"{error}{hint}") from error
     record["aliases"] = aliases
     record["aliquots"] = extra[0]
@@ -2506,7 +2533,8 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     The stock kind's own fields are not part of the record — ``tm stock show``
     owns them — and the record carries no event timeline (``tm history`` owns
     that).  A ref that names a stock is a not-found error that points at
-    ``tm stock show`` (spec §6); any other miss keeps the plain message.
+    ``tm stock show`` (spec §6); any other miss points at ``tm find``,
+    which applies the ledger's ``find.rewrites`` rules.
     """
     if not ref:
         raise LedgerError(f"unknown aliquot {ref!r}")
@@ -2542,7 +2570,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
 
     rows = fetched[0]
     if not rows:
-        hint = _wrong_type_hint(ledger, "aliquot", ref)
+        hint = _wrong_type_hint(ledger, "aliquot", ref) or try_find_hint(ref)
         raise LedgerError(f"unknown aliquot {ref!r}{hint}")
     row = dict(rows[0])
     stock_rows = fetched[2]
@@ -3117,7 +3145,7 @@ def add_alias(
     text = str(alias).strip()
     if not text:
         raise UsageError("an alias must not be empty")
-    resolved = _resolve_core(ledger.driver, checked_type, str(object_id))
+    resolved = _resolve_core_with_hint(ledger.driver, checked_type, str(object_id))
     canonical_id = str(resolved["id"])
 
     with ledger.write(

@@ -37,11 +37,23 @@ The statements are built first and fetched by a single
 cost extra queries.  :func:`search` is one pure pass and :func:`find` the thin
 orchestration around it, so Tetramark-53r.1 can add a zero-hit rewrite fallback
 without changing the search core.
+
+``find.rewrites`` rules (``ledger.yaml``, see
+:class:`tetramark.schema.model.FindConfig`) may rewrite a *literal* query --
+never a ``-E`` pattern and never a ``--where`` pattern.  By default a query
+with zero hits is retried with every rule, in one batch, and the first rule that
+produces hits is shown; ``--with-rewrite`` always runs every rule next to the
+original query in the same batch and appends its hits below the original ones
+(ordered by rule, then tier; an object found both ways keeps its original
+entry).  A rewrite hit's ``match`` is ``"<tier> via <rule>"`` and its JSON row
+carries ``rewrite: {rule, query}``.  Single-object resolution
+(:func:`resolve_any` and the show/history/lineage paths) never rewrites; their
+not-found errors point at ``tm find`` instead.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from tetramark.core.filters import (
@@ -62,9 +74,9 @@ from tetramark.core.objects import (
     box_kind_columns,
     box_kind_from,
 )
-from tetramark.errors import LedgerError, UsageError
+from tetramark.errors import LedgerError, UsageError, try_find_hint
 from tetramark.schema.ddl import CORE_COLUMNS
-from tetramark.schema.model import FieldType, Kind
+from tetramark.schema.model import FieldType, Kind, Rewrite
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
@@ -201,7 +213,10 @@ def resolve_any(ledger: Ledger, ref: str) -> dict[str, Any]:
         raise UsageError(
             f"alias {text!r} is ambiguous: it names {kinds}; pass the object id"
         )
-    raise LedgerError(f"unknown object {text!r} (no such id, box name or alias)")
+    raise LedgerError(
+        f"unknown object {text!r} (no such id, box name or alias)"
+        f"{try_find_hint(text)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +263,6 @@ class _ReadBatch:
     def __init__(self) -> None:
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.positions: dict[str, int] = {}
-        #: ``(object_type, name columns, text columns, result index)`` per scan.
-        self.scans: list[tuple[str, list[str], list[str], int]] = []
         #: ``(object_type, kind, result index)`` per kind carrying the filters.
         self.filter_groups: list[tuple[str, str, int]] = []
 
@@ -346,11 +359,23 @@ class _IdentityMaps:
 
 
 def _add_search_statements(
-    batch: _ReadBatch, ledger: Ledger, text: str, *, regex: bool
-) -> None:
-    """Append the id, alias and kind-text statements of one search."""
+    batch: _ReadBatch,
+    ledger: Ledger,
+    text: str,
+    *,
+    regex: bool,
+    prefix: str = "",
+) -> list[tuple[str, list[str], list[str], int]]:
+    """Append the id, alias and kind-text statements of one search.
+
+    ``prefix`` namespaces the batch keys so several search passes can share one
+    ``query_many`` batch (``--with-rewrite`` runs the original query and every
+    rewrite together).  Returns this pass's ``(object_type, name columns, text
+    columns, result index)`` scans; :func:`_collect_hits` reads them back.
+    """
     pattern = _regex_pattern(text) if regex else ""
     needle = text.lower()
+    scans: list[tuple[str, list[str], list[str], int]] = []
 
     # 1. Exact core ids (aliquot ids live on the aliquot table; their kind
     #    comes from the stock, not from the aliquot row).
@@ -365,7 +390,7 @@ def _add_search_statements(
             sql = f"SELECT `id`, `kind` FROM {_quote(object_type)} "
             condition = "`id` REGEXP %s" if regex else "`id` = %s"
         batch.add(
-            f"id:{object_type}",
+            f"{prefix}id:{object_type}",
             sql + "WHERE " + condition,
             (pattern if regex else text,),
         )
@@ -374,7 +399,7 @@ def _add_search_statements(
     #    the alias tier (there is no prefix/substring distinction).
     if regex:
         batch.add(
-            "alias_hits",
+            f"{prefix}alias_hits",
             f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
             f"FROM {_quote('alias')} WHERE {_quote('alias')} REGEXP %s "
             f"ORDER BY {_quote('object_type')}",
@@ -382,7 +407,7 @@ def _add_search_statements(
         )
     else:
         batch.add(
-            "alias_hits",
+            f"{prefix}alias_hits",
             f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
             f"FROM {_quote('alias')} WHERE LOCATE(LOWER(%s), LOWER({_quote('alias')})) > 0 "
             f"ORDER BY {_quote('object_type')}",
@@ -446,8 +471,11 @@ def _add_search_statements(
                 + f" FROM {from_sql} WHERE "
                 + " OR ".join(clauses)
             )
-            index = batch.add(f"scan:{object_type}:{kind_name}", sql, tuple(params))
-            batch.scans.append((object_type, name_columns, text_columns, index))
+            index = batch.add(
+                f"{prefix}scan:{object_type}:{kind_name}", sql, tuple(params)
+            )
+            scans.append((object_type, name_columns, text_columns, index))
+    return scans
 
 
 def _add_filter_statements(
@@ -545,8 +573,8 @@ def search(
     Exactly one search batch is built and fetched, though a ``=`` filter on a
     ``ref`` field may still resolve its ref through the shared coercion.  A
     zero-hit result is honest: no rewrite fallback lives here.  Tetramark-53r.1
-    adds that in :func:`find`, which may call this function again with a
-    rewritten query and merge the hits.
+    adds that in :func:`find`, which searches rewritten queries too and merges
+    the hits; this function never ranks them.
 
     ``where`` is the filter syntax; ``filters`` is its already-parsed form,
     which :func:`find` passes so the filters are parsed once (the two are
@@ -568,6 +596,7 @@ def find(
     *,
     regex: bool = False,
     where: Where = (),
+    with_rewrite: bool = False,
 ) -> list[dict[str, Any]]:
     """Search one ledger by id, alias, name, kind text and/or ``--where``.
 
@@ -578,6 +607,16 @@ def find(
     excluded whenever it is given.  With ``where`` and no query, every matching
     object is listed with ``match == "filter"``, sorted by object type, kind and
     id.  Passing neither a query nor a filter is a usage error.
+
+    ``find.rewrites`` rules (``ledger.yaml``) rewrite a literal query only.
+    By default they are a fallback for a query with zero hits: every rule is
+    tried and the first one that produces hits is shown.  With ``with_rewrite``
+    every rule runs next to the original query; original hits come first, then
+    each rule's hits in rule order.  Rewrite hits carry
+    ``match == "<tier> via <rule>"`` and ``rewrite == {"rule": ..., "query":
+    ...}``; an object found both ways keeps its original entry.  A ``-E``
+    pattern and a ``--where`` pattern are never rewritten, and the filters
+    narrow rewrite hits exactly like original ones.
     """
     filters = parse_filters(where, option="--where")
     _check_where_fields(ledger, filters)
@@ -588,22 +627,109 @@ def find(
                 "the search query must not be empty; pass a QUERY or at least "
                 "one --where filter"
             )
-        results = _filter_pass(ledger, filters)
-    else:
-        # The one tested seam for Tetramark-53r.1: the query branch goes
-        # through search(), so a zero-hit rewrite fallback can search again
-        # with a rewritten query and merge/annotate the unranked hits here.
-        results = search(ledger, text, regex=regex, filters=filters)
-    return _rank(results)
+        return _rank(_filter_pass(ledger, filters))
+
+    rewrites = [] if regex else ledger.config.find.rewrites_for(text)
+    if not rewrites:
+        return _rank(search(ledger, text, regex=regex, filters=filters))
+    if with_rewrite:
+        # The original query and every rewrite in one batch.  Original hits
+        # first, then each rule's tier-sorted hits in rule order; a duplicate
+        # object keeps the entry it already has.
+        groups = _search_many(
+            ledger,
+            [text, *(rewrite.query for rewrite in rewrites)],
+            regex=False,
+            filters=filters,
+        )
+        return _merge_rewrites(groups[0], rewrites, groups[1:])
+
+    results = search(ledger, text, regex=regex, filters=filters)
+    if results:
+        return _rank(results)
+    # Zero hits: try every rule in one batch and show the first rule whose
+    # rewrite produces hits.  Each rule is matched against the *original*
+    # query only, so rules never chain.
+    groups = _search_many(
+        ledger,
+        [rewrite.query for rewrite in rewrites],
+        regex=False,
+        filters=filters,
+    )
+    for rewrite, hits in zip(rewrites, groups):
+        if hits:
+            return _rank(_annotate_rewrite(hits, rewrite))
+    return []
+
+
+def _annotate(row: dict[str, Any], rewrite: Rewrite) -> dict[str, Any]:
+    """Mark one hit as produced by a rewrite rule (table and JSON shape)."""
+    row["match"] = f"{row['match']} via {rewrite.rule}"
+    row["rewrite"] = {"rule": rewrite.rule, "query": rewrite.query}
+    return row
+
+
+def _annotate_rewrite(
+    hits: list[dict[str, Any]], rewrite: Rewrite
+) -> list[dict[str, Any]]:
+    """Annotate every hit of one successful rewrite fallback."""
+    return [_annotate(row, rewrite) for row in hits]
+
+
+def _merge_rewrites(
+    original: list[dict[str, Any]],
+    rewrites: Sequence[Rewrite],
+    groups: Sequence[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Original hits, then every rule's hits in rule order (no duplicates).
+
+    An object found by the original query and by a rewrite (or by two rules)
+    keeps the entry it was seen with first, as the spec requires.  Ranks are
+    numbered over the merged list; the per-row ``score`` still names the tier
+    that matched.
+    """
+    merged = list(original)
+    seen = {(str(row["object"]), str(row["id"])) for row in merged}
+    for rewrite, hits in zip(rewrites, groups):
+        for row in hits:
+            key = (str(row["object"]), str(row["id"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(_annotate(row, rewrite))
+    return _number(merged)
 
 
 def _search_pass(
     ledger: Ledger, text: str, *, regex: bool, filters: tuple[Filter, ...]
 ) -> list[dict[str, Any]]:
     """Build, fetch and enrich one search; the hits are sorted but unranked."""
-    needle = text.lower()
+    return _search_many(ledger, [text], regex=regex, filters=filters)[0]
+
+
+def _search_many(
+    ledger: Ledger,
+    texts: Sequence[str],
+    *,
+    regex: bool,
+    filters: tuple[Filter, ...],
+) -> list[list[dict[str, Any]]]:
+    """Search several literal queries in one batch; one hit list per query.
+
+    The original query and every rewritten one ride in the same
+    ``query_many`` batch, so the enrichment maps (identities, aliases,
+    locations) are read once.  With one text this is exactly the pass behind
+    :func:`search`; rewrites are only ever literal, so ``regex`` is never
+    combined with more than one text.
+    """
     batch = _ReadBatch()
-    _add_search_statements(batch, ledger, text, regex=regex)
+    scopes: list[tuple[str, list[tuple[str, list[str], list[str], int]]]] = []
+    for index, text in enumerate(texts):
+        prefix = f"q{index}:" if len(texts) > 1 else ""
+        scans = _add_search_statements(
+            batch, ledger, text, regex=regex, prefix=prefix
+        )
+        scopes.append((prefix, scans))
     _add_filter_statements(batch, ledger, filters)
     batch.add_enrichment()
     # No kind carries the filters (a combination no kind can express), so no
@@ -614,11 +740,39 @@ def _search_pass(
     fetched = _fetch(
         ledger,
         batch,
-        regex_query=text if regex else None,
+        regex_query=texts[0] if regex else None,
         filters=filters,
     )
     maps = _IdentityMaps(fetched, batch.positions)
+    allowed = _allowed_ids(fetched, batch.filter_groups) if filters else None
+    return [
+        _collect_hits(
+            fetched,
+            batch.positions,
+            scans,
+            maps,
+            allowed,
+            prefix=prefix,
+            text=texts[index],
+            regex=regex,
+        )
+        for index, (prefix, scans) in enumerate(scopes)
+    ]
 
+
+def _collect_hits(
+    fetched: list[list[dict[str, Any]]],
+    positions: Mapping[str, int],
+    scans: Sequence[tuple[str, list[str], list[str], int]],
+    maps: _IdentityMaps,
+    allowed: set[tuple[str, str, str]] | None,
+    *,
+    prefix: str,
+    text: str,
+    regex: bool,
+) -> list[dict[str, Any]]:
+    """Build the enriched, sorted hits of one search from its batch result."""
+    needle = text.lower()
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
 
     def offer(
@@ -645,7 +799,7 @@ def _search_pass(
 
     # 1. Ids (exact, or a regex match with -E).
     for object_type in ("entity", "stock", "aliquot", "box"):
-        for row in fetched[batch.positions[f"id:{object_type}"]]:
+        for row in fetched[positions[f"{prefix}id:{object_type}"]]:
             offer(
                 object_type,
                 str(row["id"]),
@@ -656,7 +810,7 @@ def _search_pass(
 
     # 2. Aliases: rank exact/prefix/contains literally; with -E every alias
     #    match is the alias tier.  The identity comes from the batched maps.
-    for row in fetched[batch.positions["alias_hits"]]:
+    for row in fetched[positions[f"{prefix}alias_hits"]]:
         object_type = str(row["object_type"])
         object_id = str(row["object_id"])
         found = maps.identity(object_type, object_id)
@@ -682,7 +836,7 @@ def _search_pass(
         )
 
     # 3. Name and kind string/text fields, one view per kind.
-    for object_type, name_columns, text_columns, index in batch.scans:
+    for object_type, name_columns, text_columns, index in scans:
         for row in fetched[index]:
             if regex:
                 matched_name = bool(row.get(_NAME_MARKER))
@@ -707,8 +861,7 @@ def _search_pass(
                 match=match,
             )
 
-    if filters:
-        allowed = _allowed_ids(fetched, batch.filter_groups)
+    if allowed is not None:
         candidates = {
             key: candidate
             for key, candidate in candidates.items()
@@ -858,6 +1011,11 @@ def _enrich(
 def _rank(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sort and number the hits; ``find`` is where ranks are assigned."""
     results.sort(key=_result_key)
+    return _number(results)
+
+
+def _number(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Number already-ordered hits without re-sorting (rewrite merges)."""
     for index, row in enumerate(results, start=1):
         row["rank"] = index
     return results

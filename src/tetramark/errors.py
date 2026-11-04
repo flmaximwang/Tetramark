@@ -28,7 +28,21 @@ __all__ = [
     "LedgerError",
     "UsageError",
     "UnreachableError",
+    "try_find_hint",
 ]
+
+
+def try_find_hint(ref: str) -> str:
+    """The ``; try tm find <ref>`` suffix of a single-object not-found error.
+
+    Single-object resolution (show, history, lineage, ``--entity`` and
+    ``tm alias add``) stays exact: a ``find.rewrites`` rule is never applied to
+    it.  The error therefore points at ``tm find``, the one command that does
+    apply the ledger's rewrite rules (Tetramark-53r.1).  An empty ref gets no
+    hint.
+    """
+    text = str(ref).strip()
+    return f"; try tm find {text}" if text else ""
 
 
 class LedgerError(Exception):
