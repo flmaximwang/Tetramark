@@ -18,6 +18,8 @@ aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit)
 alias(object_type, object_id, alias, PK(object_type, alias))
 ```
 
+New `use` and `move` events store their required message (§6) in `note`; they leave `purpose` NULL.
+
 `ledger_meta` also carries the version stamps:
 
 - `spec_version` is the **ledger format version** — the key an upgrade pipeline
