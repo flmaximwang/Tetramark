@@ -82,12 +82,14 @@ tm status [--json]                        # one ledger at a glance (6.1)
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] ; tm entity edit ID --set f=v
 tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
+tm entity purge ID|ALIAS                    # hard delete, explicit only; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
 tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
+tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
@@ -100,6 +102,7 @@ tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless bo
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
 tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
+tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
@@ -178,6 +181,26 @@ use of a tube with no quantity).
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no `purpose` or
 `note` argument, and a `move` message is required and validated like a `use` message.
+
+`tm entity purge`, `tm stock purge`, `tm aliquot purge` and `tm box purge` are explicit **hard
+deletes**, only for an object added by mistake: the rows leave the tables and Dolt history keeps
+them. Each makes exactly one Dolt commit (`purge(<object>): <summary>`), resolves REF like
+`show`/`edit` (id, unique ID prefix where that object allows one, alias; a box also by name), takes
+the write lock, supports `--json` (`{object, id, kind, purged: true, …counts}`; an aliquot has no
+`kind`, and a box carries its `name`) and honours the
+global `--dry-run`/`--no-commit`; the object's alias rows go in the same write. A purge checks core
+foreign keys and user `type: ref` kind fields that point at the object or its kind, and refuses with a
+business error (exit 1), writing nothing, while anything still references it; the message names the
+referents (capped) and the command that clears them. Purging never cascades beyond a stock's own
+aliquots. `tm entity purge` refuses while a stock points at the entity; `tm stock purge` refuses on a
+child stock, a stock naming one of its aliquots as `source_aliquot_id`, or a kind ref field pointing
+at the stock or one of its aliquots, and otherwise removes its own aliquots (their events and
+aliases too); `tm box purge` refuses while the box holds an aliquot or a child box and otherwise
+removes the slot rows, the `box_<kind>` row and the box row and drops `v_box_<name>` in the same
+commit. `tm aliquot purge` also deletes the tube's aliases and refuses when a stock's
+`source_aliquot_id` or a kind `ref` field still references the tube. The Python API mirrors the four
+purges: `ledger.entities.purge(ref)`, `ledger.stocks.purge(ref)`, `ledger.aliquots.purge(ref)` and
+`ledger.boxes.purge(ref)`.
 
 A box name must be **view-safe**, because each existing box gets a generated view (§3):
 `v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters

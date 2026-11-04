@@ -115,7 +115,8 @@ tm aliquot status 1226KO02.3 missing --note "not in the box on 2026-10-23"
 ```
 
 Never encode consumption by editing the quantity with raw SQL: `use` writes the event and flips the
-status automatically. Use `purge` only when the tube never existed in the first place.
+status automatically. Use `purge` only when the object never existed in the first place; the same
+explicit hard delete exists for entities, stocks and boxes (`tm entity|stock|box purge`).
 
 ## 4. Move a box and trace it
 

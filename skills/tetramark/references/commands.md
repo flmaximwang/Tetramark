@@ -179,6 +179,7 @@ tm entity add KIND [--name NAME] [--set FIELD=VALUE ...] [--alias ALIAS ...] \
 tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm entity rename ID|ALIAS NEW_NAME [--json]
+tm entity purge ID|ALIAS [--json]
 tm entity list [KIND] [--where FILTER ...] [--json]
 ```
 
@@ -189,6 +190,11 @@ tm entity list [KIND] [--where FILTER ...] [--json]
 commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
 already another entity's alias.
 `show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
+`purge` hard-deletes an entity added by mistake in one commit (`purge(entity): …`): its kind row, its
+alias rows and the entity row. It refuses (exit 1, nothing written) while a stock or a kind `ref`
+field still points at the entity, naming the referents (capped) and `tm stock purge REF` (or the edit
+that clears the ref); the rows stay in Dolt history. `--json` adds the `aliases` count to
+`{object, id, kind, purged: true}`.
 The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
 (at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
 always print the full 36-character id, and datecode/sequence/aliquot ids are never shortened.
@@ -208,6 +214,7 @@ tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm stock list [KIND] [--where FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
+tm stock purge ID|ALIAS [--json]
 ```
 
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
@@ -226,6 +233,12 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
   with a rounded border (`<id> · <status>`, quantity/unit, `label:`, path or `not in stock`,
   `aliases:`), not a JSON blob; cards flow left to right and wrap at the console width, and
   `tm aliquot list STOCK` is the tabular view.
+- `purge` hard-deletes a stock added by mistake in one commit (`purge(stock): …`): its own aliquots —
+  each tube's event rows, alias rows and row — then its kind row, alias rows and stock row. It refuses
+  (exit 1, nothing written) while another stock has `parent_stock_id` = it, `source_aliquot_id` = one
+  of its aliquots or a kind `ref` field still points at it or at one of its aliquots. The human line is
+  `Purged stock X (N aliquot(s), M event(s) removed)`; `--json` adds the `aliquots`, `events` and
+  `aliases` counts.
 
 `stock renumber` repairs ids that predate (or ignore) the ledger's stock id strategy. Give one REF and
 `--id NEW` for a single rename, one or more REFs with `--auto` to generate strategy-shaped ids, or
@@ -301,7 +314,10 @@ tm aliquot purge ALQ [--json]
   event keeps the old position in its `from_*` columns, so `history` still shows where the tube was.
 - `move` of a not-in-stock aliquot also sets it to `stored`; with `--status` the normal transition
   check runs and the result must still be `stored`.
-- `purge` hard-deletes an aliquot and its events. It is the only hard delete; prefer `status consumed`.
+- `purge` hard-deletes a tube added by mistake in one commit (`purge(aliquot): …`): its event rows,
+  alias rows and aliquot row. It refuses (exit 1, nothing written) while a stock's
+  `source_aliquot_id` or a kind `ref` field still points at it, instead of surfacing a raw FK error;
+  prefer `status consumed` for a tube that existed. `--json` adds the `events` and `aliases` counts.
 
 ### Move a tube to another box
 
@@ -329,6 +345,7 @@ tm box show NAME|ID|ALIAS [--json]
 tm box list [--kind KIND] [--where FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
+tm box purge NAME|ID|ALIAS [--json]
 ```
 
 `box list` prints `id name kind path occupied capacity`. The first column shows a unique short UUID
@@ -349,6 +366,15 @@ path refuse it).
 `box rename` applies the same name rules (a case-only change of the box's own name is allowed),
 refuses a name that is another box's name or alias, keeps the old name as an alias, and replaces
 `v_box_<old>` with `v_box_<new>` in the same commit.
+
+`box purge` hard-deletes an empty box added by mistake in one commit (`purge(box): …`); it never
+cascades. It refuses (exit 1, nothing written) while the box holds an aliquot or a child box, or a
+kind `ref` field still points at it, pointing at `tm aliquot move`, `tm box move`, `tm box purge` and
+the reference clear path: re-point an entity/stock kind field with `tm entity|stock edit --set
+FIELD=OTHER-ID`, and for a box kind field (which has no edit command) purge and re-create the empty
+holder box. Otherwise it removes the slot rows, the `box_<kind>` row, the alias rows
+and the box row, and runs `DROP VIEW IF EXISTS v_box_<name>` in the same commit. The human line names
+the slots removed; `--json` adds the `slots` and `aliases` counts.
 
 `box show` prints a terminal grid with an `aliases: …` line when the box has aliases (or `--json` for
 `{id, box, kind, geometry, path, aliases, slots:[...]}` with the full UUID) and works for slotless

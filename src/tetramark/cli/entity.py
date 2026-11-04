@@ -155,3 +155,25 @@ def rename_entity_command(
         )
     finally:
         ledger.close()
+
+
+@entity_app.command("purge")
+@write_command
+def purge_entity_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Entity id or alias."),
+    as_json: bool = typer.Option(False, "--json", help="Print the purged object as JSON."),
+) -> None:
+    """Hard-delete an entity added by mistake (explicit; no reference may remain)."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.entities.purge(ref)
+        emit_write(
+            ledger,
+            result,
+            f"Purged entity {result['kind']} {result['id']} "
+            f"({result['aliases']} alias(es) removed)",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()

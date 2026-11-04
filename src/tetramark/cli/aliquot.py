@@ -388,14 +388,15 @@ def purge_aliquot_command(
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
     as_json: bool = typer.Option(False, "--json", help="Print the purged id as JSON."),
 ) -> None:
-    """Hard-delete an aliquot and its events (explicit; no soft status)."""
+    """Hard-delete an aliquot, its events and its aliases (explicit; no soft status)."""
     ledger = resolve_ledger(ctx)
     try:
         result = ledger.aliquots.purge(ref)
         emit_write(
             ledger,
             result,
-            f"Purged aliquot {result['id']} ({result['events']} event(s) removed)",
+            f"Purged aliquot {result['id']} ({result['events']} event(s), "
+            f"{result['aliases']} alias(es) removed)",
             as_json=json_output(ctx, as_json),
         )
     finally:

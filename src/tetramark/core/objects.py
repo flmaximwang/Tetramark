@@ -101,6 +101,9 @@ __all__ = [
     "move_box",
     "plain_decimal",
     "purge_aliquot",
+    "purge_box",
+    "purge_entity",
+    "purge_stock",
     "read_rename_map",
     "remove_alias",
     "renumber_stocks",
@@ -2524,22 +2527,513 @@ def set_aliquot_status(
         }
 
 
+# ---------------------------------------------------------------------------
+# Purge: explicit hard delete (entity, stock, aliquot, box)
+# ---------------------------------------------------------------------------
+
+
+def _cap_items(items: Sequence[str], limit: int = 10) -> str:
+    """The first ``limit`` referents, with a count for the rest (spec §6)."""
+    text = ", ".join(items[:limit])
+    if len(items) > limit:
+        text += f" and {len(items) - limit} more"
+    return text
+
+
+def _purge_refusal(
+    object_type: str,
+    object_id: str,
+    referents: Sequence[str],
+    remedy: str,
+) -> LedgerError:
+    """The one refusal every purge shares (spec §6).
+
+    The message names the referents (capped) and the command that clears them,
+    so a raw foreign-key error never reaches the user.
+    """
+    count = len(referents)
+    noun = "object" if count == 1 else "objects"
+    verb = "references" if count == 1 else "reference"
+    return LedgerError(
+        f"cannot purge {object_type} {object_id!r}: {count} other {noun} "
+        f"still {verb} it: {_cap_items(list(referents))}; {remedy}"
+    )
+
+
+def _delete_aliases(
+    session: Any, object_type: str, object_ids: Sequence[str]
+) -> int:
+    """Delete the alias rows of one or more objects; return how many.
+
+    Alias rows have no foreign key, so a purge must remove them explicitly or
+    they keep holding ``(object_type, alias)`` for a row that no longer exists
+    (spec §6).
+    """
+    ids = [str(value) for value in object_ids]
+    if not ids:
+        return 0
+    placeholders = ", ".join("%s" for _ in ids)
+    where = (
+        f"{_quote('object_type')} = %s AND {_quote('object_id')} "
+        f"IN ({placeholders})"
+    )
+    rows = session.query(
+        f"SELECT COUNT(*) AS `n` FROM {_quote('alias')} WHERE {where}",
+        (object_type, *ids),
+    )
+    count = int(rows[0]["n"]) if rows else 0
+    session.execute(
+        f"DELETE FROM {_quote('alias')} WHERE {where}", (object_type, *ids)
+    )
+    return count
+
+
+def _kind_ref_referents(
+    session: Any,
+    ledger: Ledger,
+    object_type: str,
+    kind_name: str | None,
+    object_ids: Sequence[str],
+    *,
+    exclude: tuple[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """``(object_type, id, kind.field)`` references held by kind ``ref`` fields.
+
+    A ``type: ref`` field points at a core table (``to: aliquot`` …) or at one
+    kind's table (``to: plasmid``).  Only the fields that can hold this object's
+    id are searched: a field to another kind cannot reference it, because the
+    kind tables join the core row on ``(id, kind)``.  ``exclude`` skips one kind
+    row (the purged object's own row), which is deleted in the same write and
+    may legitimately reference the object or its children.
+    """
+    ids = [str(value) for value in object_ids]
+    if not ids:
+        return []
+    placeholders = ", ".join("%s" for _ in ids)
+    found: list[tuple[str, str, str]] = []
+    for other_name in sorted(ledger.schema.kinds):
+        other = ledger.schema.kinds[other_name]
+        table = table_name(other.object.value, other_name)
+        for field_name in sorted(other.fields):
+            field = other.fields[field_name]
+            if field.type is not FieldType.ref:
+                continue
+            target = str(field.to)
+            if target != object_type and target != kind_name:
+                continue
+            rows = session.query(
+                f"SELECT {_quote('id')} AS `id`, {_quote(field_name)} AS `value` "
+                f"FROM {_quote(table)} "
+                f"WHERE {_quote(field_name)} IN ({placeholders}) "
+                f"ORDER BY {_quote('id')}",
+                tuple(ids),
+            )
+            for row in rows:
+                if exclude is not None and (table, str(row["id"])) == exclude:
+                    continue
+                found.append(
+                    (other.object.value, str(row["id"]), f"{other_name}.{field_name}")
+                )
+    return found
+
+
+def _ref_text(referents: Sequence[tuple[str, str, str]]) -> list[str]:
+    """Human lines for :func:`_kind_ref_referents` results."""
+    return [
+        f"{object_type} {object_id} ({label})"
+        for object_type, object_id, label in referents
+    ]
+
+
+def _ref_remedy(referents: Sequence[tuple[str, str, str]]) -> str:
+    """How to clear the first kind ``ref`` field that blocks a purge.
+
+    Only entity and stock kind fields are editable (``tm entity|stock edit``);
+    an entity or stock holder can always be purged instead.  A box kind field
+    has no edit command, so its holder box is re-created without the field.
+    """
+    object_type, object_id, label = referents[0]
+    field_name = label.split(".", 1)[1]
+    if object_type == "box":
+        return (
+            f"clear the reference from box {object_id} first (box kind fields "
+            "have no edit command: purge that empty box with "
+            f"'tm box purge {object_id}' and create it again without the field)"
+        )
+    return (
+        f"re-point that reference first: tm {object_type} edit {object_id} "
+        f"--set {field_name}=OTHER-ID, or purge the holder with "
+        f"tm {object_type} purge {object_id}"
+    )
+
+
+def _join_remedies(
+    primary: str | None, kind_refs: Sequence[tuple[str, str, str]]
+) -> str:
+    """Combine the remedy for cross-object references with the kind-ref one.
+
+    A refusal can name two classes of referent (e.g. a stock and a box kind
+    field); fixing one must not reveal a second refusal, so both remedies are
+    stated up front.
+    """
+    parts = [primary] if primary else []
+    if kind_refs:
+        parts.append(_ref_remedy(kind_refs))
+    return "; then ".join(parts)
+
+
+def _resolve_aliquot(session: Any, ref: str) -> dict[str, Any]:
+    """Resolve an aliquot exactly like ``show``: full id or alias, no prefix.
+
+    An aliquot id is ``<stock>.<seq>`` and is never shortened (spec §6), so a
+    prefix is not a handle even though the other object types accept one.
+    """
+    id_sql = _aliquot_id_sql()
+    rows = session.query(
+        f"SELECT * FROM {_quote('aliquot')} WHERE {_quote('id')} = {id_sql}",
+        (str(ref), str(ref)),
+    )
+    if not rows:
+        raise LedgerError(f"unknown aliquot {ref!r}")
+    return dict(rows[0])
+
+
 def purge_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """Hard-delete an aliquot and its events.
+    """Hard-delete an aliquot, its events and its aliases.
 
     Spec 3 has no per-stock-kind extension tables (an aliquot is a generic
-    tube), so there is no extension row to delete.
+    tube), so there is no extension row to delete.  A tube that a stock's
+    ``source_aliquot_id`` or a kind ``ref`` field still references is refused
+    with a friendly error instead of a raw foreign-key failure (spec §6).
     """
-    existing = _resolve_core(ledger.driver, "aliquot", ref)
+    existing = _resolve_aliquot(ledger.driver, ref)
     alq_id = str(existing["id"])
 
     with ledger.write(alq_id, verb="purge", object="aliquot") as session:
-        _resolve_core(session, "aliquot", alq_id)
+        _resolve_aliquot(session, alq_id)
+        sources = [
+            str(row["id"])
+            for row in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('stock')} "
+                f"WHERE {_quote('source_aliquot_id')} = %s "
+                f"ORDER BY {_quote('id')}",
+                (alq_id,),
+            )
+        ]
+        kind_refs = _kind_ref_referents(
+            session, ledger, "aliquot", None, [alq_id]
+        )
+        referents = [
+            *(f"stock {stock_id} (source_aliquot_id)" for stock_id in sources),
+            *_ref_text(kind_refs),
+        ]
+        if referents:
+            primary = (
+                f"purge that stock first: tm stock purge {sources[0]}"
+                if sources
+                else None
+            )
+            raise _purge_refusal(
+                "aliquot", alq_id, referents, _join_remedies(primary, kind_refs)
+            )
+        aliases = _delete_aliases(session, "aliquot", [alq_id])
         events = purge_events(session, alq_id)
         session.execute(
             f"DELETE FROM {_quote('aliquot')} WHERE {_quote('id')} = %s", (alq_id,)
         )
-    return {"object": "aliquot", "id": alq_id, "purged": True, "events": events}
+    return {
+        "object": "aliquot",
+        "id": alq_id,
+        "purged": True,
+        "events": events,
+        "aliases": aliases,
+    }
+
+
+def purge_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """Hard-delete an entity, its kind row and its aliases (spec §6).
+
+    A stock that still belongs to the entity is a real user decision, so it is
+    never cascaded: the command refuses and points at ``tm stock purge``.  The
+    kind row goes first (its ``(id, kind)`` foreign key points at the core
+    row); the alias rows are removed in the same write.
+    """
+    existing = _resolve_core(ledger.driver, "entity", ref)
+    entity_id = str(existing["id"])
+
+    with ledger.write(
+        f"{existing['kind']} {entity_id}", verb="purge", object="entity"
+    ) as session:
+        row = _resolve_core(session, "entity", entity_id)
+        kind_name = str(row["kind"])
+        stock_ids = [
+            str(stock["id"])
+            for stock in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('stock')} "
+                f"WHERE {_quote('entity_id')} = %s ORDER BY {_quote('id')}",
+                (entity_id,),
+            )
+        ]
+        kind_refs = _kind_ref_referents(
+            session,
+            ledger,
+            "entity",
+            kind_name,
+            [entity_id],
+            exclude=(table_name("entity", kind_name), entity_id),
+        )
+        referents = [
+            *(f"stock {stock_id} (entity_id)" for stock_id in stock_ids),
+            *_ref_text(kind_refs),
+        ]
+        if referents:
+            primary = (
+                f"purge its stocks first: tm stock purge {stock_ids[0]}"
+                if stock_ids
+                else None
+            )
+            raise _purge_refusal(
+                "entity", entity_id, referents, _join_remedies(primary, kind_refs)
+            )
+        aliases = _delete_aliases(session, "entity", [entity_id])
+        session.execute(
+            f"DELETE FROM {_quote(table_name('entity', kind_name))} "
+            f"WHERE {_quote('id')} = %s",
+            (entity_id,),
+        )
+        session.execute(
+            f"DELETE FROM {_quote('entity')} WHERE {_quote('id')} = %s",
+            (entity_id,),
+        )
+    return {
+        "object": "entity",
+        "id": entity_id,
+        "kind": kind_name,
+        "purged": True,
+        "aliases": aliases,
+    }
+
+
+def purge_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """Hard-delete a stock, cascading to its own aliquots (spec §6).
+
+    The stock's tubes belong to it, so they are removed with it: each tube's
+    events, alias rows and row.  Everything else that references the stock or
+    one of its aliquots (a derived/consuming stock, a kind ``ref`` field) is a
+    refusal, never a cascade.  The ``stock_<kind>`` row is deleted first: it
+    may reference the stock's own aliquots.
+    """
+    existing = _resolve_core(ledger.driver, "stock", ref)
+    stock_id = str(existing["id"])
+
+    with ledger.write(
+        f"{existing['kind']} {stock_id}", verb="purge", object="stock"
+    ) as session:
+        row = _resolve_core(session, "stock", stock_id)
+        kind_name = str(row["kind"])
+        own_table = table_name("stock", kind_name)
+        aliquots = [
+            str(aliquot["id"])
+            for aliquot in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('aliquot')} "
+                f"WHERE {_quote('stock_id')} = %s ORDER BY {_quote('seq')}",
+                (stock_id,),
+            )
+        ]
+        children = [
+            str(child["id"])
+            for child in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('stock')} "
+                f"WHERE {_quote('parent_stock_id')} = %s AND {_quote('id')} <> %s "
+                f"ORDER BY {_quote('id')}",
+                (stock_id, stock_id),
+            )
+        ]
+        sources: list[tuple[str, str]] = []
+        if aliquots:
+            placeholders = ", ".join("%s" for _ in aliquots)
+            sources = [
+                (str(child["id"]), str(child["source_aliquot_id"]))
+                for child in session.query(
+                    f"SELECT {_quote('id')} AS `id`, "
+                    f"{_quote('source_aliquot_id')} AS `source_aliquot_id` "
+                    f"FROM {_quote('stock')} "
+                    f"WHERE {_quote('source_aliquot_id')} IN ({placeholders}) "
+                    f"AND {_quote('id')} <> %s ORDER BY {_quote('id')}",
+                    (*aliquots, stock_id),
+                )
+            ]
+        kind_refs = _kind_ref_referents(
+            session,
+            ledger,
+            "stock",
+            kind_name,
+            [stock_id],
+            exclude=(own_table, stock_id),
+        )
+        kind_refs += _kind_ref_referents(
+            session,
+            ledger,
+            "aliquot",
+            None,
+            aliquots,
+            exclude=(own_table, stock_id),
+        )
+        referents = [
+            *(f"stock {child} (parent_stock_id)" for child in children),
+            *(
+                f"stock {child} (source_aliquot_id -> {aliquot})"
+                for child, aliquot in sources
+            ),
+            *_ref_text(kind_refs),
+        ]
+        if referents:
+            primary_parts: list[str] = []
+            if children:
+                primary_parts.append(
+                    "purge the derived stock first: tm stock purge "
+                    f"{children[0]}"
+                )
+            if sources:
+                primary_parts.append(
+                    "purge the consuming stock first: tm stock purge "
+                    f"{sources[0][0]}"
+                )
+            primary = "; ".join(primary_parts) or None
+            raise _purge_refusal(
+                "stock", stock_id, referents, _join_remedies(primary, kind_refs)
+            )
+
+        session.execute(
+            f"DELETE FROM {_quote(own_table)} WHERE {_quote('id')} = %s",
+            (stock_id,),
+        )
+        if aliquots:
+            placeholders = ", ".join("%s" for _ in aliquots)
+            # A hand-made stock may name one of its own tubes as its source;
+            # clear that self-reference before deleting the tube rows.
+            session.execute(
+                f"UPDATE {_quote('stock')} SET {_quote('source_aliquot_id')} = NULL "
+                f"WHERE {_quote('id')} = %s AND {_quote('source_aliquot_id')} "
+                f"IN ({placeholders})",
+                (stock_id, *aliquots),
+            )
+        events = 0
+        for aliquot_id in aliquots:
+            events += purge_events(session, aliquot_id)
+        _delete_aliases(session, "aliquot", aliquots)
+        if aliquots:
+            placeholders = ", ".join("%s" for _ in aliquots)
+            session.execute(
+                f"DELETE FROM {_quote('aliquot')} "
+                f"WHERE {_quote('id')} IN ({placeholders})",
+                tuple(aliquots),
+            )
+        aliases = _delete_aliases(session, "stock", [stock_id])
+        session.execute(
+            f"DELETE FROM {_quote('stock')} WHERE {_quote('id')} = %s",
+            (stock_id,),
+        )
+    return {
+        "object": "stock",
+        "id": stock_id,
+        "kind": kind_name,
+        "purged": True,
+        "aliquots": len(aliquots),
+        "events": events,
+        "aliases": aliases,
+    }
+
+
+def purge_box(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """Hard-delete an empty box, its slots, kind row, aliases and view.
+
+    A box that holds tubes or child boxes is refused instead of emptied: the
+    user moves the contents (or purges them) explicitly (spec §6).  The slots,
+    the ``box_<kind>`` row, the aliases, the generated ``v_box_<name>`` view
+    and the box row all change in the one commit, so ``tm check`` never sees an
+    orphan view.  ``aliquot_event.from_box_id``/``to_box_id`` have no foreign
+    key and keep the old id as history.
+    """
+    existing = _resolve_box(ledger.driver, ref)
+    box_id = str(existing["id"])
+
+    with ledger.write(
+        f"{existing['kind']} {box_id}", verb="purge", object="box"
+    ) as session:
+        row = _resolve_core(session, "box", box_id)
+        kind_name = str(row["kind"])
+        name = str(row["name"])
+        occupants = [
+            str(aliquot["id"])
+            for aliquot in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('aliquot')} "
+                f"WHERE {_quote('box_id')} = %s ORDER BY {_quote('id')}",
+                (box_id,),
+            )
+        ]
+        children = [
+            str(child["id"])
+            for child in session.query(
+                f"SELECT {_quote('id')} FROM {_quote('box')} "
+                f"WHERE {_quote('parent_box_id')} = %s ORDER BY {_quote('id')}",
+                (box_id,),
+            )
+        ]
+        kind_refs = _kind_ref_referents(
+            session,
+            ledger,
+            "box",
+            kind_name,
+            [box_id],
+            exclude=(table_name("box", kind_name), box_id),
+        )
+        referents = [
+            *(f"aliquot {aliquot} (box_id)" for aliquot in occupants),
+            *(f"box {child} (parent_box_id)" for child in children),
+            *_ref_text(kind_refs),
+        ]
+        if referents:
+            primary = (
+                "move the contents out first (tm aliquot move ALQ --box NAME "
+                "--slot SLOT -m MSG; tm box move NAME --in PARENT) or purge "
+                "them (tm aliquot purge; tm box purge)"
+                if occupants or children
+                else None
+            )
+            raise _purge_refusal(
+                "box", box_id, referents, _join_remedies(primary, kind_refs)
+            )
+        slots = int(
+            session.query(
+                f"SELECT COUNT(*) AS `n` FROM {_quote('slot')} "
+                f"WHERE {_quote('box_id')} = %s",
+                (box_id,),
+            )[0]["n"]
+        )
+        session.execute(
+            f"DELETE FROM {_quote('slot')} WHERE {_quote('box_id')} = %s",
+            (box_id,),
+        )
+        session.execute(
+            f"DELETE FROM {_quote(table_name('box', kind_name))} "
+            f"WHERE {_quote('id')} = %s",
+            (box_id,),
+        )
+        aliases = _delete_aliases(session, "box", [box_id])
+        session.execute(f"DROP VIEW IF EXISTS {_quote(box_view_name(name))}")
+        session.execute(
+            f"DELETE FROM {_quote('box')} WHERE {_quote('id')} = %s", (box_id,)
+        )
+    return {
+        "object": "box",
+        "id": box_id,
+        "kind": kind_name,
+        "name": name,
+        "purged": True,
+        "slots": slots,
+        "aliases": aliases,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3772,6 +4266,9 @@ class EntityOps:
     def rename(self, ref: str, new_name: str) -> dict[str, Any]:
         return rename_entity(self.ledger, ref, new_name)
 
+    def purge(self, ref: str) -> dict[str, Any]:
+        return purge_entity(self.ledger, ref)
+
     def show(self, ref: str) -> dict[str, Any]:
         return show_entity(self.ledger, ref)
 
@@ -3841,6 +4338,9 @@ class StockOps:
         return renumber_stocks(
             self.ledger, refs, new_id=new_id, auto=auto, map_path=map_path
         )
+
+    def purge(self, ref: str) -> dict[str, Any]:
+        return purge_stock(self.ledger, ref)
 
     def ls(
         self,
@@ -3967,6 +4467,9 @@ class BoxOps:
 
     def rename(self, ref: str, new_name: str) -> dict[str, Any]:
         return rename_box(self.ledger, ref, new_name)
+
+    def purge(self, ref: str) -> dict[str, Any]:
+        return purge_box(self.ledger, ref)
 
     def show(self, ref: str) -> dict[str, Any]:
         from tetramark.ops.render import box_view

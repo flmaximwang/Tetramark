@@ -1561,3 +1561,171 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
     both_scopes = invoke(ledger, "aliquot", "list", "--all", "--not-in-stock")
     assert isinstance(both_scopes.exception, UsageError)
     assert "--all and --not-in-stock" in str(both_scopes.exception)
+
+
+def _view_exists(ledger, name: str) -> bool:
+    rows = ledger.driver.query(
+        "SELECT table_name AS name FROM information_schema.views "
+        "WHERE table_schema = DATABASE() AND LOWER(table_name) = %s",
+        (name.lower(),),
+    )
+    return bool(rows)
+
+
+def test_cli_entity_stock_box_purge(cli_env: None, ledger_factory) -> None:
+    """The three purge commands: refusals, cascade, view drop and dry run."""
+    ledger = ledger_factory([BASE], name="cli-purge", id_prefix="77")
+
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "mistake", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--aliquots",
+            "2",
+            "--json",
+        ).output
+    )
+    write(ledger, "alias", "add", "stock", stock["id"], "old-lot")
+    write(ledger, "alias", "add", "aliquot", stock["aliquots"][0], "old-tube")
+
+    # A stock still belongs to the entity: refused, no commit, rows intact.
+    before = commit_count(ledger)
+    refused_entity = invoke(ledger, "entity", "purge", item["id"])
+    assert isinstance(refused_entity.exception, LedgerError)
+    assert refused_entity.exception.exit_code == 1
+    assert "purge its stocks first" in str(refused_entity.exception)
+    assert stock["id"] in str(refused_entity.exception)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (item["id"],)
+    )
+
+    # A box with its view: the purge drops the view in the same commit.
+    box = json.loads(write(ledger, "box", "add", "grid96", "BOX", "--json").output)
+    write(ledger, "alias", "add", "box", box["id"], "b1")
+    purged_box = json.loads(
+        write(ledger, "box", "purge", "BOX", "--json").output
+    )
+    assert purged_box["object"] == "box"
+    assert purged_box["kind"] == "grid96"
+    assert purged_box["slots"] == 96
+    assert purged_box["aliases"] == 1
+    assert purged_box["purged"] is True
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (box["id"],)
+    ) == []
+    assert not _view_exists(ledger, "v_box_BOX")
+    assert ledger.check().passed
+
+    # A box that holds a tube is refused; nothing is written.
+    box2 = json.loads(write(ledger, "box", "add", "rack", "RACK2", "--json").output)
+    stock2 = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--box",
+            "RACK2",
+            "--slot",
+            "top",
+            "--json",
+        ).output
+    )
+    before = commit_count(ledger)
+    refused_box = invoke(ledger, "box", "purge", "RACK2")
+    assert isinstance(refused_box.exception, LedgerError)
+    assert "tm aliquot move" in str(refused_box.exception)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (box2["id"],)
+    )
+
+    # Stock purge cascades to its own tubes and their events/aliases.
+    purged_stock = json.loads(
+        write(ledger, "stock", "purge", stock["id"], "--json").output
+    )
+    assert purged_stock["object"] == "stock"
+    assert purged_stock["kind"] == "lot"
+    assert purged_stock["aliquots"] == 2
+    assert purged_stock["events"] >= 2
+    assert purged_stock["aliases"] == 1
+    assert purged_stock["purged"] is True
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot` WHERE `stock_id` = %s", (stock["id"],)
+    ) == []
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE "
+        "(`object_type` = 'stock' AND `object_id` = %s) OR "
+        "(`object_type` = 'aliquot' AND `object_id` IN (%s, %s))",
+        (stock["id"], stock["aliquots"][0], stock["aliquots"][1]),
+    ) == []
+
+    text = write(ledger, "stock", "purge", stock2["id"]).output
+    assert f"Purged stock {stock2['id']} (1 aliquot(s)," in text
+    assert "event(s) removed)" in text
+
+    text = write(ledger, "box", "purge", "RACK2").output
+    assert text.strip() == (
+        "Purged box RACK2 (3 slot(s), 0 alias(es) removed)"
+    )
+
+    # With no stock left the entity is purgeable; its alias goes with it.
+    write(ledger, "alias", "add", "entity", item["id"], "old-item")
+    purged_entity = json.loads(
+        write(ledger, "entity", "purge", item["id"], "--json").output
+    )
+    assert purged_entity["object"] == "entity"
+    assert purged_entity["kind"] == "item"
+    assert purged_entity["aliases"] == 1
+    assert purged_entity["purged"] is True
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity_item` WHERE `id` = %s", (item["id"],)
+    ) == []
+
+    # The entity and aliquot human lines carry their own counts.
+    text_item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "text-item", "--json").output
+    )
+    write(ledger, "alias", "add", "entity", text_item["id"], "text-item-alias")
+    text = write(ledger, "entity", "purge", text_item["id"]).output
+    assert text.strip() == (
+        f"Purged entity item {text_item['id']} (1 alias(es) removed)"
+    )
+
+    tube_item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "tube-item", "--json").output
+    )
+    tube_stock = json.loads(
+        write(
+            ledger, "stock", "add", "lot", "--entity", tube_item["id"], "--json"
+        ).output
+    )
+    tube = tube_stock["aliquots"][0]
+    write(ledger, "alias", "add", "aliquot", tube, "tube-alias")
+    text = write(ledger, "aliquot", "purge", tube).output
+    assert text.strip() == (
+        f"Purged aliquot {tube} (1 event(s), 1 alias(es) removed)"
+    )
+
+    # Dry run prints the SQL and writes nothing.
+    spare = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "spare", "--json").output
+    )
+    before = commit_count(ledger)
+    dry = invoke(ledger, "--dry-run", "entity", "purge", spare["id"])
+    assert dry.exit_code == 0, dry.output
+    assert "DELETE FROM `entity`" in dry.output
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (spare["id"],)
+    )
