@@ -1920,6 +1920,10 @@ def list_stocks(
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
     records, _ = _list_records(ledger, "stock", kind_name, where)
+    for record in records:
+        # v_stock_<kind>'s SUM is a DOUBLE on the server driver, but a count is
+        # an int on every backend (lineage int-casts its counts the same way).
+        record["aliquots_in_stock"] = int(record["aliquots_in_stock"])
     return records
 
 
