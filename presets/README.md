@@ -48,8 +48,17 @@ each box instead, so the kind name no longer has to be a view name (`v_box_grid9
 A base-3 ledger moves to 4 with
 `migration/presets/base/3-to-4/`; that step runs **after** `migration/spec/4-to-5/` and after the
 older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) — it renames the base
-v3 copies those steps install, so it must be the last preset step. A spec-4/base-2 ledger (e.g.
-molbio-2) follows: `spec/4-to-5`, then `base/2-to-3` and `molbio/2-to-3`, then `base/3-to-4`.
+v3 copies those steps install. A spec-4/base-2 ledger (e.g. molbio-2) follows: `spec/4-to-5`, then
+`base/2-to-3` and `molbio/2-to-3`, then `base/3-to-4`.
+
+`proteins` and `nucleic_acids` are at **version 2**: the bundled sequence fields validate their
+alphabet (ticket rq9). `sequence_fields.sequence` and `oligo.sequence` take IUPAC nucleotide codes
+(`[ACGTURYKMSWBDHVN]+`), and `protein_construct.mature_sequence` takes IUPAC amino-acid codes
+(`[ACDEFGHIKLMNPQRSTVWYXBZUO*]+`). Patterns are validation-only, so the steps
+`migration/presets/proteins/1-to-2/` and then `migration/presets/nucleic_acids/1-to-2/` change no
+DDL but regenerate the `dolt_tests` that `tm check` runs; both refuse a ledger below spec 5 or
+base 4, and the nucleic step requires proteins already at 2. They run **after**
+`migration/presets/base/3-to-4/`, because they install repository base v4 copies.
 
 ## The include graph
 

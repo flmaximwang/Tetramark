@@ -26,14 +26,18 @@ old target copy into every earlier step that places the whole preset closure.
 
 - `ledger_meta.spec_version = 5`. Run [`migration/spec/4-to-5`](../../../spec/4-to-5/README.md) first
   (the step refuses a spec-4 ledger). The wave-11 order is `spec/4-to-5`, then the preset steps, then
-  [`migration/presets/base/3-to-4`](../3-to-4/README.md) last.
+  [`migration/presets/base/3-to-4`](../3-to-4/README.md) (last of the wave-10 steps; ticket rq9's
+  `proteins`/`nucleic_acids` steps follow it).
 - `ledger_meta.preset_versions.base = 2` (a second run refuses; the shared runner checks it).
 - A clean working set.
 - Files, not Dolt content: the step places **every preset copy the ledger lists** from this checkout
   before it opens the ledger (the spec-5 loader needs current copies for every stock kind's
-  `statuses:`), with **two frozen exceptions**: `base` is held at
-  [`base-3.yaml`](base-3.yaml) (the repository copy is v4 since spec 5) and `cell_culture` at
-  `cell_culture-1.yaml` (ticket 28 bumped the repository copy to v2). A ledger that lists `molbio`
+  `statuses:`), with **four frozen exceptions**: `base` is held at
+  [`base-3.yaml`](base-3.yaml) (the repository copy is v4 since spec 5), `cell_culture` at
+  `cell_culture-1.yaml` (ticket 28 bumped the repository copy to v2), and `proteins` /
+  `nucleic_acids` at [`proteins-1.yaml`](proteins-1.yaml) /
+  [`nucleic_acids-1.yaml`](nucleic_acids-1.yaml) (ticket rq9 bumps those parts to v2; their own
+  steps own the counters). A ledger that lists `molbio`
   therefore also gets molbio v3 and its four parts; its counter is bumped by
   [`migration/presets/molbio/2-to-3`](../../molbio/2-to-3/README.md). The order of the two steps does
   not matter: whichever runs first may already create the other's new tables (`box_incubator`, the

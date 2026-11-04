@@ -103,8 +103,8 @@ def test_cellbio_is_a_bundle_of_shared_parts() -> None:
     schema = load_repo_preset("cellbio")
     assert schema.preset_versions == {
         "base": 4,
-        "proteins": 1,
-        "nucleic_acids": 1,
+        "proteins": 2,
+        "nucleic_acids": 2,
         "cell_culture": 2,
         "immuno": 1,
         "viral_vectors": 1,

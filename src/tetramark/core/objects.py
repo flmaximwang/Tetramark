@@ -697,7 +697,14 @@ def _object_aliases(
 
 
 def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
-    """Find a core row by ID, then by alias (ID wins, as ``find`` does)."""
+    """Find a core row by ID, exact alias, or unique ID prefix (ID wins first).
+
+    A complete ID or an exact alias always beats an incomplete ID, as ``find``
+    ranks an exact hit above a partial one.  An incomplete ID is accepted only
+    when exactly one object matches; a prefix that hits several objects is a
+    usage error that names the candidates, so a mistyped or ambiguous reference
+    never silently picks one (the git rule for abbreviated hashes).
+    """
     row = _fetch_core(session, object_type, ref)
     if row is not None:
         return row
@@ -710,6 +717,25 @@ def _resolve_core(session: Any, object_type: str, ref: str) -> dict[str, Any]:
         row = _fetch_core(session, object_type, str(alias_row["object_id"]))
         if row is not None:
             return row
+
+    text = str(ref)
+    if text:
+        matches = session.query(
+            f"SELECT * FROM {_quote(object_type)} "
+            f"WHERE LEFT({_quote('id')}, %s) = %s "
+            f"ORDER BY {_quote('id')}",
+            (len(text), text),
+        )
+        if len(matches) == 1:
+            return dict(matches[0])
+        if len(matches) > 1:
+            shown = ", ".join(str(match["id"]) for match in matches[:10])
+            more = f" and {len(matches) - 10} more" if len(matches) > 10 else ""
+            raise UsageError(
+                f"{object_type} id {ref!r} is ambiguous: it prefixes "
+                f"{len(matches)} objects ({shown}{more}); use a longer prefix "
+                "or the full id"
+            )
     raise LedgerError(f"unknown {object_type} {ref!r}")
 
 
@@ -1068,12 +1094,44 @@ def _resolved_id_sql(object_type: str, *, by_name: bool = False) -> str:
         f"AND EXISTS (SELECT 1 FROM {table} o "
         f"WHERE o.{key} = a.{_quote('object_id')}) LIMIT 1)"
     )
+    # Tetramark-o4u: an incomplete id is accepted when exactly one object
+    # matches.  The HAVING clause yields no row for zero or several matches;
+    # the caller turns "several" into the UsageError that names candidates.
+    parts.append(
+        f"(SELECT MIN({key}) FROM {table} "
+        f"WHERE LEFT({key}, LENGTH(%s)) = %s HAVING COUNT(*) = 1)"
+    )
     return "COALESCE(" + ", ".join(parts) + ")"
 
 
 def _resolved_id_params(sql: str, ref: str) -> tuple[str, ...]:
     """The parameters for :func:`_resolved_id_sql` (one per placeholder)."""
     return (ref,) * sql.count("%s")
+
+
+def _prefix_matches(ledger: Ledger, object_type: str, ref: str) -> list[dict[str, Any]]:
+    """Rows whose id starts with ``ref`` (the o4u incomplete-id candidates)."""
+    if not ref:
+        return []
+    table = _quote(object_type)
+    return ledger.driver.query(
+        f"SELECT {_quote('id')} FROM {table} "
+        f"WHERE LEFT({_quote('id')}, %s) = %s ORDER BY {_quote('id')}",
+        (len(ref), ref),
+    )
+
+
+def _raise_ambiguous_prefix(
+    object_type: str, ref: str, matches: Sequence[Mapping[str, Any]]
+) -> None:
+    """The exact ``_resolve_core`` error for a prefix that hits several objects."""
+    shown = ", ".join(str(match["id"]) for match in matches[:10])
+    more = f" and {len(matches) - 10} more" if len(matches) > 10 else ""
+    raise UsageError(
+        f"{object_type} id {ref!r} is ambiguous: it prefixes "
+        f"{len(matches)} objects ({shown}{more}); use a longer prefix "
+        "or the full id"
+    )
 
 
 def _read_record_batch(
@@ -1123,6 +1181,15 @@ def _read_record_batch(
 
     core_rows = fetched[0]
     if not core_rows:
+        matches = _prefix_matches(ledger, object_type, ref)
+        if len(matches) > 1:
+            _raise_ambiguous_prefix(object_type, ref, matches)
+        if len(matches) == 1:
+            # The unique prefix branch normally resolved this inside the batch;
+            # retry once with the full id if Dolt returned no row (defensive).
+            return _read_record_batch(
+                ledger, object_type, str(matches[0]["id"]), extras=extras
+            )
         raise LedgerError(f"unknown {object_type} {ref!r}")
     core = dict(core_rows[0])
     kind_name = str(core["kind"])
@@ -1193,6 +1260,11 @@ def _read_box_rows(
     fetched = ledger.driver.query_many(batch)
     box_rows = fetched[0]
     if not box_rows:
+        matches = _prefix_matches(ledger, "box", ref)
+        if len(matches) > 1:
+            _raise_ambiguous_prefix("box", ref, matches)
+        if len(matches) == 1:
+            return _read_box_rows(ledger, str(matches[0]["id"]))
         # ``_resolve_box`` falls through to ``_resolve_core``'s error.
         raise LedgerError(f"unknown box {ref!r}")
     return (

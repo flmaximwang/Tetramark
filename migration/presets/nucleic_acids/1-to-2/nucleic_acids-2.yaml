@@ -1,0 +1,150 @@
+preset: nucleic_acids
+version: 2
+description: >-
+  Nucleic-acid designs and the tubes that hold them: plasmids and their
+  preparations, plus synthetic oligos and their stock tubes. Included by the
+  molbio, cellbio and angenet bundles. Adapted from BioManager (MIT).
+
+# proteins is included because ``plasmid.construct`` points at a
+# ``protein_construct`` (and its ``sequence_fields`` mixin supplies the shared
+# sequence/length fields); the include runs proteins -> base, so this part also
+# reaches the base kinds and status sets it uses.
+include: [base, proteins]
+
+kinds:
+  plasmid:
+    object: entity
+    description: >-
+      A plasmid design (the old entity_plasmids table); optionally linked to the
+      protein construct it expresses.
+    mixins: [named_fields, sequence_fields]
+    fields:
+      construct:
+        type: ref
+        to: protein_construct
+        lineage: true
+        description: Protein construct expressed by this plasmid (lineage to the design).
+      backbone:
+        type: string
+        length: 64
+        description: Backbone vector name, e.g. pZET035 or pET28a.
+      resistance:
+        type: enum
+        values: [amp, kan, cm, spec, tet]
+        description: Antibiotic resistance cassette carried by the plasmid.
+      origin_of_replication:
+        type: string
+        length: 64
+        description: Replication origin (e.g. pBR322, p15A, ColE1).
+      promoter:
+        type: string
+        length: 64
+        description: Promoter driving expression of the construct.
+      affinity_tags:
+        type: string
+        length: 64
+        description: Tags encoded on the plasmid, if different from the construct design.
+
+  plasmid_prep:
+    object: stock
+    statuses: tube
+    description: A plasmid DNA preparation made from a bacterial culture.
+    entity_kinds: [plasmid]
+    fields:
+      concentration_ng_ul:
+        type: decimal
+        precision: 12
+        scale: 2
+        description: DNA concentration measured for the preparation, in ng/µL.
+      prep_method:
+        type: string
+        length: 64
+        description: Preparation protocol, e.g. miniprep, midiprep or maxiprep.
+      elution_buffer:
+        type: string
+        length: 64
+        description: Buffer the DNA was eluted in (e.g. EB, TE, water).
+
+  oligo:
+    object: entity
+    description: >-
+      A synthetic oligonucleotide design (primer, probe or adaptor) with its
+      sequence, direction and synthesis details. Adapted from BioManager (MIT).
+    mixins: [named_fields]
+    # Own ``sequence`` (not the sequence_fields mixin): an oligo reports its
+    # length in nucleotides and its GC content, and the same sequence may be
+    # ordered more than once, so no UNIQUE on the normalised sequence.
+    fields:
+      sequence:
+        type: sequence
+        long: true
+        pattern: "[ACGTURYKMSWBDHVN]+"
+        description: >-
+          Nucleotide sequence (IUPAC nucleotide codes); normalised (uppercase,
+          whitespace stripped) by the app and fingerprinted through the generated
+          sequence_sha256 column.
+      direction:
+        type: enum
+        values: [fwd, rev]
+        description: Direction of the oligo relative to its target (forward or reverse).
+      target:
+        type: string
+        length: 128
+        description: Gene, construct or region the oligo targets.
+      modification:
+        type: string
+        length: 128
+        description: >-
+          Chemical modification requested at synthesis (e.g. 5' phosphorylation,
+          fluorophore, biotin).
+      purification:
+        type: string
+        length: 64
+        description: Purification grade requested from the vendor (e.g. desalted, PAGE, HPLC).
+      tm_c:
+        type: decimal
+        precision: 5
+        scale: 2
+        description: Melting temperature of the oligo in degrees Celsius, as calculated or supplied.
+      length_nt:
+        type: computed
+        expr: "CHAR_LENGTH(sequence)"
+        sql_type: int
+        description: Oligo length in nucleotides, recomputed from sequence.
+      gc_pct:
+        type: computed
+        # The redundant parentheses are Dolt's own rewritten form of this
+        # expression; writing it the same way keeps `tm schema plan` empty
+        # (it rebuilds a generated column whose normalised text differs).
+        expr: "ROUND(((100 * ((CHAR_LENGTH(sequence) - CHAR_LENGTH(REPLACE(sequence, 'G', ''))) + (CHAR_LENGTH(sequence) - CHAR_LENGTH(REPLACE(sequence, 'C', ''))))) / NULLIF(CHAR_LENGTH(sequence), 0)), 2)"
+        sql_type: decimal
+        precision: 5
+        scale: 2
+        description: Guanine/cytosine content in percent of length_nt, recomputed from sequence.
+
+  oligo_stock:
+    object: stock
+    statuses: tube
+    description: >-
+      A physical tube of a synthesized oligo, with its resuspension
+      concentration and solvent. Adapted from BioManager (MIT).
+    entity_kinds: [oligo]
+    fields:
+      concentration_um:
+        type: decimal
+        precision: 10
+        scale: 3
+        description: Resuspended concentration of the oligo stock, in µM.
+      solvent:
+        type: string
+        length: 64
+        description: Liquid the oligo was resuspended in (e.g. TE, water).
+
+rules:
+  - id: MB01
+    description: every plasmid with a protein construct also records its sequence
+    severity: fail
+    sql: >-
+      SELECT COUNT(*) FROM entity_plasmid
+      WHERE construct IS NOT NULL AND sequence IS NULL
+    expect: {single_value: 0}

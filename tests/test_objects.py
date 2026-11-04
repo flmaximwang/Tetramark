@@ -924,6 +924,40 @@ def test_alias_uniqueness_per_object_type_and_removal(ledger_factory) -> None:
         ledger.aliases.rm("entity", "X")
 
 
+def test_a_unique_id_prefix_resolves_but_an_ambiguous_one_is_a_usage_error(
+    ledger_factory,
+) -> None:
+    """An incomplete id is accepted when it matches exactly one object."""
+    ledger = make_ledger(ledger_factory)
+    first = new_item(ledger, "first", id="aaaaaaaa-1111-4111-8111-111111111111")
+    second = new_item(ledger, "second", id="aaaaaaaa-1111-4111-8111-222222222222")
+
+    # A prefix that matches one object is enough for show and for alias add.
+    assert ledger.entities.show(first["id"][:26])["id"] == first["id"]
+    added = ledger.aliases.add("entity", second["id"][:30], "second-old")
+    assert added["object_id"] == second["id"]
+    assert ledger.entities.show("second-old")["id"] == second["id"]
+
+    # A prefix that matches two objects writes nothing and names both.
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="ambiguous") as excinfo:
+        ledger.aliases.add("entity", "aaaaaaaa", "clash")
+    message = str(excinfo.value)
+    assert first["id"] in message and second["id"] in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `alias` = %s", ("clash",)
+    ) == []
+
+    # An exact alias wins over a prefix of other objects' ids, just like find.
+    ledger.aliases.add("entity", first["id"], "aaaaaaaa")
+    assert ledger.entities.show("aaaaaaaa")["id"] == first["id"]
+
+    # No match at all keeps the established unknown-object error.
+    with pytest.raises(LedgerError, match="unknown entity"):
+        ledger.entities.show("99999999")
+
+
 # ---------------------------------------------------------------------------
 # Commit discipline, dry-run, no-commit and IDs
 # ---------------------------------------------------------------------------

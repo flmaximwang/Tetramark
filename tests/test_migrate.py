@@ -2308,10 +2308,12 @@ def test_spec_3_to_4_refuses_an_aliquot_status_outside_its_stock_kind_set(
 # ---------------------------------------------------------------------------
 
 MOLBIO_2_TO_3 = ROOT / "migration" / "presets" / "molbio" / "2-to-3" / "migrate.py"
+MOLBIO_2_TO_3_DIR = MOLBIO_2_TO_3.parent
 BASE_2_TO_3 = ROOT / "migration" / "presets" / "base" / "2-to-3" / "migrate.py"
 CELL_CULTURE_1_TO_2 = (
     ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "migrate.py"
 )
+CELL_CULTURE_1_TO_2_DIR = CELL_CULTURE_1_TO_2.parent
 #: Ticket 28 froze the cell_culture v1 content in both step folders: molbio 2 -> 3
 #: installs it (its counter stops at 1), cell_culture 1 -> 2 does not.
 CELL_CULTURE_V1 = (
@@ -2336,12 +2338,18 @@ MOLBIO_V3_VERSIONS = {
 }
 
 #: Every preset copy a molbio ledger needs after the step.  ``cell_culture`` is
-#: the frozen v1 (ticket 28 bumped the repository copy to v2) and ``base`` is
-#: the frozen v3 (the repository copy is v4 with the ``grid96`` -> ``grid8x12``
-#: rename since spec 5); both are compared separately from repository content.
+#: the frozen v1 (ticket 28 bumped the repository copy to v2), ``proteins`` /
+#: ``nucleic_acids`` are the frozen v1s (ticket rq9 bumped the repository copies
+#: to v2) and ``base`` is the frozen v3 (the repository copy is v4 with the
+#: ``grid96`` -> ``grid8x12`` rename since spec 5); all are compared separately
+#: from repository content.
 MOLBIO_V3_FILES = (
     "molbio.yaml",
-    *[f"{part}.yaml" for part in PARTS_V3 if part != "cell_culture"],
+    *[
+        f"{part}.yaml"
+        for part in PARTS_V3
+        if part not in ("cell_culture", "proteins", "nucleic_acids")
+    ],
 )
 
 
@@ -2614,6 +2622,13 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
         assert (reopened.path / "presets" / "cell_culture.yaml").read_bytes() == (
             CELL_CULTURE_V1.read_bytes()
         )
+        # Ticket rq9's parts stay at v1: the step ships their frozen copies.
+        assert (reopened.path / "presets" / "proteins.yaml").read_bytes() == (
+            MOLBIO_2_TO_3_DIR / "proteins-1.yaml"
+        ).read_bytes()
+        assert (reopened.path / "presets" / "nucleic_acids.yaml").read_bytes() == (
+            MOLBIO_2_TO_3_DIR / "nucleic_acids-1.yaml"
+        ).read_bytes()
 
         # One commit with the contract message, tagged at the pre-step commit.
         assert commit_count(reopened) == commits_before + 1
@@ -2819,13 +2834,16 @@ def write_cell_culture_v1_presets(directory: Path) -> Path:
     shipped next to ``migration/presets/cell_culture/1-to-2/migrate.py`` is the
     only copy of what a pre-ticket-28 ledger carries.  Its includes are the
     wave-10 content: the frozen base v3 (the repository copy is v4 since spec 5)
-    plus nucleic_acids 1 and proteins 1, which is exactly what a molbio-v3
-    ledger has.
+    plus nucleic_acids 1 and proteins 1 (ticket rq9 bumped the repository copies
+    to v2, so their frozen v1 copies sit next to this step's ``migrate.py``),
+    which is exactly what a molbio-v3 ledger has.
     """
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(BASE_V3, directory / "base.yaml")
     for part in ("nucleic_acids", "proteins"):
-        shutil.copyfile(REPO_PRESETS / f"{part}.yaml", directory / f"{part}.yaml")
+        shutil.copyfile(
+            CELL_CULTURE_1_TO_2_DIR / f"{part}-1.yaml", directory / f"{part}.yaml"
+        )
     shutil.copyfile(CELL_CULTURE_V1, directory / "cell_culture.yaml")
     return directory / "cell_culture.yaml"
 
@@ -3095,6 +3113,388 @@ def test_molbio_v3_ledger_upgrades_to_cellbio_era(
     finally:
         reopened.close()
 
+
+# ---------------------------------------------------------------------------
+# Ticket rq9: proteins/nucleic_acids 1 -> 2 (IUPAC sequence patterns)
+# ---------------------------------------------------------------------------
+
+PROTEINS_1_TO_2 = ROOT / "migration" / "presets" / "proteins" / "1-to-2" / "migrate.py"
+PROTEINS1_TO_2_DIR = PROTEINS_1_TO_2.parent
+PROTEINS_2 = PROTEINS1_TO_2_DIR / "proteins-2.yaml"
+NUCLEIC_ACIDS_1_TO_2 = (
+    ROOT / "migration" / "presets" / "nucleic_acids" / "1-to-2" / "migrate.py"
+)
+NUCLEIC_ACIDS_1_TO_2_DIR = NUCLEIC_ACIDS_1_TO_2.parent
+NUCLEIC_ACIDS_2 = NUCLEIC_ACIDS_1_TO_2_DIR / "nucleic_acids-2.yaml"
+
+#: The frozen v1 copies ticket rq9 retrofitted into the wave-10 steps: a molbio
+#: ledger before the pattern steps carries these exact files.
+FROZEN_PROTEINS_1 = (
+    ROOT / "migration" / "presets" / "cell_culture" / "1-to-2" / "proteins-1.yaml"
+)
+FROZEN_NUCLEIC_ACIDS_1 = (
+    ROOT
+    / "migration"
+    / "presets"
+    / "cell_culture"
+    / "1-to-2"
+    / "nucleic_acids-1.yaml"
+)
+
+#: ``preset_versions`` of a molbio-v3 ledger before ticket rq9: base 4 (the
+#: spec-5 rename ran), cell_culture 2, proteins/nucleic_acids still 1.
+PATTERN_V1_VERSIONS = {
+    "bacteria": 1,
+    "base": 4,
+    "cell_culture": 2,
+    "molbio": 3,
+    "nucleic_acids": 1,
+    "proteins": 1,
+}
+
+
+def write_pattern_v1_presets(directory: Path) -> Path:
+    """A molbio-v3 closure before ticket rq9 (proteins/nucleic_acids at v1).
+
+    The repository ships proteins 2 / nucleic_acids 2 now, so the ledger's own
+    copies come from the frozen v1 files the retrofit steps place; base is the
+    repository v4 (ticket 30's rename already ran) and the other parts are the
+    current repository content.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("base", "bacteria", "cell_culture", "molbio"):
+        shutil.copyfile(REPO_PRESETS / f"{name}.yaml", directory / f"{name}.yaml")
+    shutil.copyfile(FROZEN_PROTEINS_1, directory / "proteins.yaml")
+    shutil.copyfile(FROZEN_NUCLEIC_ACIDS_1, directory / "nucleic_acids.yaml")
+    return directory / "molbio.yaml"
+
+
+def pattern_v1_ledger(factory, directory: Path, *, name: str = "pattern-v1") -> Ledger:
+    ledger = factory([write_pattern_v1_presets(directory)], name=name, real_init=True)
+    assert ledger.schema.preset_versions == PATTERN_V1_VERSIONS
+    assert json.loads(ledger.meta["preset_versions"]) == PATTERN_V1_VERSIONS
+    return ledger
+
+
+def seed_pattern_v1(ledger: Ledger) -> dict[str, Any]:
+    """One row per patterned field, then the invalid values a v1 ledger allows.
+
+    The v1 presets have no pattern, so a direct SQL update (committed, so the
+    migration sees a clean working set) reproduces rows an old ledger may well
+    hold: ``ACGTZ``/``ACGT1`` in nucleotide fields and ``MKW.`` in the protein
+    sequence.
+    """
+    construct = ledger.entities.add(
+        "protein_construct",
+        name="c01",
+        values={
+            "sequence": "ACGTN",
+            "mature_sequence": "MKWV*",
+            "molecular_weight_da": 12345.67,
+        },
+    )
+    plasmid = ledger.entities.add(
+        "plasmid",
+        name="p01",
+        values={"sequence": "ATGG", "construct": construct["id"]},
+    )
+    oligo = ledger.entities.add("oligo", name="o01", values={"sequence": "ACGTN"})
+    ledger.driver.execute(
+        "UPDATE `entity_protein_construct` SET `sequence` = 'ACGTZ', "
+        "`mature_sequence` = 'MKW.' WHERE `id` = %s",
+        (construct["id"],),
+    )
+    ledger.driver.execute(
+        "UPDATE `entity_plasmid` SET `sequence` = 'ACGT1' WHERE `id` = %s",
+        (plasmid["id"],),
+    )
+    ledger.driver.execute(
+        "UPDATE `entity_oligo` SET `sequence` = 'ACGTZ' WHERE `id` = %s",
+        (oligo["id"],),
+    )
+    ledger.driver.commit("test: seed rows the v2 patterns reject")
+    ledger.read_meta()
+    return {"construct": construct, "plasmid": plasmid, "oligo": oligo}
+
+
+def set_recorded_versions(ledger: Ledger, payload: dict[str, Any], note: str) -> None:
+    """Rewrite ``ledger_meta.preset_versions`` to simulate another ledger era."""
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps(payload, sort_keys=True),),
+    )
+    ledger.driver.commit(f"test: {note}")
+    ledger.read_meta()
+
+
+def load_step_module(script: Path):
+    """Import a migration script so a precondition refusal runs in-process."""
+    name = f"rq9_{script.parent.parent.name}_{script.parent.name}"
+    spec = importlib.util.spec_from_file_location(name, script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_pattern_presets_1_to_2_migration_chain(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Ticket rq9: proteins then nucleic_acids, one real ledger end to end.
+
+    One real init keeps this bounded: the refusals (order, spec 5, base 4), the
+    dry-run/apply contract (one commit, the restore tag, frozen copies,
+    counters), ``tm check`` reporting the rows outside the new patterns with
+    their ids, a corrected row passing, and the second-run refusals.
+    """
+    ledger = pattern_v1_ledger(embedded_ledger_factory, tmp_path / "pattern-v1-presets")
+    seeded = seed_pattern_v1(ledger)
+    # The v1 content has no pattern tests: these rows pass every check.
+    assert ledger.check().passed
+    copies_before = {
+        name: (ledger.path / "presets" / name).read_bytes()
+        for name in ("base.yaml", "proteins.yaml", "nucleic_acids.yaml", "molbio.yaml")
+    }
+
+    # -- the order matters: nucleic_acids needs proteins 2 first -------------
+    refused = run_python(
+        NUCLEIC_ACIDS_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    output = refused.stdout + refused.stderr
+    assert "refusing to migrate nucleic_acids 1 -> 2" in output
+    assert "migration/presets/proteins/1-to-2" in output
+    assert "nothing was written" in output
+
+    # -- proteins refusals: spec 5 first, then base 4 ----------------------
+    # The same ``plan`` the script runs, in-process (no second real init).
+    proteins_step = load_step_module(PROTEINS_1_TO_2).step
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '4' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: pretend a spec-4 ledger")
+    ledger.read_meta()
+    head_before_refusals = head(ledger)
+    commits_before_refusals = commit_count(ledger)
+    with pytest.raises(LedgerError, match="migration/spec/4-to-5"):
+        proteins_step.plan(ledger)
+    assert head(ledger) == head_before_refusals
+    assert commit_count(ledger) == commits_before_refusals
+
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '5' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: back to spec 5")
+    ledger.read_meta()
+    set_recorded_versions(
+        ledger, {**PATTERN_V1_VERSIONS, "base": 3}, "pretend a base-3 ledger"
+    )
+    with pytest.raises(LedgerError, match="migration/presets/base/3-to-4"):
+        proteins_step.plan(ledger)
+    set_recorded_versions(ledger, PATTERN_V1_VERSIONS, "restore the base-4 counters")
+    for name, data in copies_before.items():
+        assert (ledger.path / "presets" / name).read_bytes() == data, name
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    # -- proteins 1 -> 2: dry run, then one commit -------------------------
+    dry = run_python(
+        PROTEINS_1_TO_2, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: proteins 1 -> 2" in dry.stdout
+    assert "CALL DOLT_TAG('pre-migrate-proteins-1'" in dry.stdout
+    assert '"proteins": 2' in dry.stdout
+    assert "dolt tests: replace with" in dry.stdout
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    for name, data in copies_before.items():
+        assert (ledger.path / "presets" / name).read_bytes() == data, name
+
+    applied = run_python(PROTEINS_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "committed" in applied.stdout
+    assert "migrate(ledger): proteins 1 -> 2" in applied.stdout
+
+    proteins_era = open_ledger(ledger.path, allow_legacy_statuses=True)
+    try:
+        assert proteins_era.warnings == []
+        assert proteins_era.check_fingerprint(warn=False) is True
+        expected_versions = {**PATTERN_V1_VERSIONS, "proteins": 2}
+        assert json.loads(proteins_era.meta["preset_versions"]) == expected_versions
+        assert proteins_era.schema.preset_versions == expected_versions
+        # The step places the frozen v2 target; nucleic_acids stays at v1.
+        assert (proteins_era.path / "presets" / "proteins.yaml").read_bytes() == (
+            PROTEINS_2.read_bytes()
+        )
+        assert (
+            proteins_era.path / "presets" / "nucleic_acids.yaml"
+        ).read_bytes() == FROZEN_NUCLEIC_ACIDS_1.read_bytes()
+        assert (proteins_era.path / "presets" / "base.yaml").read_bytes() == (
+            REPO_PRESETS / "base.yaml"
+        ).read_bytes()
+        # One commit with the contract message, tagged at the pre-step commit.
+        assert commit_count(proteins_era) == commits_before + 1
+        head_after = head(proteins_era)
+        assert head_after != head_before
+        assert commit_message(proteins_era, head_after) == (
+            "migrate(ledger): proteins 1 -> 2"
+        )
+        assert tags(proteins_era) == {"pre-migrate-proteins-1": head_before}
+        # Every pre-step row survived.
+        assert row_count(proteins_era, "entity_protein_construct") == 1
+        assert row_count(proteins_era, "entity_plasmid") == 1
+        assert row_count(proteins_era, "entity_oligo") == 1
+
+        # ``tm check`` now FAILs on the new pattern tests, naming the rows
+        # (the same run_check the CLI calls, with ``-v`` detail queries).
+        report = run_check(proteins_era.driver, proteins_era.schema, verbose=True)
+        assert not report.passed
+        failed = {result.name for result in report.blocking_failures}
+        assert {
+            "schema_protein_construct_pattern_sequence",
+            "schema_protein_construct_pattern_mature_sequence",
+            "schema_plasmid_pattern_sequence",
+        } <= failed
+        detail = {
+            (result.name, row["id"], row["value"])
+            for result in report.blocking_failures
+            for row in result.detail_rows
+        }
+        assert (
+            "schema_protein_construct_pattern_sequence",
+            seeded["construct"]["id"],
+            "ACGTZ",
+        ) in detail
+        assert (
+            "schema_protein_construct_pattern_mature_sequence",
+            seeded["construct"]["id"],
+            "MKW.",
+        ) in detail
+        assert (
+            "schema_plasmid_pattern_sequence",
+            seeded["plasmid"]["id"],
+            "ACGT1",
+        ) in detail
+
+        # A corrected row passes again.
+        proteins_era.driver.execute(
+            "UPDATE `entity_protein_construct` SET `sequence` = 'ACGTN', "
+            "`mature_sequence` = 'MKWV*' WHERE `id` = %s",
+            (seeded["construct"]["id"],),
+        )
+        proteins_era.driver.execute(
+            "UPDATE `entity_plasmid` SET `sequence` = 'ATGG' WHERE `id` = %s",
+            (seeded["plasmid"]["id"],),
+        )
+        proteins_era.driver.commit("test: correct the sequences")
+        proteins_era.read_meta()
+        assert proteins_era.check().passed
+
+        # -- nucleic_acids 1 -> 2: dry run, then one commit ----------------
+        head_before = head(proteins_era)
+        commits_before = commit_count(proteins_era)
+        proteins_tag = tags(proteins_era)
+        assert set(proteins_tag) == {"pre-migrate-proteins-1"}
+        assert proteins_tag["pre-migrate-proteins-1"] != head_before
+        dry = run_python(
+            NUCLEIC_ACIDS_1_TO_2,
+            "--ledger",
+            str(ledger.path),
+            "--dry-run",
+            env=script_env,
+        )
+        assert dry.returncode == 0, dry.stdout + dry.stderr
+        assert "migration: nucleic_acids 1 -> 2" in dry.stdout
+        assert "CALL DOLT_TAG('pre-migrate-nucleic_acids-1'" in dry.stdout
+        assert '"nucleic_acids": 2' in dry.stdout
+        assert "dolt tests: replace with" in dry.stdout
+        # The dry run wrote nothing and restored the copies it placed.
+        assert head(proteins_era) == head_before
+        assert commit_count(proteins_era) == commits_before
+        assert tags(proteins_era) == proteins_tag
+        assert (proteins_era.path / "presets" / "nucleic_acids.yaml").read_bytes() == (
+            FROZEN_NUCLEIC_ACIDS_1.read_bytes()
+        )
+    finally:
+        proteins_era.close()
+
+    applied = run_python(
+        NUCLEIC_ACIDS_1_TO_2, "--ledger", str(ledger.path), env=script_env
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): nucleic_acids 1 -> 2" in applied.stdout
+
+    reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
+    try:
+        assert reopened.warnings == []
+        assert reopened.check_fingerprint(warn=False) is True
+        expected_versions = {
+            **PATTERN_V1_VERSIONS,
+            "proteins": 2,
+            "nucleic_acids": 2,
+        }
+        assert json.loads(reopened.meta["preset_versions"]) == expected_versions
+        assert reopened.schema.preset_versions == expected_versions
+        assert (reopened.path / "presets" / "nucleic_acids.yaml").read_bytes() == (
+            NUCLEIC_ACIDS_2.read_bytes()
+        )
+        assert (reopened.path / "presets" / "proteins.yaml").read_bytes() == (
+            PROTEINS_2.read_bytes()
+        )
+        assert commit_count(reopened) == commits_before + 1
+        head_after = head(reopened)
+        assert commit_message(reopened, head_after) == (
+            "migrate(ledger): nucleic_acids 1 -> 2"
+        )
+        assert tags(reopened) == {
+            "pre-migrate-proteins-1": proteins_tag["pre-migrate-proteins-1"],
+            "pre-migrate-nucleic_acids-1": head_before,
+        }
+
+        report = run_check(reopened.driver, reopened.schema, verbose=True)
+        assert not report.passed
+        assert "schema_oligo_pattern_sequence" in {
+            result.name for result in report.blocking_failures
+        }
+        assert (
+            "schema_oligo_pattern_sequence",
+            seeded["oligo"]["id"],
+            "ACGTZ",
+        ) in {
+            (result.name, row["id"], row["value"])
+            for result in report.blocking_failures
+            for row in result.detail_rows
+        }
+        reopened.driver.execute(
+            "UPDATE `entity_oligo` SET `sequence` = 'ACGTN' WHERE `id` = %s",
+            (seeded["oligo"]["id"],),
+        )
+        reopened.driver.commit("test: correct the oligo")
+        reopened.read_meta()
+        assert reopened.check().passed
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        reopened.close()
+
+    # -- a second run refuses each counter --------------------------------
+    again = run_python(PROTEINS_1_TO_2, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[proteins] 2, expected 1" in (
+        again.stdout + again.stderr
+    )
+    again = run_python(
+        NUCLEIC_ACIDS_1_TO_2, "--ledger", str(ledger.path), env=script_env
+    )
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[nucleic_acids] 2, expected 1" in (
+        again.stdout + again.stderr
+    )
 
 # ---------------------------------------------------------------------------
 # spec/4-to-5: one view per box, positions follow in stock (ticket 30)

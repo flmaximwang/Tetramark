@@ -100,6 +100,9 @@ tm entity list [KIND] [--where FIELD=VALUE ...] [--json]
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
 `--where` filters match the kind's columns and can be repeated (AND).
 `show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
+The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
+(at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
+always print the full 36-character id, and datecode/sequence/aliquot ids are never shortened.
 
 ## Stocks
 
@@ -235,8 +238,12 @@ tm history ID|ALIAS|BOX [--json]
 
 `OBJECT_TYPE` is `entity`, `stock`, `aliquot` or `box`; aliases are unique per object type.
 `alias remove ALIAS` removes that alias everywhere, `alias remove stock ALIAS` only from stocks.
-`find` tries exact id, then alias, then name/kind text (case-insensitive) and shows summary and
-location. `history` merges aliquot events and the Dolt commits that touched the object.
+An incomplete object id is accepted wherever a command takes an `ID|ALIAS`: when its prefix matches
+exactly one object it resolves, and a prefix that matches several is a usage error (exit 2) naming
+the candidates — a full id or exact alias always wins first.
+`find` matches ids exactly and aliases, names and kind string/text fields by exact, prefix or
+substring text (case-insensitive, literal), ranks exact id → exact alias → exact name → name prefix
+→ alias prefix → name substring → alias substring → fields, and shows summary and location. `history` merges aliquot events and the Dolt commits that touched the object.
 
 Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
 `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when

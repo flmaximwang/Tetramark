@@ -1,5 +1,5 @@
 preset: proteins
-version: 1
+version: 2
 description: >-
   Protein designs and their purified preparations: one entity per amino-acid
   sequence, with the extinction-coefficient formulas from zsqlab08, and the
@@ -19,9 +19,11 @@ mixins:
       type: sequence
       unique: true
       long: true
+      pattern: "[ACGTURYKMSWBDHVN]+"
       description: >-
-        Nucleotide sequence; normalised (uppercase, whitespace stripped) by the
-        app and fingerprinted through the generated sequence_sha256 column.
+        Nucleotide sequence (IUPAC nucleotide codes); normalised (uppercase,
+        whitespace stripped) by the app and fingerprinted through the generated
+        sequence_sha256 column.
     length_bp:
       type: computed
       expr: "CHAR_LENGTH(sequence)"
@@ -39,7 +41,10 @@ kinds:
       mature_sequence:
         type: sequence
         long: true
-        description: Mature protein sequence after signal-peptide/tag removal, when known.
+        pattern: "[ACDEFGHIKLMNPQRSTVWYXBZUO*]+"
+        description: >-
+          Mature protein sequence after signal-peptide/tag removal, when known
+          (IUPAC amino-acid codes, including the ambiguity/stop symbols).
       aliases:
         type: string
         length: 255

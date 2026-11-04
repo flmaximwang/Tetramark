@@ -29,18 +29,22 @@ bumps `preset_versions.base` and the fingerprint, and the shared runner regenera
   still carries its own base-v3 copy, so the `grid96` boxes are visible to it; it also lists any
   aliquot positions it cleared.
 - `ledger_meta.preset_versions.base = 3` (a second run refuses; the shared runner checks it).
-- **This is the last preset step.** The wave-11 upgrade order is `migration/spec/4-to-5` first, then
-  the older preset steps the ledger still needs — `migration/presets/base/2-to-3` and
-  `migration/presets/molbio/2-to-3` (and `cell_culture/1-to-2` / `library/1-to-2`) — and
-  `migration/presets/base/3-to-4` last. Those steps now install frozen base-v3 copies (the retrofit
-  is the maintenance rule in [`migration/README.md`](../../../README.md)); this step renames that
-  content. Running it before them would make them place v3 over a v4 ledger and refuse.
+- **This is the last of the wave-10 preset steps.** The wave-11 upgrade order is
+  `migration/spec/4-to-5` first, then the older preset steps the ledger still needs —
+  `migration/presets/base/2-to-3` and `migration/presets/molbio/2-to-3` (and
+  `cell_culture/1-to-2` / `library/1-to-2`) — and `migration/presets/base/3-to-4` after them. Those
+  steps now install frozen base-v3 copies (the retrofit is the maintenance rule in
+  [`migration/README.md`](../../../README.md)); this step renames that content. Ticket rq9's
+  `proteins/1-to-2` and then `nucleic_acids/1-to-2` steps run **after** this one: they need base 4
+  and install repository base-v4 copies.
 - A clean working set.
 - Files, not Dolt content: the step places **every preset copy the ledger lists** from this checkout
   before it opens the ledger. Its own `base.yaml` is placed from the frozen [`base-4.yaml`](base-4.yaml)
   next to `migrate.py`, not from `presets/`: the repository only holds the current version, and a
   later bump must not change what this historical step installs. The other presets' counters are
-  bumped by their own steps (they are independent and may already have run).
+  bumped by their own steps (they are independent and may already have run); `proteins` and
+  `nucleic_acids` are kept at the frozen [`proteins-1.yaml`](proteins-1.yaml) /
+  [`nucleic_acids-1.yaml`](nucleic_acids-1.yaml) because ticket rq9's repository copies are v2.
 - A directory copy `<ledger>/presets/base/` would shadow the flat `base.yaml` this step places;
   convert it to a file first (as for every wave-10 preset step).
 - [`base-3.yaml`](base-3.yaml) next to `migrate.py` is the content a base-3 ledger carries: it is

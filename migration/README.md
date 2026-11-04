@@ -110,9 +110,15 @@ again:
   behind that preset's own counter and the newer step could then not run. Ticket
   28's `cell_culture` 2 is the worked example: `base/2-to-3` and `molbio/2-to-3`
   both ship and place `cell_culture-1.yaml`. Ticket 30's **base 4** (`grid96` →
-  `grid8x12`, spec 5) is the current example: `base/2-to-3`, `molbio/2-to-3`,
-  `cell_culture/1-to-2` and `library/1-to-2` all ship and place `base-3.yaml`,
-  and `base/3-to-4` must run last because it renames that content.
+  `grid8x12`, spec 5) added `base-3.yaml` to `base/2-to-3`, `molbio/2-to-3`,
+  `cell_culture/1-to-2` and `library/1-to-2`, and `base/3-to-4` renames that
+  content. Ticket rq9's **proteins 2 / nucleic_acids 2** (the IUPAC sequence
+  patterns) is the current example: the same five wave-10 steps now also ship
+  and place `proteins-1.yaml` and `nucleic_acids-1.yaml`, and the two new steps
+  ship their own target copies (`proteins-2.yaml`, `nucleic_acids-2.yaml`, plus
+  `nucleic_acids-1.yaml` in the proteins step because that part's counter stays
+  at 1 there). On a wave-12 upgrade the two pattern steps run **after**
+  `base/3-to-4` (they need base 4) and in the order proteins → nucleic_acids.
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.
@@ -181,8 +187,10 @@ constraints/views — no hand-written SQL, no data loss.
 | [`spec/4-to-5`](spec/4-to-5/README.md) | `spec_version` 4 → 5 | Drops the per-box-kind `v_box_<kind>` views and creates one view per existing box, clears the positions of not-in-stock aliquots (one `move` event each), rebuilds the derived views/`dolt_tests`; refuses a view-unsafe box name, a grid box holding a child box, and an in-stock aliquot without a position. Run before `presets/base/3-to-4`. |
 | [`presets/base/1-to-2`](presets/base/1-to-2/README.md) | `preset_versions.base` 1 → 2 | Places the frozen v2 base copy (status sets `tube`/`cryo`/`animal`, `lot` uses `tube`), recreates the generated views; no table changes. |
 | [`presets/base/2-to-3`](presets/base/2-to-3/README.md) | `preset_versions.base` 2 → 3 | Places the frozen base v3 copy and applies its additive diff: the slotless `incubator` box kind (`box_incubator` table); refuses a destructive plan. |
-| [`presets/base/3-to-4`](presets/base/3-to-4/README.md) | `preset_versions.base` 3 → 4 | Places the frozen v4 base copy and applies the explicit rename map (`renames.yaml`): box kind `grid96` → `grid8x12` (table, constraints, core `kind` values); the per-box views spec 4-to-5 built stay as they are. Refuses any other destructive step. Run after `spec/4-to-5` and last among the preset steps. |
+| [`presets/base/3-to-4`](presets/base/3-to-4/README.md) | `preset_versions.base` 3 → 4 | Places the frozen v4 base copy and applies the explicit rename map (`renames.yaml`): box kind `grid96` → `grid8x12` (table, constraints, core `kind` values); the per-box views spec 4-to-5 built stay as they are. Refuses any other destructive step. Run after `spec/4-to-5` and after the wave-10 preset steps; the ticket-rq9 `proteins`/`nucleic_acids` steps run after it. |
 | [`presets/library/1-to-2`](presets/library/1-to-2/README.md) | `preset_versions.library` 1 → 2 | Places the v2 library copy (`copy` uses the base `tube` set), recreates the generated views; no table changes. |
 | [`presets/molbio/1-to-2`](presets/molbio/1-to-2/README.md) | `preset_versions.molbio` 1 → 2 | Renames four molbio kinds, adds `cell_line`/`cell_vial`/`cell_pellet`, moves `glycerol_pct` from the aliquot extension to the stock, vendors the frozen v2 preset copy. |
 | [`presets/molbio/2-to-3`](presets/molbio/2-to-3/README.md) | `preset_versions.molbio` 2 → 3 | Turns molbio into a bundle of parts, adds `entity_oligo`/`stock_oligo_stock` (and base v3's `box_incubator`), places every part copy (cell_culture frozen at v1 by ticket 28) and records a `preset_versions` key per part at 1. |
 | [`presets/cell_culture/1-to-2`](presets/cell_culture/1-to-2/README.md) | `preset_versions.cell_culture` 1 → 2 | Places the frozen v2 cell_culture copy and applies its additive diff: three `stock_cell_vial` columns (`selection`, `mycoplasma`, `mycoplasma_tested_on`) and the `cell_biosample` kind/table; one commit, additive only. |
+| [`presets/proteins/1-to-2`](presets/proteins/1-to-2/README.md) | `preset_versions.proteins` 1 → 2 | Places the frozen proteins v2 copy (IUPAC patterns on the shared `sequence_fields` sequence and `mature_sequence`) and the frozen nucleic_acids v1 copy, recreates the generated views; no table changes. `tm check` reports rows outside the alphabet. Runs after `base/3-to-4`, before `nucleic_acids/1-to-2`. |
+| [`presets/nucleic_acids/1-to-2`](presets/nucleic_acids/1-to-2/README.md) | `preset_versions.nucleic_acids` 1 → 2 | Places the frozen nucleic_acids v2 copy (IUPAC pattern on `oligo.sequence`), recreates the generated views; no table changes. Requires proteins 2 and runs after `proteins/1-to-2`. |

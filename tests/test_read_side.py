@@ -103,6 +103,24 @@ def test_find_precedence_and_ranking(ledger_factory) -> None:
     assert ledger.find("nothing-like-this") == []
 
 
+def test_find_matches_part_of_an_alias(ledger_factory) -> None:
+    ledger = ledger_factory([BUNDLED_BASE], name="find-alias-part")
+    tagged = add_item(ledger, "6×His-γPFD-HisProbe-1.3")
+    other = add_item(ledger, "unrelated")
+    ledger.aliases.add("entity", tagged["id"], "6xHis-gammaPFD-HisProbe-1.3")
+    ledger.aliases.add("entity", other["id"], "gammaPFD-like")
+
+    hits = ledger.find("gammaPFD")
+    # A prefix of an alias ranks above a substring of one.
+    assert [row["id"] for row in hits] == [other["id"], tagged["id"]]
+    assert [row["match"] for row in hits] == ["alias", "alias"]
+    assert ledger.find("6XHIS-GAMMA")[0]["id"] == tagged["id"]
+
+    # A name prefix still beats an alias prefix.
+    named = add_item(ledger, "gammaPFD-wt")
+    assert ledger.find("gammaPFD")[0]["id"] == named["id"]
+
+
 def test_find_is_literal_and_case_insensitive(ledger_factory) -> None:
     ledger = ledger_factory([BUNDLED_BASE], name="find-literal")
     underscore = add_item(ledger, "under_score")

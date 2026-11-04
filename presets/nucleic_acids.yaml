@@ -1,5 +1,5 @@
 preset: nucleic_acids
-version: 1
+version: 2
 description: >-
   Nucleic-acid designs and the tubes that hold them: plasmids and their
   preparations, plus synthetic oligos and their stock tubes. Included by the
@@ -78,9 +78,11 @@ kinds:
       sequence:
         type: sequence
         long: true
+        pattern: "[ACGTURYKMSWBDHVN]+"
         description: >-
-          Nucleotide sequence; normalised (uppercase, whitespace stripped) by the
-          app and fingerprinted through the generated sequence_sha256 column.
+          Nucleotide sequence (IUPAC nucleotide codes); normalised (uppercase,
+          whitespace stripped) by the app and fingerprinted through the generated
+          sequence_sha256 column.
       direction:
         type: enum
         values: [fwd, rev]

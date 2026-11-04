@@ -691,9 +691,15 @@ def _pattern_test(
 ) -> TestDefinition:
     assert schema_field.pattern is not None  # callers check
     column = _q(field_name)
+    # ``REGEXP`` everywhere (MySQL, Dolt, the driver) is a *search*: an
+    # unanchored pattern matches a substring of the value.  The app checks a
+    # field pattern with ``re.fullmatch`` (core/objects.py), so the generated
+    # test has to add the anchors itself; otherwise a value such as ``ACGTZ``
+    # would pass an ``[ACGT]+`` pattern on its ``ACGT`` prefix.  Wrapping is
+    # harmless for patterns that are already anchored.
     condition = (
         f"{column} IS NOT NULL "
-        f"AND NOT ({column} REGEXP {_lit(schema_field.pattern)})"
+        f"AND NOT ({column} REGEXP {_lit(f'^(?:{schema_field.pattern})$')})"
     )
     description = (
         schema_field.description or f"{field_name} matches {schema_field.pattern}"

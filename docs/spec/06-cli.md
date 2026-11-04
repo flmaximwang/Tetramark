@@ -254,7 +254,18 @@ portability     no warnings
   day prefix (configurable `reuse: false` → max+1). Example: prefix `08`, 2026-06-24 → `0826FP01`.
 - `sequence` — `<prefix><NNNNN>` monotonic.
 - Explicit IDs are always accepted (back-filling / migration) if unique and well-formed (pattern from the strategy).
+- An **incomplete ID** is accepted wherever a command takes an `ID|ALIAS` reference when its prefix
+  matches exactly one object; a full ID or an exact alias always wins first. A prefix that matches
+  several objects is a usage error (exit 2) that names the candidates, so nothing is picked silently.
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
+
+List tables abbreviate uuid ids the way git abbreviates hashes: `tm entity list` and `tm stock list`
+print the shortest **unique** prefix of at least 8 characters (ids that share the first 8 grow
+together until they differ). `tm stock list` shortens both its `id` and its `entity_id` column when
+that value is a uuid id, so a ledger with a `uuid` stock strategy gets short stock ids too.
+`tm <object> show`, JSON and CSV always print the full 36-character id, so it remains the
+cross-command identifier, and datecode/sequence ids (`0826FP01`, `S00042`) and aliquot ids
+(`0826FP01.1`) are never shortened.
 
 ### 6.3 The interactive form — `tm <object> add-form`
 
