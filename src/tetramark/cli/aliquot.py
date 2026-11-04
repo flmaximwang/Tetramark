@@ -226,20 +226,35 @@ def move_aliquot_command(
             "status and the normal transition rule applies."
         ),
     ),
+    message: str = typer.Option(
+        ...,
+        "--message",
+        "-m",
+        help=(
+            "Why the tube was moved (required; trimmed and stored on the "
+            "move event)."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Move an aliquot to another box/slot (placing it puts it back in stock)."""
+    """Move an aliquot to another box/slot; -m/--message is required.
+
+    Placing the tube puts it back in stock when it was not; -m/--message is
+    trimmed, refused when empty, and recorded on the move event.
+    """
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.move(ref, box=box, slot=slot, status=status)
+        result = ledger.aliquots.move(
+            ref, box=box, slot=slot, status=status, message=message
+        )
         location = box if slot is None else f"{box}:{slot}"
-        message = f"Moved aliquot {result['id']} to {location}"
+        line = f"Moved aliquot {result['id']} to {location}"
         if result.get("old_status") != result.get("status"):
-            message += f" (status {result['old_status']} -> {result['status']})"
+            line += f" (status {result['old_status']} -> {result['status']})"
         emit_write(
             ledger,
             result,
-            message,
+            line,
             as_json=json_output(ctx, as_json),
         )
     finally:

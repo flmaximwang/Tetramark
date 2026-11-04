@@ -260,7 +260,10 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "--quantity", "50", "--unit", "ul",
     )
     assert added["ids"] == [f"{stock_id}.3", f"{stock_id}.4"]
-    run("aliquot", "move", f"{stock_id}.4", "--box", "BOX-1", "--slot", "C3")
+    run(
+        "aliquot", "move", f"{stock_id}.4", "--box", "BOX-1", "--slot", "C3",
+        "-m", "moved to BOX-1",
+    )
     used = run_json(
         "aliquot", "use", f"{stock_id}.3", "20", "ul", "--purpose", "assay"
     )

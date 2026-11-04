@@ -150,6 +150,8 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
             ledger,
             "aliquot",
             "move",
+            "-m",
+            "moved",
             first,
             "--box",
             "BOX",
@@ -653,6 +655,8 @@ def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory)
             ledger,
             "aliquot",
             "move",
+            "-m",
+            "moved",
             alq,
             "--box",
             "BOX",
@@ -744,6 +748,8 @@ def test_cli_aliquot_status_clears_position(cli_env: None, ledger_factory) -> No
             ledger,
             "aliquot",
             "move",
+            "-m",
+            "moved",
             alq,
             "--box",
             "G",
@@ -787,7 +793,9 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
     alq = stock["aliquots"][0]
 
     # Two in-stock statuses: the bare move lists them and asks for --status.
-    ambiguous = invoke(ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1")
+    ambiguous = invoke(
+        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1", "-m", "moved"
+    )
     assert isinstance(ambiguous.exception, LedgerError)
     assert "several in-stock statuses" in str(ambiguous.exception)
     assert "growing" in str(ambiguous.exception)
@@ -795,13 +803,13 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
 
     # --status must name an in-stock status of the set.
     bad = invoke(
-        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1",
+        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1", "-m", "moved",
         "--status", "contaminated",
     )
     assert bad.exception.exit_code == 2
     assert "not in stock" in str(bad.exception)
     unknown = invoke(
-        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1",
+        ledger, "aliquot", "move", alq, "--box", "G", "--slot", "A1", "-m", "moved",
         "--status", "nope",
     )
     assert unknown.exception.exit_code == 2
@@ -812,6 +820,8 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
             ledger,
             "aliquot",
             "move",
+            "-m",
+            "moved",
             alq,
             "--box",
             "G",
@@ -824,6 +834,79 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
     )
     assert restored["old_status"] == "contaminated"
     assert restored["status"] == "growing"
+
+
+def test_cli_aliquot_move_requires_message_and_records_it(
+    cli_env: None, ledger_factory
+) -> None:
+    """Missing/blank -m is a usage error; a normal move keeps its old line."""
+    ledger = ledger_factory([BASE], name="cli-move-message", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "BOX")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "1",
+            "--json",
+        ).output
+    )
+    alq = stock["aliquots"][0]
+
+    missing = invoke(ledger, "aliquot", "move", alq, "--box", "BOX", "--slot", "A1")
+    assert missing.exit_code == 2
+    assert "--message" in missing.output
+
+    before = commit_count(ledger)
+    blank = invoke(
+        ledger,
+        "aliquot",
+        "move",
+        alq,
+        "--box",
+        "BOX",
+        "--slot",
+        "A1",
+        "--message",
+        " \t ",
+    )
+    assert blank.exception.exit_code == 2
+    assert "message" in str(blank.exception)
+    assert commit_count(ledger) == before
+
+    moved = write(
+        ledger,
+        "aliquot",
+        "move",
+        alq,
+        "--box",
+        "BOX",
+        "--slot",
+        "A1",
+        "-m",
+        "  moved to the bench  ",
+    )
+    assert moved.output.strip() == (
+        f"Moved aliquot {alq} to BOX:A1 (status pending -> stored)"
+    )
+    row = ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    )[0]
+    assert row["status"] == "stored" and row["slot"] == "A1"
+
+    history = json.loads(read(ledger, "history", alq, "--json").output)
+    event = history["events"][-1]
+    assert event["event"] == "move"
+    assert event["note"] == "moved to the bench"
+    assert event["purpose"] is None
+    assert event["to_slot"] == "A1"
 
 
 # ---------------------------------------------------------------------------

@@ -275,7 +275,7 @@ def test_fixed_creation_status_and_transitions(ledger_factory) -> None:
     # stored -> pending is never allowed, forced or not (--force without a
     # position then hits the in-stock placement rule, not the transition).
     shelf = ledger.boxes.add("shelf", "SHELF")
-    ledger.aliquots.move(alq, box="SHELF")
+    ledger.aliquots.move(alq, box="SHELF", message="placed on the shelf")
     with pytest.raises(LedgerError, match="allowed next status"):
         ledger.aliquots.status(alq, "pending")
     # An in-stock status without a position breaks the placement invariant.
@@ -301,7 +301,7 @@ def test_fixed_move_and_use_follow_the_fixed_set(ledger_factory) -> None:
     assert ledger.aliquots.show(alq)["status"] == "stored"
 
     # Moving an in-stock tube keeps the only in-stock status.
-    moved = ledger.aliquots.move(alq, box="RACK", slot="top")
+    moved = ledger.aliquots.move(alq, box="RACK", slot="top", message="moved to the rack")
     assert moved["old_status"] == "stored" and moved["status"] == "stored"
 
     # Leaving stock clears the position; moving it back restores stored.
@@ -310,7 +310,7 @@ def test_fixed_move_and_use_follow_the_fixed_set(ledger_factory) -> None:
     assert ledger.driver.query(
         "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"box_id": None, "slot": None}]
-    restored = ledger.aliquots.move(alq, box="RACK", slot="top")
+    restored = ledger.aliquots.move(alq, box="RACK", slot="top", message="moved back")
     assert restored["old_status"] == "missing"
     assert restored["status"] == "stored"
 
@@ -614,5 +614,5 @@ def test_legacy_ledger_stored_tests_are_not_rederived(ledger_factory) -> None:
     item = ledger.entities.add("item", name="legacy-tested")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
     shelf = ledger.boxes.add("shelf", "SHELF")
-    ledger.aliquots.move(stock["aliquots"][0], box="SHELF")
+    ledger.aliquots.move(stock["aliquots"][0], box="SHELF", message="placed")
     assert ledger.check().passed
