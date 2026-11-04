@@ -4399,3 +4399,20 @@ def test_spec4_boxes_fixture_matches_its_builder(
     # The named-view acceptance shape: rack R holds child box G in slot 1.
     assert ("G", "grid9x9", "R", "1") in checked_data["boxes"]
     assert ("R", "1", "stored") not in checked_data["aliquots"]
+
+
+def test_commit_meta_read_error_propagates(monkeypatch) -> None:
+    """A failed dolt_log read is the error, not a bogus version mismatch."""
+    from types import SimpleNamespace
+
+    from tetramark.migrate import _read_commit_and_meta
+
+    class BrokenDriver:
+        def query_many(self, statements):
+            raise LedgerError("dolt_log unreadable: simulated")
+
+    ledger = SimpleNamespace(driver=BrokenDriver(), meta={"version": "4"})
+
+    with pytest.raises(LedgerError, match="dolt_log unreadable"):
+        _read_commit_and_meta(ledger, "deadbeef")
+    assert ledger.meta == {"version": "4"}

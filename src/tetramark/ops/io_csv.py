@@ -2481,11 +2481,18 @@ class _ExportRows:
                         for (name, _), rows in zip(self._statements, results)
                     }
                     return self._rows.get(key, [])
-        if self._rows is not None:
-            return self._rows.get(key, [])
+        if self._rows is None:
+            # The fallback keeps every read it has already paid for; exporting
+            # reads each key more than once (aliases, box names, ...).
+            self._rows = {}
+        if key in self._rows:
+            return self._rows[key]
         for name, sql in self._statements:
             if name == key:
-                return self._driver.query(sql)
+                rows = self._driver.query(sql)
+                self._rows[key] = rows
+                return rows
+        self._rows[key] = []
         return []
 
 

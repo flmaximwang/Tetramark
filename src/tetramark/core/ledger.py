@@ -1274,6 +1274,11 @@ def _open_read_state(
             rows = validated.query(_META_SQL, fill_columns=False)
         except LedgerError:
             return validated, {}
+        except BaseException:
+            # The replacement driver is not ours to keep on an unexpected
+            # failure; close it before letting the error out.
+            _close_driver(validated, discard=True)
+            raise
         return validated, _meta_dict(rows)
     if selected is None:
         return driver, _meta_dict(results[0])

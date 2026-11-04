@@ -818,22 +818,18 @@ def _read_commit_and_meta(ledger: Ledger, commit_hash: str) -> str:
     The post-commit verification needs the new ``ledger_meta`` rows and the
     commit message; ``query_many`` costs one ``dolt sql`` run for the rows and
     one for the CSV column lists, where two separate ``query`` calls cost four.
-    A read error leaves ``meta`` empty, exactly like :meth:`Ledger.read_meta`,
-    so the verification (not this helper) reports the failed migration.
+    A read error propagates as the real :class:`LedgerError`; swallowing it
+    would empty ``meta`` and report a misleading version/schema mismatch.
     """
-    try:
-        meta_rows, log_rows = ledger.driver.query_many(
-            [
-                ("SELECT `key`, `value` FROM `ledger_meta` ORDER BY `key`", None),
-                (
-                    "SELECT `message` FROM `dolt_log` WHERE `commit_hash` = %s",
-                    (commit_hash,),
-                ),
-            ]
-        )
-    except LedgerError:  # pragma: no cover - a missing meta table is corruption
-        ledger.meta = {}
-        return ""
+    meta_rows, log_rows = ledger.driver.query_many(
+        [
+            ("SELECT `key`, `value` FROM `ledger_meta` ORDER BY `key`", None),
+            (
+                "SELECT `message` FROM `dolt_log` WHERE `commit_hash` = %s",
+                (commit_hash,),
+            ),
+        ]
+    )
     ledger.meta = {str(row["key"]): str(row["value"]) for row in meta_rows}
     return str(log_rows[0]["message"]) if log_rows else ""
 
