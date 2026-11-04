@@ -1031,3 +1031,91 @@ def test_cli_aliquot_show_help_names_history_and_stock_show() -> None:
     help_text = " ".join(result.output.split())
     assert "tm history" in help_text
     assert "tm stock show" in help_text
+
+
+# ---------------------------------------------------------------------------
+# Wrong-type hints (Tetramark-i93.4): the error names the other show verb
+# ---------------------------------------------------------------------------
+
+
+def cli_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    ledger,
+    *args: str,
+) -> tuple[int, str]:
+    """Run ``tm`` through ``main()`` and return (exit code, stderr)."""
+    monkeypatch.setattr(sys, "argv", ["tm", *base_args(ledger), *args])
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    captured = capsys.readouterr()
+    return int(excinfo.value.code or 0), captured.err
+
+
+def test_cli_stock_show_of_an_aliquot_names_the_aliquot_verb(
+    cli_env: None,
+    ledger_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``tm stock show <aliquot>`` exits 1 and hints at ``tm aliquot show``."""
+    ledger = ledger_factory([BASE], name="cli-hint-stock", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger, "stock", "add", "lot", "--entity", item["id"], "--json"
+        ).output
+    )
+    alq = stock["aliquots"][0]
+    expected = (
+        f"Error: unknown stock {alq!r}: {alq} is an aliquot; "
+        f"try tm aliquot show {alq}"
+    )
+
+    code, err = cli_failure(monkeypatch, capsys, ledger, "stock", "show", alq)
+    assert code == 1
+    assert err.strip() == expected
+
+    # --json does not change the error output: same message, same exit code.
+    code, err = cli_failure(
+        monkeypatch, capsys, ledger, "stock", "show", alq, "--json"
+    )
+    assert code == 1
+    assert err.strip() == expected
+
+
+def test_cli_aliquot_show_of_a_stock_names_the_stock_verb(
+    cli_env: None,
+    ledger_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``tm aliquot show <stock>`` exits 1 and hints at ``tm stock show``."""
+    ledger = ledger_factory([BASE], name="cli-hint-aliquot", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger, "stock", "add", "lot", "--entity", item["id"], "--json"
+        ).output
+    )
+    expected = (
+        f"Error: unknown aliquot {stock['id']!r}: {stock['id']} is a stock; "
+        f"try tm stock show {stock['id']}"
+    )
+
+    code, err = cli_failure(
+        monkeypatch, capsys, ledger, "aliquot", "show", stock["id"]
+    )
+    assert code == 1
+    assert err.strip() == expected
+
+    # --json does not change the error output: same message, same exit code.
+    code, err = cli_failure(
+        monkeypatch, capsys, ledger, "aliquot", "show", stock["id"], "--json"
+    )
+    assert code == 1
+    assert err.strip() == expected

@@ -1208,6 +1208,40 @@ def _read_record_batch(
     return record, aliases, fetched[2:]
 
 
+def _wrong_type_hint(ledger: Ledger, object_type: str, ref: str) -> str:
+    """The ``: <ref> is a <type>; try tm <type> show <ref>`` suffix, or ``""``.
+
+    ``tm aliquot show <stock>`` and ``tm stock show <aliquot>`` are easy
+    mistakes, so their not-found error names the verb that would work (spec
+    §6).  The ref is resolved like ``tm find`` does, through
+    :func:`tetramark.ops.find.resolve_any`; the import is local because
+    ``ops.find`` imports this module at module level.
+
+    A ref that names nothing, an empty or ambiguous ref (``UsageError``) and a
+    ref of a third object type keep the plain not-found message and get no
+    hint.
+    """
+    text = str(ref).strip()
+    if not text:
+        return ""
+    from tetramark.ops.find import resolve_any
+
+    try:
+        found = resolve_any(ledger, ref)
+    except UsageError:
+        # Empty or ambiguous: the resolver cannot name one object.
+        return ""
+    except LedgerError:
+        # Names nothing at all.
+        return ""
+    found_type = str(found["object"])
+    if object_type == "aliquot" and found_type == "stock":
+        return f": {text} is a stock; try tm stock show {text}"
+    if object_type == "stock" and found_type == "aliquot":
+        return f": {text} is an aliquot; try tm aliquot show {text}"
+    return ""
+
+
 def _read_box_rows(
     ledger: Ledger, ref: str
 ) -> tuple[
@@ -1757,21 +1791,34 @@ def edit_stock(
 
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """One stock, its sorted aliases (``aliases``) and its aliquots."""
+    """One stock, its sorted aliases (``aliases``) and its aliquots.
+
+    A ref that names an aliquot is a not-found error that points at
+    ``tm aliquot show`` (spec §6); any other miss keeps the plain message.
+    """
     id_sql = _resolved_id_sql("stock")
     params = _resolved_id_params(id_sql, ref)
-    record, aliases, extra = _read_record_batch(
-        ledger,
-        "stock",
-        ref,
-        extras=[
-            (
-                "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
-                f"FROM `aliquot` WHERE `stock_id` = {id_sql} ORDER BY `seq`",
-                params,
-            )
-        ],
-    )
+    try:
+        record, aliases, extra = _read_record_batch(
+            ledger,
+            "stock",
+            ref,
+            extras=[
+                (
+                    "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
+                    f"FROM `aliquot` WHERE `stock_id` = {id_sql} ORDER BY `seq`",
+                    params,
+                )
+            ],
+        )
+    except UsageError:
+        # An ambiguous id prefix is a usage error; it keeps its exit code.
+        raise
+    except LedgerError as error:
+        hint = _wrong_type_hint(ledger, "stock", ref)
+        if not hint:
+            raise
+        raise LedgerError(f"{error}{hint}") from error
     record["aliases"] = aliases
     record["aliquots"] = extra[0]
     return record
@@ -2203,7 +2250,8 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
 
     The stock kind's own fields are not part of the record — ``tm stock show``
     owns them — and the record carries no event timeline (``tm history`` owns
-    that).
+    that).  A ref that names a stock is a not-found error that points at
+    ``tm stock show`` (spec §6); any other miss keeps the plain message.
     """
     if not ref:
         raise LedgerError(f"unknown aliquot {ref!r}")
@@ -2239,7 +2287,8 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
 
     rows = fetched[0]
     if not rows:
-        raise LedgerError(f"unknown aliquot {ref!r}")
+        hint = _wrong_type_hint(ledger, "aliquot", ref)
+        raise LedgerError(f"unknown aliquot {ref!r}{hint}")
     row = dict(rows[0])
     stock_rows = fetched[2]
     stock_kind = str(stock_rows[0]["stock_kind"]) if stock_rows else ""
