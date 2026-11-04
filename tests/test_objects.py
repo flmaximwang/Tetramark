@@ -14,6 +14,7 @@ import pytest
 
 from tetramark.core.ledger import open as open_ledger
 from tetramark.errors import LedgerError, UsageError
+from tetramark.ops.lineage import lineage
 
 from conftest import FACTORY_AUTHOR, PRESETS
 
@@ -60,6 +61,70 @@ def events(ledger, aliquot_id: str) -> list[dict[str, object]]:
         "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
         (aliquot_id,),
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: empty refs and not-yet-applied kind tables
+# ---------------------------------------------------------------------------
+
+
+def test_lineage_depth_zero_does_not_count_unvisited_stock_kinds(ledger_factory) -> None:
+    """Counts are read only for stocks the walk visits."""
+    ledger = make_full_ledger(ledger_factory, name="lineage-depth-zero")
+    item = new_item(ledger)
+    ledger.stocks.add("lot", entity=item["id"])
+    ledger.driver.execute("DROP VIEW `v_stock_lot`")
+
+    result = lineage(ledger, item["id"], up=False, down=True, depth=0)
+
+    assert [node.id for node in result.nodes] == [item["id"]]
+
+
+def test_show_rejects_an_empty_ref(ledger_factory) -> None:
+    """An empty ref is unknown, not a prefix that matches everything."""
+    ledger = make_ledger(ledger_factory, name="empty-ref")
+    item = new_item(ledger)
+    box = new_box(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+
+    with pytest.raises(LedgerError, match="unknown entity ''"):
+        ledger.entities.show("")
+    with pytest.raises(LedgerError, match="unknown stock ''"):
+        ledger.stocks.show("")
+    with pytest.raises(LedgerError, match="unknown box ''"):
+        ledger.boxes.show("")
+    # The objects are still reachable normally.
+    assert ledger.entities.show(item["id"])["id"] == item["id"]
+    assert ledger.stocks.show(stock["id"])["id"] == stock["id"]
+    assert ledger.boxes.show(box["name"])["box"] == box["name"]
+
+
+def test_history_ignores_a_missing_unrelated_kind_table(ledger_factory) -> None:
+    """History reads only the resolved kind's diff table."""
+    ledger = make_full_ledger(ledger_factory, name="history-missing-kind")
+    item = new_item(ledger)
+
+    ledger.driver.execute("DROP TABLE `entity_plasmid`")
+
+    result = ledger.history(item["id"])
+    assert result["id"] == item["id"]
+    assert result["object"] == "entity"
+    assert result["commits"]
+
+
+def test_show_ignores_a_missing_unrelated_kind_table(ledger_factory) -> None:
+    """Only the resolved kind's table is read; another pending kind may be absent."""
+    ledger = make_full_ledger(ledger_factory, name="missing-kind")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+
+    # A schema kind whose table has not been applied yet (adopt/migration in
+    # progress).  It is unrelated to the shown objects.
+    ledger.driver.execute("DROP TABLE `entity_plasmid`")
+    ledger.driver.execute("DROP TABLE `stock_prep`")
+
+    assert ledger.entities.show(item["id"])["id"] == item["id"]
+    assert ledger.stocks.show(stock["id"])["id"] == stock["id"]
 
 
 # ---------------------------------------------------------------------------

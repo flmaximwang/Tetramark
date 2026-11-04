@@ -26,11 +26,13 @@ child stock → source aliquot → that aliquot's stock.
 The graph is built eagerly from the core tables plus one query for every kind
 that has a ``lineage: true`` field (only rows where the field is set).  Those
 reads are independent, so they all run in **one** ``driver.query_many`` batch
-together with the rows root resolution needs; the aliquot ownership and stock
-count reads (which depend on the graph) share a second batch.  Traversal is
-lazy: it walks only the requested directions, stops at ``--depth`` and never
-visits a node twice, so a cycle in hand-written data (a ``cell_line.parental``
-loop) terminates instead of hanging.
+together with the rows root resolution needs; the aliquot ownership reads
+(which depend on the graph) share a second batch.  Traversal is lazy: it walks
+only the requested directions, stops at ``--depth`` and never visits a node
+twice, so a cycle in hand-written data (a ``cell_line.parental`` loop)
+terminates instead of hanging.  Stock counts are read **after** traversal, in
+one batch for the visited stocks only: ``--depth 0`` does not scan the whole
+ledger, and an unvisited kind's missing count view cannot fail the walk.
 """
 
 from __future__ import annotations
@@ -604,46 +606,56 @@ def _starts(
     return items
 
 
-def _owners_and_counts(
+def _owners(
     ledger: Ledger,
     links: Sequence[tuple[str, str, str]],
     root_aliquot: str | None,
-    stock_rows: Sequence[dict[str, Any]],
-) -> tuple[dict[str, str], dict[str, tuple[int, int]]]:
-    """Aliquot owners and every stock count the walk may need, in one batch.
+) -> dict[str, str]:
+    """Aliquot owners the graph may need, in one batch.
 
-    Both reads depend on the graph rows, so they cannot join the first batch;
-    they are independent of each other and share this one.  Counts cover every
-    stock of every kind (``WHERE id IN`` chunks of 500, exactly the view query
-    :func:`stock_aliquot_counts` runs), so a visited node reads the same tuple
-    it always did while the traversal is still free to visit any of them.
-    ``root_aliquot`` is the resolved ref when it is an aliquot: its owner is
-    needed for a tube no relation names (the id is de-duplicated against the
-    links, so a named tube costs no extra query).
+    Only aliquots that are actually linked (or the resolved aliquot root) are
+    asked about; stock counts are deliberately not read here because the
+    traversal has not decided which stocks it will show.
     """
     owners: dict[str, str] = {}
-    counts: dict[str, tuple[int, int]] = {}
-    batch: list[tuple[str, tuple[str, ...]]] = []
     owner_count = 0
     link_ids = [aliquot_id for _child, aliquot_id, _via in links]
     if root_aliquot is not None:
         link_ids.append(root_aliquot)
+    batch: list[tuple[str, tuple[str, ...]]] = []
     for sql, params in _aliquot_owner_queries(link_ids):
         batch.append((sql, params))
         owner_count += 1
-    by_kind: dict[str, list[str]] = defaultdict(list)
-    for row in stock_rows:
-        by_kind[str(row["kind"])].append(str(row["id"]))
-    for kind_name, stock_ids in by_kind.items():
-        batch.extend(_count_queries(kind_name, stock_ids))
     if not batch:
-        return owners, counts
+        return owners
     results = ledger.driver.query_many(batch)
     for index in range(owner_count):
         _collect_owners(results[index], owners)
-    for rows in results[owner_count:]:
+    return owners
+
+
+def _visited_counts(
+    ledger: Ledger, nodes: Sequence[LineageNode]
+) -> dict[str, tuple[int, int]]:
+    """``{stock id: (in stock, total)}`` for the stocks the walk actually shows.
+
+    One ``query_many`` for every visited stock kind (chunks of 500), instead of
+    counting every stock in the ledger before the traversal.  An unvisited
+    kind's missing view therefore cannot break a depth-0 or one-branch walk.
+    """
+    counts: dict[str, tuple[int, int]] = {}
+    by_kind: dict[str, list[str]] = defaultdict(list)
+    for node in nodes:
+        if node.object == "stock":
+            by_kind[node.kind].append(node.id)
+    statements: list[tuple[str, tuple[str, ...]]] = []
+    for kind_name, stock_ids in by_kind.items():
+        statements.extend(_count_queries(kind_name, stock_ids))
+    if not statements:
+        return counts
+    for rows in ledger.driver.query_many(statements):
         _collect_counts(rows, counts)
-    return owners, counts
+    return counts
 
 
 def lineage(
@@ -671,11 +683,10 @@ def lineage(
     snapshot = _load(ledger, ref)
     graph, links = _build(snapshot, ledger.schema)
     object_type, object_id = _resolve_ref(snapshot, ref)
-    owners, counts = _owners_and_counts(
+    owners = _owners(
         ledger,
         links,
         object_id if object_type == "aliquot" else None,
-        snapshot.stock_rows,
     )
     _add_aliquots(graph, links, owners)
     root = _root_node(graph, object_type, object_id, owners)
@@ -727,6 +738,7 @@ def lineage(
             _starts(graph, root.id, graph.children[root.id], direction=+1, level=1)
         )
 
+    counts = _visited_counts(ledger, ordered)
     if counts:
         ordered = [
             LineageNode(

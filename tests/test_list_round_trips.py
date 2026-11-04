@@ -259,20 +259,27 @@ def test_box_show_runs_one_batched_read(
     assert invoke_log == ["json", "csv"]
 
 
-def test_show_entity_and_stock_run_one_batched_read(
+def test_show_entity_and_stock_resolve_the_kind_after_the_core_row(
     read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
+    """Core + aliases + extras, then only the resolved kind's table.
+
+    Two small batches instead of one per kind: a kind the schema declares but
+    whose table is not applied yet cannot break an unrelated show.
+    """
     ledger, built = read_ledger
 
     clear(invoke_log)
     entity = ledger.entities.show(built["entities"][0]["id"])
     assert entity["category"] == "lab"
-    assert invoke_log == ["json", "csv"]
+    assert len(invoke_log) <= 4
+    assert invoke_log == ["json", "csv", "json", "csv"]
 
     clear(invoke_log)
     stock = ledger.stocks.show(built["lot"]["id"])
     assert len(stock["aliquots"]) == 3
-    assert invoke_log == ["json", "csv"]
+    assert len(invoke_log) <= 4
+    assert invoke_log == ["json", "csv", "json", "csv"]
 
 
 def test_empty_list_does_not_start_a_process(

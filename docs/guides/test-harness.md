@@ -11,7 +11,7 @@ defaults to the embedded driver.
 * **Embedded driver (default in the product).** A batch of SQL is one `dolt sql` subprocess in the
   ledger directory: roughly **60–100 ms per process** on an idle machine, 0.2–0.4 s under
   ten-worker load. Tetramark-0i8.x removed every avoidable process (init 3, schema plan 2,
-  list/show 2, a write session 2, open 1, …), which brought the suite from 1643 s to ~13 min. That
+  list 2, show 2 batches, a write session 2, open 1, …), which brought the suite from 1643 s to ~13 min. That
   is the floor of this backend: the suite still executes thousands of processes and this machine
   tops out at 17–23 `dolt sql` starts/s.
 * **Server driver (default in the test harness).** The same statements run over the MySQL protocol

@@ -12,20 +12,23 @@ Two independent trails are merged into one answer:
 Their order is different by nature: events have a timestamp (and an
 auto-increment id as tie-break), commits have ``dolt_log.commit_order``.
 
-Both trails are built by **one** read batch.  ``resolve_any`` (``tm find``) is
+The ref is resolved in the first read batch.  ``resolve_any`` (``tm find``) is
 result-dependent: which object type, id and kind the ref names decides the
 event and diff statements, and a single ``dolt sql`` process cannot read a
 statement plan out of another statement's result.  The batch therefore carries
 a small statement for every possible answer -- per object type and per way of
-naming it (id, box name, alias) -- and this module keeps only the statements
-that match the resolved object.  Every kept statement is the SQL the per-query
-path ran, so the answer (and its JSON/text/CSV renderings) is unchanged; a
-template ledger drops from one ``dolt sql`` process per trail step to two (one
-``-r json`` batch plus one ``-r csv`` pass for the omitted NULL columns).
+naming it (id, box name, alias) -- plus the events and the core/alias/extra
+diffs; this module keeps only the statements that match the resolved object.
+The **kind table's diff** needs the resolved kind, so it is the one follow-up
+batch, and it reads only that table: a not-yet-applied kind cannot break the
+history of an object of another kind.  Every kept statement is the SQL the
+per-query path ran, so the answer (and its JSON/text/CSV renderings) is
+unchanged.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from tetramark.core.objects import OBJECT_TYPES
@@ -319,28 +322,22 @@ def _kind_diff_branch(table: str, source: str, where: str) -> str:
     )
 
 
-def _add_kind_diffs(batch: _Batch, schema: EffectiveSchema, text: str) -> None:
-    """One ``UNION ALL`` statement for every kind table a ref could name.
+def _kind_diff_statements(
+    object_type: str, table: str, text: str
+) -> list[tuple[str, tuple[str, ...]]]:
+    """The diff reads for the one kind table the resolved object uses.
 
-    The resolved ``(object, kind)`` decides which table's rows count, so the
-    batch asks every kind table (each branch is gated by the table's literal
-    name, the way ``SELECT * FROM dolt_diff_<table>`` would be chosen after
-    resolution); only the matching branches can return rows.  Only
-    ``diff_type``/``to_commit`` are read from a kind table's diff, so the
-    branches share one narrow shape instead of selecting every column.
+    ``history`` resolves the object first, then asks only this table: a schema
+    kind whose table is not applied yet cannot break the history of an object
+    of another kind, and the read does not scan every kind's diff table.
     """
-    branches: list[str] = []
-    params: list[str] = []
-    for object_type in ("entity", "stock", "box"):
-        for kind_name in sorted(schema.kinds_for(object_type)):
-            table = table_name(object_type, kind_name)
-            for source in _SOURCES[object_type]:
-                where = _diff_where(object_type, source, "to_id", "from_id")
-                branches.append(_kind_diff_branch(table, source, where))
-                params.extend(_params(text, where))
-    if not branches:
-        return
-    batch.add("diff:kinds", " UNION ALL ".join(branches), tuple(params))
+    statements: list[tuple[str, tuple[str, ...]]] = []
+    for source in _SOURCES[object_type]:
+        where = _diff_where(object_type, source, "to_id", "from_id")
+        statements.append(
+            (_kind_diff_branch(table, source, where), _params(text, where))
+        )
+    return statements
 
 
 def _add_alias_diffs(batch: _Batch, text: str) -> None:
@@ -452,13 +449,22 @@ def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
     _add_resolution(batch, text)
     _add_events(batch, text)
     _add_core_diffs(batch, text)
-    _add_kind_diffs(batch, ledger.schema, text)
     _add_alias_diffs(batch, text)
     _add_extra_diffs(batch, text)
     _add_static_reads(batch)
 
     results = ledger.driver.query_many(batch.statements)
     object_type, object_id, kind_name, source = _resolve(batch, results, text)
+
+    # The kind table is the only part of the batch whose SQL needs the resolved
+    # kind.  Read it after resolution, and only that one table.
+    kind_rows: list[dict[str, Any]] = []
+    if object_type != "aliquot" and kind_name in ledger.schema.kinds:
+        kind_table = table_name(object_type, kind_name)
+        for rows in ledger.driver.query_many(
+            _kind_diff_statements(object_type, kind_table, text)
+        ):
+            kind_rows.extend(rows)
 
     events = [dict(row) for row in batch.rows(results, f"events:{object_type}:{source}")]
     box_names = {
@@ -470,7 +476,9 @@ def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
             event[f"{side}_box"] = (
                 None if box_id is None else box_names.get(str(box_id), str(box_id))
             )
-    commits = _commits(batch, results, object_type, kind_name, object_id, source)
+    commits = _commits(
+        batch, results, object_type, kind_name, object_id, source, kind_rows
+    )
     aliases = [
         str(row["alias"])
         for row in batch.rows(results, "aliases")
@@ -485,16 +493,6 @@ def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
         "events": events,
         "commits": commits,
     }
-
-
-def _kind_diff_rows(
-    rows: list[dict[str, Any]], table: str, source: str
-) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in rows
-        if str(row.get("tm_table")) == table and str(row.get("tm_src")) == source
-    ]
 
 
 def _alias_diff_rows(
@@ -515,6 +513,7 @@ def _commits(
     kind_name: str,
     object_id: str,
     source: str,
+    kind_rows: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     # Each entry is (table, rows, is_box_move): ``is_box_move`` asks for the
     # aliquots' entering/leaving wording instead of the raw Dolt diff type.
@@ -527,13 +526,7 @@ def _commits(
     ]
     if object_type != "aliquot":
         table = table_name(object_type, kind_name)
-        sources.append(
-            (
-                table,
-                _kind_diff_rows(batch.rows(results, "diff:kinds"), table, source),
-                False,
-            )
-        )
+        sources.append((table, list(kind_rows), False))
     sources.append(
         (
             "alias",

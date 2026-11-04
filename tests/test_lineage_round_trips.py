@@ -1,11 +1,10 @@
-"""Pin lineage/history graph reads to one or two batched driver round trips.
+"""Pin lineage/history graph reads to a few batched driver round trips.
 
 ``tm lineage`` used to run one ``dolt sql`` process per core table, per
-``lineage: true`` kind, per aliquot chunk and per stock count view; ``tm
-history`` paid one per resolve step, per diff trail, per box-name and per alias
-read.  The batched paths build their answer from one or two ``query_many``
-batches instead (one JSON run plus the CSV run that restores Dolt's
-NULL-omitted columns).
+``lineage: true`` kind, per aliquot chunk and **per stock count view for the
+whole ledger**; ``tm history`` paid one per resolve step, per diff trail, per
+box-name and per alias read.  The batched paths resolve first and then read
+only the kind table and the visited stocks (two/three ``query_many`` batches).
 
 These tests pin that budget by counting ``EmbeddedDriver._invoke`` calls after
 the fixture rows are built, and prove the batched answer is the answer the
@@ -222,10 +221,10 @@ def clear(log: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_lineage_runs_in_two_batched_reads(
+def test_lineage_batches_graph_owners_and_visited_counts(
     template: tuple[Ledger, dict[str, str]], invoke_log: list[str]
 ) -> None:
-    """Graph + root identification, then ownership/counts: <= four invocations."""
+    """Graph, owners, then counts for the visited stocks only."""
     ledger, ids = template
     refs = [
         ids["variant"],  # entity root, both directions, lineage + stock counts
@@ -236,8 +235,8 @@ def test_lineage_runs_in_two_batched_reads(
         clear(invoke_log)
         result = lineage(ledger, ref)
         assert result.nodes, ref
-        # One JSON batch + its CSV pass for each of the two batches.
-        assert invoke_log == ["json", "csv", "json", "csv"], (
+        # One JSON batch + its CSV pass for each of up to three batches.
+        assert len(invoke_log) <= 6 and len(invoke_log) % 2 == 0, (
             f"lineage {ref!r} issued {len(invoke_log)} dolt processes: {invoke_log}"
         )
 
@@ -245,7 +244,7 @@ def test_lineage_runs_in_two_batched_reads(
 def test_lineage_root_only_still_fits_the_budget(
     template: tuple[Ledger, dict[str, str]], invoke_log: list[str]
 ) -> None:
-    """``--depth 0`` pays the same two batches; the traversal is pure Python."""
+    """``--depth 0`` pays the graph + owner batches; counts have no stock to read."""
     ledger, ids = template
     clear(invoke_log)
     result = lineage(ledger, ids["variant"], up=False, down=True, depth=0)
@@ -253,10 +252,10 @@ def test_lineage_root_only_still_fits_the_budget(
     assert len(invoke_log) <= 4
 
 
-def test_history_runs_in_one_batched_read(
+def test_history_batches_resolution_and_kind_diff(
     template: tuple[Ledger, dict[str, str]], invoke_log: list[str]
 ) -> None:
-    """Every trail and the resolution rows share one JSON batch (+ CSV pass)."""
+    """Resolution/events share one batch; the kind diff is one small batch."""
     ledger, ids = template
     refs = [
         ids["aliquot"],  # id resolution, events + aliquot diffs
@@ -269,7 +268,7 @@ def test_history_runs_in_one_batched_read(
         clear(invoke_log)
         result = history(ledger, ref)
         assert result["id"], ref
-        assert len(invoke_log) <= 3, (
+        assert len(invoke_log) <= 4, (
             f"history {ref!r} issued {len(invoke_log)} dolt processes: {invoke_log}"
         )
 

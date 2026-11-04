@@ -1151,9 +1151,17 @@ def _read_record_batch(
     raises the resolver's error after the batch (the reads are side-effect
     free, so a miss costs one process instead of one per lookup).
     """
+    if not ref:
+        # ``resolve_any`` has nothing to match; without this the unique-prefix
+        # SQL branch would treat "" as a prefix of every id.
+        raise LedgerError(f"unknown {object_type} {ref!r}")
     id_sql = _resolved_id_sql(object_type)
     params = _resolved_id_params(id_sql, ref)
     table = _quote(object_type)
+    # The kind table is selected only after the core row says which kind the
+    # object is: a schema may declare a kind whose table has not been applied
+    # yet (adopt/migration in progress), and selecting every kind table here
+    # would make show fail on an unrelated missing table.
     batch: list[tuple[str, Any]] = [
         (f"SELECT * FROM {table} WHERE {_quote('id')} = {id_sql}", params),
         (
@@ -1165,17 +1173,6 @@ def _read_record_batch(
             params,
         ),
     ]
-    kind_positions: dict[str, int] = {}
-    for kind_name in sorted(ledger.schema.kinds_for(object_type)):
-        kind_positions[kind_name] = len(batch)
-        batch.append(
-            (
-                f"SELECT * FROM {_quote(table_name(object_type, kind_name))} "
-                f"WHERE {_quote('id')} = {id_sql}",
-                params,
-            )
-        )
-    extra_start = len(batch)
     batch.extend(extras)
     fetched = ledger.driver.query_many(batch)
 
@@ -1193,20 +1190,22 @@ def _read_record_batch(
         raise LedgerError(f"unknown {object_type} {ref!r}")
     core = dict(core_rows[0])
     kind_name = str(core["kind"])
+    kind_rows = ledger.driver.query(
+        f"SELECT * FROM {_quote(table_name(object_type, kind_name))} "
+        f"WHERE {_quote('id')} = %s",
+        (str(core["id"]),),
+    )
     record = dict(core)
-    position = kind_positions.get(kind_name)
-    if position is None:  # pragma: no cover - schema and row disagree
-        kind_row = _fetch_kind_row(
-            ledger.driver, kind_name, object_type, str(core["id"])
-        )
-    else:
-        kind_row = dict(fetched[position][0]) if fetched[position] else {}
+    if kind_rows:
+        kind_row = dict(kind_rows[0])
+    else:  # pragma: no cover - a core row always has its kind row
+        kind_row = {}
     for key, value in kind_row.items():
         if key != "id":
             record[key] = value
     record["object"] = object_type
     aliases = [str(row["alias"]) for row in fetched[1]]
-    return record, aliases, fetched[extra_start:]
+    return record, aliases, fetched[2:]
 
 
 def _read_box_rows(
@@ -1226,6 +1225,8 @@ def _read_box_rows(
     slotted rows), so the batch does not depend on the resolved kind; the
     caller picks the ones its geometry needs.
     """
+    if not ref:
+        raise LedgerError(f"unknown box {ref!r}")
     id_sql = _resolved_id_sql("box", by_name=True)
     params = _resolved_id_params(id_sql, ref)
     batch: list[tuple[str, Any]] = [
