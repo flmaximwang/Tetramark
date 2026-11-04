@@ -121,7 +121,9 @@ tm stock add bacterial_glycerol --entity p035 \
 tm aliquot show 1226L401.1           # the tube's <stock>.<seq> id, as `stock add` printed it
 tm aliquot list                      # the tubes an experiment can use (in stock by default)
 tm box show WFL-12-01
-tm find pZET035
+tm find pZET035                      # id → alias → name/text, case-insensitive
+tm find -E '^pZET'                   # -E: case-insensitive ICU regex over the same places
+tm entity list --where 'name~(?i)^pzet'   # --where: field=value exact, field~pattern regex
 tm check
 ```
 
@@ -135,7 +137,10 @@ tm --ledger ~/lab/lab101 find pZET035      # -l ~/lab/lab101 works too
 `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes an experiment can use
 (in stock by default; `--all` includes consumed, missing and other history), `box show` prints the
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
-(exit 0 when no non-info test fails). Writes to one ledger are serialized by a per-ledger lock: a
+(exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and
+`--where` filters the entity/stock/box lists or `tm find` by `field=value` (exact) or
+`field~pattern` (ICU regex); see [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64-where-filters-and-tm-find).
+Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.
 

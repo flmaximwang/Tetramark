@@ -56,7 +56,7 @@ one Dolt commit; every read is a normal `tm` command.
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
 | Rename an entity or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias) |
-| Find anything | `tm find ID\|ALIAS\|TEXT` |
+| Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance=kan'` (`=` exact; `~` case-sensitive regex, `(?i)`) |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
 | Register an organism line and its colony | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse` |
 | Record a cross / pedigree link | `tm stock add fly_culture … --set dam=ALQ --set sire=ALQ` (refs to aliquots, `lineage: true`) |
@@ -69,7 +69,7 @@ one Dolt commit; every read is a normal `tm` command.
 The **form** (`tm <obj> add-form`) is for people at a terminal; **agents use `add`** — it takes no
 flags and refuses to run without a TTY.
 
-Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
+Full flags, filters and `tm find -E`: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 
 ## Short recipes
 

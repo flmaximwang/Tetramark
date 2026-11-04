@@ -80,12 +80,12 @@ tm status [--json]                        # one ledger at a glance (6.1)
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
-tm entity show ID|ALIAS ; tm entity list [KIND] [--where f=v] ; tm entity edit ID --set f=v
+tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] ; tm entity edit ID --set f=v
 tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|list|edit ...
+tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
@@ -98,12 +98,12 @@ tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
-tm box list ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
+tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
-tm find QUERY               # id → alias → name/text match across all objects and kinds
+tm find [QUERY] [-E|--regex] [--where FILTER ...]   # §6.4: id → alias → name/text; regex; filters
 tm alias add OBJ_TYPE ID ALIAS ; tm alias remove ...
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
@@ -218,7 +218,9 @@ choice, so it turns the implicit in-stock scope off; combined with `--not-in-sto
 never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
 and includes the box plus every box nested inside it; `--where FIELD=VALUE` (repeatable, AND) matches
 aliquot core columns exactly, except `status` (`--where status=…` is a usage error pointing at
-`--status`). The table and CSV print the narrow rows `id stock_kind status quantity unit label path`
+`--status`). This is the aliquot's own exact-only `--where`; the shared `field=value` / `field~pattern`
+syntax of §6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
+rows `id stock_kind status quantity unit label path`
 (`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
 prints, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only and changes no
 ledger format — `spec_version` is untouched.
@@ -410,3 +412,88 @@ validation or write logic: the same message is printed, `--dry-run`, `--no-commi
 behave as they do for `add`, and **the write lock is taken only when `y` confirms**. If the core
 rejects the entry, the error is shown and the form goes back to the field that failed. There is no
 "add another": the form ends after one write.
+
+### 6.4 `--where` filters and `tm find`
+
+`tm entity list`, `tm stock list`, `tm box list`, `tm find` and their Python `where=` argument take
+one filter syntax: `field=value` (exact) or `field~pattern` (regular expression). A filter is split at
+its first `=` or `~`, so the value may contain either character; the field name before it must be an
+identifier (a letter or `_`, then letters, digits or `_`), and it is case-sensitive. A filter with
+neither operator, or with a field name that is not an identifier, is a usage error (exit 2).
+`tm aliquot list` keeps its own exact-only `--where FIELD=VALUE` (above): this section is about the
+shared syntax used by the three lists and by `tm find`.
+
+`field=value` compares the column exactly. On a kind field the value is coerced by the field's schema
+the way `--set` coerces it: an `enum` must be one of its values, a `ref` may be an id or an alias and
+is resolved to the id it stores, an `int`/`decimal`/`bool`/`date`/`datetime` is parsed, a `sequence`
+is normalised. On a core column the text is compared as written: `id`, `kind`, `name`, `created_at`,
+`notes` and the core references (`entity_id`, `parent_stock_id`, `source_aliquot_id`, `parent_box_id`,
+`parent_slot`) take the stored value itself, so a core `ref` such as `entity_id` takes the id, never
+an alias.
+
+`field~pattern` matches the column's **text form** with a regular expression. It is a *search*, not a
+full match: unanchored, so anchor it with `^`/`$` when needed (`name~^pZET` starts with, `name~ZET`
+contains). It is case-sensitive; write `(?i)` in the pattern for case-insensitive (`name~(?i)^pzet`).
+The database compiles the pattern (Dolt's ICU/MySQL 8 dialect), so `\d`, `\p{L}`, classes, groups and
+lookarounds behave as there, not exactly as in Python `re`; the `find.rewrites` rules of
+Tetramark-53r.1 are Python `re` patterns and do not share this dialect. The text form of an `int`, a
+`decimal`, a `date`/`datetime` or `created_at` is its printed value (`length_bp~^15`,
+`created_at~^2026-11-04`); a `ref` column, core or kind, is matched against the id it stores, never
+its aliases; `NULL` never matches, not even `field~^$`. A computed kind column can be addressed by
+`~` (its text form), while `=` applies the `--set` coercion and so refuses it.
+
+The rules are the same everywhere:
+
+* a field may be filtered with `=` once; a second `=` on the same field is a usage error
+  (`field 'name' appears twice in --where`);
+* `=` and `~` must not be mixed on one field (`field 'name' cannot be filtered with both '=' and '~'
+  in --where`); any number of `~` filters may address one field and they are ANDed
+  (`--where 'name~^p' --where 'name~9$'`);
+* an empty pattern (`name~`) is a usage error; an invalid pattern is a usage error that names the
+  filter (`invalid regular expression in the --where filter 'name~['`), never a raw database error;
+* a field that is neither a core filter column nor a field of a kind in scope is a usage error that
+  lists the valid fields (`unknown field(s) 'nope' in --where; valid fields: …`).
+
+The valid fields are the core filter columns of the object type plus the fields of the kinds in scope:
+`id`, `kind`, `name` (entity, box), `created_at` and `notes` for all three, `entity_id`,
+`parent_stock_id` and `source_aliquot_id` for stocks, and `parent_box_id` and `parent_slot` for boxes.
+A computed kind column is accepted by `~` as described above; view-derived columns (`path`,
+`capacity`, `occupied`, `status`, the counts) are not filterable. A field that no kind in scope has is
+the unknown-field usage error above. When a field is declared by only some of the kinds being listed,
+only those kinds are read: a kind without **every** filtered field contributes no rows rather than
+ignoring the filter (`tm stock list --where 'induction=iptg'` reads the stock kinds that declare
+`induction` and not the others). On `tm find` the valid set is wider — the core columns of entity,
+stock and box and the fields of every entity/stock/box kind — and a filtered field that only some
+kinds have simply excludes the other kinds from the result.
+
+Every filter is ANDed; `--where` (also `-w`) is repeatable. The listings and `tm find` build all
+statements of the read first and fetch them in one `query_many` batch, so `--where` does not cost a
+process per kind; only naming an invalid pattern (the error path probes each pattern) and an `=`
+filter on a kind `ref` (the alias may be resolved) cost extra queries. A listing that matches nothing
+prints `(none)` (an empty list in JSON) and exits 0.
+
+`tm find [QUERY] [-E|--regex] [--where FILTER ...]` searches the whole ledger. Without `-E`, `QUERY`
+is a literal, case-insensitive search: the exact id, exact alias, exact name, name prefix, alias
+prefix, name substring, alias substring, exact field and field substring tiers, with `%` and `_` as
+ordinary characters. Its places are the ids of all four object types, aliases, names and the
+`string`/`text` fields of every kind. With `-E`/`--regex`, `QUERY` is a case-insensitive database
+regex over the same places (`(?i)` is added to the pattern): a regex has no exact/prefix/substring
+sub-tiers, so the ranks collapse to id > alias > name > field, with prefix and substring matches
+merged; ties are broken by object type, kind and id. An invalid `-E` pattern is a usage error
+(`invalid regex '[': the pattern is not a valid regular expression`) with no literal fallback — a
+pattern that does not compile never matches as if it were text.
+
+`--where` applies to every hit after the search (AND), so even an id or alias hit must satisfy it.
+Aliquots are excluded whenever any `--where` is given (they have no kind row to filter);
+`tm find 1226L401.1 --where 'id~^12'` therefore reports no match. `QUERY` is optional with `--where`:
+`tm find --where 'resistance=kan'` lists every matching object with `match` = `filter`, sorted by
+object type (entity, stock, box), kind and id. Passing neither a `QUERY` nor a `--where` is a usage
+error (`the search query must not be empty; pass a QUERY or at least one --where filter`). A search
+that finds nothing exits 1: `no match for '<QUERY>'`, or `no objects match the --where filters` when
+only filters were given; `--where` syntax/field errors and an invalid `-E` pattern exit 2.
+
+The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=())`,
+`ledger.entities.ls(kind=None, *, where=())`, `ledger.stocks.ls(...)` and `ledger.boxes.ls(...)`. A
+`where` **mapping** is equality only (`where={"name": "pUC19"}`); a list of strings accepts both
+operators (`where=["name~(?i)^puc", "resistance=amp"]`). Parsing, coercion and errors are the same
+code as the CLI.
