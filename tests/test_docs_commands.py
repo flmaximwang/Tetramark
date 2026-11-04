@@ -245,6 +245,12 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert stock["aliquots"] == [f"{stock_id}.1", f"{stock_id}.2"]
     stock_shown = run_json("stock", "show", stock_id)
     assert len(stock_shown["aliquots"]) == 2
+    assert stock_shown["aliquots"][0]["path"] == "FR-1/BOX-2:A1"
+    assert stock_shown["aliquots"][0]["in_stock"] is True
+    stock_cards = run("stock", "show", stock_id)
+    assert "aliquots  2" in stock_cards.output
+    assert "FR-1/BOX-2:A1" in stock_cards.output
+    assert "· stored" in stock_cards.output
     run("stock", "edit", stock_id, "--set", "buffer=TE")
     assert "buffer" in run("stock", "show", stock_id).output
     filtered = run_json("stock", "list", "protein_prep", "--where", "buffer=TE")

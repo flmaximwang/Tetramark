@@ -225,6 +225,15 @@ rows `id stock_kind status quantity unit label path`
 prints, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only and changes no
 ledger format — `spec_version` is untouched.
 
+`tm stock show` embeds the stock's tubes. Each row carries `id`, `seq`, `status`, `quantity`, `unit`,
+`label`, `box_id`, `slot`, the slot-inclusive `path` (`NULL` when the tube is not in stock), the
+sorted `aliases` and the derived `in_stock`; the rows, paths and aliases ride in the same read batch
+as the stock. Text output prints the stock's field block, then `aliquots  N` and one **card per
+tube**: the title is `<id> · <status>` (coloured by status), then the quantity/unit, a `label:` line
+when the tube has one, the path or `not in stock`, and an `aliases:` line when it has aliases. Every
+card keeps the rounded border; only its colour follows the status. `--json` keeps the enriched rows
+in the record; `--format csv` stays the machine form, and the tabular tube view is `tm aliquot list`.
+
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
 show <stock>` answers `<stock> is a stock; try tm stock show <stock>`, and `tm stock show
 <aliquot>` answers `<aliquot> is an aliquot; try tm aliquot show <aliquot>`. Both use the same

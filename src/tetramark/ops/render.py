@@ -19,9 +19,11 @@ generated ``v_box_slots`` view exposes the same data as ``occupant_alias_list``.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from rich import box
 from rich.console import Console, Group
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -35,8 +37,11 @@ __all__ = [
     "STATUS_STYLES",
     "box_csv_rows",
     "box_view",
+    "render_aliquot_card",
     "render_box",
     "render_box_text",
+    "render_stock_aliquots",
+    "render_stock_aliquots_text",
 ]
 
 #: Colour assigned to each status in the grid/list renderings.  The raw
@@ -374,3 +379,87 @@ def box_csv_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _csv_occupants(occupants: list[dict[str, Any]]) -> str:
     return ",".join(_occupant_label(occupant) for occupant in occupants)
+
+
+# ---------------------------------------------------------------------------
+# Stock show: one card per aliquot
+# ---------------------------------------------------------------------------
+
+
+def render_aliquot_card(row: Mapping[str, Any]) -> Panel:
+    """One tube as a status-coloured card (``tm stock show`` text output).
+
+    The card answers the questions a reader has about a tube - how much is in
+    it, what it is called and where it is - without the JSON blob the row used
+    to render as: the title is ``<id> · <status>``, then the quantity/unit, a
+    ``label:`` line when the tube has one, the slot-inclusive path (or ``not
+    in stock``) and an ``aliases:`` line when it has aliases.  Every card keeps
+    the rounded border; only its colour follows the status.
+    """
+    status = str(row.get("status") or "")
+    style = _status_style(status) or "cyan"
+    title = Text()
+    title.append(str(row.get("id")), style="bold")
+    title.append(" · ", style="dim")
+    title.append(status, style=style)
+
+    quantity = Text()
+    amount = row.get("quantity")
+    unit = row.get("unit")
+    if amount is None:
+        quantity.append("no quantity", style="dim")
+    else:
+        quantity.append(str(amount))
+        if unit:
+            quantity.append(f" {unit}")
+
+    lines = [quantity]
+    label = row.get("label")
+    if label:
+        label_line = Text()
+        label_line.append("label: ", style="dim")
+        label_line.append(str(label))
+        lines.append(label_line)
+    path = row.get("path")
+    lines.append(Text(str(path)) if path else Text("not in stock", style="dim"))
+    aliases = [str(alias) for alias in row.get("aliases") or []]
+    if aliases:
+        alias_line = Text()
+        alias_line.append("aliases: ", style="dim")
+        alias_line.append(", ".join(aliases))
+        lines.append(alias_line)
+    return Panel(
+        Group(*lines),
+        title=title,
+        title_align="left",
+        border_style=style,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        expand=False,
+    )
+
+
+def render_stock_aliquots(aliquots: Sequence[Mapping[str, Any]]) -> Text | Group:
+    """The ``aliquots`` section of ``tm stock show``: a count and the cards."""
+    if not aliquots:
+        return Text("aliquots  (none)", style="dim")
+    blocks: list[Any] = [Text(f"aliquots  {len(aliquots)}", style="dim")]
+    blocks.extend(render_aliquot_card(row) for row in aliquots)
+    return Group(*blocks)
+
+
+def render_stock_aliquots_text(
+    aliquots: Sequence[Mapping[str, Any]], *, width: int = 120
+) -> str:
+    """Render the section without colour, for snapshots and tests."""
+    buffer = io.StringIO()
+    console = Console(
+        file=buffer,
+        width=width,
+        color_system=None,
+        force_terminal=False,
+        highlight=False,
+        legacy_windows=False,
+    )
+    console.print(render_stock_aliquots(aliquots))
+    return buffer.getvalue().rstrip("\n")
