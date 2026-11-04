@@ -552,28 +552,27 @@ def test_cli_format_applies_to_list_and_show(cli_env: None, ledger_factory) -> N
 
 def test_stock_show_aliquot_cards_render_the_tube_details() -> None:
     """Each tube is a card: id/status, quantity/label, path and aliases."""
-    text = render_stock_aliquots_text(
-        [
-            {
-                "id": "1226L401.1",
-                "status": "stored",
-                "quantity": "500",
-                "unit": "ul",
-                "label": "first tube",
-                "path": "FR-1/SH-1/BOX:A1",
-                "aliases": ["tube-A"],
-            },
-            {
-                "id": "1226L401.2",
-                "status": "pending",
-                "quantity": None,
-                "unit": None,
-                "label": None,
-                "path": None,
-                "aliases": [],
-            },
-        ]
-    )
+    rows = [
+        {
+            "id": "1226L401.1",
+            "status": "stored",
+            "quantity": "500",
+            "unit": "ul",
+            "label": "first tube",
+            "path": "FR-1/SH-1/BOX:A1",
+            "aliases": ["tube-A"],
+        },
+        {
+            "id": "1226L401.2",
+            "status": "pending",
+            "quantity": None,
+            "unit": None,
+            "label": None,
+            "path": None,
+            "aliases": [],
+        },
+    ]
+    text = render_stock_aliquots_text(rows)
 
     assert "aliquots  2" in text
     assert "1226L401.1 · stored" in text
@@ -584,4 +583,19 @@ def test_stock_show_aliquot_cards_render_the_tube_details() -> None:
     assert "1226L401.2 · pending" in text
     assert "no quantity" in text
     assert "not in stock" in text
+
+    # Cards flow left to right: both fit on one line at 120 columns...
+    assert any(
+        "1226L401.1 · stored" in line and "1226L401.2 · pending" in line
+        for line in text.splitlines()
+    )
+    # ...and the second wraps to its own row on a narrow console.
+    narrow = render_stock_aliquots_text(rows, width=30)
+    first_line = next(
+        line
+        for line in narrow.splitlines()
+        if "1226L401.1 · stored" in line
+    )
+    assert "1226L401.2 · pending" not in first_line
+    assert "1226L401.2 · pending" in narrow
     assert render_stock_aliquots_text([]) == "aliquots  (none)"

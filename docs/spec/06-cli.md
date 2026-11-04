@@ -228,10 +228,11 @@ ledger format — `spec_version` is untouched.
 `tm stock show` embeds the stock's tubes. Each row carries `id`, `seq`, `status`, `quantity`, `unit`,
 `label`, `box_id`, `slot`, the slot-inclusive `path` (`NULL` when the tube is not in stock), the
 sorted `aliases` and the derived `in_stock`; the rows, paths and aliases ride in the same read batch
-as the stock. Text output prints the stock's field block, then `aliquots  N` and one **card per
-tube**: the title is `<id> · <status>` (coloured by status), then the quantity/unit, a `label:` line
-when the tube has one, the path or `not in stock`, and an `aliases:` line when it has aliases. Every
-card keeps the rounded border; only its colour follows the status. `--json` keeps the enriched rows
+as the stock. Text output prints the stock's field block, then `aliquots  N` and the tube **cards**,
+flowing left to right and wrapping at the console width: the title is `<id> · <status>` (coloured by
+status), then the quantity/unit, a `label:` line when the tube has one, the path or `not in stock`,
+and an `aliases:` line when it has aliases. Every card keeps the rounded border; only its colour
+follows the status. `--json` keeps the enriched rows
 in the record; `--format csv` stays the machine form, and the tabular tube view is `tm aliquot list`.
 
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot

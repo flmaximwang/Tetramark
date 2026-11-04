@@ -224,7 +224,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**
   with a rounded border (`<id> · <status>`, quantity/unit, `label:`, path or `not in stock`,
-  `aliases:`), not a JSON blob; `tm aliquot list STOCK` is the tabular view.
+  `aliases:`), not a JSON blob; cards flow left to right and wrap at the console width, and
+  `tm aliquot list STOCK` is the tabular view.
 
 `stock renumber` repairs ids that predate (or ignore) the ledger's stock id strategy. Give one REF and
 `--id NEW` for a single rename, one or more REFs with `--auto` to generate strategy-shaped ids, or
