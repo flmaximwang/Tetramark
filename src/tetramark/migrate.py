@@ -115,6 +115,7 @@ __all__ = [
     "counter",
     "load_renames",
     "main",
+    "manual_step_readme",
     "open_target",
     "preset_args",
     "restore_files",
@@ -140,6 +141,11 @@ _STEP_KINDS = ("spec", "preset")
 
 #: A preset name ends up in a tag name and a commit message.
 _PRESET_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+#: The repository root (this file is ``src/tetramark/migrate.py``).  The
+#: ``migration/`` folders live there; an installed package has none, and the
+#: manual-step pointer is then simply absent.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class MigrationError(LedgerError):
@@ -399,6 +405,35 @@ def _branch(ledger: Ledger) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def manual_step_readme(step: MigrationStep) -> str | None:
+    """The README of the **manual** step that follows ``step``, if there is one.
+
+    A step that is behind its ledger (the ledger's counter is newer than the
+    step's ``from_version``) cannot run: the counter check refuses it.  What
+    the operator needs then is the *next* step — and a manual step cannot be
+    run by name, because it has no ``migrate.py``: it is followed by hand.
+    This returns the path of that README, relative to the repository root
+    (``migration/spec/5-to-6/README.md``), so the refusal can point at it.
+
+    ``None`` when the next folder does not exist or is a **scripted** step:
+    there the ``migrate.py`` is the thing to run, and the plain counter
+    message says as much.
+    """
+    folder = (
+        _REPO_ROOT
+        / "migration"
+        / ("spec" if step.kind == "spec" else f"presets/{step.preset}")
+        / f"{step.from_version + 1}-to-{step.from_version + 2}"
+    )
+    readme = folder / "README.md"
+    if not readme.is_file() or (folder / "migrate.py").exists():
+        return None
+    try:
+        return str(readme.relative_to(_REPO_ROOT))
+    except ValueError:  # pragma: no cover - the folder is always under the root
+        return str(readme)
+
+
 def counter(step: MigrationStep, ledger: Ledger) -> int | None:
     """Read the counter this step upgrades (``None`` when the ledger has none).
 
@@ -450,10 +485,20 @@ def _require_counter(step: MigrationStep, ledger: Ledger) -> int:
             "counter)"
         )
     if current != step.from_version:
-        raise LedgerError(
+        message = (
             f"refusing to run {step.title}: ledger {ledger.name!r} is at "
             f"{step.counter_label} {current}, expected {step.from_version}"
         )
+        if current > step.from_version:
+            # The ledger is already past this step: point at the next one, so
+            # the operator is not left with a bare counter mismatch.
+            pointer = manual_step_readme(step)
+            if pointer is not None:
+                message += (
+                    f"; this step is behind the ledger — follow {pointer} to "
+                    "continue the upgrade by hand"
+                )
+        raise LedgerError(message)
     return current
 
 
