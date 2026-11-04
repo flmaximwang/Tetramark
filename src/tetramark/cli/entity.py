@@ -122,3 +122,26 @@ def edit_entity_command(
         )
     finally:
         ledger.close()
+
+
+@entity_app.command("rename")
+@write_command
+def rename_entity_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Entity id or alias."),
+    new_name: str = typer.Argument(..., help="New entity name."),
+    as_json: bool = typer.Option(False, "--json", help="Print the renamed entity as JSON."),
+) -> None:
+    """Rename an entity; the old name stays as an alias."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.entities.rename(ref, new_name)
+        emit_write(
+            ledger,
+            result,
+            f"Renamed entity {result['old_name']} -> {result['name']} "
+            f"(old name kept as alias)",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()

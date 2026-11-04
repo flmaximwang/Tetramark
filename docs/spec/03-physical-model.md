@@ -139,8 +139,8 @@ Views (generated):
   - **slotless**: one column `occupant` (an aliquot id or a child box name), one row per direct
     occupant, sorted. An empty box returns **zero rows**.
 
-  Every path that creates a box (`tm box add`, CSV import; there is no box rename or delete command
-  yet) maintains its view in the same Dolt commit, and
+  Every path that creates or renames a box (`tm box add`, CSV import, `tm box rename`; there is no box
+  delete command yet) maintains its view in the same Dolt commit, and
   `tm schema plan/apply` reconciles the views from the live `box` rows (`tm check` reports a view
   that is missing, orphaned or out of date). There are **no `v_box_<kind>` views** any more: one
   view per box replaces them (spec 5).

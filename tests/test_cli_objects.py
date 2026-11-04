@@ -1119,3 +1119,31 @@ def test_cli_aliquot_show_of_a_stock_names_the_stock_verb(
     )
     assert code == 1
     assert err.strip() == expected
+
+
+def test_cli_entity_and_box_rename(cli_env: None, ledger_factory) -> None:
+    """`tm entity|box rename` is one commit and keeps the old name as an alias."""
+    ledger = ledger_factory([BASE], name="cli-rename", id_prefix="77")
+    write(ledger, "entity", "add", "item", "--name", "alpha")
+    write(ledger, "box", "add", "grid96", "G1")
+
+    # Entity refs resolve by id or alias (not name), so take the id from find.
+    found = json.loads(read(ledger, "find", "alpha", "--json").output)
+    entity_id = found[0]["id"]
+    result = write(ledger, "entity", "rename", entity_id, "beta", "--json")
+    payload = json.loads(result.output)
+    assert payload["name"] == "beta"
+    assert payload["old_name"] == "alpha"
+    assert payload["aliases"] == ["alpha"]
+    shown = json.loads(read(ledger, "entity", "show", "alpha", "--json").output)
+    assert shown["name"] == "beta"
+
+    result = write(ledger, "box", "rename", "G1", "G2")
+    assert "Renamed box G1 -> G2" in result.output
+    view = json.loads(read(ledger, "box", "show", "G1", "--json").output)
+    assert view["box"] == "G2"
+    assert view["aliases"] == ["G1"]
+
+    refused = invoke(ledger, "box", "rename", "G2", "slots")
+    assert refused.exception.exit_code == 2
+    assert "core view" in str(refused.exception)

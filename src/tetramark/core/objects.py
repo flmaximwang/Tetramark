@@ -46,6 +46,7 @@ from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliqu
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
     CORE_COLUMNS,
+    box_view_name,
     box_view_statements,
     slot_rows,
     table_name,
@@ -1547,6 +1548,94 @@ def edit_entity(
     return record
 
 
+def _rename_summary(object_id: str, old_name: Any, new_name: str) -> str:
+    """Commit summary of a rename: ``OLD -> NEW`` when ASCII, else the id."""
+    text = f"{old_name} -> {new_name}"
+    return text if old_name is not None and text.isascii() else object_id
+
+
+def _keep_old_name_alias(
+    session: Any, object_type: str, object_id: str, old_name: Any
+) -> bool:
+    """Record a renamed object's previous name as one of its aliases.
+
+    Returns ``True`` when a new alias row was written.  An object that already
+    carries the old name as an alias keeps it unchanged; an alias owned by
+    another object of the same type aborts the rename (the old name could not
+    keep finding this object).
+    """
+    if old_name is None or not str(old_name).strip():
+        return False
+    text = str(old_name).strip()
+    owners = session.query(
+        f"SELECT {_quote('object_id')} FROM {_quote('alias')} "
+        f"WHERE {_quote('object_type')} = %s AND {_quote('alias')} = %s",
+        (object_type, text),
+    )
+    if owners:
+        owner = str(owners[0]["object_id"])
+        if owner == object_id:
+            return False
+        raise LedgerError(
+            f"cannot keep the old name {text!r} as an alias: it is already an "
+            f"alias of {object_type} {owner!r}"
+        )
+    _add_alias_row(session, object_type, object_id, text)
+    return True
+
+
+def _clean_new_name(new_name: str) -> str:
+    text = str(new_name).strip()
+    if not text:
+        raise UsageError("the new name must not be empty")
+    return text
+
+
+def rename_entity(ledger: Ledger, ref: str, new_name: str) -> dict[str, Any]:
+    """Give an entity a new name and keep the old name as an alias.
+
+    ``entity.name`` and a kind's own ``name`` field change together (as
+    ``edit --set name=...`` does); the previous name becomes an alias of the
+    entity in the same commit, so ``find``/``show`` and every ``--entity REF``
+    still resolve it.
+    """
+    name = _clean_new_name(new_name)
+    existing = _resolve_core(ledger.driver, "entity", ref)
+    entity_id = str(existing["id"])
+    kind_name = str(existing["kind"])
+    kind = ledger.schema.kind(kind_name)
+    old_name = existing.get("name")
+    if old_name == name:
+        raise UsageError(f"entity {entity_id!r} is already named {name!r}")
+
+    with ledger.write(
+        _rename_summary(entity_id, old_name, name), verb="rename", object="entity"
+    ) as session:
+        core, fields = _split_values(
+            session, ledger, kind, kind_name, "entity", {"name": name}
+        )
+        _mirror_name(kind, core, fields)
+        if core:
+            _update(session, "entity", {"id": entity_id}, core)
+        if fields:
+            _update(
+                session, table_name("entity", kind_name), {"id": entity_id}, fields
+            )
+        _keep_old_name_alias(session, "entity", entity_id, old_name)
+        aliases = _object_aliases(session, "entity", entity_id)
+
+    if old_name is not None and str(old_name).strip() not in aliases:
+        aliases = sorted({*aliases, str(old_name).strip()})  # dry run
+    return {
+        "object": "entity",
+        "kind": kind_name,
+        "id": entity_id,
+        "name": name,
+        "old_name": old_name,
+        "aliases": aliases,
+    }
+
+
 def show_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
     """One entity (core + kind fields), accepting an ID or an alias.
 
@@ -2431,6 +2520,73 @@ def move_box(
     return record
 
 
+def rename_box(ledger: Ledger, ref: str, new_name: str) -> dict[str, Any]:
+    """Give a box a new name, keep the old one as an alias, rebuild its view.
+
+    The new name follows the view-safe name rule (spec 5); a case-only change
+    of the box's own name is allowed.  ``v_box_<old>`` is dropped and
+    ``v_box_<new>`` created in the same commit as the row change and the
+    old-name alias, so ``tm check`` never sees a stale view.
+    """
+    name = _clean_new_name(new_name)
+    existing = _resolve_box(ledger.driver, ref)
+    box_id = str(existing["id"])
+    kind_name = str(existing["kind"])
+    old_name = str(existing["name"])
+    if old_name == name:
+        raise UsageError(f"box {box_id!r} is already named {name!r}")
+
+    with ledger.write(
+        _rename_summary(box_id, old_name, name), verb="rename", object="box"
+    ) as session:
+        others = [
+            str(row["name"])
+            for row in session.query(
+                f"SELECT {_quote('name')} FROM {_quote('box')} "
+                f"WHERE {_quote('id')} <> %s",
+                (box_id,),
+            )
+        ]
+        problem = box_name_problem(name, others)
+        if problem is not None:
+            raise UsageError(problem)
+        if name in others:
+            raise LedgerError(f"box name {name!r} is already in use")
+        alias_owner = session.query(
+            f"SELECT {_quote('object_id')} FROM {_quote('alias')} "
+            f"WHERE {_quote('object_type')} = 'box' AND {_quote('alias')} = %s "
+            f"AND {_quote('object_id')} <> %s",
+            (name, box_id),
+        )
+        if alias_owner:
+            raise LedgerError(
+                f"box name {name!r} is already an alias of box "
+                f"{alias_owner[0]['object_id']!r}"
+            )
+        _update(session, "box", {"id": box_id}, {"name": name})
+        if "name" in ledger.schema.kind(kind_name).fields:
+            _update(
+                session, table_name("box", kind_name), {"id": box_id}, {"name": name}
+            )
+        session.execute(f"DROP VIEW IF EXISTS {_quote(box_view_name(old_name))}")
+        _create_box_views(
+            session, ledger, [{"id": box_id, "name": name, "kind": kind_name}]
+        )
+        _keep_old_name_alias(session, "box", box_id, old_name)
+        aliases = _object_aliases(session, "box", box_id)
+
+    if old_name not in aliases:
+        aliases = sorted({*aliases, old_name})  # dry run
+    return {
+        "object": "box",
+        "kind": kind_name,
+        "id": box_id,
+        "name": name,
+        "old_name": old_name,
+        "aliases": aliases,
+    }
+
+
 def list_boxes(
     ledger: Ledger,
     kind_name: str | None = None,
@@ -3035,6 +3191,9 @@ class EntityOps:
     ) -> dict[str, Any]:
         return edit_entity(self.ledger, ref, values=values)
 
+    def rename(self, ref: str, new_name: str) -> dict[str, Any]:
+        return rename_entity(self.ledger, ref, new_name)
+
     def show(self, ref: str) -> dict[str, Any]:
         return show_entity(self.ledger, ref)
 
@@ -3205,6 +3364,9 @@ class BoxOps:
 
     def move(self, ref: str, *, parent: str, slot: str | None = None) -> dict[str, Any]:
         return move_box(self.ledger, ref, parent=parent, slot=slot)
+
+    def rename(self, ref: str, new_name: str) -> dict[str, Any]:
+        return rename_box(self.ledger, ref, new_name)
 
     def show(self, ref: str) -> dict[str, Any]:
         from tetramark.ops.render import box_view

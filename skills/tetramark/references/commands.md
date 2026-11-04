@@ -93,12 +93,16 @@ tm entity add KIND [--name NAME] [--set FIELD=VALUE ...] [--alias ALIAS ...] \
   [--id EXPLICIT_ID] [--json]
 tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
+tm entity rename ID|ALIAS NEW_NAME [--json]
 tm entity list [KIND] [--where FIELD=VALUE ...] [--json]
 ```
 
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
 `--where` filters match the kind's columns and can be repeated (AND).
+`rename` sets the name (and the kind's `name` field) and keeps the old name as an alias in the same
+commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
+already another entity's alias.
 `show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
 The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
 (at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
@@ -178,6 +182,7 @@ tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--json]
 tm box show NAME|ID|ALIAS [--json]
 tm box list [--kind KIND] [--where FIELD=VALUE ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
+tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 ```
 
 `box add` materialises the slots implied by the geometry (`grid8x12` → 96, `grid9x9` → 81, `rack` →
@@ -187,6 +192,10 @@ box holds tubes only**, so `--in` a grid box is refused. Every box name must be 
 generated view `v_box_<name>` must not collide with a core view, the name is at most 58 characters,
 and it must not differ only in case from an existing box name (`tm box add`, box import and the CSV
 path refuse it).
+
+`box rename` applies the same name rules (a case-only change of the box's own name is allowed),
+refuses a name that is another box's name or alias, keeps the old name as an alias, and replaces
+`v_box_<old>` with `v_box_<new>` in the same commit.
 
 `box show` prints a terminal grid with an `aliases: …` line when the box has aliases (or `--json` for
 `{box, kind, geometry, path, aliases, slots:[...]}`) and works for slotless boxes too (it lists child
