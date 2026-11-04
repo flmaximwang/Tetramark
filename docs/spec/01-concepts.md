@@ -114,7 +114,7 @@ back-references work. This is deliberately the Python `re` dialect, not the data
 The rules are validated when the ledger opens. A bad pattern, a replacement that names a group the
 pattern lacks, a missing or duplicate `name`, or an empty `rewrites:` list is refused with the rule
 named (`find.rewrites[1] ('type-code'): invalid pattern ...`). A ledger that carries `find:` needs
-tm 0.9.0 or newer: older releases refuse the unknown key.
+tm 0.8.1 or newer: older releases refuse the unknown key.
 
 Several ledgers can live next to each other (one project each, or a lab with a dozen projects);
 nothing couples them — no shared `workspace.yaml`, no server, no registry. A command is always
