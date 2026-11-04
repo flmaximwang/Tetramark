@@ -198,8 +198,8 @@ tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] \
 tm aliquot show ALQ [--json]
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
-tm aliquot move ALQ --box NAME [--slot S] [--status S] [--json]
-tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT] [--note TEXT] [--json]
+tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
+tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
 tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
 tm aliquot purge ALQ [--json]
 ```
@@ -223,8 +223,23 @@ tm aliquot purge ALQ [--json]
   same record with the full ids. A tube that is not in stock has no position (`box_id`, `slot` and
   `path` are empty; `null` in JSON). The tube's events are in `tm history ALQ`; the stock kind's own
   fields are in `tm stock show`, and `list STOCK` is the rich per-stock tube listing.
-- `use` subtracts `AMOUNT` in the aliquot's own unit and sets `consumed` when the quantity reaches
-  zero; the event stores the purpose.
+- `use` consumes part or all of a tube. `AMOUNT` and `UNIT` come together: passing only one of them
+  is a usage error, and with an amount the unit must match the tube's unit and the amount may not
+  exceed what remains. Leaving both out means "use everything left" — the event records the tube's
+  remaining quantity and unit, exactly as if you had passed them. A tube with a NULL quantity can
+  only be used whole (the event records a NULL amount); a partial use of such a tube is refused.
+  `use` works on every aliquot and is refused only when the tube is already `consumed`. Reaching
+  zero sets `consumed` and clears the box position in the same write (the event keeps the old
+  position). The human line names the amount used and ends with the message, e.g.
+  `Used all 200 ml from X (consumed): <msg>`; `--json` adds `used_amount`, `used_unit` and `message`
+  (`used_amount` is `null` for a whole use of a tube with no quantity).
+- `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
+  is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
+  `aliquot_event.note` (new `use`/`move` events leave `purpose` NULL) — never the ASCII commit
+  message. `use`'s old `--purpose`/`--note` flags are removed outright (no aliases); `tm aliquot
+  status --force --note` is unchanged. **Temporary naming mismatch:** the CLI says `--message` while
+  `tm history --json` reports the same value as the event's `note`; a follow-up change will align the
+  names.
 - `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
   `--force --note TEXT` overrides an illegal transition deliberately (the event records
   `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
@@ -235,6 +250,11 @@ tm aliquot purge ALQ [--json]
 - `move` of a not-in-stock aliquot also sets it to `stored`; with `--status` the normal transition
   check runs and the result must still be `stored`.
 - `purge` hard-deletes an aliquot and its events. It is the only hard delete; prefer `status consumed`.
+
+The Python API mirrors the CLI through `ledger.aliquots`:
+`ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
+`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no `purpose`/`note`
+argument, and a missing, blank or whitespace-only `message` is refused exactly like on the CLI.
 
 ## Boxes
 

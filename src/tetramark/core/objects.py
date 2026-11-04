@@ -2403,7 +2403,7 @@ def set_aliquot_status(
                     f"aliquot {alq_id!r} has no box position; status "
                     f"{target_text!r} is in stock, so the tube must be placed "
                     f"first: run 'tm aliquot move {alq_id} --box NAME --slot "
-                    "SLOT'"
+                    "SLOT -m MSG'"
                 )
             box_row = _fetch_core(session, "box", str(row["box_id"]))
             if box_row is not None:
@@ -2413,7 +2413,7 @@ def set_aliquot_status(
                         f"aliquot {alq_id!r} is in slotted box "
                         f"{box_row['name']!r} but has no slot; run "
                         f"'tm aliquot move {alq_id} --box {box_row['name']} "
-                        "--slot SLOT' to give it one"
+                        "--slot SLOT -m MSG' to give it one"
                     )
         else:
             # A status that is not in stock has no position: clear it in the

@@ -67,11 +67,12 @@ tm aliquot add 1226FP01 --count 3 \
   --box WFL-12-02 --slot B1 --slot B2 --slot B3 \
   --quantity 500 --unit ul
 
-tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3
+tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03 C3"
 ```
 
 The slots are consumed in the order given; one slot per new aliquot. A move keeps the aliquot's
-status and quantity and records a `move` event with the old and new positions.
+status and quantity and records a `move` event with the old and new positions. It requires
+`-m/--message` too: say why the tube moved.
 
 ## 3. Use part of a bacterial pellet
 
@@ -83,12 +84,16 @@ tm stock add bacterial_pellet --entity p035 --aliquots 3 \
   --quantity 500 --unit ml \
   --set culture_volume_ml=1500 --set od600=2.4 --set induction=iptg
 
-tm aliquot use 1226KO02.1 200 ml --purpose "first purification"
+tm aliquot use 1226KO02.1 200 ml -m "first purification"
 tm stock show 1226KO02
 ```
 
-`1226KO02.1` now has `300 ml` and stays `stored`. Using the remaining `300 ml` (or `use … 500 ml`)
-sets it to `consumed`; `1226KO02.2`/`.3` are untouched. If a tube is missing rather than used:
+`1226KO02.1` now has `300 ml` and stays `stored`. Using the remaining `300 ml` — or
+`tm aliquot use 1226KO02.1 -m "second elution"`, which uses everything left — sets it to `consumed`;
+`1226KO02.2`/`.3` are untouched. `-m/--message` is required on `use` and `move`: it is trimmed, may
+not be blank and is recorded on the tube's event, so say why the material left the tube. A tube
+registered without a quantity can only be used whole (`tm aliquot use ALQ -m "used it all"`); a
+partial amount is refused. If a tube is missing rather than used:
 
 ```sh
 tm aliquot status 1226KO02.3 missing --note "not in the box on 2026-10-23"
@@ -274,7 +279,8 @@ back). `tm schema show KIND` prints the same fixed set for every kind. The detai
 optional enum **stock property**, never a status: `tm stock edit FLY --set fate=discarded` (fly:
 discarded/lost), `tm stock edit MOUSE_OR_FISH --set fate=euthanized` (mouse, fish:
 euthanized/found_dead/transferred/cancelled), `tm stock edit WORM --set condition=starved` (worm:
-growing/starved/contaminated). Use `tm aliquot use` for quantities.
+growing/starved/contaminated). Use `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` for quantities (the
+message is required there; `status` needs none unless it is a forced change).
 
 ## 11. Record a cross (dam/sire are aliquots)
 

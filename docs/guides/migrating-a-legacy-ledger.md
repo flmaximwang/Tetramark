@@ -226,7 +226,7 @@ Old `stock_pellets` + `stock_pellets_aliquots`: one pellet (culture) with N tube
 - one aliquot per old pellet aliquot (`<stock_id>.1`, `.2`, …);
 - `volume_ml` → aliquot `quantity`, unit `ml`;
 - the old pellet short code (`4a334ac2`) → alias on the stock;
-- old volume-usage records → `tm aliquot use <aliquot> <amount> ml --purpose ...` on the matching
+- old volume-usage records → `tm aliquot use <aliquot> <amount> ml -m "..."` on the matching
   aliquot, or a `consumed` status with a note if only the end state is known.
 
 Do not keep a stock-level scalar volume next to the aliquot volumes: the tubes are the inventory.
