@@ -155,6 +155,10 @@ def test_readme_quickstart_runs(docs_env: Path) -> None:
     assert "1 of 96 slots used" in shown.output
     assert f"{stock_id}.1" in shown.output
 
+    listed = run_json("aliquot", "list")
+    assert [row["id"] for row in listed] == [f"{stock_id}.1"]
+    assert listed[0]["path"] == "WFL-12-01:A1"
+
     found = run("find", "pZET035")
     assert "pZET035" in found.output
     assert "WFL-12-01:A1" in found.output
@@ -265,6 +269,39 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "aliquot", "status", f"{stock_id}.4", "missing", "--note", "not found"
     )
     assert missing["status"] == "missing"
+
+    # Aliquot list: in stock by default; --all/--status widen; the table and
+    # JSON forms match the command reference.
+    listed = run_json("aliquot", "list", stock_id)
+    assert [row["id"] for row in listed] == [
+        f"{stock_id}.1",
+        f"{stock_id}.2",
+        f"{stock_id}.3",
+    ]
+    assert listed[0] == run_json("aliquot", "show", f"{stock_id}.1")
+    assert listed[0]["path"] == "FR-1/BOX-2:A1"
+    assert run("aliquot", "list", stock_id).output.splitlines()[0].split() == [
+        "id",
+        "stock_kind",
+        "status",
+        "quantity",
+        "unit",
+        "label",
+        "path",
+    ]
+    assert [
+        row["id"] for row in run_json("aliquot", "list", "--status", "missing")
+    ] == [f"{stock_id}.4"]
+    assert [
+        row["id"] for row in run_json("aliquot", "list", "--not-in-stock")
+    ] == [f"{stock_id}.4"]
+    assert {
+        row["id"] for row in run_json("aliquot", "list", "--all")
+    } == {f"{stock_id}.1", f"{stock_id}.2", f"{stock_id}.3", f"{stock_id}.4"}
+    assert [
+        row["id"] for row in run_json("aliquot", "list", "--box", "FR-1")
+    ] == [f"{stock_id}.1", f"{stock_id}.2", f"{stock_id}.3"]
+
     purged = run_json("aliquot", "purge", f"{stock_id}.4")
     assert purged["id"] == f"{stock_id}.4"
 

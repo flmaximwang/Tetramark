@@ -124,6 +124,20 @@ tm stock show 1226FP01
 If a tube was moved, `history` shows both the old and new position; if several tubes exist, `find`
 lists each location.
 
+To enumerate instead of search — what is available, and where everything is:
+
+```sh
+tm aliquot list                      # every in-stock tube (the "what can an experiment use" view)
+tm aliquot list 1226FP01             # one stock's available tubes
+tm aliquot list --box FR-1           # everything in the freezer, nested boxes included
+tm aliquot list --not-in-stock       # the missing/consumed/thawed audit
+tm aliquot list --status missing     # one status (an explicit status leaves the shelf view)
+```
+
+A list is the availability view, not the history: `tm aliquot list` hides the tubes that left stock
+unless `--all` or an explicit `--status` names them. Use `find` when you have a handle and want its
+location; use `list` when you want a set.
+
 ## 6. Audit
 
 ```sh

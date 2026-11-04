@@ -105,7 +105,11 @@ def show_stock_command(
     ref: str = typer.Argument(..., help="Stock id or alias."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Show one stock, its kind fields and its aliquots."""
+    """Show one stock, its kind fields and its aliquots.
+
+    The embedded aliquot rows stay compact; `tm aliquot list STOCK` prints the
+    rich per-tube rows (label, box path, aliases and in-stock flag).
+    """
     ledger = resolve_ledger(ctx)
     try:
         emit_read(

@@ -126,9 +126,14 @@ def test_open_exposes_the_object_facades(ledger_factory, dolt_env) -> None:
         item = opened.entities.add("item", name="alpha")
         stock = opened.stocks.add("lot", entity=item["id"])
         aliquot = stock["aliquots"][0]
+        opened.boxes.add("grid96", "G-1")
+        opened.aliquots.move(aliquot, box="G-1", slot="A1")
 
         assert opened.entities.show(item["id"])["id"] == item["id"]
         assert opened.stocks.show(stock["id"])["id"] == stock["id"]
         assert opened.aliquots.show(aliquot)["id"] == aliquot
+        assert [row["id"] for row in opened.aliquots.ls()] == [aliquot]
+        assert [row["id"] for row in opened.aliquots.ls(stock["id"])] == [aliquot]
+        assert opened.aliquots.ls(stock["id"], status=["missing"]) == []
     finally:
         opened.close()

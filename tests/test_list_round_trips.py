@@ -234,6 +234,48 @@ def test_stock_list_runs_one_batched_read(
     assert prep["status"] == "empty"
 
 
+def test_aliquot_list_runs_one_batched_read(
+    read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
+) -> None:
+    ledger, built = read_ledger
+    clear(invoke_log)
+
+    rows = ledger.aliquots.ls()
+
+    # `lot` has two unplaced tubes (pending) and one placed in the slotless
+    # SHELF-1; `placed` has one tube in BOX-1 A1.  The default in-stock scope
+    # returns exactly the two placed tubes.
+    assert len(rows) == 2
+    assert all(row["in_stock"] for row in rows)
+    assert {row["path"] for row in rows} == {"BOX-1:A1", "SHELF-1"}
+    # The rows and their aliases: one JSON batch, one CSV pass for the column
+    # names JSON omits for NULL values.
+    assert invoke_log == ["json", "csv"]
+
+    # A box filter (a recursive box tree in the same statement) and a stock
+    # filter (a resolved id in the same statement) stay one process too.
+    clear(invoke_log)
+    shelf = ledger.aliquots.ls(box="SHELF-1")
+    assert [(row["stock_id"], row["seq"]) for row in shelf] == [
+        (built["lot"]["id"], 3)
+    ]
+    assert invoke_log == ["json", "csv"]
+
+    clear(invoke_log)
+    assert [row["seq"] for row in ledger.aliquots.ls(built["lot"]["id"])] == [3]
+    assert invoke_log == ["json", "csv"]
+
+    # A pinned status is the one deliberate second batch: the status vocabulary
+    # is the stock kind's, so the stock is resolved first (unknown/ambiguous
+    # refs and the precise "choose from" message need its kind).
+    clear(invoke_log)
+    assert [
+        row["seq"]
+        for row in ledger.aliquots.ls(built["lot"]["id"], status=("stored",))
+    ] == [3]
+    assert invoke_log == ["json", "csv", "json", "csv"]
+
+
 def test_box_list_runs_one_batched_read(
     read_ledger: tuple[Ledger, dict[str, Any]], invoke_log: list[str]
 ) -> None:
