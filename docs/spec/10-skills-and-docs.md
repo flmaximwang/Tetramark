@@ -6,7 +6,8 @@
 - `skills/tetramark-schema` — writing presets/kinds/rules, schema plan/apply, destructive changes.
 - [Migrating a legacy ledger](../guides/migrating-a-legacy-ledger.md) — rulebook for moving an old zsqlab DB: map old tables → kinds, keep old UIDs as
   explicit IDs (or aliases when they don't fit), `box/row/col` → box name + slot label, `status` 三态 →
-  status vocab, pellet aliquots → aliquots with quantity, export old tables to CSV → `tm import`,
+  the fixed four-status set (`pending`/`stored`/`missing`/`consumed`; see
+  `migration/spec/5-to-6/README.md`), pellet aliquots → aliquots with quantity, export old tables to CSV → `tm import`,
   checklist (row counts per kind, `tm check` all PASS, spot-check `box show` vs old grid views).
 - [Upgrading 0.4.2 → 0.5.0](../guides/upgrading-0.4-to-0.5.md) — the workspace removal in practice:
   `cd` into the ledger directory, the P4 stale-`workspace.yaml` pointer, author and backup changes.

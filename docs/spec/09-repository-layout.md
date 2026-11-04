@@ -27,7 +27,7 @@ docs/guides/              # how-to guides (migration, upgrade, releasing, test h
 docs/releases/            # release notes, v<version>.md: title + body of the GitHub release
 docs/records/             # dated delivery records (real migrations, wave deliveries)
 docs/issues/              # open design for planned work (not yet implemented)
-migration/                # hand-run upgrade steps (scripts + their READMEs)
+migration/                # hand-run upgrade steps: a migrate.py + README, or a README-only manual step
 tests/                    # pytest; fixtures create real dolt repos in tmp_path
 ```
 
