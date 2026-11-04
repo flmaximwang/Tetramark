@@ -66,17 +66,19 @@ overrides the wait. Reads never lock; `tm status` probes the lock without taking
 writes nothing and does not lock.
 
 The root help groups the commands into five panels — Setup, Inventory, Lookup, Data and Versioning —
-in workflow order. `Setup` is `presets`, `init`, `adopt`, `schema`, `config`, `status`; there is no
-`workspace` and no `server` command group in 0.5.0. The listing below follows the same order.
+in workflow order. `Setup` is `presets`, `init`, `adopt`, `schema`, `config`, `status`, `skill`; there
+is no `workspace` and no `server` command group in 0.5.0. The listing below follows the same order.
 
 ```
-# Setup: presets, init, adopt, schema, config, status
+# Setup: presets, init, adopt, schema, config, status, skill
 tm presets [list|show NAME]
 tm init PATH --preset base [--preset molbio] [--name N] [--id-prefix 12] [--author ...]
 tm adopt PATH --preset molbio [--name N] [--id-prefix 12] [--author ...] [--force-config]  # §3.1
 tm schema show [KIND] | plan | apply [--allow-destructive]
 tm config get [author] ; tm config set author "Name <email>"   # the only setting
 tm status [--json]                        # one ledger at a glance (6.1)
+tm skill path [NAME] [--json]             # where the skill copy lives (6.5)
+tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (6.5)
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
@@ -591,3 +593,41 @@ The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(
 `where` **mapping** is equality only (`where={"name": "pUC19"}`); a list of strings accepts both
 operators (`where=["name~(?i)^puc", "resistance=amp"]`). Parsing, coercion and errors are the same
 code as the CLI.
+
+### 6.5 `tm skill` — which copy describes this CLI
+
+A shipped skill states the Tetramark version it was written against in its frontmatter (§10), so a
+stale copy is detectable instead of failing on its first removed command. These two commands read
+that stamp and are **ledger-free**: they never resolve or open a ledger, so they work in a directory
+that holds none.
+
+- `tm skill path [NAME]` prints the bare directory of the copy `NAME` resolves to (`tetramark` by
+  default). Resolution is `$TETRAMARK_SKILLS_DIR` first, then the checkout's `skills/`, then
+  installed package data (once the wheel ships the skills; Tetramark-bfq). `--json` prints
+  `{"name", "path", "source"}`, where `source` is `env`, `checkout` or `package`. A name that no
+  root holds exits 1 with a message naming all three roots.
+- `tm skill version [NAME] [--json]` prints one line comparing the copy's frontmatter `version:`
+  with `tm --version`:
+
+  ```
+  skill 0.8.15 (/repo/skills/tetramark/SKILL.md); tm 0.8.15; match
+  ```
+
+  `--json` prints `{"name", "skill_version", "skill_path", "tm_version", "match"}`; on a match
+  stderr is empty. `--file PATH` checks another copy instead -- a `SKILL.md` or the skill directory
+  that holds it -- which is how a stale 0.4-era export is inspected.
+
+A mismatch is a warning on stderr and exit 0, never a failure: an old skill is a documentation
+problem, not a broken ledger. The warnings live only in `tm skill version` (no other command warns
+about a stale copy):
+
+- `warning: skill 0.4.1 describes an older CLI than tm 0.8.15; use the copy at $(tm skill path) instead`
+  (`newer` when the skill claims a later CLI; exit 0 in both cases);
+- `warning: <path> carries no version; it predates versioned skills (tetramark < 0.8.14)` -- a
+  frontmatter without `version:`: `skill_version` is `null`, `match` is `false`, exit 0;
+- `warning: skill version 'devel' is not comparable with tm 0.8.15` -- a version that is not dotted
+  numeric, so no ordering is claimed; exit 0.
+
+Only a missing file or a file without YAML frontmatter exits 1. The version is the package version:
+there is no separate skill revision and no `rev:` field (§10).
+
