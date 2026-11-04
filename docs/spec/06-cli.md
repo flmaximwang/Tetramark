@@ -90,8 +90,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
-tm aliquot move ALQ --box NAME [--slot S] [--status S]
-tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
+tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
+tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
@@ -151,6 +151,31 @@ changing to `stored` without a position is refused with a hint to run
 `tm aliquot move ALQ --box NAME --slot S`. `tm aliquot move` of an aliquot that is not `stored` also
 sets it to `stored`; a move with `--status` runs the normal transition check, and the result must be
 `stored`.
+
+`tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
+`-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
+option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
+event text, never the ASCII commit message. `use`'s old `--purpose` and `--note` flags are removed
+outright — no aliases; `tm aliquot status --force --note` is unchanged, and `move` never had either
+flag. **Temporary naming mismatch:** the CLI says `--message`, while the value is stored in
+`aliquot_event.note` and new `use`/`move` events leave `purpose` NULL; `tm history --json` keeps the
+`note`/`purpose` event keys. A follow-up change will align the names.
+
+`tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
+together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
+the amount may not exceed what remains. Passing neither means "use everything left": the event records
+the tube's remaining quantity and unit, and the result is identical to passing them explicitly. A tube
+whose quantity is NULL can only be used whole — the event records a NULL amount and the tube is
+consumed — while a partial use of such a tube is refused. `use` works on every aliquot, whatever its
+status, and is refused only when the tube is already `consumed`. Reaching zero moves it to `consumed`
+and clears its box position in the same write (the old position stays on the event). The human line
+names the amount used and ends with the message, e.g. `Used all 200 ml from X (consumed): <msg>`;
+`--json` adds `used_amount`, `used_unit` and `message` to the result (`used_amount` is NULL for a whole
+use of a tube with no quantity).
+
+The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
+`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no `purpose` or
+`note` argument, and a `move` message is required and validated like a `use` message.
 
 A box name must be **view-safe**, because each existing box gets a generated view (§3):
 `v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters

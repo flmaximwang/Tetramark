@@ -22,6 +22,10 @@ Rules:
 - A slot holds either aliquots (up to the box kind's `slot_capacity`, default 1) or one child box —
   never both. Box nesting must be acyclic.
 - "Removing" a tube means status → `consumed` (soft). Hard delete only via explicit `--purge`.
+- **An action done in the physical world that cannot simply be reversed needs a message.** `tm aliquot
+  use` (the material is gone) and `tm aliquot move` (the tube was physically relocated) therefore
+  require `-m/--message`; `create`, `edit` and `status` do not. The message is recorded on the aliquot
+  event, so the timeline keeps why the action happened, not just the resulting state.
 
 ### 1.1 Aliquot status
 
