@@ -16,7 +16,7 @@ from tetramark.core.ledger import open as open_ledger
 from tetramark.errors import LedgerError, UsageError
 from tetramark.ops.lineage import lineage
 
-from conftest import FACTORY_AUTHOR, PRESETS
+from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 FULL = PRESETS / "full"
 BASE = PRESETS / "base"
@@ -967,6 +967,287 @@ def test_wrong_type_hints_stay_off_for_other_misses(ledger_factory) -> None:
         ledger.stocks.show("")
     with pytest.raises(LedgerError, match=rf"^unknown stock {item['id']!r}$"):
         ledger.stocks.show(item["id"])
+
+
+# ---------------------------------------------------------------------------
+# Aliquot listing: tm aliquot list (Tetramark-i93.9)
+# ---------------------------------------------------------------------------
+
+
+def test_aliquot_list_defaults_to_the_tubes_an_experiment_can_use(
+    ledger_factory,
+) -> None:
+    """Only in-stock tubes by default; --all and the complement show the rest."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
+    first, second, third = stock["aliquots"]
+    ledger.aliquots.move(first, box="BOX", slot="A1")
+    ledger.aliquots.status(second, "missing", note="not in the box")
+
+    listed = ledger.aliquots.ls()
+    assert [row["id"] for row in listed] == [first]
+    # A list row is the show record: same keys, same values.
+    assert listed[0] == ledger.aliquots.show(first)
+    assert listed[0]["in_stock"] is True
+
+    every = ledger.aliquots.ls(all_statuses=True)
+    assert [row["id"] for row in every] == [first, second, third]
+    assert [row["in_stock"] for row in every] == [True, False, False]
+
+    left = ledger.aliquots.ls(in_stock=False)
+    assert [row["id"] for row in left] == [second, third]
+    assert all(row["path"] is None for row in left)
+
+
+def test_aliquot_list_status_filter_widens_the_default_scope(ledger_factory) -> None:
+    """Naming a status is a deliberate choice: it turns the in-stock scope off."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
+    first, second, third = stock["aliquots"]
+    ledger.aliquots.move(first, box="BOX", slot="A1")
+    ledger.aliquots.status(second, "missing", note="gone")
+    ledger.aliquots.status(third, "consumed", note="used up")
+
+    assert [row["id"] for row in ledger.aliquots.ls(status=("missing",))] == [second]
+    assert [
+        row["id"] for row in ledger.aliquots.ls(status=("stored", "missing"))
+    ] == [first, second]
+    # --all with a status is redundant but legal.
+    assert [
+        row["id"]
+        for row in ledger.aliquots.ls(status=("missing",), all_statuses=True)
+    ] == [second]
+    # --not-in-stock still intersects with an explicit status filter.
+    assert [
+        row["id"]
+        for row in ledger.aliquots.ls(status=("missing",), in_stock=False)
+    ] == [second]
+    assert ledger.aliquots.ls(status=("stored",), in_stock=False) == []
+
+
+def test_aliquot_list_box_filter_includes_every_nested_box(ledger_factory) -> None:
+    """--box covers the box itself and every box nested inside it."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    ledger.boxes.add("shelf", "SH-1")
+    rack = ledger.boxes.add("rack", "R-1", parent="SH-1")
+    inner = ledger.boxes.add("grid96", "G-2", parent="R-1", slot="middle")
+    ledger.boxes.add("grid96", "G-1")
+    ledger.aliases.add("box", rack["id"], "RACK-A")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
+    first, second, third = stock["aliquots"]
+    ledger.aliquots.move(first, box="R-1", slot="top")
+    ledger.aliquots.move(second, box="G-2", slot="B2")
+    # A slotless box holds a tube directly as well as child boxes.
+    ledger.aliquots.move(third, box="SH-1")
+
+    assert [row["id"] for row in ledger.aliquots.ls(box="SH-1")] == [
+        first,
+        second,
+        third,
+    ]
+    assert [row["id"] for row in ledger.aliquots.ls(box="R-1")] == [first, second]
+    assert [row["id"] for row in ledger.aliquots.ls(box=rack["id"])] == [first, second]
+    assert [row["id"] for row in ledger.aliquots.ls(box="RACK-A")] == [first, second]
+    assert [row["id"] for row in ledger.aliquots.ls(box=str(inner["id"]))] == [second]
+    assert ledger.aliquots.ls(box="G-1") == []
+    # Every filter at once: the parameters of the box tree, the stock, the kind,
+    # the statuses, --where and the in-stock scope must line up in SQL order.
+    assert [
+        row["id"]
+        for row in ledger.aliquots.ls(
+            box="SH-1",
+            stock=stock["id"],
+            kind="lot",
+            status=("stored",),
+            where=["seq=2"],
+        )
+    ] == [second]
+    # A valid box with no tube in it is an empty list, not an error.
+    ledger.boxes.add("shelf", "EMPTY")
+    assert ledger.aliquots.ls(box="EMPTY") == []
+
+
+def test_aliquot_list_filters_by_stock_kind_stock_and_where(ledger_factory) -> None:
+    """A stock, a stock kind and --where narrow the same listing."""
+    ledger = make_full_ledger(ledger_factory)
+    item = new_item(ledger)
+    everything = ledger.entities.add("everything", name="thing")
+    new_box(ledger, "BOX", "grid96")
+    lot = ledger.stocks.add("lot", entity=item["id"], aliquots=2)
+    prep = ledger.stocks.add("prep", entity=everything["id"])
+    first, second = lot["aliquots"]
+    only = prep["aliquots"][0]
+    ledger.aliquots.move(first, box="BOX", slot="A1")
+    ledger.aliquots.move(only, box="BOX", slot="A2")
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `label` = 'first tube' WHERE `id` = %s", (first,)
+    )
+
+    assert [row["id"] for row in ledger.aliquots.ls(kind="lot")] == [first]
+    assert [row["id"] for row in ledger.aliquots.ls(kind="prep")] == [only]
+    assert [row["id"] for row in ledger.aliquots.ls(stock=lot["id"])] == [first]
+    # An id prefix follows the same rule as every other reference: it must
+    # name exactly one stock, or the command refuses with the candidates.
+    with pytest.raises(UsageError, match="ambiguous"):
+        ledger.aliquots.ls(stock=lot["id"][:6])
+    assert [
+        row["id"] for row in ledger.aliquots.ls(where=["label=first tube"])
+    ] == [first]
+    assert [
+        row["id"] for row in ledger.aliquots.ls(all_statuses=True, where=["seq=2"])
+    ] == [second]
+
+    # A child stock is its own listing: a stock filter never follows lineage.
+    child = ledger.stocks.add("lot", entity=item["id"], parent=lot["id"])
+    child_tube = child["aliquots"][0]
+    ledger.aliquots.move(child_tube, box="BOX", slot="A3")
+    assert [row["id"] for row in ledger.aliquots.ls(stock=lot["id"])] == [first]
+    assert child_tube in [row["id"] for row in ledger.aliquots.ls()]
+
+
+def test_aliquot_list_refuses_unknown_filters_and_empty_values(ledger_factory) -> None:
+    """Every miss keeps its class: not-found from the resolver, usage from the CLI."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+    ledger.aliquots.move(alq, box="BOX", slot="A1")
+
+    with pytest.raises(LedgerError, match=r"^unknown stock 'NOPE'$"):
+        ledger.aliquots.ls("NOPE")
+    with pytest.raises(LedgerError, match=r"^unknown box 'NOPE'$"):
+        ledger.aliquots.ls(box="NOPE")
+    # An empty ref must not fall through to the unique-prefix branch and match
+    # the ledger's only stock/box.
+    with pytest.raises(LedgerError, match=r"^unknown stock ''$"):
+        ledger.aliquots.ls("")
+    with pytest.raises(LedgerError, match=r"^unknown box ''$"):
+        ledger.aliquots.ls(box="")
+    with pytest.raises(LedgerError) as hinted:
+        ledger.aliquots.ls(alq)
+    assert str(hinted.value) == (
+        f"unknown stock {alq!r}: {alq} is an aliquot; try tm aliquot show {alq}"
+    )
+    assert hinted.value.exit_code == 1
+    # The pinned-status path resolves the stock too, and keeps the same hint.
+    with pytest.raises(LedgerError) as hinted_status:
+        ledger.aliquots.ls(alq, status=("stored",))
+    assert "is an aliquot; try tm aliquot show" in str(hinted_status.value)
+
+    with pytest.raises(UsageError, match=r"unknown status 'bogus'"):
+        ledger.aliquots.ls(status=("bogus",))
+    with pytest.raises(UsageError, match="a --status value must not be empty"):
+        ledger.aliquots.ls(status=("",))
+    with pytest.raises(UsageError, match="filter the status with --status"):
+        ledger.aliquots.ls(where=["status=stored"])
+    with pytest.raises(UsageError, match="unknown field"):
+        ledger.aliquots.ls(where=["nope=1"])
+    with pytest.raises(UsageError, match="--all and --not-in-stock"):
+        ledger.aliquots.ls(all_statuses=True, in_stock=False)
+
+
+def test_aliquot_list_status_validation_follows_the_pinned_stock_kind(
+    ledger_factory,
+) -> None:
+    """A pinned stock/kind validates against its own set, not the whole ledger."""
+    ledger = ledger_factory(
+        [REPO_PRESETS / "cell_culture.yaml"], name="list-status", id_prefix="77"
+    )
+    entity = ledger.entities.add("cell_line", name="HeLa")
+    new_box(ledger, "BOX", "grid8x12")
+    vial = ledger.stocks.add("cell_vial", entity=entity["id"], status="missing")
+    pellet = ledger.stocks.add("cell_pellet", entity=entity["id"], status="pending")
+    vial_tube = vial["aliquots"][0]
+    pellet_tube = pellet["aliquots"][0]
+
+    # `thawed` is a cryo status, `pending` is a tube status.
+    with pytest.raises(UsageError, match="for stock kind 'cell_pellet'"):
+        ledger.aliquots.ls(kind="cell_pellet", status=("thawed",))
+    with pytest.raises(UsageError, match="for stock kind 'cell_vial'"):
+        ledger.aliquots.ls(kind="cell_vial", status=("pending",))
+    with pytest.raises(UsageError, match="for stock '"):
+        ledger.aliquots.ls(vial["id"], status=("pending",))
+    with pytest.raises(UsageError, match="for stock '"):
+        ledger.aliquots.ls(pellet["id"], status=("thawed",))
+
+    # Without a pin, the ledger-wide vocabulary accepts both and each row's
+    # own kind still decides whether it is in stock.
+    assert ledger.aliquots.ls(status=("thawed",)) == []
+    assert [
+        row["id"] for row in ledger.aliquots.ls(status=("missing", "pending"))
+    ] == [vial_tube, pellet_tube]
+
+
+def test_aliquot_list_scope_covers_every_stock_kind(ledger_factory) -> None:
+    """The in-stock scope ORs each kind's set: `alive` counts for an animal."""
+    ledger = ledger_factory(
+        [REPO_PRESETS / "zebrafish.yaml"], name="list-animal", id_prefix="77"
+    )
+    line = ledger.entities.add("fish_line", name="AB")
+    ledger.boxes.add("rack", "R-1")
+    ledger.boxes.add("freezer", "FR-1")
+    alive = ledger.stocks.add(
+        "fish_group", entity=line["id"], status="alive", box="R-1", slots=("1",)
+    )
+    frozen = ledger.stocks.add(
+        "fish_sperm_cryo", entity=line["id"], status="stored", box="FR-1"
+    )
+    planned = ledger.stocks.add("fish_group", entity=line["id"], status="planned")
+
+    assert [row["id"] for row in ledger.aliquots.ls()] == [
+        alive["aliquots"][0],
+        frozen["aliquots"][0],
+    ]
+    assert [row["id"] for row in ledger.aliquots.ls(in_stock=False)] == [
+        planned["aliquots"][0]
+    ]
+    assert [row["id"] for row in ledger.aliquots.ls(status=("alive",))] == [
+        alive["aliquots"][0]
+    ]
+    # Pinned to the animal kind, a cryo status is refused.
+    with pytest.raises(UsageError, match="for stock kind 'fish_group'"):
+        ledger.aliquots.ls(kind="fish_group", status=("stored",))
+
+
+def test_aliquot_list_scope_with_no_in_stock_status(
+    ledger_factory, tmp_path
+) -> None:
+    """A kind whose set has no in-stock status is never on the shelf."""
+    preset = tmp_path / "noinstock.yaml"
+    preset.write_text(
+        "preset: noinstock\n"
+        "version: 1\n"
+        "status_sets:\n"
+        "  archived:\n"
+        "    file_only: {in_stock: false, to: [gone]}\n"
+        "    gone: {in_stock: false}\n"
+        "mixins:\n"
+        "  named_fields:\n"
+        "    name: {type: string, required: true, unique: true}\n"
+        "kinds:\n"
+        "  item:\n"
+        "    object: entity\n"
+        "    mixins: [named_fields]\n"
+        "  archived_lot:\n"
+        "    object: stock\n"
+        "    entity_kinds: [item]\n"
+        "    statuses: archived\n",
+        encoding="utf-8",
+    )
+    ledger = ledger_factory([preset], name="list-noinstock", id_prefix="77")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("archived_lot", entity=item["id"], status="file_only")
+    alq = stock["aliquots"][0]
+
+    assert ledger.aliquots.ls() == []
+    assert [row["id"] for row in ledger.aliquots.ls(in_stock=False)] == [alq]
+    assert [row["id"] for row in ledger.aliquots.ls(status=("file_only",))] == [alq]
 
 
 # ---------------------------------------------------------------------------

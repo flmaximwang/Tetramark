@@ -79,6 +79,7 @@ __all__ = [
     "box_kind_from",
     "edit_entity",
     "edit_stock",
+    "list_aliquots",
     "list_entities",
     "list_boxes",
     "list_stocks",
@@ -123,6 +124,24 @@ _CORE_FILTERS: dict[str, frozenset[str]] = {
     ),
     "box": frozenset(
         {"id", "kind", "name", "parent_box_id", "parent_slot", "created_at", "notes"}
+    ),
+    # An aliquot has no kind row, so these are the columns ``--where`` can
+    # address.  ``status`` is deliberately absent: ``tm aliquot list``'s
+    # dedicated ``--status`` filter also decides the default in-stock scope,
+    # and a second spelling for the same thing would drift from it.
+    "aliquot": frozenset(
+        {
+            "id",
+            "stock_id",
+            "seq",
+            "box_id",
+            "slot",
+            "quantity",
+            "unit",
+            "label",
+            "created_at",
+            "notes",
+        }
     ),
 }
 
@@ -2456,6 +2475,325 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Aliquot listing
+# ---------------------------------------------------------------------------
+
+
+def _in_stock_scope_sql(ledger: Ledger) -> tuple[str, list[Any]]:
+    """SQL for "this tube's status counts as in stock", plus its parameters.
+
+    The in-stock statuses live on each stock kind's status set, so one OR
+    branch per *distinct* set (the bundled sets are shared by several kinds)
+    keeps the statement short.  A kind without an in-stock status gets no
+    branch: no tube of it can match the positive scope, which is exactly
+    right, and the negated scope then matches all of its tubes.
+    """
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for kind_name in sorted(ledger.schema.kinds_for("stock")):
+        names = tuple(aliquot_status_set(ledger, kind_name).in_stock_names)
+        if names:
+            groups.setdefault(names, []).append(kind_name)
+    if not groups:
+        # A ledger whose stock kinds have no in-stock status at all (a custom
+        # preset): the positive scope matches nothing and the negated one
+        # matches every tube.
+        return "FALSE", []
+    parts: list[str] = []
+    params: list[Any] = []
+    for names, kinds in groups.items():
+        kind_slots = ", ".join(["%s"] * len(kinds))
+        status_slots = ", ".join(["%s"] * len(names))
+        parts.append(
+            f"(s.{_quote('kind')} IN ({kind_slots}) "
+            f"AND a.{_quote('status')} IN ({status_slots}))"
+        )
+        params.extend(kinds)
+        params.extend(names)
+    return "(" + " OR ".join(parts) + ")", params
+
+
+def _check_status_filter(
+    ledger: Ledger,
+    statuses: Sequence[str],
+    *,
+    kind_name: str | None,
+    stock_label: str | None,
+    stock_row: Mapping[str, Any] | None,
+) -> None:
+    """Reject a status the pinned stock kind does not define.
+
+    With a stock or a stock kind pinned, the status must be in *that* kind's
+    set.  Without one it only has to belong to some stock kind's set: a typo
+    guard that still lets each row's own kind decide whether it is in stock.
+    """
+    if stock_row is not None:
+        status_set = aliquot_status_set(ledger, str(stock_row["kind"]))
+        label = f"stock {stock_label!r}"
+    elif kind_name is not None:
+        status_set = aliquot_status_set(ledger, kind_name)
+        label = f"stock kind {kind_name!r}"
+    else:
+        known = {
+            name
+            for current in ledger.schema.kinds_for("stock")
+            for name in aliquot_status_set(ledger, current).names
+        }
+        for status in statuses:
+            if status not in known:
+                raise UsageError(
+                    f"unknown status {status!r}; choose from: "
+                    f"{', '.join(sorted(known))}"
+                )
+        return
+    for status in statuses:
+        if not status_set.has(status):
+            raise UsageError(
+                f"unknown status {status!r} for {label}; choose from: "
+                f"{', '.join(status_set.names)}"
+            )
+
+
+def _resolve_stock_filter(ledger: Ledger, ref: str) -> Mapping[str, Any]:
+    """Resolve the ``STOCK`` argument of ``list_aliquots`` (with its hint).
+
+    The not-found message names ``tm aliquot show`` when the ref is actually a
+    tube, the same hint ``show_stock`` gives; an ambiguous prefix keeps its
+    usage error.
+    """
+    try:
+        return _resolve_core(ledger.driver, "stock", ref)
+    except UsageError:
+        raise
+    except LedgerError as error:
+        hint = _wrong_type_hint(ledger, "stock", ref)
+        if not hint:
+            raise
+        raise LedgerError(f"{error}{hint}") from error
+
+
+def list_aliquots(
+    ledger: Ledger,
+    stock: str | None = None,
+    *,
+    kind_name: str | None = None,
+    box: str | None = None,
+    statuses: str | Sequence[str] = (),
+    in_stock: bool | None = None,
+    all_statuses: bool = False,
+    where: Iterable[str] | Mapping[str, Any] | None = (),
+) -> list[dict[str, Any]]:
+    """List tubes; by default only the ones that are physically in stock.
+
+    A list answers the question a session starts with - which tubes can an
+    experiment use - so tubes that left stock (consumed, missing, thawed, ...)
+    are hidden unless asked for.  ``all_statuses`` shows every status and
+    ``in_stock=False`` shows only the complement; an explicit ``statuses``
+    filter turns the implicit in-stock scope off, because naming a status is
+    already a deliberate choice.  Everything ANDs together:
+
+    * ``stock``: one stock id or alias (the unique-prefix rule applies);
+    * ``kind_name``: one stock kind (an aliquot has no kind of its own);
+    * ``box``: a box name/id/alias plus every box nested inside it;
+    * ``statuses``: the exact statuses to keep (an empty sequence leaves the
+      default in-stock scope in charge);
+    * ``where``: exact matches on the aliquot core columns except ``status``
+      (that is what ``statuses`` is for).
+
+    The records have exactly the same shape as :func:`show_aliquot` - the
+    same keys, including the sorted ``aliases`` and the derived ``in_stock`` -
+    so a list row and a single tube can be handled by the same code.  Rows are
+    ordered by ``stock_id`` and then numeric ``seq``.  The rows and their
+    aliases are read in one batched driver round trip.
+    """
+    if all_statuses and in_stock is not None:
+        raise UsageError(
+            "--all and --not-in-stock cannot be combined (all_statuses "
+            "conflicts with an explicit in_stock filter)"
+        )
+    # An empty ref is not a prefix of every id: the unique-prefix branch of
+    # the SQL resolver would match the ledger's only stock/box, silently
+    # answering a different question.  The show readers guard the same way.
+    if stock is not None and not str(stock):
+        raise LedgerError(f"unknown stock {stock!r}")
+    if box is not None and not str(box):
+        raise LedgerError(f"unknown box {box!r}")
+    wanted = (
+        [statuses]
+        if isinstance(statuses, str)
+        else [str(status) for status in statuses]
+    )
+    normalised = tuple(dict.fromkeys(status.strip() for status in wanted))
+    if any(not status for status in normalised):
+        raise UsageError("a --status value must not be empty")
+
+    filters = _parse_pairs(where, option="--where")
+    if "status" in filters:
+        raise UsageError(
+            "filter the status with --status, not --where (the default scope "
+            "is in stock)"
+        )
+    unknown = sorted(set(filters) - _CORE_FILTERS["aliquot"])
+    if unknown:
+        raise UsageError(
+            f"unknown field(s) {', '.join(repr(name) for name in unknown)} in "
+            "--where; valid fields: "
+            + ", ".join(sorted(_CORE_FILTERS["aliquot"]))
+        )
+
+    if kind_name is not None:
+        _kind_for(ledger, "stock", kind_name)
+
+    stock_label = None if stock is None else str(stock)
+    stock_row: Mapping[str, Any] | None = None
+    if stock_label is not None and normalised:
+        # The status vocabulary is the stock kind's, so pin it before the main
+        # read when both filters are given.
+        stock_row = _resolve_stock_filter(ledger, stock_label)
+    if normalised:
+        _check_status_filter(
+            ledger,
+            normalised,
+            kind_name=kind_name,
+            stock_label=stock_label,
+            stock_row=stock_row,
+        )
+
+    if all_statuses:
+        scope: str | None = None
+    elif in_stock is False:
+        scope = "not_in_stock"
+    elif in_stock is True:
+        scope = "in_stock"
+    elif normalised:
+        scope = None
+    else:
+        scope = "in_stock"
+
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    box_join = ""
+    if box is not None:
+        box_id_sql = _resolved_id_sql("box", by_name=True)
+        params.extend(_resolved_id_params(box_id_sql, str(box)))
+        box_join = (
+            "JOIN (WITH RECURSIVE `box_tree` AS ("
+            f"SELECT {_quote('id')} FROM {_quote('box')} "
+            f"WHERE {_quote('id')} = {box_id_sql} "
+            "UNION ALL "
+            f"SELECT child.{_quote('id')} FROM {_quote('box')} child "
+            f"JOIN `box_tree` parent "
+            f"ON child.{_quote('parent_box_id')} = parent.{_quote('id')}"
+            f") SELECT {_quote('id')} FROM `box_tree`) AS `bt` "
+            f"ON `bt`.{_quote('id')} = a.{_quote('box_id')} "
+        )
+
+    if stock_label is not None:
+        stock_id_sql = _resolved_id_sql("stock")
+        conditions.append(f"a.{_quote('stock_id')} = ({stock_id_sql})")
+        params.extend(_resolved_id_params(stock_id_sql, stock_label))
+    if kind_name is not None:
+        conditions.append(f"s.{_quote('kind')} = %s")
+        params.append(kind_name)
+    if normalised:
+        status_slots = ", ".join(["%s"] * len(normalised))
+        conditions.append(f"a.{_quote('status')} IN ({status_slots})")
+        params.extend(normalised)
+    for field, value in filters.items():
+        conditions.append(f"a.{_quote(field)} = %s")
+        params.append(value)
+    if scope is not None:
+        scope_sql, scope_params = _in_stock_scope_sql(ledger)
+        if scope == "not_in_stock":
+            scope_sql = f"NOT ({scope_sql})"
+        conditions.append(scope_sql)
+        params.extend(scope_params)
+
+    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    from_sql = (
+        f"FROM {_quote('aliquot')} a "
+        f"JOIN {_quote('stock')} s ON s.{_quote('id')} = a.{_quote('stock_id')} "
+        + box_join
+    )
+    main_sql = (
+        "SELECT "
+        f"a.{_quote('id')}, a.{_quote('stock_id')}, a.{_quote('seq')}, "
+        f"a.{_quote('box_id')}, a.{_quote('slot')}, a.{_quote('status')}, "
+        f"a.{_quote('quantity')}, a.{_quote('unit')}, a.{_quote('label')}, "
+        f"a.{_quote('created_at')}, a.{_quote('notes')}, "
+        f"s.{_quote('kind')} AS {_quote('stock_kind')}, "
+        f"s.{_quote('entity_id')} AS {_quote('entity_id')}, "
+        f"COALESCE(l.{_quote('location')}, l.{_quote('box_path')}) "
+        f"AS {_quote('path')} "
+        + from_sql
+        + f"LEFT JOIN {_quote('v_aliquot_location')} l "
+        f"ON l.{_quote('aliquot_id')} = a.{_quote('id')} "
+        + where_sql
+        + f" ORDER BY a.{_quote('stock_id')}, a.{_quote('seq')}, a.{_quote('id')}"
+    )
+    # The aliases ride in the same batch: the correlated subquery repeats the
+    # same FROM/WHERE so the two statements take identical parameters.
+    alias_sql = (
+        f"SELECT al.{_quote('object_id')} AS {_quote('object_id')}, "
+        f"al.{_quote('alias')} AS {_quote('alias')} "
+        f"FROM {_quote('alias')} al "
+        f"WHERE al.{_quote('object_type')} = 'aliquot' "
+        f"AND al.{_quote('object_id')} IN (SELECT a.{_quote('id')} "
+        + from_sql
+        + where_sql
+        + f") ORDER BY al.{_quote('object_id')}, al.{_quote('alias')}"
+    )
+    fetched = ledger.driver.query_many(
+        [(main_sql, tuple(params)), (alias_sql, tuple(params))]
+    )
+    rows, alias_rows = fetched[0], fetched[1]
+
+    if not rows:
+        # An empty result could mean "no tube matches" or a mistyped filter;
+        # resolving only on the empty path keeps the happy path at one process.
+        if stock_label is not None:
+            _resolve_stock_filter(ledger, stock_label)
+        if box is not None:
+            _resolve_box(ledger.driver, str(box))
+
+    aliases: dict[str, list[str]] = {}
+    for row in alias_rows:
+        aliases.setdefault(str(row["object_id"]), []).append(str(row["alias"]))
+
+    status_sets: dict[str, StatusSet] = {}
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        stock_kind = str(row["stock_kind"])
+        status = str(row["status"])
+        status_set = status_sets.get(stock_kind)
+        if status_set is None:
+            status_set = aliquot_status_set(ledger, stock_kind)
+            status_sets[stock_kind] = status_set
+        records.append(
+            {
+                "id": str(row["id"]),
+                "stock_id": str(row["stock_id"]),
+                "seq": int(row["seq"]),
+                "status": status,
+                "quantity": row["quantity"],
+                "unit": row["unit"],
+                "label": row["label"],
+                "notes": row["notes"],
+                "created_at": row["created_at"],
+                "aliases": aliases.get(str(row["id"]), []),
+                "stock_kind": stock_kind,
+                "entity_id": str(row["entity_id"]),
+                "box_id": row["box_id"],
+                "slot": row["slot"],
+                "path": row["path"],
+                "in_stock": status_is_in_stock(status_set, status),
+                "object": "aliquot",
+            }
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Boxes
 # ---------------------------------------------------------------------------
 
@@ -3361,6 +3699,28 @@ class AliquotOps:
 
     def show(self, ref: str) -> dict[str, Any]:
         return show_aliquot(self.ledger, ref)
+
+    def ls(
+        self,
+        stock: str | None = None,
+        *,
+        kind: str | None = None,
+        box: str | None = None,
+        status: str | Sequence[str] = (),
+        in_stock: bool | None = None,
+        all_statuses: bool = False,
+        where: Iterable[str] | Mapping[str, Any] | None = (),
+    ) -> list[dict[str, Any]]:
+        return list_aliquots(
+            self.ledger,
+            stock,
+            kind_name=kind,
+            box=box,
+            statuses=status,
+            in_stock=in_stock,
+            all_statuses=all_statuses,
+            where=where,
+        )
 
     def move(
         self,

@@ -23,6 +23,20 @@ _TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "object")
 #: ``tm stock list`` shortens ids); JSON and CSV keep the full ids.
 _TEXT_UUID_KEYS: tuple[str, ...] = ("stock_id", "entity_id", "box_id")
 
+#: The narrow columns ``tm aliquot list`` prints in table and CSV form; JSON
+#: keeps the full :func:`~tetramark.core.objects.show_aliquot` record.  The
+#: aliquot id is never shortened (spec §6), and the set holds no uuid-only
+#: column, so there is nothing else for the list to abbreviate.
+ALIQUOT_LIST_COLUMNS: tuple[str, ...] = (
+    "id",
+    "stock_kind",
+    "status",
+    "quantity",
+    "unit",
+    "label",
+    "path",
+)
+
 
 def _text_record(record: dict[str, Any]) -> dict[str, Any]:
     """One aliquot record as the entity/stock show key/value table renders it.
@@ -112,7 +126,7 @@ def show_aliquot_command(
     The record covers the aliquot row, its sorted aliases, the owning stock's
     kind and entity, the box/slot and the path read from the box nesting.  The
     tube's events are in `tm history ALQ`; the stock kind's own fields are in
-    `tm stock show`.
+    `tm stock show`, and the rich per-stock listing is `tm aliquot list STOCK`.
     """
     ledger = resolve_ledger(ctx)
     try:
@@ -124,6 +138,73 @@ def show_aliquot_command(
         emit_read(_text_record(record), fmt="table")
         if record.get("path"):
             typer.echo(f"path: {record['path']}")
+    finally:
+        ledger.close()
+
+
+@aliquot_app.command("list")
+def list_aliquots_command(
+    ctx: typer.Context,
+    stock: str | None = typer.Argument(
+        None, help="Only the tubes of this stock (id or alias)."
+    ),
+    kind: str | None = typer.Option(
+        None, "--kind", "-k", help="Only tubes of this stock kind."
+    ),
+    box: str | None = typer.Option(
+        None,
+        "--box",
+        "-b",
+        help="Only tubes in this box (name/id/alias) or any box nested inside it.",
+    ),
+    status: list[str] = typer.Option(
+        [],
+        "--status",
+        help=(
+            "Only these statuses (repeatable; an explicit status turns the "
+            "default in-stock scope off)."
+        ),
+    ),
+    all_statuses: bool = typer.Option(
+        False,
+        "--all",
+        help="Every status, including the tubes that left stock.",
+    ),
+    not_in_stock: bool = typer.Option(
+        False,
+        "--not-in-stock",
+        help="Only the tubes that are not in stock (missing/consumed/thawed audit).",
+    ),
+    where: list[str] = typer.Option(
+        [],
+        "--where",
+        "-w",
+        help="Filter as field=value; repeat to AND. Filter status with --status.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """List the tubes an experiment can use (in stock by default).
+
+    Add `--all` for every status and `--not-in-stock` for the tubes that left
+    stock.  The table prints id, stock kind, status, quantity, unit, label and
+    path; `--json` prints the same record `tm aliquot show` prints.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        rows = ledger.aliquots.ls(
+            stock,
+            kind=kind,
+            box=box,
+            status=status,
+            in_stock=False if not_in_stock else None,
+            all_statuses=all_statuses,
+            where=where,
+        )
+        emit_read(
+            rows,
+            fmt=output_format(ctx, as_json),
+            columns=list(ALIQUOT_LIST_COLUMNS),
+        )
     finally:
         ledger.close()
 

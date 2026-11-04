@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app, main
 from tetramark.core.ledger import open as open_ledger
+from tetramark.errors import LedgerError, UsageError
 
 from conftest import PRESETS
 
@@ -1147,3 +1148,132 @@ def test_cli_entity_and_box_rename(cli_env: None, ledger_factory) -> None:
     refused = invoke(ledger, "box", "rename", "G2", "slots")
     assert refused.exception.exit_code == 2
     assert "core view" in str(refused.exception)
+
+
+def test_cli_aliquot_list_scopes_filters_and_formats(
+    cli_env: None, ledger_factory
+) -> None:
+    """`tm aliquot list` is the in-stock shelf view, filterable and read-only."""
+    ledger = ledger_factory([BASE], name="cli-list", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "shelf", "SH-1")
+    write(ledger, "box", "add", "grid96", "BOX", "--in", "SH-1")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--aliquots",
+            "2",
+            "--box",
+            "BOX",
+            "--slot",
+            "A1",
+            "--slot",
+            "A2",
+            "--quantity",
+            "5",
+            "--unit",
+            "ml",
+            "--json",
+        ).output
+    )
+    first, second = stock["aliquots"]
+    write(ledger, "aliquot", "status", second, "missing", "--note", "gone")
+    write(ledger, "alias", "add", "aliquot", first, "tube-A")
+
+    before = commit_count(ledger)
+    listed = json.loads(read(ledger, "aliquot", "list", "--json").output)
+    assert [row["id"] for row in listed] == [first]
+    assert listed[0]["aliases"] == ["tube-A"]
+    # A list row is the show record, and the read writes nothing.
+    shown = json.loads(read(ledger, "aliquot", "show", first, "--json").output)
+    assert listed[0] == shown
+    assert commit_count(ledger) == before
+
+    table = read(ledger, "aliquot", "list")
+    assert table.output.splitlines()[0].split() == [
+        "id",
+        "stock_kind",
+        "status",
+        "quantity",
+        "unit",
+        "label",
+        "path",
+    ]
+    assert "SH-1/BOX:A1" in table.output
+
+    csv_rows = read(ledger, "--format", "csv", "aliquot", "list").output.splitlines()
+    assert csv_rows[0] == "id,stock_kind,status,quantity,unit,label,path"
+    assert csv_rows[1].startswith(f"{first},lot,stored,")
+    assert csv_rows[1].endswith("SH-1/BOX:A1")
+
+    every = json.loads(read(ledger, "aliquot", "list", "--all", "--json").output)
+    assert [row["id"] for row in every] == [first, second]
+    left = json.loads(
+        read(ledger, "aliquot", "list", "--not-in-stock", "--json").output
+    )
+    assert [row["id"] for row in left] == [second]
+    missing = json.loads(
+        read(ledger, "aliquot", "list", "--status", "missing", "--json").output
+    )
+    assert [row["id"] for row in missing] == [second]
+    by_stock = json.loads(
+        read(ledger, "aliquot", "list", stock["id"], "--json").output
+    )
+    assert [row["id"] for row in by_stock] == [first]
+    by_kind = json.loads(
+        read(ledger, "aliquot", "list", "--kind", "lot", "--json").output
+    )
+    assert [row["id"] for row in by_kind] == [first]
+    by_box = json.loads(
+        read(ledger, "aliquot", "list", "--box", "SH-1", "--json").output
+    )
+    assert [row["id"] for row in by_box] == [first]
+    by_where = json.loads(
+        read(ledger, "aliquot", "list", "--where", "seq=1", "--json").output
+    )
+    assert [row["id"] for row in by_where] == [first]
+    assert read(ledger, "aliquot", "list", "--status", "consumed").output.strip() == (
+        "(none)"
+    )
+    assert json.loads(
+        read(ledger, "aliquot", "list", "--status", "consumed", "--json").output
+    ) == []
+    empty_csv = read(
+        ledger, "--format", "csv", "aliquot", "list", "--status", "consumed"
+    )
+    assert empty_csv.output.splitlines() == [
+        "id,stock_kind,status,quantity,unit,label,path"
+    ]
+
+    not_found = invoke(ledger, "aliquot", "list", "NOPE")
+    assert isinstance(not_found.exception, LedgerError)
+    assert not_found.exception.exit_code == 1
+    # An empty ref is a miss, never a prefix of the ledger's only stock/box.
+    empty_stock = invoke(ledger, "aliquot", "list", "")
+    assert isinstance(empty_stock.exception, LedgerError)
+    assert "unknown stock ''" in str(empty_stock.exception)
+    empty_box = invoke(ledger, "aliquot", "list", "--box", "")
+    assert isinstance(empty_box.exception, LedgerError)
+    assert "unknown box ''" in str(empty_box.exception)
+    wrong_type = invoke(ledger, "aliquot", "list", first)
+    assert isinstance(wrong_type.exception, LedgerError)
+    assert "is an aliquot; try tm aliquot show" in str(wrong_type.exception)
+    unknown_box = invoke(ledger, "aliquot", "list", "--box", "NOPE")
+    assert isinstance(unknown_box.exception, LedgerError)
+    unknown_status = invoke(ledger, "aliquot", "list", "--status", "bogus")
+    assert isinstance(unknown_status.exception, UsageError)
+    assert unknown_status.exception.exit_code == 2
+    assert "unknown status 'bogus'" in str(unknown_status.exception)
+    where_status = invoke(ledger, "aliquot", "list", "--where", "status=stored")
+    assert isinstance(where_status.exception, UsageError)
+    assert "filter the status with --status" in str(where_status.exception)
+    both_scopes = invoke(ledger, "aliquot", "list", "--all", "--not-in-stock")
+    assert isinstance(both_scopes.exception, UsageError)
+    assert "--all and --not-in-stock" in str(both_scopes.exception)

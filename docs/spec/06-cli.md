@@ -90,6 +90,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
+tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
+                [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
@@ -192,8 +194,9 @@ grid rules above, in the same commit as the rows.
 
 `tm entity show`, `tm stock show`, `tm aliquot show` and `tm box show` include the object's aliases as
 a sorted `aliases` list in JSON output and print an `aliases` row or line in table output; `list`
-output stays narrow and unchanged. The generated views expose the same data as `alias_list` /
-`occupant_alias_list` (§3).
+**table** output stays narrow. `tm aliquot list --json` is the exception among lists: an aliquot has
+no per-kind view to project, so its items are the full `tm aliquot show` record and carry `aliases`
+too. The generated views expose the same data as `alias_list` / `occupant_alias_list` (§3).
 
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
@@ -204,6 +207,20 @@ tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
 `stored`, §1.1). A tube that is not in stock has `box_id`, `slot` and `path`
 NULL. The stock kind's own fields stay in `tm stock show`, and the tube's events stay in
 `tm history ALQ`: `show` carries no event timeline. The command is read-only and changes no
+ledger format — `spec_version` is untouched.
+
+`tm aliquot list` enumerates tubes. With no filter it prints the tubes an experiment can use — the
+statuses whose set entry has `in_stock: true` (§2.4) — not the whole history, because a list answers
+"what is available"; `--all` adds every status and `--not-in-stock` shows only the complement (the
+missing/consumed/thawed audit). An explicit `--status S` (repeatable, OR) is already a deliberate
+choice, so it turns the implicit in-stock scope off; combined with `--not-in-stock` it intersects.
+`STOCK` (one stock id or alias; the incomplete-id rule applies) limits the listing to one stock and
+never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
+and includes the box plus every box nested inside it; `--where FIELD=VALUE` (repeatable, AND) matches
+aliquot core columns exactly, except `status` (`--where status=…` is a usage error pointing at
+`--status`). The table and CSV print the narrow rows `id stock_kind status quantity unit label path`
+(`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
+prints, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only and changes no
 ledger format — `spec_version` is untouched.
 
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
@@ -302,6 +319,11 @@ portability     no warnings
   matches exactly one object; a full ID or an exact alias always wins first. A prefix that matches
   several objects is a usage error (exit 2) that names the candidates, so nothing is picked silently.
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
+
+**A list verb defaults to what is available.** When the object has an availability notion, its
+`list` prints what can be used now, not the whole history: `tm aliquot list` hides the tubes that
+left stock unless `--all` or an explicit `--status` names them. Future list verbs follow the same
+rule; the entity/stock/box lists have no availability notion and keep printing every row.
 
 List tables abbreviate uuid ids the way git abbreviates hashes: `tm entity list` and `tm stock list`
 print the shortest **unique** prefix of at least 8 characters (ids that share the first 8 grow
