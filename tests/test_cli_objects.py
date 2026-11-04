@@ -1729,3 +1729,55 @@ def test_cli_entity_stock_box_purge(cli_env: None, ledger_factory) -> None:
     assert ledger.driver.query(
         "SELECT `id` FROM `entity` WHERE `id` = %s", (spare["id"],)
     )
+
+
+def test_cli_aliquot_label(cli_env: None, ledger_factory) -> None:
+    """``tm aliquot label``: set, refuse an overwrite, --replace keeps an alias."""
+    ledger = ledger_factory([BASE], name="cli-label", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "labelled", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger, "stock", "add", "lot", "--entity", item["id"], "--json"
+        ).output
+    )
+    tube = stock["aliquots"][0]
+
+    # A tube without a label simply gets one.
+    first = json.loads(write(ledger, "aliquot", "label", tube, "T-1", "--json").output)
+    assert first["label"] == "T-1"
+    assert first["old_label"] is None
+    assert first["aliases"] == []
+    assert json.loads(read(ledger, "aliquot", "show", tube, "--json").output)[
+        "label"
+    ] == "T-1"
+
+    # A different label without --replace is refused; nothing is written.
+    before = commit_count(ledger)
+    refused = invoke(ledger, "aliquot", "label", tube, "T-2")
+    assert isinstance(refused.exception, LedgerError)
+    assert "--replace" in str(refused.exception)
+    assert commit_count(ledger) == before
+
+    # The same label again is a usage error.
+    same = invoke(ledger, "aliquot", "label", tube, "T-1", "--replace")
+    assert isinstance(same.exception, UsageError)
+    assert commit_count(ledger) == before
+
+    # --replace keeps the old label as an alias that still resolves the tube.
+    text = write(ledger, "aliquot", "label", tube, "T-2", "--replace").output
+    assert text.strip() == (
+        f"Labelled aliquot {tube} 'T-2' (old label 'T-1' kept as an alias)"
+    )
+    shown = json.loads(read(ledger, "aliquot", "show", "T-1", "--json").output)
+    assert shown["id"] == tube
+    assert shown["label"] == "T-2"
+    assert shown["aliases"] == ["T-1"]
+
+    # Resolution by alias works for the command itself, too.
+    third = json.loads(
+        write(ledger, "aliquot", "label", "T-1", "T-3", "--replace", "--json").output
+    )
+    assert third["old_label"] == "T-2"
+    assert third["aliases"] == ["T-1", "T-2"]

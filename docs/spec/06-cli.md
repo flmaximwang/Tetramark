@@ -97,6 +97,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --n
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
+tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}

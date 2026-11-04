@@ -265,8 +265,13 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
 tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
+tm aliquot label ALQ LABEL [--replace] [--json]
 tm aliquot purge ALQ [--json]
 ```
+
+- `label` sets the tube's `label`. A tube that already has a different label is refused unless
+  `--replace` is given; then the old label becomes an alias of the aliquot (it still resolves the
+  tube) and the new label is set, in one commit.
 
 - Alias strings like `STOCK`/`ALQ` mean a full ID (`1226FP01`) or an alias (`p035`).
 - `list` prints the tubes an experiment can use: only `stored` tubes by default, because a list is

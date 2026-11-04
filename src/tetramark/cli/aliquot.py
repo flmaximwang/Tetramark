@@ -381,6 +381,44 @@ def status_aliquot_command(
         ledger.close()
 
 
+@aliquot_app.command("label")
+@write_command
+def label_aliquot_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Aliquot id or alias."),
+    label: str = typer.Argument(..., help="The label to write on the tube."),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help=(
+            "Replace an existing label: the old label is kept as an alias of "
+            "the aliquot and the new one is set."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
+) -> None:
+    """Set an aliquot's label; --replace moves an existing label to its aliases.
+
+    A tube without a label gets LABEL.  A tube that already has a different
+    label is refused unless --replace is given; then the old label becomes an
+    alias (it keeps resolving the tube) and LABEL is set, in one commit.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.aliquots.label(ref, label, replace=replace)
+        line = f"Labelled aliquot {result['id']} {result['label']!r}"
+        if result.get("old_label"):
+            line += f" (old label {result['old_label']!r} kept as an alias)"
+        emit_write(
+            ledger,
+            result,
+            line,
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()
+
+
 @aliquot_app.command("purge")
 @write_command
 def purge_aliquot_command(

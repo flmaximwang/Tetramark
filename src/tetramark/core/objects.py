@@ -107,6 +107,7 @@ __all__ = [
     "read_rename_map",
     "remove_alias",
     "renumber_stocks",
+    "set_aliquot_label",
     "set_aliquot_status",
     "show_entity",
     "show_stock",
@@ -2527,6 +2528,58 @@ def set_aliquot_status(
         }
 
 
+#: Width of the core ``aliquot.label`` column (``VARCHAR(255)``).
+_ALIQUOT_LABEL_LENGTH = 255
+
+
+def set_aliquot_label(
+    ledger: Ledger, ref: str, label: str, *, replace: bool = False
+) -> dict[str, Any]:
+    """Set an aliquot's ``label``; with ``replace`` the old label becomes an alias.
+
+    A tube without a label simply gets one.  A tube that already carries a
+    different label is refused unless ``replace=True``: then the previous
+    label is kept as an alias of the aliquot (so it still resolves the tube)
+    and the new label takes its place, in one commit.
+    """
+    text = str(label).strip()
+    if not text:
+        raise UsageError("a label must not be empty")
+    if len(text) > _ALIQUOT_LABEL_LENGTH:
+        raise UsageError(
+            f"a label is limited to {_ALIQUOT_LABEL_LENGTH} characters "
+            f"(got {len(text)})"
+        )
+    existing = _resolve_aliquot(ledger.driver, ref)
+    alq_id = str(existing["id"])
+    raw_old = existing.get("label")
+    old_label = str(raw_old).strip() if raw_old is not None else ""
+    if old_label == text:
+        raise UsageError(f"aliquot {alq_id!r} already has the label {text!r}")
+    if old_label and not replace:
+        raise LedgerError(
+            f"aliquot {alq_id!r} already has the label {old_label!r}; pass "
+            f"--replace to keep {old_label!r} as an alias and set {text!r}"
+        )
+
+    with ledger.write(alq_id, verb="label", object="aliquot") as session:
+        _resolve_aliquot(session, alq_id)
+        if old_label:
+            _keep_old_name_alias(session, "aliquot", alq_id, old_label)
+        _update(session, "aliquot", {"id": alq_id}, {"label": text})
+        aliases = _object_aliases(session, "aliquot", alq_id)
+
+    if old_label and old_label not in aliases:
+        aliases = sorted({*aliases, old_label})  # dry run
+    return {
+        "object": "aliquot",
+        "id": alq_id,
+        "label": text,
+        "old_label": old_label or None,
+        "aliases": aliases,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Purge: explicit hard delete (entity, stock, aliquot, box)
 # ---------------------------------------------------------------------------
@@ -4438,6 +4491,9 @@ class AliquotOps:
         return set_aliquot_status(
             self.ledger, ref, status, note=note, force=force
         )
+
+    def label(self, ref: str, label: str, *, replace: bool = False) -> dict[str, Any]:
+        return set_aliquot_label(self.ledger, ref, label, replace=replace)
 
     def purge(self, ref: str) -> dict[str, Any]:
         return purge_aliquot(self.ledger, ref)
