@@ -7,6 +7,7 @@ dist/
 .worktrees/
 
 # deployed agent skills (managed by skills-manager)
+.agents/
 .claude/
 .codex/
 .copilot/
