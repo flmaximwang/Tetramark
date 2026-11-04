@@ -165,7 +165,7 @@ def build_rows(ledger: Ledger) -> dict[str, str]:
         "sample", name="S1", values={"source_culture": culture["id"]}
     )
     ledger.aliquots.move(aliquot, box="B2", slot="B2", message="moved")
-    ledger.aliquots.use(aliquot, "4", "ul", purpose="split")
+    ledger.aliquots.use(aliquot, "4", "ul", message="split")
     return {
         "design": design["id"],
         "variant": variant["id"],

@@ -170,13 +170,16 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
             second,
             "40",
             "ul",
-            "--purpose",
+            "-m",
             "prep",
             "--json",
         ).output
     )
     assert used["quantity"] == "60.000000"
     assert used["status"] == "stored"
+    assert used["used_amount"] == "40"
+    assert used["used_unit"] == "ul"
+    assert used["message"] == "prep"
 
     status = json.loads(
         write(ledger, "aliquot", "status", first, "missing", "--json").output
@@ -908,6 +911,143 @@ def test_cli_aliquot_move_requires_message_and_records_it(
     assert event["note"] == "moved to the bench"
     assert event["purpose"] is None
     assert event["to_slot"] == "A1"
+
+
+# ---------------------------------------------------------------------------
+# tm aliquot use (Tetramark-c4g.2)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_aliquot_use_amount_is_optional_and_message_required(
+    cli_env: None, ledger_factory
+) -> None:
+    """AMOUNT/UNIT come together; -m is required; the line names the amount."""
+    ledger = ledger_factory([BASE], name="cli-use", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "BOX")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "3",
+            "--box",
+            "BOX",
+            "--slot",
+            "A1",
+            "--slot",
+            "A2",
+            "--slot",
+            "A3",
+            "--quantity",
+            "200",
+            "--unit",
+            "ml",
+            "--json",
+        ).output
+    )
+    first, second, third = stock["aliquots"]
+
+    # The message is required.
+    missing = invoke(ledger, "aliquot", "use", first)
+    assert missing.exit_code == 2
+    assert "--message" in missing.output
+
+    # ... and it must not be blank.
+    before = commit_count(ledger)
+    blank = invoke(ledger, "aliquot", "use", first, "-m", " \t ")
+    assert blank.exception.exit_code == 2
+    assert "message" in str(blank.exception)
+    assert commit_count(ledger) == before
+
+    # AMOUNT and UNIT come together: passing only the amount is a usage error.
+    only_amount = invoke(ledger, "aliquot", "use", first, "50", "-m", "prep")
+    assert only_amount.exception.exit_code == 2
+    assert "must be given together" in str(only_amount.exception)
+    assert commit_count(ledger) == before
+
+    # The old flags are gone outright (no aliases).
+    removed = invoke(
+        ledger, "aliquot", "use", first, "50", "ml", "--purpose", "prep"
+    )
+    assert removed.exit_code == 2
+    assert "no such option" in removed.output.lower()
+
+    # A partial use names the amount used and ends with the message.
+    partial = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "use",
+            first,
+            "50",
+            "ml",
+            "-m",
+            "  prep  ",
+            "--json",
+        ).output
+    )
+    assert partial["used_amount"] == "50"
+    assert partial["used_unit"] == "ml"
+    assert partial["message"] == "prep"
+    assert partial["quantity"] == "150.000000"
+    assert partial["status"] == "stored"
+
+    human = write(ledger, "aliquot", "use", second, "50", "ml", "-m", "prep")
+    assert human.output.strip() == (
+        f"Used 50 ml from {second} (stored, 150 ml left): prep"
+    )
+
+    # Without an amount everything left is used: the line says "all".
+    whole = write(ledger, "aliquot", "use", third, "-m", "used it all")
+    assert whole.output.strip() == (
+        f"Used all 200 ml from {third} (consumed): used it all"
+    )
+    row = ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (third,)
+    )[0]
+    assert row["status"] == "consumed"
+    assert row["box_id"] is None and row["slot"] is None
+
+    history = json.loads(read(ledger, "history", third, "--json").output)
+    event = history["events"][-1]
+    assert event["event"] == "use"
+    assert event["note"] == "used it all"
+    assert event["purpose"] is None
+    assert event["old_status"] == "stored"
+    assert event["new_status"] == "consumed"
+
+    # A tube without a quantity is used whole; the amount is unknown.
+    bare = json.loads(
+        write(ledger, "aliquot", "add", stock["id"], "--json").output
+    )["ids"][0]
+    unknown = write(ledger, "aliquot", "use", bare, "-m", "used it all")
+    assert unknown.output.strip() == (
+        f"Used all of {bare} (consumed): used it all"
+    )
+    unknown_json = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "use",
+            json.loads(
+                write(ledger, "aliquot", "add", stock["id"], "--json").output
+            )["ids"][0],
+            "-m",
+            "used it all",
+            "--json",
+        ).output
+    )
+    assert unknown_json["used_amount"] is None
+    assert unknown_json["used_unit"] is None
+    assert unknown_json["quantity"] is None
+    assert unknown_json["status"] == "consumed"
 
 
 # ---------------------------------------------------------------------------

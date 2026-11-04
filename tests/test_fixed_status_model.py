@@ -75,7 +75,8 @@ def new_item(ledger, name: str = "alpha"):
 
 def events(ledger, aliquot_id: str) -> list[dict[str, Any]]:
     return ledger.driver.query(
-        "SELECT `event`, `old_status`, `new_status`, `forced`, `note` "
+        "SELECT `event`, `amount`, `unit`, `old_status`, `new_status`, `forced`, "
+        "`note`, `purpose` "
         "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
         (aliquot_id,),
     )
@@ -325,15 +326,77 @@ def test_fixed_move_and_use_follow_the_fixed_set(ledger_factory) -> None:
 
     # A partial use keeps the tube stored; zero consumes it and clears the
     # position in the same write.
-    partial = ledger.aliquots.use(alq, "4", "ul")
+    partial = ledger.aliquots.use(alq, "4", "ul", message="prep")
     assert partial["status"] == "stored"
-    emptied = ledger.aliquots.use(alq, "6", "ul")
+    emptied = ledger.aliquots.use(alq, "6", "ul", message="used up")
     assert emptied["status"] == "consumed"
     assert ledger.driver.query(
         "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"box_id": None, "slot": None}]
     with pytest.raises(LedgerError, match="already consumed"):
-        ledger.aliquots.use(alq, "1", "ul")
+        ledger.aliquots.use(alq, "1", "ul", message="again")
+
+
+def test_fixed_use_consumes_a_tube_from_every_status(ledger_factory) -> None:
+    """The fixed set is universal: ``use`` works on every tube (spec 6)."""
+    ledger = fixed_ledger(ledger_factory, name="fixed-use-statuses")
+    item = new_item(ledger)
+    ledger.boxes.add("shelf", "SHELF")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=3, quantity=100, unit="ul"
+    )
+    pending, stored, missing = stock["aliquots"]
+    ledger.aliquots.move(stored, box="SHELF", message="placed")
+    ledger.aliquots.status(missing, "missing")
+
+    for tube, status in (
+        (pending, "pending"),
+        (stored, "stored"),
+        (missing, "missing"),
+    ):
+        assert ledger.aliquots.show(tube)["status"] == status
+        # A whole use consumes the tube, whatever it was before.
+        result = ledger.aliquots.use(tube, message="used it all")
+        assert result["status"] == "consumed"
+        assert result["used_amount"] == "100"
+        assert result["used_unit"] == "ul"
+        assert result["message"] == "used it all"
+
+        event = events(ledger, tube)[-1]
+        assert event["event"] == "use"
+        assert event["old_status"] == status
+        assert event["new_status"] == "consumed"
+        assert event["note"] == "used it all"
+        assert event["purpose"] is None
+        # The emptied tube leaves its box in the same write.
+        assert ledger.driver.query(
+            "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (tube,)
+        ) == [{"box_id": None, "slot": None}]
+
+
+def test_fixed_use_of_a_tube_without_a_quantity(ledger_factory) -> None:
+    """A tube with no quantity is used whole; the event records a NULL amount."""
+    ledger = fixed_ledger(ledger_factory, name="fixed-use-no-quantity")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+    assert ledger.aliquots.show(alq)["quantity"] is None
+
+    # A partial use of such a tube is refused.
+    with pytest.raises(LedgerError, match="no quantity"):
+        ledger.aliquots.use(alq, "1", "ul", message="prep")
+
+    result = ledger.aliquots.use(alq, message="used it all")
+    assert result["status"] == "consumed"
+    assert result["used_amount"] is None
+    assert result["quantity"] is None
+
+    event = events(ledger, alq)[-1]
+    assert event["event"] == "use"
+    assert event["amount"] is None
+    assert event["note"] == "used it all"
+    assert event["purpose"] is None
+    assert event["new_status"] == "consumed"
 
 
 # ---------------------------------------------------------------------------

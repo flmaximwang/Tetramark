@@ -353,7 +353,7 @@ def _history_fixture(ledger):
     )
     aliquot = stock["aliquots"][0]
     ledger.aliquots.move(aliquot, box="H2", slot="B2", message="moved to H2")
-    ledger.aliquots.use(aliquot, "40", "ul", purpose="prep")
+    ledger.aliquots.use(aliquot, "40", "ul", message="prep")
     return item, stock, aliquot
 
 
@@ -376,7 +376,8 @@ def test_history_shows_create_move_use_in_order(ledger_factory) -> None:
     assert move["note"] == "moved to H2"
     assert move["purpose"] is None
     use = result["events"][2]
-    assert use["purpose"] == "prep"
+    assert use["note"] == "prep"
+    assert use["purpose"] is None
 
     messages = [commit["message"] for commit in result["commits"]]
     assert any(message.startswith("add(stock):") for message in messages)

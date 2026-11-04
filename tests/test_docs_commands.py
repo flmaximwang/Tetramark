@@ -265,9 +265,12 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "-m", "moved to BOX-1",
     )
     used = run_json(
-        "aliquot", "use", f"{stock_id}.3", "20", "ul", "--purpose", "assay"
+        "aliquot", "use", f"{stock_id}.3", "20", "ul", "-m", "assay"
     )
     assert used["status"] == "stored"
+    assert used["used_amount"] == "20"
+    assert used["used_unit"] == "ul"
+    assert used["message"] == "assay"
     missing = run_json(
         "aliquot", "status", f"{stock_id}.4", "missing", "--note", "not found"
     )

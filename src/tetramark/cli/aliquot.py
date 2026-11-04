@@ -11,6 +11,7 @@ from tetramark.cli.messages import aliquots_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_read, output_format, short_uuid_ids
+from tetramark.core.objects import plain_decimal
 
 aliquot_app = group("Aliquots: the physical tubes that occupy box slots.")
 
@@ -53,6 +54,33 @@ def _text_record(record: dict[str, Any]) -> dict[str, Any]:
         if key in rows:
             rows[key] = value
     return rows
+
+
+def _use_line(result: dict[str, Any]) -> str:
+    """The human line of ``tm aliquot use`` (spec §6).
+
+    The line names the amount used and ends with the message, e.g.
+    ``Used all 200 ml from X (consumed): <msg>``.  A tube that is emptied
+    says "all" (an explicit use of the whole remainder says the same), a
+    partial use names what is left, and a tube without a quantity says
+    "all of" because the amount is unknown.
+    """
+    aliquot_id = str(result.get("id"))
+    status = str(result.get("status"))
+    message = str(result.get("message") or "")
+    used_amount = result.get("used_amount")
+    used_unit = result.get("used_unit")
+    if used_amount is None:
+        return f"Used all of {aliquot_id} ({status}): {message}"
+    amount_text = f"{used_amount} {used_unit}".strip()
+    left = result.get("quantity")
+    if left is None or plain_decimal(left) == "0":
+        return f"Used all {amount_text} from {aliquot_id} ({status}): {message}"
+    left_text = f"{plain_decimal(left)} {used_unit}".strip()
+    return (
+        f"Used {amount_text} from {aliquot_id} ({status}, {left_text} left): "
+        f"{message}"
+    )
 
 
 @aliquot_app.command("add")
@@ -266,21 +294,42 @@ def move_aliquot_command(
 def use_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
-    amount: str = typer.Argument(..., help="Amount consumed (decimal)."),
-    unit: str = typer.Argument(..., help="Unit; must match the aliquot's unit."),
-    purpose: str | None = typer.Option(None, "--purpose", help="Why it was used."),
-    note: str | None = typer.Option(None, "--note", help="Free-text note."),
+    amount: str | None = typer.Argument(
+        None,
+        help=(
+            "Amount consumed (decimal); it comes with UNIT. Leave both out "
+            "to use everything left."
+        ),
+    ),
+    unit: str | None = typer.Argument(
+        None, help="Unit of AMOUNT; it must match the aliquot's unit."
+    ),
+    message: str = typer.Option(
+        ...,
+        "--message",
+        "-m",
+        help=(
+            "Why the material was used (required; trimmed and stored on the "
+            "use event)."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Consume part or all of an aliquot; reaching zero marks it consumed."""
+    """Consume part or all of an aliquot; -m/--message is required.
+
+    AMOUNT and UNIT come together: passing only one of them is a usage
+    error.  Leaving both out uses everything left, which is the same as
+    passing the remaining quantity and its unit.  Reaching zero marks the
+    tube ``consumed`` and clears its box slot; the message is trimmed,
+    refused when empty, and recorded on the use event.
+    """
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.use(ref, amount, unit, purpose=purpose, note=note)
+        result = ledger.aliquots.use(ref, amount, unit, message=message)
         emit_write(
             ledger,
             result,
-            f"Used {amount} {unit} from {result['id']}; "
-            f"remaining {result['quantity']} {result['unit']} ({result['status']})",
+            _use_line(result),
             as_json=json_output(ctx, as_json),
         )
     finally:
