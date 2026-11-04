@@ -88,6 +88,7 @@ tm stock show|list|edit ...
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
+tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
 tm aliquot move ALQ --box NAME [--slot S] [--status S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
@@ -162,10 +163,26 @@ nests in a grid box.
 gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and
 grid rules above, in the same commit as the rows.
 
-`tm entity show`, `tm stock show` and `tm box show` include the object's aliases as a sorted
-`aliases` list in JSON output and print an `aliases` row or line in table output; `list` output stays
-narrow and unchanged. The generated views expose the same data as `alias_list` /
+`tm entity show`, `tm stock show`, `tm aliquot show` and `tm box show` include the object's aliases as
+a sorted `aliases` list in JSON output and print an `aliases` row or line in table output; `list`
+output stays narrow and unchanged. The generated views expose the same data as `alias_list` /
 `occupant_alias_list` (§3).
+
+`tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
+shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
+The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
+`notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the
+tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
+`Freezer-1/Shelf-2/Box:A3`) and the derived `in_stock` flag (the status has `in_stock: true` in
+its stock kind's status set, §2.4). A tube that is not in stock has `box_id`, `slot` and `path`
+NULL. The stock kind's own fields stay in `tm stock show`, and the tube's events stay in
+`tm history ALQ`: `show` carries no event timeline. The command is read-only and changes no
+ledger format — `spec_version` is untouched.
+
+A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
+show <stock>` answers `<stock> is a stock; try tm stock show <stock>`, and `tm stock show
+<aliquot>` answers `<aliquot> is an aliquot; try tm aliquot show <aliquot>`. Both use the same
+error class and exit code as any other not-found error (exit 1).
 
 `tm lineage ID` is the read-only **descent** graph of entities and stocks (lineage/pedigree, not
 phylogeny). `ID` resolves like `tm find` (id, then alias) to an entity, a stock or an aliquot; an aliquot
