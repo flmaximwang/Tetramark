@@ -134,7 +134,7 @@ vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 tm entity list [KIND] [--where FILTER ...] [--json]
 tm stock list [KIND] [--where FILTER ...] [--json]
 tm box list [--where FILTER ...] [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 ```
 
 - `FILTER` is `field=value` (exact) or `field~pattern` (regex). It is split at the first `=` or `~`, so
@@ -166,8 +166,8 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--json]
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
 of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
-error with no literal fallback. `--where ~` and `-E` use the database (ICU) dialect; the
-`find.rewrites` rules (Tetramark-53r.1) are Python `re` and do not share it.
+error with no literal fallback. `--where ~` and `-E` use the database (ICU) dialect; the ledger's
+`find.rewrites` rules are Python `re` and do not share it (see **Aliases, search, history** below).
 
 `tm aliquot list --where` is its own exact-only `FIELD=VALUE` filter, not this syntax.
 
@@ -384,7 +384,7 @@ Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
 ```sh
 tm alias add OBJECT_TYPE OBJECT_ID ALIAS [--json]
 tm alias remove [OBJECT_TYPE] ALIAS [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
@@ -401,6 +401,14 @@ prefix → alias prefix → name substring → alias substring → fields, and s
 a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
 hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
 object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
+
+A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, replacement}`; Python
+`re.fullmatch` + `match.expand`, validated at open with the rule named). They rewrite a **literal**
+QUERY only: a query with no hits falls back to the first rule that hits — a stderr line names the rule
+and the rewritten query — and `--with-rewrite` adds every rule's hits below the original ones (`match`
+reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where` patterns and single-object
+`show`/`history`/`lineage`/`--entity`/alias resolution never rewrite; those errors end with
+`try tm find <ref>`.
 
 Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
 `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when
