@@ -4435,3 +4435,195 @@ def test_commit_meta_read_error_propagates(monkeypatch) -> None:
     with pytest.raises(LedgerError, match="dolt_log unreadable"):
         _read_commit_and_meta(ledger, "deadbeef")
     assert ledger.meta == {"version": "4"}
+
+
+# ---------------------------------------------------------------------------
+# The one-folder-per-counter rule (README-only steps included)
+# ---------------------------------------------------------------------------
+
+#: The step folders of one counter: ``migration/spec/`` or
+#: ``migration/presets/<name>/``.
+STEP_ROOT = ROOT / "migration"
+
+
+def step_folders(root: Path) -> dict[str, Path]:
+    """The ``<n>-to-<n+1>`` folders under ``root``, by name."""
+    folders: dict[str, Path] = {}
+    if not root.is_dir():
+        return folders
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        parts = entry.name.split("-to-")
+        if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+            continue
+        folders[entry.name] = entry
+    return folders
+
+
+def preset_version(path: Path) -> int:
+    """The ``version:`` a preset file declares."""
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return int(document.get("version") or 1)
+
+
+@pytest.mark.fast
+def test_every_counter_step_has_one_folder_with_a_readme() -> None:
+    """One folder per counter bump, and a README in it (scripted or manual).
+
+    The maintenance rule in ``migration/README.md``: whoever bumps
+    ``SPEC_VERSION`` or a preset's ``version:`` adds exactly one folder for
+    that step.  Every step folder holds a ``README.md``; it may also hold a
+    ``migrate.py`` (a scripted step) or be **README-only** (a manual step) —
+    the spec 5 -> 6 upgrade is manual, so a ``migrate.py`` must *not* be
+    required and no dummy script may be invented for it.
+    """
+    # -- the spec counter --------------------------------------------------
+    spec_folders = step_folders(STEP_ROOT / "spec")
+    spec_steps = sorted(int(name.split("-to-")[0]) for name in spec_folders)
+    assert spec_steps == list(range(1, len(spec_steps) + 1)), (
+        "the spec steps must be contiguous from 1 to 2: "
+        f"{sorted(spec_folders)}"
+    )
+    assert len(spec_steps) >= model.SPEC_VERSION - 1, (
+        f"spec {model.SPEC_VERSION} needs a folder for every step up to "
+        f"{model.SPEC_VERSION - 1} -> {model.SPEC_VERSION}: {sorted(spec_folders)}"
+    )
+
+    # -- every preset ------------------------------------------------------
+    for preset_path in sorted(REPO_PRESETS.glob("*.yaml")):
+        name = preset_path.stem
+        version = preset_version(preset_path)
+        folders = step_folders(STEP_ROOT / "presets" / name)
+        steps = sorted(int(folder.split("-to-")[0]) for folder in folders)
+        assert steps == list(range(1, len(steps) + 1)), (
+            f"the {name} steps must be contiguous from 1 to 2: {sorted(folders)}"
+        )
+        assert len(steps) >= version - 1, (
+            f"preset {name} is at version {version}: every step up to "
+            f"{version - 1} -> {version} needs a folder: {sorted(folders)}"
+        )
+
+    # -- every step folder has a README, and is scripted or README-only ----
+    for root in [STEP_ROOT / "spec", *sorted((STEP_ROOT / "presets").iterdir())]:
+        for name, folder in step_folders(root).items():
+            readme = folder / "README.md"
+            assert readme.is_file(), f"{folder.relative_to(ROOT)} has no README.md"
+            files = {entry.name for entry in folder.iterdir() if entry.is_file()}
+            if "migrate.py" not in files:
+                # A README-only (manual) step holds no script — not even a
+                # dummy one.  A frozen preset copy next to the README is fine.
+                stray = {
+                    entry
+                    for entry in files
+                    if not entry.endswith((".md", ".yaml", ".yml"))
+                }
+                assert not stray, (
+                    f"{folder.relative_to(ROOT)} is a README-only step and must "
+                    f"not hold {sorted(stray)}"
+                )
+
+
+@pytest.mark.fast
+def test_manual_step_readme_points_at_the_next_manual_step() -> None:
+    """A step behind its ledger names the next (manual) step's README."""
+    from tetramark.migrate import manual_step_readme
+
+    def step(kind: str, from_version: int, preset: str | None = None):
+        return MigrationStep(
+            kind=kind, from_version=from_version, plan=lambda ledger: [], preset=preset
+        )
+
+    # spec 4 -> 5 on a spec-5 ledger: the next step is the manual 5 -> 6.
+    assert manual_step_readme(step("spec", 4)) == "migration/spec/5-to-6/README.md"
+    # A preset step: the next step's README, in the preset's own folder.
+    assert (
+        manual_step_readme(step("preset", 3, preset="base"))
+        == "migration/presets/base/4-to-5/README.md"
+    )
+    # A scripted next step keeps the plain counter message: there the
+    # migrate.py is the thing to run, not a README to follow.
+    assert manual_step_readme(step("spec", 3)) is None
+    assert manual_step_readme(step("preset", 2, preset="base")) is None
+
+
+@pytest.mark.fast
+def test_the_manual_spec_step_readme_quotes_the_check_and_the_remap() -> None:
+    """The README must quote the SQL the spec-6 contract states."""
+    from test_fixed_status_model import MIGRATION_CHECK
+
+    readme = (
+        ROOT / "migration" / "spec" / "5-to-6" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    # The very statement the tool's contract adds, character for character.
+    assert MIGRATION_CHECK in readme
+
+    # Every old word of the per-kind vocabularies is remapped, and the README
+    # says which fixed name it becomes.
+    remap = {
+        "planned": "pending",
+        "alive": "stored",
+        "crossed": "stored",
+        "growing": "stored",
+        "starved": "stored",
+        "lost": "missing",
+        "thawed": "consumed",
+        "euthanized": "consumed",
+        "found_dead": "consumed",
+        "transferred": "consumed",
+        "cancelled": "consumed",
+        "discarded": "consumed",
+        "contaminated": "consumed",
+    }
+    for old, new in remap.items():
+        assert f"'{old}'" in readme, old
+        assert f"'{new}'" in readme, new
+
+    # One migrated event per remapped aliquot, with the old word in the note.
+    assert "migrated: " in readme
+    assert "`old_status`" in readme
+    assert "`new_status`" in readme
+    # The past is never rewritten, and no property is backfilled.
+    assert "never rewritten" in readme
+    assert "not backfilled" in readme
+
+
+def test_a_step_behind_its_ledger_points_at_the_manual_readme(
+    embedded_ledger_factory, script_env: dict[str, str]
+) -> None:
+    """A scripted step on a newer ledger refuses and names the next README."""
+    ledger = embedded_ledger_factory(
+        [REPO_PRESETS / "base.yaml"], name="behind-the-ledger", id_prefix="77"
+    )
+    # A spec-5 ledger: the spec 4 -> 5 step is behind it.
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '5' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'preset_versions'",
+        (json.dumps({"base": 4}),),
+    )
+    ledger.driver.commit("test: pretend a spec-5 ledger at base 4")
+    ledger.read_meta()
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    result = run_python(SPEC_4_TO_5, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "refusing to run migration spec 4 -> 5" in output
+    assert "migration/spec/5-to-6/README.md" in output
+    # Nothing was written: no tag, no commit, no DDL.
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert "pre-migrate-spec-4" not in tags(ledger)
+
+    # The same for a preset step: base 3 -> 4 on a base-4 ledger.
+    result = run_python(BASE_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "refusing to run migration base 3 -> 4" in output
+    assert "migration/presets/base/4-to-5/README.md" in output
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
