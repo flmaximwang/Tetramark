@@ -6,6 +6,10 @@
 preset's `version:` adds exactly one folder for that step, in the same change.**
 No release may ship a bumped counter without its step folder here.
 
+A step folder is **scripted** (it holds a `migrate.py`) or **manual** (it is
+README-only). Both kinds have a `README.md`; the folder name and the rule are
+the same either way.
+
 A change that affects **only reads** is the one case that bumps no counter, so
 it gets no step. The current example is `lineage: true` on a `ref` field
 (`tm lineage`): it changes no stored shape, but it *is* part of the schema
@@ -23,8 +27,9 @@ release.
 ```
 migration/
   README.md
-  spec/<N>-to-<N+1>/            README.md, migrate.py
-  presets/<name>/<N>-to-<N+1>/  README.md, migrate.py, renames.yaml (optional)
+  spec/<N>-to-<N+1>/            README.md, migrate.py (or README only)
+  presets/<name>/<N>-to-<N+1>/  README.md, migrate.py (or README only),
+                                renames.yaml (optional)
 ```
 
 Every ledger records the counters a step dispatches on in `ledger_meta`:
@@ -55,6 +60,41 @@ directory is always opened embedded. `--branch` selects a session branch
 There is deliberately no `tm` command for this. The `tm upgrade` design in
 `docs/issues/001-tm-upgrade.md` stays a separate proposal; it can absorb
 `migration/` later.
+
+### Manual (README-only) steps
+
+A step that cannot be scripted holds **no `migrate.py`**: its folder has a
+`README.md` (and, at most, a frozen preset copy) and no script. The README
+states the same things a scripted step's README states — what changes, the
+preconditions and the order, the SQL or the file edits, the verification and
+the rollback — and the operator does it by hand.
+
+A manual step is the right kind when the change touches the ledger's **files**
+(the preset copies under `<ledger>/presets/`, a local `kinds/`) as much as its
+rows, or when the rows need a judgement call (a vocabulary remap an operator
+has to review). The current example is **spec 5 → 6** (the fixed aliquot
+status set): the preset copies must be replaced, `aliquot.status` remapped, the
+`migrated:` events written and the `CHECK` added — see
+[`spec/5-to-6`](spec/5-to-6/README.md). Its preset steps
+([`presets/base/4-to-5`](presets/base/4-to-5/README.md) and the other twelve)
+are manual too: they only replace the ledger's stored copy, and the counter is
+written by the spec step's `tm schema apply`.
+
+A manual step has no tag and no `migrate(ledger): …` commit of its own: the
+operator's own commits carry the work, and the spec step's `tm schema apply`
+writes the counters, the fingerprint and the regenerated `dolt_tests` in one
+commit.
+
+### A step on a ledger that is already past it
+
+A scripted step refuses a ledger whose counter is not the one it expects —
+nothing is written. When the ledger's counter is **newer** than the step's
+`from_version`, the refusal names the **next** step's README instead of only
+the mismatch, so the operator is pointed at the procedure that continues the
+upgrade (for example `migration/spec/4-to-5/migrate.py` on a spec-5 ledger
+names `migration/spec/5-to-6/README.md`). The pointer is only added when that
+next folder exists and is README-only; a scripted next step keeps the plain
+counter message.
 
 ## What every step guarantees
 
@@ -122,6 +162,10 @@ again:
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.
+- **A manual preset step installs the copy of its checkout.** Its README names
+  the version it upgrades to (`version: 5`), so a later bump of that preset
+  must update the older manual step as well — the same retrofit the scripted
+  steps need (the frozen copy next to the step).
 
 ## Writing a step
 
@@ -136,6 +180,11 @@ again:
   expected (usually empty) output;
 - **verification**: `tm check` with no `FAIL`, plus the counters/tags/commit to
   look at.
+
+A **README-only** step states the same list and adds the exact procedure: the
+files to replace, the SQL to run (in the order it must run), how the counter
+is written, and how to roll back. It has no `migrate.py`, no tag and no commit
+of its own.
 
 `migrate.py` is short; it imports `MigrationStep`/`main` from
 `tetramark.migrate` and builds its SQL from the schema helpers (never from
@@ -194,3 +243,17 @@ constraints/views — no hand-written SQL, no data loss.
 | [`presets/cell_culture/1-to-2`](presets/cell_culture/1-to-2/README.md) | `preset_versions.cell_culture` 1 → 2 | Places the frozen v2 cell_culture copy and applies its additive diff: three `stock_cell_vial` columns (`selection`, `mycoplasma`, `mycoplasma_tested_on`) and the `cell_biosample` kind/table; one commit, additive only. |
 | [`presets/proteins/1-to-2`](presets/proteins/1-to-2/README.md) | `preset_versions.proteins` 1 → 2 | Places the frozen proteins v2 copy (IUPAC patterns on the shared `sequence_fields` sequence and `mature_sequence`) and the frozen nucleic_acids v1 copy, recreates the generated views; no table changes. `tm check` reports rows outside the alphabet. Runs after `base/3-to-4`, before `nucleic_acids/1-to-2`. |
 | [`presets/nucleic_acids/1-to-2`](presets/nucleic_acids/1-to-2/README.md) | `preset_versions.nucleic_acids` 1 → 2 | Places the frozen nucleic_acids v2 copy (IUPAC pattern on `oligo.sequence`), recreates the generated views; no table changes. Requires proteins 2 and runs after `proteins/1-to-2`. |
+| [`spec/5-to-6`](spec/5-to-6/README.md) | `spec_version` 5 → 6 | **Manual** (README only, no `migrate.py`): the fixed aliquot status set. Replaces the ledger's preset copies with the status-free ones, remaps `aliquot.status` (the old → new table), records one `migrated: <old status>` event per remapped aliquot, adds the `ck_aliquot_status` `CHECK` and lets `tm schema apply` write `spec_version`, `preset_versions`, the fingerprint and the regenerated `dolt_tests` in one commit. Past events are never rewritten; no stock property is backfilled. Run the pending historical preset steps first (they target spec 5). |
+| [`presets/base/4-to-5`](presets/base/4-to-5/README.md) | `preset_versions.base` 4 → 5 | **Manual**: the `tube`/`cryo`/`animal` status sets leave the base preset; the ledger's stored copy is replaced with this checkout's status-free one. The counter is written by the spec step's `tm schema apply`. |
+| [`presets/bacteria/1-to-2`](presets/bacteria/1-to-2/README.md) | `preset_versions.bacteria` 1 → 2 | **Manual**: the `tube` status set leaves the bacteria part. |
+| [`presets/biosamples/1-to-2`](presets/biosamples/1-to-2/README.md) | `preset_versions.biosamples` 1 → 2 | **Manual**: the `tube` status set leaves the biosamples part. |
+| [`presets/c_elegans/1-to-2`](presets/c_elegans/1-to-2/README.md) | `preset_versions.c_elegans` 1 → 2 | **Manual**: the `worm` status set becomes the optional `condition` stock property of a worm culture. |
+| [`presets/cell_culture/2-to-3`](presets/cell_culture/2-to-3/README.md) | `preset_versions.cell_culture` 2 → 3 | **Manual**: the `cryo`/`tube` status sets leave the cell culture part. |
+| [`presets/drosophila/1-to-2`](presets/drosophila/1-to-2/README.md) | `preset_versions.drosophila` 1 → 2 | **Manual**: the `fly` status set becomes the optional `fate` stock property of a fly culture. |
+| [`presets/immuno/1-to-2`](presets/immuno/1-to-2/README.md) | `preset_versions.immuno` 1 → 2 | **Manual**: the `tube` status set leaves the immuno part. |
+| [`presets/library/2-to-3`](presets/library/2-to-3/README.md) | `preset_versions.library` 2 → 3 | **Manual**: the `tube` status set leaves the library part. |
+| [`presets/mouse/1-to-2`](presets/mouse/1-to-2/README.md) | `preset_versions.mouse` 1 → 2 | **Manual**: the `animal`/`cryo` status sets leave the mouse part; a cohort's detailed state becomes the optional `fate` stock property. |
+| [`presets/nucleic_acids/2-to-3`](presets/nucleic_acids/2-to-3/README.md) | `preset_versions.nucleic_acids` 2 → 3 | **Manual**: the `tube` status set leaves the nucleic acids part. |
+| [`presets/proteins/2-to-3`](presets/proteins/2-to-3/README.md) | `preset_versions.proteins` 2 → 3 | **Manual**: the `tube` status set leaves the proteins part. |
+| [`presets/viral_vectors/1-to-2`](presets/viral_vectors/1-to-2/README.md) | `preset_versions.viral_vectors` 1 → 2 | **Manual**: the `tube` status set leaves the viral vectors part. |
+| [`presets/zebrafish/1-to-2`](presets/zebrafish/1-to-2/README.md) | `preset_versions.zebrafish` 1 → 2 | **Manual**: the `animal`/`cryo` status sets leave the zebrafish part; a group's detailed state becomes the optional `fate` stock property. |

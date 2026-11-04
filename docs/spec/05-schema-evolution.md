@@ -14,9 +14,26 @@
 - After apply, the plan must be empty (idempotency is a test).
 
 `tm schema plan/apply` evolves a ledger within one spec version. When the **format** itself changes —
-`SPEC_VERSION` or a preset's `version:` is bumped — the step is a hand-run script under `migration/`,
-one folder per counter that changed (`migration/spec/<N>-to-<N+1>/`,
-`migration/presets/<name>/<N>-to-<N+1>/`). Spec 5 (ticket 30) is the current format: one generated
+`SPEC_VERSION` or a preset's `version:` is bumped — the step is a hand-run procedure under
+`migration/`, one folder per counter that changed (`migration/spec/<N>-to-<N+1>/`,
+`migration/presets/<name>/<N>-to-<N+1>/`). A folder holds a `migrate.py` (a **scripted** step) or is
+**README-only** (a **manual** step: the operator follows its README, because the change touches the
+ledger's files — its preset copies, its local kinds — as much as its rows).
+
+**Spec 6 (ticket Tetramark-epn) is the current format**: every aliquot has one fixed, hardcoded
+status set — `pending`, `stored`, `missing`, `consumed` — that every stock kind shares (§1.1). No
+preset declares a vocabulary any more (`status_sets:`/`statuses:` are a load error),
+`aliquot.status` carries a real DB `CHECK`, and the stock views count an aliquot in stock exactly
+when its status is `stored`. Its upgrade is **manual**: `migration/spec/5-to-6/README.md` states
+the whole procedure (replace the ledger's preset copies with the status-free ones, remap
+`aliquot.status` along the old → new table, record one `migrated: <old status>` event per remapped
+aliquot, add the `CHECK`), and `tm schema apply` then writes `spec_version`, `preset_versions`, the
+fingerprint and the regenerated `dolt_tests` in one commit. The thirteen preset steps of the same
+change (`migration/presets/<name>/<N>-to-<N+1>/README.md`) only replace the ledger's stored preset
+copy; their counter is written by that same `tm schema apply`. Past events are never rewritten and
+no stock property is backfilled.
+
+Spec 5 (ticket 30) was the format before that: one generated
 view per **existing box** replaces the per-kind `v_box_<kind>` views, and an aliquot's stored
 position follows its in-stock status (§3); base preset 4 renames the box kind `grid96` to
 `grid8x12`. A spec-4 ledger at base 3 therefore runs **two** steps in this order:
@@ -40,11 +57,14 @@ nucleic step requires proteins already at 2. Like every preset step they add no 
 the `dolt_tests` that now reject rows outside the sequence alphabet. The spec step's README states the preconditions, the
 upgrade order, verification and rollback; the preset step's README covers the rename. Run both with
 `--dry-run` first; on a real ledger write on a Dolt branch and merge only after review. The rule:
-whoever bumps a counter adds exactly one folder in the same change. A step runs as `uv run migration/<…>/migrate.py --ledger PATH [--branch B] [--dry-run]`
+whoever bumps a counter adds exactly one folder in the same change — a scripted one or a README-only
+one. A scripted step runs as `uv run migration/<…>/migrate.py --ledger PATH [--branch B] [--dry-run]`
 and, through `src/tetramark/migrate.py`, refuses unless the ledger's counter equals `N`, creates the tag
 `pre-migrate-<spec|preset>-<N>` before writing, prints every statement with `--dry-run`, and applies in
 exactly one commit (`migrate(ledger): spec N -> N+1`) that bumps the counter, `tetramark_version` and
-the fingerprint together. A step that turns a preset into a **bundle** declares the part counters it
+the fingerprint together. A ledger that is already **past** the step is refused as well, and the
+refusal names the next step's README when that step is manual. A step that turns a preset into a
+**bundle** declares the part counters it
 introduces (`preset_versions_extra`), so `preset_versions` records every file the ledger now loads. A step whose target schema differs from the ledger's declares it (`schema=`),
 so the commit writes the **new** fingerprint and regenerates the derived `dolt_tests` from that schema in
 the same commit; a preset step then replaces `<ledger>/presets/` with the repository copy after the
