@@ -317,6 +317,26 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     purged = run_json("aliquot", "purge", f"{stock_id}.4")
     assert purged["id"] == f"{stock_id}.4"
 
+    # Purge objects added by mistake (docs: explicit hard deletes, one commit
+    # each; a box's view goes with it and a stock cascades to its own tubes).
+    scratch_entity = run_json("entity", "add", "item", "--name", "purge-me")
+    assert run_json("entity", "purge", scratch_entity["id"])["kind"] == "item"
+    scratch_box = run_json("box", "add", "rack", "PURGE-ME")
+    assert scratch_box["slots"] == 10
+    assert run_json("box", "purge", "PURGE-ME")["slots"] == 10
+    scratch_stock = run_json(
+        "stock",
+        "add",
+        "protein_prep",
+        "--entity",
+        construct["id"],
+        "--set",
+        "concentration_mg_ml=1.0",
+    )
+    cascaded = run_json("stock", "purge", scratch_stock["id"])
+    assert cascaded["aliquots"] == 1
+    assert cascaded["events"] >= 1
+
     # Aliases, search, history.
     run("alias", "add", "stock", stock_id, "protein-c1")
     alias_found = run("find", "protein-c1")

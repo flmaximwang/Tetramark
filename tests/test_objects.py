@@ -12,6 +12,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+import yaml
 
 from tetramark.core.ledger import open as open_ledger
 from tetramark.errors import LedgerError, UsageError
@@ -21,6 +22,7 @@ from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 FULL = PRESETS / "full"
 BASE = PRESETS / "base"
+MOUSE = REPO_PRESETS / "mouse.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -1015,6 +1017,528 @@ def test_purge_refuses_an_aliquot_used_as_a_source(ledger_factory) -> None:
     assert ledger.driver.query(
         "SELECT `id` FROM `aliquot` WHERE `id` = %s", (first["aliquots"][0],)
     )
+
+
+def test_aliquot_purge_removes_its_aliases(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", alq, "tube-one")
+
+    before = commit_count(ledger)
+    purged = ledger.aliquots.purge(alq)
+
+    assert commit_count(ledger) == before + 1
+    assert purged["aliases"] == 1
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `object_type` = 'aliquot' "
+        "AND `object_id` = %s",
+        (alq,),
+    ) == []
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == []
+
+
+def test_purge_refuses_a_kind_ref_to_an_aliquot(ledger_factory) -> None:
+    """A stock kind's ``ref`` to an aliquot is a reference, not a cascade."""
+    ledger = ledger_factory([MOUSE], name="purge-aliquot-kind-ref")
+    strain = ledger.entities.add("mouse_strain", name="C57BL/6J")
+    source = ledger.stocks.add("mouse_cohort", entity=strain["id"])
+    dam = source["aliquots"][0]
+    child = ledger.stocks.add(
+        "mouse_cohort", entity=strain["id"], values={"dam": dam}
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="mouse_cohort.dam"):
+        ledger.aliquots.purge(dam)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot` WHERE `id` = %s", (dam,)
+    )
+    # The owning stock is refused for the same kind ref until it is cleared.
+    with pytest.raises(LedgerError, match="mouse_cohort.dam"):
+        ledger.stocks.purge(source["id"])
+    ledger.stocks.edit(child["id"], values={"dam": child["aliquots"][0]})
+    assert ledger.stocks.purge(source["id"])["aliquots"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Entity / stock / box purge
+# ---------------------------------------------------------------------------
+
+
+def _view_exists(ledger, name: str) -> bool:
+    rows = ledger.driver.query(
+        "SELECT table_name AS name FROM information_schema.views "
+        "WHERE table_schema = DATABASE() AND LOWER(table_name) = %s",
+        (name.lower(),),
+    )
+    return bool(rows)
+
+
+def test_entity_purge_removes_kind_row_and_aliases(ledger_factory) -> None:
+    ledger = make_full_ledger(ledger_factory)
+    entity = ledger.entities.add("everything", name="mistake")
+    ledger.aliases.add("entity", entity["id"], "oops")
+
+    before = commit_count(ledger)
+    purged = ledger.entities.purge(entity["id"])
+
+    assert commit_count(ledger) == before + 1
+    assert purged == {
+        "object": "entity",
+        "id": entity["id"],
+        "kind": "everything",
+        "purged": True,
+        "aliases": 1,
+    }
+    for table in ("entity", "entity_everything"):
+        assert ledger.driver.query(
+            f"SELECT `id` FROM `{table}` WHERE `id` = %s", (entity["id"],)
+        ) == []
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `object_type` = 'entity' "
+        "AND `object_id` = %s",
+        (entity["id"],),
+    ) == []
+    assert ledger.check().passed
+
+
+def test_entity_purge_refuses_a_stock(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="purge its stocks first") as caught:
+        ledger.entities.purge(item["id"])
+
+    assert stock["id"] in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (item["id"],)
+    )
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock` WHERE `id` = %s", (stock["id"],)
+    )
+
+
+def test_entity_purge_refuses_a_kind_ref_field(ledger_factory) -> None:
+    ledger = make_full_ledger(ledger_factory)
+    parent = ledger.entities.add("everything", name="parent")
+    ledger.entities.add(
+        "everything", name="child", values={"parent": parent["id"]}
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="everything.parent") as caught:
+        ledger.entities.purge(parent["id"])
+    assert "tm entity edit" in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (parent["id"],)
+    )
+
+
+def test_stock_purge_cascades_to_its_aliquots(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    box = new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=2,
+        box="BOX",
+        slots=["A1", "A2"],
+        quantity=10,
+        unit="ul",
+    )
+    first, second = stock["aliquots"]
+    ledger.aliquots.use(first, "1", "ul", message="prep")
+    ledger.aliases.add("stock", stock["id"], "lot-one")
+    ledger.aliases.add("aliquot", second, "tube-two")
+    removed_events = len(events(ledger, first)) + len(events(ledger, second))
+    assert removed_events >= 3
+
+    before = commit_count(ledger)
+    purged = ledger.stocks.purge(stock["id"])
+
+    assert commit_count(ledger) == before + 1
+    assert purged["object"] == "stock"
+    assert purged["kind"] == "lot"
+    assert purged["aliquots"] == 2
+    assert purged["events"] == removed_events
+    assert purged["aliases"] == 1
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock` WHERE `id` = %s", (stock["id"],)
+    ) == []
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock_lot` WHERE `id` = %s", (stock["id"],)
+    ) == []
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot` WHERE `stock_id` = %s", (stock["id"],)
+    ) == []
+    assert (
+        sum(len(events(ledger, alq)) for alq in (first, second)) == 0
+    )
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE "
+        "(`object_type` = 'stock' AND `object_id` = %s) OR "
+        "(`object_type` = 'aliquot' AND `object_id` = %s)",
+        (stock["id"], second),
+    ) == []
+    # The box and its slots are untouched: purge never empties a box.
+    assert ledger.driver.query(
+        "SELECT `box_id` FROM `slot` WHERE `box_id` = %s", (box["id"],)
+    )
+    assert ledger.check().passed
+
+
+def test_stock_purge_refuses_a_derived_stock(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    first = ledger.stocks.add("lot", entity=item["id"])
+    second = ledger.stocks.add("lot", entity=item["id"], parent=first["id"])
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="parent_stock_id") as caught:
+        ledger.stocks.purge(first["id"])
+    assert second["id"] in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock` WHERE `id` = %s", (first["id"],)
+    )
+
+
+def test_stock_purge_refuses_a_consuming_stock(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    first = ledger.stocks.add("lot", entity=item["id"])
+    second = ledger.stocks.add(
+        "lot", entity=item["id"], source_aliquot=first["aliquots"][0]
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="source_aliquot_id") as caught:
+        ledger.stocks.purge(first["id"])
+    assert second["id"] in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot` WHERE `id` = %s", (first["aliquots"][0],)
+    )
+
+
+def test_box_purge_removes_slots_kind_row_aliases_and_view(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    box = new_box(ledger, "BOX", "grid96")
+    ledger.aliases.add("box", box["id"], "b1")
+    assert _view_exists(ledger, "v_box_BOX")
+
+    before = commit_count(ledger)
+    purged = ledger.boxes.purge("BOX")
+
+    assert commit_count(ledger) == before + 1
+    assert purged == {
+        "object": "box",
+        "id": box["id"],
+        "kind": "grid96",
+        "name": "BOX",
+        "purged": True,
+        "slots": 96,
+        "aliases": 1,
+    }
+    for table in ("box", "box_grid96"):
+        assert ledger.driver.query(
+            f"SELECT `id` FROM `{table}` WHERE `id` = %s", (box["id"],)
+        ) == []
+    assert ledger.driver.query(
+        "SELECT `label` FROM `slot` WHERE `box_id` = %s", (box["id"],)
+    ) == []
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `object_type` = 'box' "
+        "AND `object_id` = %s",
+        (box["id"],),
+    ) == []
+    assert not _view_exists(ledger, "v_box_BOX")
+    assert ledger.check().passed
+
+
+def test_box_purge_refuses_a_held_aliquot(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    box = new_box(ledger, "BOX", "grid96")
+    item = new_item(ledger)
+    ledger.stocks.add(
+        "lot", entity=item["id"], box="BOX", slots=["A1"], quantity=1, unit="ml"
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="tm aliquot move") as caught:
+        ledger.boxes.purge("BOX")
+    assert "tm box purge" in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (box["id"],)
+    )
+    assert ledger.driver.query(
+        "SELECT `box_id` FROM `slot` WHERE `box_id` = %s", (box["id"],)
+    )
+    assert _view_exists(ledger, "v_box_BOX")
+
+
+def test_box_purge_refuses_a_child_box(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    parent = ledger.boxes.add("shelf", "SHELF")
+    child = ledger.boxes.add("rack", "RACK", parent="SHELF")
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="parent_box_id") as caught:
+        ledger.boxes.purge("SHELF")
+    assert child["id"] in str(caught.value)
+    assert "tm box move" in str(caught.value)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (parent["id"],)
+    )
+
+
+def _ref_preset(tmp_path):
+    """A minimal ledger whose kinds carry ``ref`` fields at each target form."""
+    path = tmp_path / "purge_refs.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "preset": "purge_refs",
+                "version": 1,
+                "mixins": {
+                    "named_fields": {
+                        "name": {"type": "string", "required": True, "unique": True}
+                    }
+                },
+                "kinds": {
+                    "item": {"object": "entity", "mixins": ["named_fields"]},
+                    "lot": {"object": "stock", "entity_kinds": ["item"]},
+                    "lot_holder": {
+                        "object": "stock",
+                        "entity_kinds": ["item"],
+                        "fields": {
+                            "parent_lot": {"type": "ref", "to": "lot"}
+                        },
+                    },
+                    "rack": {
+                        "object": "box",
+                        "geometry": {"type": "named", "slots": ["1", "2", "3"]},
+                    },
+                    "box_holder": {
+                        "object": "box",
+                        "geometry": {"type": "slotless", "capacity": 2},
+                        "fields": {
+                            "item_ref": {"type": "ref", "to": "item"},
+                            "rack_ref": {"type": "ref", "to": "rack"},
+                        },
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_purge_refuses_a_box_kind_ref_with_a_real_remedy(
+    tmp_path, ledger_factory
+) -> None:
+    """A ref field on a box kind blocks the target, but no ``tm box edit`` exists."""
+    ledger = ledger_factory(
+        [_ref_preset(tmp_path)], name="purge-box-kind-ref", real_init=True
+    )
+    item = ledger.entities.add("item", name="target")
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    holder = ledger.boxes.add("box_holder", "HOLDER")
+    ledger.driver.execute(
+        "UPDATE `box_box_holder` SET `item_ref` = %s WHERE `id` = %s",
+        (item["id"], holder["id"]),
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="box_holder.item_ref") as caught:
+        ledger.entities.purge(item["id"])
+    message = str(caught.value)
+    # Mixed referents: both remedies are stated up front.
+    assert f"tm stock purge {stock['id']}" in message
+    assert "tm box edit" not in message
+    assert "tm box purge" in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (item["id"],)
+    )
+
+
+def test_box_purge_refuses_a_box_kind_ref(tmp_path, ledger_factory) -> None:
+    ledger = ledger_factory(
+        [_ref_preset(tmp_path)], name="purge-box-ref", real_init=True
+    )
+    target = ledger.boxes.add("rack", "TARGET")
+    holder = ledger.boxes.add("box_holder", "HOLDER")
+    ledger.driver.execute(
+        "UPDATE `box_box_holder` SET `rack_ref` = %s WHERE `id` = %s",
+        (target["id"], holder["id"]),
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="box_holder.rack_ref") as caught:
+        ledger.boxes.purge("TARGET")
+    message = str(caught.value)
+    assert "tm box edit" not in message
+    assert holder["id"] in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (target["id"],)
+    )
+
+
+def test_stock_purge_refuses_a_kind_ref_to_another_stock(
+    tmp_path, ledger_factory
+) -> None:
+    ledger = ledger_factory(
+        [_ref_preset(tmp_path)], name="purge-stock-ref", real_init=True
+    )
+    item = ledger.entities.add("item", name="target")
+    parent = ledger.stocks.add("lot", entity=item["id"])
+    holder = ledger.stocks.add("lot_holder", entity=item["id"])
+    ledger.driver.execute(
+        "UPDATE `stock_lot_holder` SET `parent_lot` = %s WHERE `id` = %s",
+        (parent["id"], holder["id"]),
+    )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="lot_holder.parent_lot") as caught:
+        ledger.stocks.purge(parent["id"])
+    message = str(caught.value)
+    assert f"tm stock edit {holder['id']}" in message
+    assert f"tm stock purge {holder['id']}" in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock` WHERE `id` = %s", (parent["id"],)
+    )
+
+
+def test_purge_refusal_caps_a_long_referent_list(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BIG", "grid96")
+    ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=12,
+        box="BIG",
+        slots=[f"A{number}" for number in range(1, 13)],
+    )
+
+    with pytest.raises(LedgerError, match="and 2 more") as caught:
+        ledger.boxes.purge("BIG")
+    assert "12 other objects still reference it" in str(caught.value)
+
+
+def test_box_purge_keeps_aliquot_event_box_ids(ledger_factory) -> None:
+    """An event's old position is history, not a foreign key (spec §6)."""
+    ledger = make_ledger(ledger_factory)
+    source = new_box(ledger, "SOURCE", "grid96")
+    new_box(ledger, "TARGET", "grid96")
+    item = new_item(ledger)
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], box="SOURCE", slots=["A1"]
+    )
+    ledger.aliquots.move(
+        stock["aliquots"][0], box="TARGET", slot="A2", message="relocated"
+    )
+
+    ledger.boxes.purge("SOURCE")
+
+    events = ledger.driver.query(
+        "SELECT `from_box_id` FROM `aliquot_event` WHERE `from_box_id` = %s",
+        (source["id"],),
+    )
+    assert events, "the move event keeps the old box id"
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (source["id"],)
+    ) == []
+    assert ledger.check().passed
+
+
+def test_purge_accepts_alias_and_unique_prefix_refs(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    ledger.aliases.add("entity", item["id"], "alias-item")
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", alq, "tube-alias")
+    box = new_box(ledger, "BOX", "rack")
+    ledger.aliases.add("box", box["id"], "box-alias")
+
+    assert ledger.aliquots.purge("tube-alias")["id"] == alq
+    assert ledger.stocks.purge(stock["id"][:5])["id"] == stock["id"]
+    assert ledger.entities.purge("alias-item")["id"] == item["id"]
+    assert ledger.boxes.purge("box-alias")["id"] == box["id"]
+
+
+def test_purge_honours_no_commit(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    before = commit_count(ledger)
+
+    ledger.no_commit = True
+    try:
+        assert ledger.entities.purge(item["id"])["purged"] is True
+    finally:
+        ledger.no_commit = False
+
+    assert commit_count(ledger) == before
+    assert dirty(ledger), "the deletion is executed but left uncommitted"
+
+
+def test_purge_dry_run_writes_nothing(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    box = new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], box="BOX", slots=["A1"])
+    spare_entity = ledger.entities.add("item", name="spare")
+    spare_box = ledger.boxes.add("rack", "SPARE")
+    before = commit_count(ledger)
+
+    ledger.dry_run = True
+    try:
+        entity_result = ledger.entities.purge(spare_entity["id"])
+        stock_result = ledger.stocks.purge(stock["id"])
+        box_result = ledger.boxes.purge("SPARE")
+        assert entity_result["purged"] and stock_result["purged"]
+        assert box_result["purged"]
+        assert commit_count(ledger) == before
+        assert dirty(ledger) == []
+        assert ledger.last_write is not None
+        assert "DELETE FROM `box`" in ledger.last_write.sql
+        assert "DROP VIEW IF EXISTS `v_box_SPARE`" in ledger.last_write.sql
+    finally:
+        ledger.dry_run = False
+
+    assert ledger.driver.query(
+        "SELECT `id` FROM `entity` WHERE `id` = %s", (spare_entity["id"],)
+    )
+    assert ledger.driver.query(
+        "SELECT `id` FROM `stock` WHERE `id` = %s", (stock["id"],)
+    )
+    assert ledger.driver.query(
+        "SELECT `id` FROM `box` WHERE `id` = %s", (spare_box["id"],)
+    )
+    assert ledger.driver.query(
+        "SELECT `box_id` FROM `slot` WHERE `box_id` = %s", (spare_box["id"],)
+    )
+    assert _view_exists(ledger, "v_box_SPARE")
+    assert box["id"] != spare_box["id"]
+
 
 
 # ---------------------------------------------------------------------------

@@ -154,3 +154,25 @@ def rename_box_command(
         )
     finally:
         ledger.close()
+
+
+@box_app.command("purge")
+@write_command
+def purge_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    as_json: bool = typer.Option(False, "--json", help="Print the purged box as JSON."),
+) -> None:
+    """Hard-delete an empty box, its slots and its view (explicit; contents refused)."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.boxes.purge(ref)
+        emit_write(
+            ledger,
+            result,
+            f"Purged box {result['name']} ({result['slots']} slot(s), "
+            f"{result['aliases']} alias(es) removed)",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()

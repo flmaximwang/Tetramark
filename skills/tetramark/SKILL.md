@@ -51,7 +51,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Mark lost / consumed / planned | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions) |
 | Record a detailed life state | `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event `--note` |
 | Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move … -m MSG`) |
-| Hard-delete a tube (rare) | `tm aliquot purge ALQ` |
+| Hard-delete an object added by mistake (rare) | `tm entity\|stock\|aliquot\|box purge REF` (refused while referenced; a box must be empty) |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
 | Move a whole box | `tm box move NAME --in PARENT [--slot S]` |
@@ -84,8 +84,7 @@ tm lineage p035 --up                                      # lineage:true edges +
 ```
 
 The stock gets a date-code ID; its default one aliquot is `<stock_id>.1`. Full multi-step flows
-(new plasmid + glycerol stock, pellet consumption, moving and lineage formats):
-`references/recipes.md` §1-4.
+(new plasmid + glycerol stock, pellet consumption, moving and lineage formats): `references/recipes.md` §1-4.
 
 ### Organisms: line, colony, aliquot (angenet)
 
@@ -143,8 +142,9 @@ tm check --group core
 - **Box names are view-safe and grid boxes hold tubes only.** A `box add` name must not collide with
   a core view, is at most 58 characters and must differ from existing names beyond letter case; a box
   can be nested in a named or slotless box, not in a grid.
-- **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
-  delete with no undo (only Dolt history can recover it).
+- **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; the explicit
+  `tm entity|stock|aliquot|box purge` is a hard delete with no undo (only Dolt history recovers it),
+  for an object added by mistake; it refuses while anything still references the object.
 - **Do not move a tube by editing fields.** `aliquot move` records the event and checks slot capacity
   and exclusivity; `stock edit` only changes stock metadata. `use`/`move` need `-m/--message`.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.

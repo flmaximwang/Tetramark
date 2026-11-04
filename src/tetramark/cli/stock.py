@@ -244,3 +244,25 @@ def renumber_stocks_command(
             )
     finally:
         ledger.close()
+
+
+@stock_app.command("purge")
+@write_command
+def purge_stock_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Stock id or alias."),
+    as_json: bool = typer.Option(False, "--json", help="Print the purged object as JSON."),
+) -> None:
+    """Hard-delete a stock and its own aliquots (explicit; no other reference may remain)."""
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.stocks.purge(ref)
+        emit_write(
+            ledger,
+            result,
+            f"Purged stock {result['id']} ({result['aliquots']} aliquot(s), "
+            f"{result['events']} event(s) removed)",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()
