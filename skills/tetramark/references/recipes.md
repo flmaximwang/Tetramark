@@ -405,7 +405,8 @@ tm aliquot move 7726KW01.1 --box FR-1 --slot A1 -m "thaw was recorded on the wro
 
 ## 14. Inspect one tube
 
-`tm aliquot show` answers "what is this tube and where is it" without opening its box:
+`tm aliquot show` answers "what is this tube, where is it and what happened to it" without opening
+its box:
 
 ```sh
 tm aliquot show 1226FP01.1
@@ -416,13 +417,15 @@ tm aliquot show 1226FP01.1 --json
 aliquot …`, or an old id left by `tm stock renumber`). The table holds the aliquot row (`status`,
 `quantity`, `unit`, `label`, `notes`, `created_at`), the sorted `aliases`, the owning stock's
 `stock_kind` and `entity_id`, the `box_id`/`slot` and the derived `in_stock`; the `path` down the
-box nesting (`Freezer-1/Shelf-2/Box:A3`) prints on its own line under the table. A tube that is not
-in stock has no position, so `box_id`, `slot` and `path` are empty (`null` in JSON) and `in_stock`
-is false.
+box nesting (`Freezer-1/Shelf-2/Box:A3`) prints on its own line under the table. Below it,
+`events  N` and one line per event list the tube's own trail, oldest first — creation, moves, use,
+status changes — so the tube's event story no longer needs a second command. A tube that is not in
+stock has no position, so `box_id`, `slot` and `path` are empty (`null` in JSON) and `in_stock` is
+false.
 
 For the rest of the picture:
 
 ```sh
-tm history 1226FP01.1        # the tube's events: creation, moves, use, status changes
+tm history 1226FP01.1        # the same events plus the Dolt commits that touched the tube
 tm stock show 1226FP01       # the stock kind's own fields and all its tubes
 ```

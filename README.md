@@ -133,8 +133,8 @@ From anywhere else, point at the directory explicitly:
 tm --ledger ~/lab/lab101 find pZET035      # -l ~/lab/lab101 works too
 ```
 
-`aliquot show` prints one tube's status, quantity, aliases and box path (the id is the
-`<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes an experiment can use
+`aliquot show` prints one tube's status, quantity, aliases, box path and event timeline (the id is
+the `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes an experiment can use
 (in stock by default; `--all` includes consumed, missing and other history), `box show` prints the
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
 (exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and

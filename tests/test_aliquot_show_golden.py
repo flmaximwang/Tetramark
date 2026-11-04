@@ -13,15 +13,20 @@ string or ``null``) and the stable values that depend on the fixture only
 * ``aliquot_show_aliased.json`` -- a tube looked up by one of its aliases: a
   non-empty, sorted ``aliases`` list.
 
+Every fixture tube carries its own event trail in the new ``events`` key: the
+create event that made it, with its type, amount, unit, status and box name.
+
 **Volatile fields.**  ``created_at`` (the creation instant) and every generated
 id (``id``/``stock_id`` datecode ids, ``entity_id``/``box_id`` uuid4 ids)
-differ on every run, so the comparison cannot freeze them.  :func:`_normalise`
-*checks* each one is the expected real value for this ledger -- the created
-timestamp parses, the uuid ids are canonical uuid4 and the ids are the ones the
-fixture just created, including ``id == <stock_id>.<seq>`` -- and then replaces
-it with a placeholder (``<timestamp>``, ``<stock-id>``, ...).  The golden
-therefore pins the shape and every stable value, not a timestamp or a random
-uuid.  Regenerate the files after an intended output change with::
+differ on every run, so the comparison cannot freeze them.  The same holds for
+the events: their ``at`` instant, their auto-increment id and the uuid of the
+box they name.  :func:`_normalise` *checks* each one is the expected real
+value for this ledger -- the created timestamp parses, the uuid ids are
+canonical uuid4 and the ids are the ones the fixture just created, including
+``id == <stock_id>.<seq>`` -- and then replaces it with a placeholder
+(``<timestamp>``, ``<stock-id>``, ...).  The golden therefore pins the shape
+and every stable value, not a timestamp or a random uuid.  Regenerate the
+files after an intended output change with::
 
     TETRAMARK_UPDATE_GOLDENS=1 uv run pytest tests/test_aliquot_show_golden.py
 
@@ -76,6 +81,37 @@ def _show_json(ledger, ref: str) -> dict[str, Any]:
     return record
 
 
+def _normalise_events(events: list[Any]) -> list[dict[str, Any]]:
+    """Replace the per-run values of the event trail with placeholders.
+
+    Three values of an event differ on every run: the instant it happened
+    (``at``), the auto-increment id the ledger gave it and the uuid of a box
+    it names.  Each one is asserted to be the real value of this run first
+    (the timestamp parses, the id is a positive integer, the box id is a
+    canonical uuid4), then replaced.  Everything else is left untouched: the
+    event type, the amount, the statuses and the box *names* are the values
+    the golden pins.
+    """
+    assert isinstance(events, list)
+    normalised: list[dict[str, Any]] = []
+    for event in events:
+        assert isinstance(event, dict)
+        at = event["at"]
+        assert isinstance(at, str)
+        datetime.fromisoformat(at)  # Dolt renders DATETIME with a space
+        assert isinstance(event["id"], int) and event["id"] > 0
+        row = dict(event)
+        row["at"] = "<timestamp>"
+        row["id"] = "<event-id>"
+        for key in ("from_box_id", "to_box_id"):
+            value = row[key]
+            if value is not None:
+                assert is_uuid4(value)
+                row[key] = "<box-id>"
+        normalised.append(row)
+    return normalised
+
+
 def _normalise(
     record: dict[str, Any],
     *,
@@ -96,6 +132,9 @@ def _normalise(
       uuid4 ids; ``box_id`` stays ``null`` for a tube without a position);
     * ``stock_id`` -> ``<stock-id>`` and ``id`` -> ``<stock-id>.<seq>``, keeping
       the contract that a tube id is its stock id plus its sequence.
+
+    The events get the same treatment: their instant, their id and the uuid of
+    a box they name are placeholders, the rest is pinned.
 
     Every other field is left untouched: those are the values the golden pins.
     """
@@ -118,6 +157,7 @@ def _normalise(
     normalised["box_id"] = "<box-id>" if box is not None else None
     normalised["id"] = f"<stock-id>.{record['seq']}"
     normalised["stock_id"] = "<stock-id>"
+    normalised["events"] = _normalise_events(record.get("events") or [])
     return normalised
 
 

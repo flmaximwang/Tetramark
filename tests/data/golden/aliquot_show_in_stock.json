@@ -3,6 +3,27 @@
   "box_id": "<box-id>",
   "created_at": "<timestamp>",
   "entity_id": "<entity-id>",
+  "events": [
+    {
+      "actor": "Ledger Factory",
+      "amount": "100.000000",
+      "at": "<timestamp>",
+      "event": "create",
+      "forced": false,
+      "from_box": null,
+      "from_box_id": null,
+      "from_slot": null,
+      "id": "<event-id>",
+      "new_status": "stored",
+      "note": null,
+      "old_status": null,
+      "purpose": null,
+      "to_box": "Box",
+      "to_box_id": "<box-id>",
+      "to_slot": "A3",
+      "unit": "ul"
+    }
+  ],
   "id": "<stock-id>.1",
   "in_stock": true,
   "label": "alpha-1",

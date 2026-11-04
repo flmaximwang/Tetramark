@@ -290,7 +290,37 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         f"{stock_id}.2",
         f"{stock_id}.3",
     ]
-    assert listed[0] == run_json("aliquot", "show", f"{stock_id}.1")
+    # `show` carries the tube's events, oldest first; a list item is the same
+    # record without them (a list must not read every tube's event trail).
+    first_shown = run_json("aliquot", "show", f"{stock_id}.1")
+    assert "events" in first_shown
+    assert listed[0] == {
+        key: value for key, value in first_shown.items() if key != "events"
+    }
+    assert "events" not in listed[0]
+    assert [event["event"] for event in first_shown["events"]] == ["create"]
+    assert set(first_shown["events"][0]) == {
+        "id",
+        "event",
+        "at",
+        "amount",
+        "unit",
+        "from_box_id",
+        "from_box",
+        "from_slot",
+        "to_box_id",
+        "to_box",
+        "to_slot",
+        "old_status",
+        "new_status",
+        "forced",
+        "actor",
+        "purpose",
+        "note",
+    }
+    assert first_shown["events"][0]["to_box"] == "BOX-2"
+    assert first_shown["events"][0]["to_slot"] == "A1"
+    assert first_shown["events"][0]["forced"] is False
     assert listed[0]["path"] == "FR-1/BOX-2:A1"
     assert run("aliquot", "list", stock_id).output.splitlines()[0].split() == [
         "id",
@@ -313,6 +343,48 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     assert [
         row["id"] for row in run_json("aliquot", "list", "--box", "FR-1")
     ] == [f"{stock_id}.1", f"{stock_id}.2", f"{stock_id}.3"]
+
+    # The tube's whole trail: create, move, status, oldest first, with the
+    # box names resolved and the status change recorded.
+    trail = run_json("aliquot", "show", f"{stock_id}.4")
+    assert [event["event"] for event in trail["events"]] == [
+        "create",
+        "move",
+        "status",
+    ]
+    create, move, status = trail["events"]
+    assert create["to_box"] == "BOX-2" and create["to_slot"] == "B2"
+    assert move["from_box"] == "BOX-2" and move["from_slot"] == "B2"
+    assert move["to_box"] == "BOX-1" and move["to_slot"] == "C3"
+    assert status["from_box"] == "BOX-1" and status["from_slot"] == "C3"
+    assert status["old_status"] == "stored" and status["new_status"] == "missing"
+
+    # Text output: the field block, then the path line when the tube is in
+    # stock, then `events  N` and one line per event, oldest first.
+    in_stock_lines = run("aliquot", "show", f"{stock_id}.3").output.splitlines()
+    path_at = in_stock_lines.index("path: FR-1/BOX-2:B1")
+    events_at = in_stock_lines.index("events  2")
+    assert path_at < events_at
+    assert len(in_stock_lines[events_at + 1 :]) == 2
+    assert " create " in in_stock_lines[events_at + 1]
+    assert " use " in in_stock_lines[events_at + 2]
+
+    missing_lines = run("aliquot", "show", f"{stock_id}.4").output.splitlines()
+    events_at = missing_lines.index("events  3")
+    event_lines = missing_lines[events_at + 1 :]
+    assert len(event_lines) == 3
+    assert " create " in event_lines[0] and "to=BOX-2:B2" in event_lines[0]
+    assert " move " in event_lines[1]
+    assert "from=BOX-2:B2" in event_lines[1] and "to=BOX-1:C3" in event_lines[1]
+    assert " status " in event_lines[2]
+    assert "from=BOX-1:C3" in event_lines[2]
+    assert "status=stored->missing" in event_lines[2]
+
+    # CSV stays the flat single-row record: no events column.
+    csv_header = run(
+        "--format", "csv", "aliquot", "show", f"{stock_id}.1"
+    ).output.splitlines()[0].split(",")
+    assert "id" in csv_header and "events" not in csv_header
 
     purged = run_json("aliquot", "purge", f"{stock_id}.4")
     assert purged["id"] == f"{stock_id}.4"

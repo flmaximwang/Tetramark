@@ -45,7 +45,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Put its tube in a box | `tm stock add … --box NAME --slot A1` |
 | Take a sample from a tube (lineage edge) | `tm stock add cell_biosample --entity LINE --source-aliquot ALQ` (cellbio; `animal_biosample` in angenet) |
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
-| See one tube, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
+| See one tube and its events, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
 | Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG` (also restores a not-in-stock tube) |
 | Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
 | Mark lost / consumed / planned | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions) |

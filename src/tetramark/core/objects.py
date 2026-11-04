@@ -107,6 +107,7 @@ __all__ = [
     "read_rename_map",
     "remove_alias",
     "renumber_stocks",
+    "set_aliquot_label",
     "set_aliquot_status",
     "show_entity",
     "show_stock",
@@ -2527,6 +2528,58 @@ def set_aliquot_status(
         }
 
 
+#: Width of the core ``aliquot.label`` column (``VARCHAR(255)``).
+_ALIQUOT_LABEL_LENGTH = 255
+
+
+def set_aliquot_label(
+    ledger: Ledger, ref: str, label: str, *, replace: bool = False
+) -> dict[str, Any]:
+    """Set an aliquot's ``label``; with ``replace`` the old label becomes an alias.
+
+    A tube without a label simply gets one.  A tube that already carries a
+    different label is refused unless ``replace=True``: then the previous
+    label is kept as an alias of the aliquot (so it still resolves the tube)
+    and the new label takes its place, in one commit.
+    """
+    text = str(label).strip()
+    if not text:
+        raise UsageError("a label must not be empty")
+    if len(text) > _ALIQUOT_LABEL_LENGTH:
+        raise UsageError(
+            f"a label is limited to {_ALIQUOT_LABEL_LENGTH} characters "
+            f"(got {len(text)})"
+        )
+    existing = _resolve_aliquot(ledger.driver, ref)
+    alq_id = str(existing["id"])
+    raw_old = existing.get("label")
+    old_label = str(raw_old).strip() if raw_old is not None else ""
+    if old_label == text:
+        raise UsageError(f"aliquot {alq_id!r} already has the label {text!r}")
+    if old_label and not replace:
+        raise LedgerError(
+            f"aliquot {alq_id!r} already has the label {old_label!r}; pass "
+            f"--replace to keep {old_label!r} as an alias and set {text!r}"
+        )
+
+    with ledger.write(alq_id, verb="label", object="aliquot") as session:
+        _resolve_aliquot(session, alq_id)
+        if old_label:
+            _keep_old_name_alias(session, "aliquot", alq_id, old_label)
+        _update(session, "aliquot", {"id": alq_id}, {"label": text})
+        aliases = _object_aliases(session, "aliquot", alq_id)
+
+    if old_label and old_label not in aliases:
+        aliases = sorted({*aliases, old_label})  # dry run
+    return {
+        "object": "aliquot",
+        "id": alq_id,
+        "label": text,
+        "old_label": old_label or None,
+        "aliases": aliases,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Purge: explicit hard delete (entity, stock, aliquot, box)
 # ---------------------------------------------------------------------------
@@ -3064,21 +3117,93 @@ def _aliquot_id_sql() -> str:
     )
 
 
+def _aliquot_events_sql(id_sql: str) -> str:
+    """The read of one tube's ``aliquot_event`` rows, oldest first.
+
+    ``id_sql`` resolves the ref to the tube id, so the statement answers for
+    the same tube the other reads of the batch answer for.  The two
+    ``LEFT JOIN``s bring the box names of a move along; a box that is gone
+    falls back to its id, exactly like ``tm history`` renders it.
+    """
+    return (
+        "SELECT "
+        f"e.{_quote('id')} AS {_quote('id')}, "
+        f"e.{_quote('event')} AS {_quote('event')}, "
+        f"e.{_quote('at')} AS {_quote('at')}, "
+        f"e.{_quote('amount')} AS {_quote('amount')}, "
+        f"e.{_quote('unit')} AS {_quote('unit')}, "
+        f"e.{_quote('from_box_id')} AS {_quote('from_box_id')}, "
+        f"COALESCE(fb.{_quote('name')}, e.{_quote('from_box_id')}) "
+        f"AS {_quote('from_box')}, "
+        f"e.{_quote('from_slot')} AS {_quote('from_slot')}, "
+        f"e.{_quote('to_box_id')} AS {_quote('to_box_id')}, "
+        f"COALESCE(tb.{_quote('name')}, e.{_quote('to_box_id')}) "
+        f"AS {_quote('to_box')}, "
+        f"e.{_quote('to_slot')} AS {_quote('to_slot')}, "
+        f"e.{_quote('old_status')} AS {_quote('old_status')}, "
+        f"e.{_quote('new_status')} AS {_quote('new_status')}, "
+        f"e.{_quote('forced')} AS {_quote('forced')}, "
+        f"e.{_quote('actor')} AS {_quote('actor')}, "
+        f"e.{_quote('purpose')} AS {_quote('purpose')}, "
+        f"e.{_quote('note')} AS {_quote('note')} "
+        f"FROM {_quote('aliquot_event')} e "
+        f"LEFT JOIN {_quote('box')} fb "
+        f"ON fb.{_quote('id')} = e.{_quote('from_box_id')} "
+        f"LEFT JOIN {_quote('box')} tb "
+        f"ON tb.{_quote('id')} = e.{_quote('to_box_id')} "
+        f"WHERE e.{_quote('aliquot_id')} = {id_sql} "
+        f"ORDER BY e.{_quote('at')}, e.{_quote('id')}"
+    )
+
+
+def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One ``aliquot_event`` row as the shape the show record carries.
+
+    The keys are the ones the spec names, in that order: the row's own id,
+    the event, when it happened, how much was used, where the tube came from
+    and went to (the box name next to its id), the status change, whether the
+    change was forced, and who did it and why.  ``forced`` is a bool, so the
+    JSON record says ``true``/``false`` and not the driver's 0/1.
+    """
+    return {
+        "id": int(row["id"]),
+        "event": str(row["event"]),
+        "at": row["at"],
+        "amount": row["amount"],
+        "unit": row["unit"],
+        "from_box_id": row["from_box_id"],
+        "from_box": row["from_box"],
+        "from_slot": row["from_slot"],
+        "to_box_id": row["to_box_id"],
+        "to_box": row["to_box"],
+        "to_slot": row["to_slot"],
+        "old_status": row["old_status"],
+        "new_status": row["new_status"],
+        "forced": bool(row["forced"]),
+        "actor": row["actor"],
+        "purpose": row["purpose"],
+        "note": row["note"],
+    }
+
+
 def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """One aliquot: its row, aliases, owning stock and location (spec §6).
+    """One aliquot: its row, aliases, owning stock, location and events (spec §6).
 
     Everything is read in one batch: the aliquot row, its sorted aliases, the
-    owning stock's kind and entity, and the path from ``v_aliquot_location``.
-    ``in_stock`` is derived from the stock kind's status set (spec 4): it says
-    whether the tube's status counts as physically in stock.  A tube that is
-    not in stock carries no position, so its ``box_id``, ``slot`` and ``path``
-    are NULL.
+    owning stock's kind and entity, the path from ``v_aliquot_location`` and
+    the tube's own ``aliquot_event`` rows.  ``in_stock`` is derived from the
+    stock kind's status set (spec 4): it says whether the tube's status counts
+    as physically in stock.  A tube that is not in stock carries no position,
+    so its ``box_id``, ``slot`` and ``path`` are NULL.
 
-    The stock kind's own fields are not part of the record — ``tm stock show``
-    owns them — and the record carries no event timeline (``tm history`` owns
-    that).  A ref that names a stock is a not-found error that points at
-    ``tm stock show`` (spec §6); any other miss points at ``tm find``,
-    which applies the ledger's ``find.rewrites`` rules.
+    ``events`` is the tube's event trail, oldest first: each event names the
+    boxes it moved from and to, so a reader sees what happened to the tube
+    without leaving the command.  It is the same rows ``tm history`` shows, and
+    the same line format; the Dolt commits stay in ``tm history``, so show
+    carries events only.  The stock kind's own fields are not part of the
+    record — ``tm stock show`` owns them.  A ref that names a stock is a
+    not-found error that points at ``tm stock show`` (spec §6); any other miss
+    points at ``tm find``, which applies the ledger's ``find.rewrites`` rules.
     """
     if not ref:
         raise LedgerError(f"unknown aliquot {ref!r}")
@@ -3109,6 +3234,10 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
             f"WHERE l.{_quote('aliquot_id')} = {id_sql}",
             params,
         ),
+        (
+            _aliquot_events_sql(id_sql),
+            params,
+        ),
     ]
     fetched = ledger.driver.query_many(batch)
 
@@ -3122,6 +3251,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     entity_id = str(stock_rows[0]["entity_id"]) if stock_rows else ""
     location_rows = fetched[3]
     path = location_rows[0]["path"] if location_rows else None
+    events = [_event_record(event) for event in fetched[4]]
 
     status = str(row["status"])
     in_stock = False
@@ -3147,6 +3277,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         "path": path,
         "in_stock": in_stock,
         "object": "aliquot",
+        "events": events,
     }
 
 
@@ -3275,11 +3406,14 @@ def list_aliquots(
     * ``where``: exact matches on the aliquot core columns except ``status``
       (that is what ``statuses`` is for).
 
-    The records have exactly the same shape as :func:`show_aliquot` - the
-    same keys, including the sorted ``aliases`` and the derived ``in_stock`` -
-    so a list row and a single tube can be handled by the same code.  Rows are
-    ordered by ``stock_id`` and then numeric ``seq``.  The rows and their
-    aliases are read in one batched driver round trip.
+    The records have the same shape as :func:`show_aliquot` - the same keys,
+    including the sorted ``aliases`` and the derived ``in_stock`` - so a list
+    row and a single tube can be handled by the same code.  They carry no
+    ``events``: a list reads every tube of the scope, so one event read per
+    tube would cost a round trip per row.  ``tm aliquot show`` is the command
+    that answers for one tube, with its events.  Rows are ordered by
+    ``stock_id`` and then numeric ``seq``.  The rows and their aliases are
+    read in one batched driver round trip.
     """
     if all_statuses and in_stock is not None:
         raise UsageError(
@@ -4438,6 +4572,9 @@ class AliquotOps:
         return set_aliquot_status(
             self.ledger, ref, status, note=note, force=force
         )
+
+    def label(self, ref: str, label: str, *, replace: bool = False) -> dict[str, Any]:
+        return set_aliquot_label(self.ledger, ref, label, replace=replace)
 
     def purge(self, ref: str) -> dict[str, Any]:
         return purge_aliquot(self.ledger, ref)
