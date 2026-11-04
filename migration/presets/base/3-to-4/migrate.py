@@ -87,6 +87,19 @@ TO_VERSION = 4
 #: the content whose counter it bumps.
 FROZEN_BASE = Path(__file__).with_name("base-4.yaml")
 
+#: The frozen bacteria v1 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/bacteria.yaml`` to v2 by dropping
+#: its ``statuses:`` keys; a historical step that places the whole closure and
+#: records the part counters must keep installing the v1 content whose counter
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_BACTERIA = Path(__file__).with_name("bacteria-1.yaml")
+
+#: The frozen cell_culture v2 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/cell_culture.yaml`` to v3; this
+#: step's era reads v2 (the content ``cell_culture/1-to-2`` installs), so it
+#: keeps that copy.
+FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-2.yaml")
+
 #: The explicit rename map: the geometry is unchanged, only the kind name is.
 RENAMES = Path(__file__).with_name("renames.yaml")
 
@@ -204,7 +217,14 @@ def main(argv: list[str] | None = None) -> None:
     """
     arguments = preset_args(argv)
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
-    saved += vendor_preset_files(arguments.ledger, {PRESET: FROZEN_BASE})
+    saved += vendor_preset_files(
+        arguments.ledger,
+        {
+            PRESET: FROZEN_BASE,
+            "bacteria": FROZEN_BACTERIA,
+            "cell_culture": FROZEN_CELL_CULTURE,
+        },
+    )
     saved += vendor_preset_files(
         arguments.ledger,
         {"proteins": FROZEN_PROTEINS, "nucleic_acids": FROZEN_NUCLEIC_ACIDS},

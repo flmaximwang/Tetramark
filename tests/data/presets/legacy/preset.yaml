@@ -1,0 +1,104 @@
+preset: legacy
+version: 1
+description: >-
+  Test-only spec-4/5 fixture: per-kind status sets, including a set with two
+  in-stock statuses (``worm``), a cryo set with no ``pending`` and no
+  ``consumed``, and a tube set.  The repository presets are the spec-6 fixed
+  model since Tetramark-epn.4, so the code paths that depend on a stock kind's
+  own vocabulary keep their coverage here.  Do not convert this fixture: a
+  fixed-model closure cannot express "several in-stock statuses" or a
+  per-kind list filter.
+status_sets:
+  tube:
+    pending: {in_stock: false, to: [stored, missing, consumed]}
+    stored: {in_stock: true, to: [missing, consumed]}
+    missing: {in_stock: false, to: [stored, consumed]}
+    consumed: {in_stock: false}
+  cryo:
+    stored: {in_stock: true, to: [thawed, missing]}
+    missing: {in_stock: false, to: [stored, thawed]}
+    thawed: {in_stock: false}
+  animal:
+    planned: {in_stock: false, to: [alive, cancelled]}
+    alive: {in_stock: true, to: [euthanized, transferred]}
+    cancelled: {in_stock: false}
+    euthanized: {in_stock: false}
+    transferred: {in_stock: false}
+  worm:
+    growing: {in_stock: true, to: [starved, contaminated, discarded]}
+    starved: {in_stock: true, to: [growing, contaminated, discarded]}
+    contaminated: {in_stock: false, to: [discarded]}
+    discarded: {in_stock: false}
+mixins:
+  named_fields:
+    name: {type: string, required: true, unique: true}
+    description: {type: text}
+kinds:
+  item:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      category: {type: string, length: 32}
+  worm_strain:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      allele: {type: string, length: 128}
+  cell_line:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      species: {type: string, length: 64}
+  fish_line:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      background: {type: string, length: 64}
+  lot:
+    object: stock
+    entity_kinds: [item]
+    statuses: tube
+    fields:
+      supplier: {type: string, default: unknown}
+  worm_culture:
+    object: stock
+    entity_kinds: [worm_strain]
+    statuses: worm
+    fields:
+      stage: {type: string, length: 32}
+  cell_vial:
+    object: stock
+    entity_kinds: [cell_line]
+    statuses: cryo
+    fields:
+      passage: {type: int}
+  cell_pellet:
+    object: stock
+    entity_kinds: [cell_line]
+    statuses: tube
+    fields:
+      cell_count: {type: int}
+  fish_group:
+    object: stock
+    entity_kinds: [fish_line]
+    statuses: animal
+    fields:
+      sex: {type: string, length: 1}
+  fish_sperm_cryo:
+    object: stock
+    entity_kinds: [fish_line]
+    statuses: cryo
+    fields:
+      frozen_on: {type: date}
+  grid9x9:
+    object: box
+    geometry: {type: grid, rows: "A-J!I", cols: "1-9"}
+  grid8x12:
+    object: box
+    geometry: {type: grid, rows: "A-H", cols: "1-12"}
+  rack:
+    object: box
+    geometry: {type: named, slots: [1, 2, 3, 4, 5]}
+  freezer:
+    object: box
+    geometry: {type: slotless, capacity: 6}

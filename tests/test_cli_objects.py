@@ -764,10 +764,11 @@ def test_cli_aliquot_status_clears_position(cli_env: None, ledger_factory) -> No
 def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
     from tetramark.errors import LedgerError
 
-    from conftest import REPO_PRESETS
+    # A legacy closure: two in-stock statuses only exist in a spec-4/5 preset.
+    from conftest import PRESETS
 
     ledger = ledger_factory(
-        [REPO_PRESETS / "base.yaml", REPO_PRESETS / "c_elegans.yaml"],
+        [PRESETS / "legacy"],
         name="cli-move-status",
         id_prefix="77",
     )

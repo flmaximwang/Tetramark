@@ -102,14 +102,17 @@ PARTS = ("nucleic_acids", "bacteria", "proteins", "cell_culture")
 #: ``ledger_meta.preset_versions`` entries this step adds next to molbio's bump.
 PRESET_VERSIONS_EXTRA = {part: 1 for part in PARTS}
 
-#: The frozen cell_culture v1 this step installs over the repository copy.
+#: The frozen part copies this step installs over the repository copies.
 #: Ticket 28 bumps ``presets/cell_culture.yaml`` to v2; molbio v3 was released
 #: with cell_culture 1 and its counter is bumped by
-#: ``migration/presets/cell_culture/1-to-2``, not here.  The other parts are
-#: still the current repository version, which is why they are placed from
-#: ``presets/`` above.
+#: ``migration/presets/cell_culture/1-to-2``, not here.  Tetramark-epn.4 (spec
+#: 6) bumps ``presets/bacteria.yaml`` to v2 the same way, and this step records
+#: ``bacteria`` at version 1, so it keeps the frozen v1 content.  The other
+#: parts are still the current repository version, which is why they are placed
+#: from ``presets/`` above.
 FROZEN_PART_FILES = {
     "cell_culture": Path(__file__).with_name("cell_culture-1.yaml"),
+    "bacteria": Path(__file__).with_name("bacteria-1.yaml"),
 }
 
 #: The frozen base v3 this step installs over the repository copy: spec 5

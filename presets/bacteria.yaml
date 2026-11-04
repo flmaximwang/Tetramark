@@ -1,5 +1,5 @@
 preset: bacteria
-version: 1
+version: 2
 description: >-
   Bacterial strains and the stocks made from them: glycerol freezer stocks and
   harvested cell pellets, both holding a plasmid, a strain or both. Included by
@@ -29,7 +29,6 @@ kinds:
 
   bacterial_glycerol:
     object: stock
-    statuses: tube
     description: A bacterial glycerol stock of a plasmid or bacterial strain.
     entity_kinds: [plasmid, bacterial_strain]
     fields:
@@ -55,7 +54,6 @@ kinds:
 
   bacterial_pellet:
     object: stock
-    statuses: tube
     description: >-
       A bacterial cell pellet harvested from a culture. Aliquot volumes live in
       the core aliquot quantity, matching the zsqlab10 pellet aliquots model.

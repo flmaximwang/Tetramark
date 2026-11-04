@@ -101,6 +101,13 @@ FROZEN_CELL_CULTURE = Path(__file__).with_name("cell_culture-2.yaml")
 #: content its era reads.  ``migration/README.md`` requires the retrofit.
 FROZEN_BASE = Path(__file__).with_name("base-3.yaml")
 
+#: The frozen bacteria v1 this step installs over the repository copy.
+#: Tetramark-epn.4 (spec 6) bumps ``presets/bacteria.yaml`` to v2 by dropping
+#: its ``statuses:`` keys; a historical step that places the whole closure and
+#: records the part counters must keep installing the v1 content whose counter
+#: its era reads (``migration/README.md`` requires the retrofit).
+FROZEN_BACTERIA = Path(__file__).with_name("bacteria-1.yaml")
+
 #: What the target content must contain, checked before anything is written.
 REQUIRED_COLUMNS = ("selection", "mycoplasma", "mycoplasma_tested_on")
 REQUIRED_KINDS = ("cell_biosample",)
@@ -223,7 +230,11 @@ def main(argv: list[str] | None = None) -> None:
     saved = vendor_repo_presets(arguments.ledger, REPO_PRESETS)
     saved += vendor_preset_files(
         arguments.ledger,
-        {PRESET: FROZEN_CELL_CULTURE, "base": FROZEN_BASE},
+        {
+            PRESET: FROZEN_CELL_CULTURE,
+            "base": FROZEN_BASE,
+            "bacteria": FROZEN_BACTERIA,
+        },
     )
     saved += vendor_preset_files(
         arguments.ledger,

@@ -1,18 +1,21 @@
 preset: zebrafish
-version: 1
+version: 2
 description: >-
   Zebrafish genetics: a fish line as the genetic design (ZFIN name, allele,
   background), tanks or tagged fish as living groups, a clutch for the embryo /
   larvae nursery stage, and frozen sperm. A tank is counted as a group - one
   housing unit is one aliquot, its quantity is the headcount and its unit is
   individuals - while a tagged fish is one individually counted aliquot. A
-  clutch and the parents of a group are recorded through dam and sire. Frozen
-  embryos are not modelled (zebrafish embryos are not routinely
-  cryopreserved). Cultures are kept in a rack or incubator, box kinds from
-  base. Included by the angenet bundle. Adapted from BioManager (MIT).
+  clutch and the parents of a group are recorded through dam and sire. A group's
+  fate (euthanized, found_dead, transferred, cancelled) is an optional stock
+  property; every aliquot uses the one fixed status set of the core model (spec
+  1.1), so this part declares no status vocabulary. Frozen embryos are not
+  modelled (zebrafish embryos are not routinely cryopreserved). Cultures are
+  kept in a rack or incubator, box kinds from base. Included by the angenet
+  bundle. Adapted from BioManager (MIT).
 
-# Living groups reference only base (named_fields and the animal status set) and
-# the core aliquot table the dam/sire refs point at.
+# Living groups reference only base (named_fields) and the core aliquot table
+# the dam/sire refs point at.
 include: [base]
 
 kinds:
@@ -44,7 +47,6 @@ kinds:
 
   fish_group:
     object: stock
-    statuses: animal
     description: >-
       A fish group: a tank population that is treated as identical fish of one
       line (birth date, sex, genotype), or one tagged fish when individuals are
@@ -65,6 +67,10 @@ kinds:
         type: text
         long: true
         description: Genotype / modifications of the group; NULL means untyped (e.g. a litter before genotyping).
+      fate:
+        type: enum
+        values: [euthanized, found_dead, transferred, cancelled]
+        description: Fate of the fish in the group (euthanized, found_dead, transferred or cancelled).
       density_per_l:
         type: decimal
         precision: 10
@@ -83,7 +89,6 @@ kinds:
 
   fish_clutch:
     object: stock
-    statuses: animal
     description: >-
       A zebrafish clutch: the embryos and larvae from one cross, kept as the
       nursery stage between the parents' tank and the grown fish. The aliquot
@@ -100,6 +105,10 @@ kinds:
       larvae_count:
         type: int
         description: Number of larvae that hatched from the clutch, when counted.
+      fate:
+        type: enum
+        values: [euthanized, found_dead, transferred, cancelled]
+        description: Fate of the fish in the clutch (euthanized, found_dead, transferred or cancelled).
       dam:
         type: ref
         to: aliquot
@@ -113,7 +122,6 @@ kinds:
 
   fish_sperm_cryo:
     object: stock
-    statuses: cryo
     description: >-
       Frozen zebrafish sperm - a line kept in the cryo tank - with its freezing
       date, method and thaw-recovery check. There is no fish embryo cryo kind:

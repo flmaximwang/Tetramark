@@ -1,30 +1,22 @@
 preset: c_elegans
-version: 1
+version: 2
 description: >-
   C. elegans genetics: a worm strain as the genetic design (allele, lab prefix,
   WormBase id, source) and a culture plate as the living colony. A plate is
   counted as a group - one housing unit is one aliquot, its quantity is the
   headcount and its unit is individuals - and the frozen stock is the real
   colony: a cryo vial is thawed, chunked onto a plate and can be re-frozen. The
-  status set worm lives here because only worm cultures use it; cultures are
-  kept in an incubator, a box kind from base. Included by the angenet bundle.
-  Adapted from BioManager (MIT).
+  plate's condition (growing, starved, contaminated) is an optional stock
+  property; every aliquot uses the one fixed status set of the core model (spec
+  1.1), so this part declares no status vocabulary. Cultures are kept in an
+  incubator, a box kind from base. Included by the angenet bundle. Adapted from
+  BioManager (MIT).
 
-# A plate/cryo vial is a housing unit: only base (named_fields and the status
-# sets) is referenced. Worm strains are self-fertilising hermaphrodites, so a
-# culture has no dam/sire fields (design §3); `parental` on the strain is the
-# single-parent descent edge.
+# A plate/cryo vial is a housing unit: only base (named_fields) is referenced.
+# Worm strains are self-fertilising hermaphrodites, so a culture has no
+# dam/sire fields (design §3); `parental` on the strain is the single-parent
+# descent edge.
 include: [base]
-
-status_sets:
-  # A plate is in stock while the population grows or has starved (starved
-  # worms can be chunked back to growing); a contaminated or discarded plate is
-  # not. Declared here, not in base: only c_elegans uses it (design §4).
-  worm:
-    growing: {in_stock: true, to: [starved, contaminated, discarded]}
-    starved: {in_stock: true, to: [growing, contaminated, discarded]}
-    contaminated: {in_stock: false, to: [discarded]}
-    discarded: {in_stock: false}
 
 kinds:
   worm_strain:
@@ -60,7 +52,6 @@ kinds:
 
   worm_culture:
     object: stock
-    statuses: worm
     description: >-
       A worm culture plate: one housing unit's population of one strain. The
       aliquot is the plate itself; its quantity is the headcount and its unit
@@ -84,10 +75,13 @@ kinds:
         type: string
         length: 32
         description: Developmental stage on the plate (e.g. egg, L1, L2, L3, L4, adult, dauer, mixed).
+      condition:
+        type: enum
+        values: [growing, starved, contaminated]
+        description: Condition of the plate's population (growing, starved or contaminated).
 
   worm_cryo:
     object: stock
-    statuses: cryo
     description: >-
       A frozen C. elegans stock - the strain kept at -80 C or in liquid nitrogen
       - with its freezing date, method and thaw-recovery check. Adapted from

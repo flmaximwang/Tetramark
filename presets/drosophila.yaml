@@ -1,27 +1,19 @@
 preset: drosophila
-version: 1
+version: 2
 description: >-
   Drosophila genetics: a fly line as the genetic design (balancers, stock
   centre/number, FlyBase id) and a culture vial as the living colony. A vial is
   counted as a group - one housing unit is one aliquot, its quantity is the
   headcount and its unit is individuals - and a cross vial names the two parent
-  aliquots through dam and sire. The status set fly lives here because only fly
-  cultures use it; cultures are kept in an incubator, a box kind from base.
-  Included by the angenet bundle. Adapted from BioManager (MIT).
+  aliquots through dam and sire. The vial's fate (discarded, lost) is an
+  optional stock property; every aliquot uses the one fixed status set of the
+  core model (spec 1.1), so this part declares no status vocabulary. Cultures
+  are kept in an incubator, a box kind from base. Included by the angenet
+  bundle. Adapted from BioManager (MIT).
 
-# The fly vial is a housing unit, so it references only base (named_fields and
-# the status sets) and the core aliquot table the dam/sire refs point at.
+# The fly vial is a housing unit, so it references only base (named_fields) and
+# the core aliquot table the dam/sire refs point at.
 include: [base]
-
-status_sets:
-  # A culture stays in stock while it is alive or has been crossed to produce
-  # progeny; a discarded or lost vial is gone. Declared here, not in base: only
-  # drosophila uses it (design §4, ticket 29).
-  fly:
-    alive: {in_stock: true, to: [crossed, discarded, lost]}
-    crossed: {in_stock: true, to: [discarded, lost]}
-    discarded: {in_stock: false}
-    lost: {in_stock: false}
 
 kinds:
   fly_line:
@@ -57,7 +49,6 @@ kinds:
 
   fly_culture:
     object: stock
-    statuses: fly
     description: >-
       A fly culture vial: one housing unit's population, with the flies treated
       as identical members of one line. The aliquot is the vial itself; its
@@ -86,6 +77,10 @@ kinds:
         type: string
         length: 128
         description: Visible marker used to pick the progeny of this cross (e.g. white eye, curly wing).
+      fate:
+        type: enum
+        values: [discarded, lost]
+        description: Fate of the culture (discarded or lost).
       dam:
         type: ref
         to: aliquot
