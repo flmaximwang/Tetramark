@@ -139,8 +139,8 @@ done
 Columns that do **not** migrate:
 
 - `name_concat`, `file_name_concat`, `marker`, `sequence_sha256`, `*_0p1pct` → derived; Tetramark
-  computes `sequence_sha256`, `length_bp` and the ε columns. Re-typing them would create a second
-  source of truth.
+  computes `sequence_sha256`, the length column (`length_aa` on a `protein_construct`, `length_bp`
+  on a `plasmid`) and the ε columns. Re-typing them would create a second source of truth.
 - `entity_kind`/`stock_kind` discriminators → replaced by the kind table.
 - `project*`, `series*`, `body*`, `version*`, `tag_description`, `file_name`: keep the pieces you
   actually search in a local field (or `notes`), do not bulk-copy descriptions with no consumer.

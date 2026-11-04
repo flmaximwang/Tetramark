@@ -80,11 +80,13 @@ A sequence is stored normalised (uppercase, whitespace stripped) and fingerprint
 `sequence_sha256`; `unique: true` puts the UNIQUE index on that hash, not on the `MEDIUMTEXT`.
 `length_bp` is recomputed, never typed in. Version 2 (ticket rq9) added the IUPAC alphabet patterns
 to `sequence`/`mature_sequence`/`oligo.sequence`; they are validation-only and regenerate tests, not
-DDL.
+DDL. The mixin is a **nucleotide** field, and since `proteins` 4 (ticket `Tetramark-3ht`) `plasmid`
+is its only loader: a `protein_construct`'s `sequence` is the full-length amino-acid sequence,
+carries the amino-acid pattern itself, and its computed length is `length_aa`.
 
 ### Entities
 
-| Kind | Part | Fields beyond `sequence`/`length_bp` |
+| Kind | Part | Fields beyond the sequence and length columns |
 |---|---|---|
 | `protein_construct` | `proteins` | `mature_sequence` (sequence), `aliases`, `molecular_weight_da`, `pi`, extinction coefficients as computed columns, `tag` |
 | `plasmid` | `nucleic_acids` | `construct` (ref → `protein_construct`, `lineage: true`), `backbone`, `resistance` (enum `amp, kan, cm, spec, tet`), `origin_of_replication`, `promoter`, `affinity_tags` |

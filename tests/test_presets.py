@@ -85,7 +85,7 @@ EXPECTED_VERSIONS = {
     "cellbio": 1,
     "nucleic_acids": 3,
     "bacteria": 2,
-    "proteins": 3,
+    "proteins": 4,
     "cell_culture": 3,
     "immuno": 2,
     "viral_vectors": 2,
@@ -189,7 +189,7 @@ PART_KINDS = {
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
 MOLBIO_VERSIONS = {
     "base": 5,
-    "proteins": 3,
+    "proteins": 4,
     "nucleic_acids": 3,
     "bacteria": 2,
     "cell_culture": 3,
@@ -199,7 +199,7 @@ MOLBIO_VERSIONS = {
 #: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
 CELLBIO_VERSIONS = {
     "base": 5,
-    "proteins": 3,
+    "proteins": 4,
     "nucleic_acids": 3,
     "cell_culture": 3,
     "immuno": 2,
@@ -458,15 +458,20 @@ def test_bundled_sequence_fields_carry_the_iupac_patterns() -> None:
     nucleic = load_repo_preset("nucleic_acids")
 
     construct = proteins.kinds["protein_construct"]
-    assert construct.fields["sequence"].pattern == NUCLEOTIDE_PATTERN
+    # Version 4: the construct's sequence is amino acids and carries its own
+    # pattern; the shared (nucleotide) mixin is now loaded by ``plasmid`` only.
+    assert construct.fields["sequence"].pattern == AMINO_ACID_PATTERN
     assert construct.fields["mature_sequence"].pattern == AMINO_ACID_PATTERN
-    # ``sequence_fields`` is the mixin both construct kinds share.
+    assert "sequence_fields" not in construct.mixins
+    assert construct.fields["length_aa"].expr == "CHAR_LENGTH(sequence)"
+    assert "length_bp" not in construct.fields
     assert "sequence_fields" in yaml.safe_load(
         repo_preset("proteins").read_text(encoding="utf-8")
     )["mixins"]
     assert nucleic.kinds["plasmid"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
+    assert nucleic.kinds["plasmid"].fields["length_bp"].expr == "CHAR_LENGTH(sequence)"
     assert nucleic.kinds["oligo"].fields["sequence"].pattern == NUCLEOTIDE_PATTERN
-    assert proteins.preset_versions["proteins"] == 3
+    assert proteins.preset_versions["proteins"] == 4
     assert nucleic.preset_versions["nucleic_acids"] == 3
 
 
@@ -499,7 +504,7 @@ def test_iupac_patterns_validate_rows_in_a_new_ledger(ledger_factory) -> None:
 
     with pytest.raises(UsageError, match="does not match the pattern"):
         ledger.entities.add(
-            "protein_construct", name="c-bad", values={"sequence": "ACGTZ"}
+            "protein_construct", name="c-bad", values={"sequence": "ACGT1"}
         )
     with pytest.raises(UsageError, match="does not match the pattern"):
         ledger.entities.add(
@@ -602,8 +607,8 @@ def test_molbio_derives_construct_fields_from_zsqlab08() -> None:
     assert construct.object is ObjectType.entity
     assert construct.fields["sequence"].type is FieldType.sequence
     assert construct.fields["sequence"].unique
-    assert construct.fields["length_bp"].type is FieldType.computed
-    assert construct.fields["length_bp"].expr == "CHAR_LENGTH(sequence)"
+    assert construct.fields["length_aa"].type is FieldType.computed
+    assert construct.fields["length_aa"].expr == "CHAR_LENGTH(sequence)"
     assert construct.fields["molecular_weight_da"].type is FieldType.decimal
 
     reduced = construct.fields["extinction_coefficient_reduced_0p1pct"]
@@ -824,7 +829,7 @@ def test_molbio_v3_fresh_init_has_every_kind_table_and_part_version(
         )
     }
     assert {
-        "length_bp",
+        "length_aa",
         "extinction_coefficient_reduced_0p1pct",
         "extinction_coefficient_oxidized_0p1pct",
         "sequence_sha256",

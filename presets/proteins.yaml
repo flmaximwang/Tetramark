@@ -1,5 +1,5 @@
 preset: proteins
-version: 3
+version: 4
 description: >-
   Protein designs and their purified preparations: one entity per amino-acid
   sequence, with the extinction-coefficient formulas from zsqlab08, and the
@@ -9,10 +9,14 @@ description: >-
 
 include: [base]
 
-# ``sequence_fields`` lives here because this is the deepest part that both
-# ``protein_construct`` (here) and ``plasmid`` (nucleic_acids, which includes
-# this part) load, so one definition serves both.  ``base`` is lower in the
-# include graph but domain-neutral, so a sequence mixin does not belong there.
+# ``sequence_fields`` lives here because ``plasmid`` (nucleic_acids) loads it
+# through this part.  It is a **nucleotide** field: an entity's ``sequence`` is
+# its DNA and ``length_bp`` counts base pairs.  ``base`` is lower in the include
+# graph but domain-neutral, so a sequence mixin does not belong there.
+#
+# ``protein_construct`` no longer loads it (version 4): a construct's
+# ``sequence`` is its full-length **amino-acid** sequence, which ticket rq9 had
+# been validating -- and naming -- as if it were DNA.
 mixins:
   sequence_fields:
     sequence:
@@ -36,8 +40,23 @@ kinds:
     description: >-
       A protein design (the old entity_constructs table); one row per amino-acid
       sequence, with the extinction-coefficient formulas from zsqlab08.
-    mixins: [named_fields, sequence_fields]
+    mixins: [named_fields]
     fields:
+      sequence:
+        type: sequence
+        unique: true
+        long: true
+        pattern: "[ACDEFGHIKLMNPQRSTVWYXBZUO*]+"
+        description: >-
+          Full-length protein sequence (IUPAC amino-acid codes, including the
+          ambiguity and stop symbols); normalised (uppercase, whitespace
+          stripped) by the app and fingerprinted through the generated
+          sequence_sha256 column.
+      length_aa:
+        type: computed
+        expr: "CHAR_LENGTH(sequence)"
+        sql_type: int
+        description: Protein length in amino acids, recomputed from sequence.
       mature_sequence:
         type: sequence
         long: true

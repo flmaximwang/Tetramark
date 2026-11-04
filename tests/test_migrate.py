@@ -3543,6 +3543,194 @@ def test_pattern_presets_1_to_2_migration_chain(
         again.stdout + again.stderr
     )
 
+
+# ---------------------------------------------------------------------------
+# Tetramark-3ht: proteins 3 -> 4 (a construct's sequence is amino acids)
+# ---------------------------------------------------------------------------
+
+PROTEINS_3_TO_4 = (
+    ROOT / "migration" / "presets" / "proteins" / "3-to-4" / "migrate.py"
+)
+PROTEINS_3_TO_4_DIR = PROTEINS_3_TO_4.parent
+PROTEINS_4 = PROTEINS_3_TO_4_DIR / "proteins-4.yaml"
+PROTEINS_3 = (
+    ROOT / "migration" / "presets" / "proteins" / "2-to-3" / "proteins-3.yaml"
+)
+
+#: ``preset_versions`` of the spec-6 closure with proteins still at 3.
+PROTEINS_V3_VERSIONS = {
+    "bacteria": 2,
+    "base": 5,
+    "cell_culture": 3,
+    "molbio": 3,
+    "nucleic_acids": 3,
+    "proteins": 3,
+}
+
+#: The amino-acid sequence a legacy construct carries in its ``sequence``.
+CONSTRUCT_AA = "MGSSHHHHHHSSGMVNEVIDINEAVRAYIAQIEGLRAEIGRLDATIATLR"
+
+
+def write_proteins_v3_presets(directory: Path) -> Path:
+    """The spec-6 closure with proteins at v3, before Tetramark-3ht.
+
+    The repository ships proteins 4 now, so the ledger's own copy comes from the
+    frozen v3 file the manual ``proteins/2-to-3`` step installs; every other
+    part is the current spec-6 copy.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("base", "bacteria", "cell_culture", "nucleic_acids", "molbio"):
+        shutil.copyfile(REPO_PRESETS / f"{name}.yaml", directory / f"{name}.yaml")
+    shutil.copyfile(PROTEINS_3, directory / "proteins.yaml")
+    return directory / "molbio.yaml"
+
+
+def proteins_v3_ledger(
+    factory, directory: Path, *, name: str = "proteins-v3"
+) -> Ledger:
+    ledger = factory([write_proteins_v3_presets(directory)], name=name, real_init=True)
+    assert ledger.schema.preset_versions == PROTEINS_V3_VERSIONS
+    assert json.loads(ledger.meta["preset_versions"]) == PROTEINS_V3_VERSIONS
+    return ledger
+
+
+def seed_amino_acid_construct(ledger: Ledger) -> dict[str, Any]:
+    """One construct holding the legacy amino-acid sequence in ``sequence``.
+
+    The v3 preset still validates ``sequence`` as nucleotide, so the row is
+    added with a valid value and corrected with SQL: exactly the row the legacy
+    import produced and the v3 pattern never saw.
+    """
+    construct = ledger.entities.add(
+        "protein_construct",
+        name="gPFD",
+        values={"sequence": "ACGTN", "molecular_weight_da": 12345.67},
+    )
+    ledger.driver.execute(
+        "UPDATE `entity_protein_construct` SET `sequence` = %s WHERE `id` = %s",
+        (CONSTRUCT_AA, construct["id"]),
+    )
+    ledger.driver.commit("test: seed the legacy amino-acid construct")
+    ledger.read_meta()
+    return construct
+
+
+def test_proteins_3_to_4_renames_the_construct_length(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Tetramark-3ht: one real spec-6 ledger, dry run then one commit.
+
+    The v3 nucleotide pattern reports the legacy construct; the step places the
+    frozen v4 copy, renames ``length_bp`` to ``length_aa`` in place and
+    regenerates the tests, so ``tm check`` is green again with the same row.
+    """
+    ledger = proteins_v3_ledger(
+        embedded_ledger_factory, tmp_path / "proteins-v3-presets"
+    )
+    seeded = seed_amino_acid_construct(ledger)
+    report = run_check(ledger.driver, ledger.schema)
+    assert not report.passed
+    assert "schema_protein_construct_pattern_sequence" in {
+        result.name for result in report.blocking_failures
+    }
+    copies_before = {
+        name: (ledger.path / "presets" / f"{name}.yaml").read_bytes()
+        for name in PROTEINS_V3_VERSIONS
+    }
+
+    # -- a spec-5 ledger refuses: the v4 preset belongs to spec 6 ----------
+    commits_pre = commit_count(ledger)
+    step = load_step_module(PROTEINS_3_TO_4).step
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '5' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: pretend a spec-5 ledger")
+    ledger.read_meta()
+    head_pretend = head(ledger)
+    with pytest.raises(LedgerError, match="migration/spec/5-to-6"):
+        step.plan(ledger)
+    # The refusal wrote nothing: only the test's own commit is new.
+    assert head(ledger) == head_pretend
+    assert commit_count(ledger) == commits_pre + 1
+    assert tags(ledger) == {}
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '6' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: back to spec 6")
+    ledger.read_meta()
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    # -- dry run writes nothing -------------------------------------------
+    dry = run_python(
+        PROTEINS_3_TO_4, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: proteins 3 -> 4" in dry.stdout
+    assert "CALL DOLT_TAG('pre-migrate-proteins-3'" in dry.stdout
+    assert "RENAME COLUMN `length_bp` TO `length_aa`" in dry.stdout
+    assert '"proteins": 4' in dry.stdout
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    for name, data in copies_before.items():
+        assert (ledger.path / "presets" / f"{name}.yaml").read_bytes() == data, name
+
+    # -- apply: exactly one commit ----------------------------------------
+    applied = run_python(PROTEINS_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): proteins 3 -> 4" in applied.stdout
+
+    reopened = open_ledger(ledger.path)
+    try:
+        assert_fingerprint_refreshed(reopened)
+        assert reopened.check_fingerprint(warn=False) is True
+        assert json.loads(reopened.meta["preset_versions"]) == {
+            **PROTEINS_V3_VERSIONS,
+            "proteins": 4,
+        }
+        assert (reopened.path / "presets" / "proteins.yaml").read_bytes() == (
+            PROTEINS_4.read_bytes()
+        )
+        assert commit_count(reopened) == commits_before + 1
+        assert tags(reopened) == {"pre-migrate-proteins-3": head_before}
+        assert commit_message(reopened, head(reopened)) == (
+            "migrate(ledger): proteins 3 -> 4"
+        )
+
+        columns = column_names(reopened, "entity_protein_construct")
+        assert "length_aa" in columns
+        assert "length_bp" not in columns
+        # The value moved in place: same sequence, same length, no data change.
+        rows = reopened.driver.query(
+            "SELECT `sequence`, `length_aa` FROM `entity_protein_construct` "
+            "WHERE `id` = %s",
+            (seeded["id"],),
+        )
+        assert rows == [
+            {"sequence": CONSTRUCT_AA, "length_aa": len(CONSTRUCT_AA)}
+        ]
+        assert row_count(reopened, "entity_protein_construct") == 1
+
+        # The amino-acid pattern now matches the row: the check is green.
+        checked = tm_check(reopened)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        reopened.close()
+
+    # -- a second run refuses the counter ---------------------------------
+    again = run_python(PROTEINS_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "preset_versions[proteins] 4, expected 3" in (
+        again.stdout + again.stderr
+    )
+
+
 # ---------------------------------------------------------------------------
 # spec/4-to-5: one view per box, positions follow in stock (ticket 30)
 # ---------------------------------------------------------------------------

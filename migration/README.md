@@ -159,6 +159,11 @@ again:
   `nucleic_acids-1.yaml` in the proteins step because that part's counter stays
   at 1 there). On a wave-12 upgrade the two pattern steps run **after**
   `base/3-to-4` (they need base 4) and in the order proteins → nucleic_acids.
+  Ticket `Tetramark-3ht`'s **proteins 4** (a construct's `sequence` is amino
+  acids) is the **manual** example: it retrofits the README-only
+  `proteins/2-to-3` step with a frozen `proteins-3.yaml`, because that step
+  installs the copy of its checkout and would otherwise place v4 behind its own
+  counter.
 - **A bundle step records its part counters.** When a preset becomes a bundle
   (`include:` only), its step passes `preset_versions_extra={part: 1, ...}` so
   the one commit also records the version of every file the ledger now loads.
@@ -254,6 +259,7 @@ constraints/views — no hand-written SQL, no data loss.
 | [`presets/library/2-to-3`](presets/library/2-to-3/README.md) | `preset_versions.library` 2 → 3 | **Manual**: the `tube` status set leaves the library part. |
 | [`presets/mouse/1-to-2`](presets/mouse/1-to-2/README.md) | `preset_versions.mouse` 1 → 2 | **Manual**: the `animal`/`cryo` status sets leave the mouse part; a cohort's detailed state becomes the optional `fate` stock property. |
 | [`presets/nucleic_acids/2-to-3`](presets/nucleic_acids/2-to-3/README.md) | `preset_versions.nucleic_acids` 2 → 3 | **Manual**: the `tube` status set leaves the nucleic acids part. |
-| [`presets/proteins/2-to-3`](presets/proteins/2-to-3/README.md) | `preset_versions.proteins` 2 → 3 | **Manual**: the `tube` status set leaves the proteins part. |
+| [`presets/proteins/2-to-3`](presets/proteins/2-to-3/README.md) | `preset_versions.proteins` 2 → 3 | **Manual**: the `tube` status set leaves the proteins part. The frozen `proteins-3.yaml` keeps this step installing v3 after [proteins 3 → 4](presets/proteins/3-to-4/README.md) bumps the part again. |
+| [`presets/proteins/3-to-4`](presets/proteins/3-to-4/README.md) | `preset_versions.proteins` 3 → 4 | Splits the shared `sequence_fields` mixin: `protein_construct` gets its own `sequence` with the amino-acid pattern and `length_aa`, while `plasmid` keeps the nucleotide `sequence`/`length_bp`. Applies the `length_bp` → `length_aa` rename from `renames.yaml`, places the frozen v4 copy, recreates the construct view; requires spec 6 and runs after `spec/5-to-6`. |
 | [`presets/viral_vectors/1-to-2`](presets/viral_vectors/1-to-2/README.md) | `preset_versions.viral_vectors` 1 → 2 | **Manual**: the `tube` status set leaves the viral vectors part. |
 | [`presets/zebrafish/1-to-2`](presets/zebrafish/1-to-2/README.md) | `preset_versions.zebrafish` 1 → 2 | **Manual**: the `animal`/`cryo` status sets leave the zebrafish part; a group's detailed state becomes the optional `fate` stock property. |
