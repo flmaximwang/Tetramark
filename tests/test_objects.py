@@ -1928,6 +1928,58 @@ def test_stock_show_resolves_stock_aliases(ledger_factory) -> None:
     assert ledger.aliquots.add("LOT1")["stock_id"] == stock["id"]
 
 
+def test_stock_show_aliquot_rows_carry_label_path_aliases_and_in_stock(
+    ledger_factory,
+) -> None:
+    """Each embedded tube row answers "how much and where" without a second read."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=2, quantity="5", unit="ul"
+    )
+    first, second = stock["aliquots"]
+    ledger.aliquots.move(first, box="BOX", slot="A1", message="placed")
+    ledger.aliases.add("aliquot", first, "tube-A")
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `label` = 'first tube' WHERE `id` = %s", (first,)
+    )
+
+    rows = ledger.stocks.show(stock["id"])["aliquots"]
+
+    assert set(rows[0]) == {
+        "id",
+        "seq",
+        "status",
+        "quantity",
+        "unit",
+        "label",
+        "box_id",
+        "slot",
+        "path",
+        "aliases",
+        "in_stock",
+    }
+    assert rows[0]["id"] == first
+    assert rows[0]["seq"] == 1
+    assert rows[0]["status"] == "stored"
+    assert Decimal(str(rows[0]["quantity"])) == Decimal("5")
+    assert rows[0]["unit"] == "ul"
+    assert rows[0]["label"] == "first tube"
+    assert rows[0]["box_id"] is not None
+    assert rows[0]["slot"] == "A1"
+    assert rows[0]["path"] == "BOX:A1"
+    assert rows[0]["aliases"] == ["tube-A"]
+    assert rows[0]["in_stock"] is True
+
+    assert rows[1]["id"] == second
+    assert rows[1]["status"] == "pending"
+    assert rows[1]["label"] is None
+    assert rows[1]["path"] is None
+    assert rows[1]["aliases"] == []
+    assert rows[1]["in_stock"] is False
+
+
 # ---------------------------------------------------------------------------
 # Status sets and transitions (spec 4)
 # ---------------------------------------------------------------------------

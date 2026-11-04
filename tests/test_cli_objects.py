@@ -1311,6 +1311,66 @@ def test_cli_stock_show_of_an_aliquot_names_the_aliquot_verb(
     assert err.strip() == expected
 
 
+def test_cli_stock_show_renders_aliquots_as_cards(
+    cli_env: None, ledger_factory
+) -> None:
+    """Text `stock show` prints one card per tube; JSON keeps the record."""
+    ledger = ledger_factory([BASE], name="cli-stock-cards", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "BOX")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--aliquots",
+            "1",
+            "--box",
+            "BOX",
+            "--slot",
+            "A1",
+            "--quantity",
+            "500",
+            "--unit",
+            "ul",
+            "--json",
+        ).output
+    )
+    first = stock["aliquots"][0]
+    write(ledger, "aliquot", "add", stock["id"], "--count", "1")
+    write(ledger, "alias", "add", "aliquot", first, "tube-A")
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `label` = 'first tube' WHERE `id` = %s", (first,)
+    )
+
+    text = read(ledger, "stock", "show", stock["id"]).output
+    assert "aliquots  2" in text
+    assert f"{first} · stored" in text
+    assert "500.000000 ul" in text
+    assert "label: first tube" in text
+    assert "BOX:A1" in text
+    assert "aliases: tube-A" in text
+    assert "not in stock" in text
+    # The old rendering put a JSON blob inside an `aliquots` field row.
+    assert '{"id"' not in text
+    assert "[{" not in text
+
+    rows = json.loads(
+        read(ledger, "stock", "show", stock["id"], "--json").output
+    )["aliquots"]
+    assert rows[0]["label"] == "first tube"
+    assert rows[0]["path"] == "BOX:A1"
+    assert rows[0]["aliases"] == ["tube-A"]
+    assert rows[0]["in_stock"] is True
+    assert rows[1]["in_stock"] is False
+    assert rows[1]["path"] is None
+
+
 def test_cli_aliquot_show_of_a_stock_names_the_stock_verb(
     cli_env: None,
     ledger_factory,

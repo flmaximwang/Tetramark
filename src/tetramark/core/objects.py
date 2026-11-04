@@ -2003,6 +2003,13 @@ def edit_stock(
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
     """One stock, its sorted aliases (``aliases``) and its aliquots.
 
+    Each embedded aliquot row carries what a reader asks of a tube: ``id``,
+    ``seq``, ``status``, ``quantity``, ``unit``, ``label``, ``box_id``,
+    ``slot``, the slot-inclusive ``path`` (NULL when the tube is not in
+    stock), its sorted ``aliases`` and the derived ``in_stock`` flag.  The
+    rows, their paths and their aliases ride in the same read batch as the
+    stock, so a stock show never pays a query per tube.
+
     A ref that names an aliquot is a not-found error that points at
     ``tm aliquot show`` (spec §6); any other miss points at ``tm find``,
     which applies the ledger's ``find.rewrites`` rules.
@@ -2016,10 +2023,23 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
             ref,
             extras=[
                 (
-                    "SELECT `id`, `seq`, `status`, `quantity`, `unit`, `box_id`, `slot` "
-                    f"FROM `aliquot` WHERE `stock_id` = {id_sql} ORDER BY `seq`",
+                    "SELECT a.`id`, a.`seq`, a.`status`, a.`quantity`, a.`unit`, "
+                    "a.`label`, a.`box_id`, a.`slot`, "
+                    "COALESCE(l.`location`, l.`box_path`) AS `path` "
+                    "FROM `aliquot` a "
+                    "LEFT JOIN `v_aliquot_location` l "
+                    "ON l.`aliquot_id` = a.`id` "
+                    f"WHERE a.`stock_id` = {id_sql} ORDER BY a.`seq`",
                     params,
-                )
+                ),
+                (
+                    "SELECT al.`object_id`, al.`alias` FROM `alias` al "
+                    "WHERE al.`object_type` = 'aliquot' "
+                    f"AND al.`object_id` IN (SELECT a.`id` FROM `aliquot` a "
+                    f"WHERE a.`stock_id` = {id_sql}) "
+                    "ORDER BY al.`object_id`, al.`alias`",
+                    params,
+                ),
             ],
         )
     except UsageError:
@@ -2031,8 +2051,29 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
             # A plain miss points at ``tm find`` (rewrite rules live there).
             raise LedgerError(f"{error}{try_find_hint(ref)}") from error
         raise LedgerError(f"{error}{hint}") from error
+    status_set = aliquot_status_set(ledger, str(record["kind"]))
+    aliases_by_tube: dict[str, list[str]] = {}
+    for row in extra[1]:
+        aliases_by_tube.setdefault(str(row["object_id"]), []).append(
+            str(row["alias"])
+        )
     record["aliases"] = aliases
-    record["aliquots"] = extra[0]
+    record["aliquots"] = [
+        {
+            "id": str(row["id"]),
+            "seq": int(row["seq"]),
+            "status": str(row["status"]),
+            "quantity": row["quantity"],
+            "unit": row["unit"],
+            "label": row["label"],
+            "box_id": row["box_id"],
+            "slot": row["slot"],
+            "path": row["path"],
+            "aliases": aliases_by_tube.get(str(row["id"]), []),
+            "in_stock": status_is_in_stock(status_set, str(row["status"])),
+        }
+        for row in extra[0]
+    ]
     return record
 
 

@@ -220,8 +220,11 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
   owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),
   `active` (at least one in stock) or `depleted` (every aliquot has left stock). `--where` takes the
   shared filters (see **Filters** above).
-- `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
-  row in table output).
+- `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
+  carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
+  `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**
+  with a rounded border (`<id> · <status>`, quantity/unit, `label:`, path or `not in stock`,
+  `aliases:`), not a JSON blob; `tm aliquot list STOCK` is the tabular view.
 
 `stock renumber` repairs ids that predate (or ignore) the ledger's stock id strategy. Give one REF and
 `--id NEW` for a single rename, one or more REFs with `--auto` to generate strategy-shaped ids, or
