@@ -776,7 +776,10 @@ def test_animal_transitions_follow_the_status_set(ledger_factory) -> None:
     assert "tm aliquot move" in str(forced.exception)
 
     # Placing the mouse again restores the in-stock status through one move.
-    restored = ok(ledger, "aliquot", "move", aliquot, "--box", "CAGE-1")
+    restored = ok(
+        ledger, "aliquot", "move", aliquot, "--box", "CAGE-1",
+        "-m", "placed back in CAGE-1",
+    )
     assert "alive" in restored.output
     row = ledger.driver.query(
         "SELECT `old_status`, `new_status` FROM `aliquot_event` "
