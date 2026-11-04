@@ -92,7 +92,7 @@ tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quant
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path
 tm aliquot move ALQ --box NAME [--slot S] [--status S]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]      # decrements quantity; reaching 0 → consumed
-tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: a status of the stock kind's set
+tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
@@ -108,7 +108,7 @@ tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # desce
 
 # Data: import, export, check
 tm import KIND FILE.csv [--object entity|stock|aliquot|box]   # all-or-nothing, one commit
-                                # a 'status' column is a creation status (any set status)
+                                # a 'status' column is a creation status (any of the four, §1.1)
 tm import all DIRECTORY ; tm export KIND|all [--out DIR]
 tm check [-v] [--group G] [--format table|json|csv]
 
@@ -138,20 +138,19 @@ backup, `tm backup --name NAME` for another, `tm backup --list` to list). A miss
 configured backup is a usage error; nothing is created implicitly. A directory literally named
 `list` must be passed as `./list`, so it is not read as a subcommand.
 
-Creating aliquots accepts any status of the stock kind's set (`--status`, or the import `status`
-column); changing one follows the set's `to:` rules. `--force` requires `--note`, records
-`aliquot_event.forced = TRUE` and is the only way to make an unforced-illegal change; without
-`--force` the CLI refuses and names the allowed next status(es).
+Creating aliquots accepts any of the four fixed statuses `pending`, `stored`, `missing`, `consumed`
+(`--status`, or the import `status` column); changing one follows the fixed transitions (§1.1).
+`--force` requires `--note`, records `aliquot_event.forced = TRUE` and is the only way to make an
+unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
 
-An aliquot's **position follows its status** (spec 5): a status with `in_stock: true` needs a
-position (a box, plus a slot when that box is slotted), and changing to any other status clears
-`box_id`/`slot` in the same write. A `status`/`use` change that leaves stock records the old
-position in the event's `from_box_id`/`from_slot` (with `to_*` NULL), so `tm history` still shows
-where the tube was; changing to an in-stock status without a position is refused with a hint to run
-`tm aliquot move ALQ --box NAME --slot S`. `tm aliquot move` of a not-in-stock aliquot also sets the
-single in-stock status of its stock kind's set; when the set has more than one in-stock status it
-refuses and lists them unless `--status` names one. If the aliquot is already in stock, a move with
-`--status` runs the normal transition check and the result must stay in stock.
+An aliquot's **position follows its status** (spec 5): `stored` needs a position (a box, plus a slot
+when that box is slotted), and changing to any other status clears `box_id`/`slot` in the same write.
+A `status`/`use` change that leaves stock records the old position in the event's
+`from_box_id`/`from_slot` (with `to_*` NULL), so `tm history` still shows where the tube was;
+changing to `stored` without a position is refused with a hint to run
+`tm aliquot move ALQ --box NAME --slot S`. `tm aliquot move` of an aliquot that is not `stored` also
+sets it to `stored`; a move with `--status` runs the normal transition check, and the result must be
+`stored`.
 
 A box name must be **view-safe**, because each existing box gets a generated view (§3):
 `v_box_<name>` must not equal a core view (for example `slots`), the name is at most 58 characters
@@ -176,8 +175,8 @@ shortened prefix) or one of the tube's aliases (including the old ids `tm stock 
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
 `notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the
 tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
-`Freezer-1/Shelf-2/Box:A3`) and the derived `in_stock` flag (the status has `in_stock: true` in
-its stock kind's status set, §2.4). A tube that is not in stock has `box_id`, `slot` and `path`
+`Freezer-1/Shelf-2/Box:A3`) and the derived `in_stock` flag (true exactly when the status is
+`stored`, §1.1). A tube that is not in stock has `box_id`, `slot` and `path`
 NULL. The stock kind's own fields stay in `tm stock show`, and the tube's events stay in
 `tm history ALQ`: `show` carries no event timeline. The command is read-only and changes no
 ledger format — `spec_version` is untouched.
