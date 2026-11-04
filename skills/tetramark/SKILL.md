@@ -50,7 +50,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
 | Mark lost / consumed / planned | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions) |
 | Record a detailed life state | `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event `--note` |
-| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move`) |
+| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move … -m MSG`) |
 | Hard-delete a tube (rare) | `tm aliquot purge ALQ` |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
