@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.2](v0.8.2.md) | `v0.8.2.md` | box ids in `box list`/`box show`; aliquot help points at `move`/`use`/`status` |
 | [0.8.1](v0.8.1.md) | `v0.8.1.md` | stock show cards in wrapping rows; regex find, shared filters, rewrite rules |
 | [0.8.0](v0.8.0.md) | `v0.8.0.md` | one fixed status set; `use`/`move` require `-m`; manual spec 5→6 upgrade |
 | [0.7.2](v0.7.2.md) | `v0.7.2.md` | `tm aliquot list`: find the usable tubes |

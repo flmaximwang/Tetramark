@@ -303,6 +303,19 @@ tm aliquot purge ALQ [--json]
   check runs and the result must still be `stored`.
 - `purge` hard-deletes an aliquot and its events. It is the only hard delete; prefer `status consumed`.
 
+### Move a tube to another box
+
+Use `tm box list` to find the destination name or short id, then inspect its free slots:
+
+```sh
+tm box show WFL-12-03
+tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03 C3"
+```
+
+Omit `--slot` for a slotless box. `--box` accepts a name, full id, alias or unique id prefix.
+Change placement with `move`, quantity with `use`, and status with `status` (also shown by
+`tm aliquot --help`). See the [tube move recipe](recipes.md#move-a-tube-to-another-box).
+
 The Python API mirrors the CLI through `ledger.aliquots`:
 `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no `purpose`/`note`
@@ -318,10 +331,11 @@ tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 ```
 
-`box list` prints `name kind path occupied capacity`. `occupied` counts the aliquots and the immediate
-child boxes directly in the box (items, not slots; nested contents do not roll up), and `capacity` is
-slots × `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, or
-blank when unlimited. `--where` filters the core box columns and the box kind's fields; the derived
+`box list` prints `id name kind path occupied capacity`. The first column shows a unique short UUID
+prefix (at least eight characters) in the table; CSV and JSON keep the full UUID. `occupied` counts
+the aliquots and the immediate child boxes directly in the box (items, not slots; nested contents do
+not roll up), and `capacity` is slots × `slot_capacity` for `grid`/`named` geometry, the declared
+capacity for slotless geometry, or blank when unlimited. `--where` filters the core box columns and the box kind's fields; the derived
 `path`/`occupied`/`capacity` columns are output, not filters (see **Filters** above).
 
 `box add` materialises the slots implied by the geometry (`grid8x12` → 96, `grid9x9` → 81, `rack` →
@@ -337,8 +351,9 @@ refuses a name that is another box's name or alias, keeps the old name as an ali
 `v_box_<old>` with `v_box_<new>` in the same commit.
 
 `box show` prints a terminal grid with an `aliases: …` line when the box has aliases (or `--json` for
-`{box, kind, geometry, path, aliases, slots:[...]}`) and works for slotless boxes too (it lists child
-boxes). `--format csv` prints one row per slot.
+`{id, box, kind, geometry, path, aliases, slots:[...]}` with the full UUID) and works for slotless
+boxes too (it lists child boxes). The text header is `<name>  <kind>  id: <short>  path: ...`,
+using the first eight UUID characters. `--format csv` prints one row per slot.
 
 ## The interactive form (for people)
 

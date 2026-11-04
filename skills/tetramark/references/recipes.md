@@ -74,6 +74,21 @@ The slots are consumed in the order given; one slot per new aliquot. A move keep
 status and quantity and records a `move` event with the old and new positions. It requires
 `-m/--message` too: say why the tube moved.
 
+### Move a tube to another box
+
+```sh
+tm box list
+tm box show WFL-12-03
+tm aliquot move 1226FP01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03 C3"
+tm aliquot show 1226FP01.2
+```
+
+`box list` starts with an `id` column: unique short UUID prefixes in the table, full UUIDs in
+CSV and JSON. `box show` includes a short id in its header and the full `id` in JSON. Choose a
+free slot from the destination view; omit `--slot` for a slotless box. `--box` accepts the box
+name, full id, alias or unique id prefix. Placement changes use `move`, quantity changes use
+`use`, and status changes use `status`.
+
 ## 3. Use part of a bacterial pellet
 
 A `bacterial_pellet` stock is one culture; its **aliquots are the tubes and hold the volume**. The stock ID is

@@ -13,7 +13,10 @@ from tetramark.cli.options import group, json_output, resolve_ledger, write_comm
 from tetramark.cli.output import emit_read, output_format, short_uuid_ids
 from tetramark.core.objects import plain_decimal
 
-aliquot_app = group("Aliquots: the physical tubes that occupy box slots.")
+aliquot_app = group(
+    "Aliquots: the physical tubes that occupy box slots.\n\n"
+    "Change placement with move, quantity with use, and status with status."
+)
 
 #: Record fields the human table does not print as key/value rows: ``path``
 #: gets its own line and ``object`` (always ``aliquot``) is noise for a human.

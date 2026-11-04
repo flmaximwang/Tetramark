@@ -8,6 +8,8 @@ tests run against a real ledger.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 
 import pytest
@@ -197,6 +199,59 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
     assert f"{stock_id},lot,{entity_id},alpha,0,depleted" in (
         stock_csv.output.splitlines()
     )
+
+
+@pytest.mark.fast
+def test_aliquot_help_points_to_change_commands() -> None:
+    result = CliRunner().invoke(app, ["aliquot", "--help"])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    assert "Change placement with move, quantity with use, and status with status." in text
+
+
+def test_box_ids_in_table_csv_json_and_show(cli_env: None, ledger_factory) -> None:
+    """``box list``/``box show`` expose the uuid: short in the table, full in JSON/CSV."""
+    ledger = ledger_factory([BASE], name="box-short-ids")
+    ids = {
+        name: ledger.boxes.add("grid96", name)["id"]
+        for name in ("alpha", "beta", "solo")
+    }
+
+    table = invoke(ledger, "box", "list")
+    assert table.exit_code == 0, table.output
+    assert table.output.splitlines()[0].split() == [
+        "id",
+        "name",
+        "kind",
+        "path",
+        "occupied",
+        "capacity",
+    ]
+    for name, box_id in ids.items():
+        assert is_uuid4(box_id)
+        assert _row_tokens(table.output, name)[0] == box_id[:8]
+        assert box_id not in table.output
+
+    listed = invoke(ledger, "box", "list", "--json")
+    assert listed.exit_code == 0, listed.output
+    assert {row["id"] for row in json.loads(listed.output)} == set(ids.values())
+    listed_csv = invoke(ledger, "--format", "csv", "box", "list")
+    assert listed_csv.exit_code == 0, listed_csv.output
+    reader = csv.DictReader(io.StringIO(listed_csv.output))
+    assert reader.fieldnames == ["id", "name", "kind", "path", "occupied", "capacity"]
+    assert {row["id"] for row in reader} == set(ids.values())
+
+    shown = invoke(ledger, "box", "show", "solo", "--json")
+    assert shown.exit_code == 0, shown.output
+    assert json.loads(shown.output)["id"] == ids["solo"]
+    text = invoke(ledger, "box", "show", "solo")
+    assert text.exit_code == 0, text.output
+    assert text.output.splitlines()[0] == (
+        f"solo  grid96  id: {ids['solo'][:8]}  path: solo"
+    )
+    slots = invoke(ledger, "--format", "csv", "box", "show", "solo")
+    assert slots.exit_code == 0, slots.output
+    assert slots.output.splitlines()[0] == "slot,row,col,occupants"
 
 
 def test_list_table_widens_colliding_uuid_prefixes(

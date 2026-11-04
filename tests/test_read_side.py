@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tetramark.cli.app import app
+from tetramark.cli.output import is_uuid4
 from tetramark.errors import LedgerError
 from tetramark.ops.render import (
     box_csv_rows,
@@ -174,7 +175,7 @@ def test_find_reports_location_across_objects(ledger_factory) -> None:
 
 def test_box_show_grid_json_shape_and_snapshot(ledger_factory) -> None:
     ledger = ledger_factory([BUNDLED_BASE], name="render-grid")
-    ledger.boxes.add("grid9x9", "GRID")
+    created = ledger.boxes.add("grid9x9", "GRID")
     first = add_item(ledger, "first")
     second = add_item(ledger, "second")
     stock = add_lot(
@@ -187,7 +188,8 @@ def test_box_show_grid_json_shape_and_snapshot(ledger_factory) -> None:
     third_aliquot = second_stock["aliquots"][0]
 
     view = ledger.boxes.show("GRID")
-    assert set(view) == {"box", "kind", "geometry", "path", "aliases", "slots"}
+    assert set(view) == {"id", "box", "kind", "geometry", "path", "aliases", "slots"}
+    assert view["id"] == created["id"]
     assert view["box"] == "GRID"
     assert view["kind"] == "grid9x9"
     assert view["path"] == "GRID"
@@ -221,7 +223,7 @@ def test_box_show_grid_json_shape_and_snapshot(ledger_factory) -> None:
         for line in text.splitlines()
     )
     assert normalized == (
-        "GRID  grid9x9  path: GRID\n"
+        f"GRID  grid9x9  id: {created['id'][:8]}  path: GRID\n"
         "3 of 81 slots used\n"
         "       1       2      3       4  5  6  7  8      9\n"
         "A  {first}\n"
@@ -282,7 +284,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
         ledger, item["id"], box="RACK", slots=("1",), quantity="3"
     )
     rack = ledger.boxes.show("RACK")
-    assert set(rack) == {"box", "kind", "geometry", "path", "aliases", "slots"}
+    assert set(rack) == {"id", "box", "kind", "geometry", "path", "aliases", "slots"}
     assert rack["geometry"]["type"] == "named"
     assert rack["geometry"]["slots"] == [str(number) for number in range(1, 11)]
     assert next(slot for slot in rack["slots"] if slot["label"] == "1")[
@@ -299,6 +301,7 @@ def test_box_show_named_and_slotless_list_forms(ledger_factory) -> None:
     )
     shelf = ledger.boxes.show("SHELF")
     assert set(shelf) == {
+        "id",
         "box",
         "kind",
         "geometry",
@@ -471,6 +474,7 @@ def test_cli_box_show_json_and_csv(cli_env: None, ledger_factory) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert set(payload) == {
+        "id",
         "box",
         "kind",
         "geometry",
@@ -480,6 +484,7 @@ def test_cli_box_show_json_and_csv(cli_env: None, ledger_factory) -> None:
     }
     assert payload["aliases"] == []
     assert payload["box"] == "CBOX"
+    assert is_uuid4(payload["id"])
     assert next(slot for slot in payload["slots"] if slot["label"] == "B2")[
         "occupants"
     ][0]["id"] == aliquot
