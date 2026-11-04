@@ -271,6 +271,24 @@ def test_cli_alias_add_accepts_a_unique_incomplete_id(
     )
 
 
+def test_cli_alias_add_accepts_a_box_name(cli_env: None, ledger_factory) -> None:
+    """``tm alias add box <box name> <alias>`` resolves the box's human name."""
+    ledger = ledger_factory([BASE], name="cli-box-name", id_prefix="77")
+    box = json.loads(
+        write(ledger, "box", "add", "rack", "rack-a", "--json").output
+    )
+
+    added = json.loads(
+        write(ledger, "alias", "add", "box", "rack-a", "ra", "--json").output
+    )
+    assert added["object_type"] == "box"
+    assert added["object_id"] == box["id"]
+
+    shown = json.loads(read(ledger, "box", "show", "ra", "--json").output)
+    assert shown["id"] == box["id"]
+    assert shown["aliases"] == ["ra"]
+
+
 def test_cli_show_prints_sorted_aliases_in_json_and_table(
     cli_env: None, ledger_factory
 ) -> None:

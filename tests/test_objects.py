@@ -2455,6 +2455,84 @@ def test_a_unique_id_prefix_resolves_but_an_ambiguous_one_is_a_usage_error(
         ledger.entities.show("99999999")
 
 
+def test_alias_add_resolves_a_box_by_its_name(ledger_factory) -> None:
+    """``aliases.add("box", ...)`` accepts a box name, like every box command."""
+    ledger = make_ledger(ledger_factory, name="alias-box-name")
+    box = new_box(ledger, "rack-a", "rack")
+
+    added = ledger.aliases.add("box", "rack-a", "ra")
+
+    assert added["object_type"] == "box"
+    assert added["object_id"] == box["id"]
+    assert ledger.boxes.show("ra")["id"] == box["id"]
+    assert ledger.boxes.show("rack-a")["aliases"] == ["ra"]
+
+
+def test_alias_add_box_name_beats_another_boxes_alias(ledger_factory) -> None:
+    """A box name outranks another box's alias, following ``_resolve_box``."""
+    ledger = make_ledger(ledger_factory, name="alias-box-precedence")
+    named = new_box(ledger, "Shared", "rack")
+    other = new_box(ledger, "OTHER", "rack")
+    ledger.aliases.add("box", other["id"], "Shared")
+
+    added = ledger.aliases.add("box", "Shared", "x")
+
+    assert added["object_id"] == named["id"]
+    assert ledger.boxes.show(named["id"])["aliases"] == ["x"]
+    assert ledger.boxes.show(other["id"])["aliases"] == ["Shared"]
+
+
+def test_alias_add_unknown_box_ref_keeps_the_hint_and_writes_nothing(
+    ledger_factory,
+) -> None:
+    """A box miss names the ref and points at ``tm find``; no alias row lands."""
+    ledger = make_ledger(ledger_factory, name="alias-box-miss")
+    new_box(ledger, "rack-a", "rack")
+    new_item(ledger, "alpha")
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError) as excinfo:
+        ledger.aliases.add("box", "no-such-box", "x")
+    message = str(excinfo.value)
+    assert "unknown box 'no-such-box'" in message
+    assert "; try tm find no-such-box" in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `alias` = %s", ("x",)
+    ) == []
+
+    # Only boxes gain the name lookup: an entity is still resolved by
+    # id/alias/prefix, never by its (nullable, non-unique) name.
+    with pytest.raises(LedgerError, match="unknown entity 'alpha'"):
+        ledger.aliases.add("entity", "alpha", "y")
+
+
+def test_alias_add_box_ambiguous_id_prefix_stays_a_usage_error(
+    ledger_factory,
+) -> None:
+    """An ambiguous box prefix is exit 2 with no hint, exactly as before."""
+    ledger = make_ledger(ledger_factory, name="alias-box-ambiguous")
+    # Box ids are uuid4 and box add takes no id, so seed two rows that share a
+    # prefix by hand; the resolver only reads the box table.
+    for suffix, name in (("1", "prefix-one"), ("2", "prefix-two")):
+        ledger.driver.execute(
+            "INSERT INTO `box` (`id`, `name`, `kind`) VALUES (%s, %s, 'rack')",
+            (f"aaaaaaaa-0000-0000-0000-0000000000{suffix}", name),
+        )
+
+    before = commit_count(ledger)
+    with pytest.raises(UsageError) as excinfo:
+        ledger.aliases.add("box", "aaaaaaaa", "x")
+    message = str(excinfo.value)
+    assert excinfo.value.exit_code == 2
+    assert "ambiguous" in message
+    assert "try tm find" not in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `alias` = %s", ("x",)
+    ) == []
+
+
 # ---------------------------------------------------------------------------
 # Commit discipline, dry-run, no-commit and IDs
 # ---------------------------------------------------------------------------
