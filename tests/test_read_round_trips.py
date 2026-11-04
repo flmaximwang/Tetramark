@@ -17,7 +17,8 @@ from tetramark.driver.embedded import EmbeddedDriver
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so
-#: ``tests/conftest.py`` skips them when ``TETRAMARK_DRIVER=server``.
+#: the ``embedded_driver`` marker makes conftest switch them to that
+#: backend even though the rest of the session defaults to the server.
 pytestmark = pytest.mark.embedded_driver
 
 

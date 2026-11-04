@@ -5,12 +5,16 @@ shells out points ``DOLT_ROOT_PATH``, ``HOME``, ``XDG_CONFIG_HOME`` and the Git
 config env vars at the pytest ``tmp_path`` so the developer's global Dolt/Git
 configuration is never read or written.
 
-Two lanes:
+The authoritative commands:
 
+* ``uv run pytest`` — the **whole** real-Dolt suite, including the
+  ``embedded_driver`` process-budget tests.  Ledger tests use the real
+  ``dolt sql-server`` backend; the budget tests switch to the embedded driver
+  per test, so both backends run in the same session.  The run enforces its own
+  300 s wall-clock budget (``TETRAMARK_SUITE_BUDGET_SECONDS`` overrides it for
+  profiling) and a 60 s per-test timeout.
 * ``uv run pytest -q -m fast`` — the Dolt-free unit tests only; seconds, no
-  ``dolt`` binary needed. Run this while iterating.
-* ``uv run pytest -q -n 4`` — the full suite, every integration test against a
-  real database. Run this before merging or releasing.
+  ``dolt`` binary needed.  This lane enforces a 30 s wall-clock budget.
 
 A ledger is one self-contained directory in 0.5.0: ``.dolt/`` plus
 ``ledger.yaml``, created in ``tmp_path/<name>``.  There is no workspace layer
@@ -30,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
@@ -63,78 +68,141 @@ RunDolt = Callable[..., subprocess.CompletedProcess[str]]
 
 
 # ---------------------------------------------------------------------------
-# The server lane (default in tests, opt-in in the product)
+# Backend per test, and the suite wall-clock budget
 # ---------------------------------------------------------------------------
 
-#: Run the suite through the opt-in ``dolt sql-server`` backend by default.
+#: Environment variable selecting the backend for a ledger operation.
+DRIVER_ENV = "TETRAMARK_DRIVER"
+
+#: Full-suite wall-clock ceiling.  A run that exceeds it FAILS (non-zero exit)
+#: even when every test passed.  Override only to profile a slower machine:
+#: ``TETRAMARK_SUITE_BUDGET_SECONDS=600 uv run pytest``; an empty value disables
+#: the guard.
+SUITE_BUDGET_ENV = "TETRAMARK_SUITE_BUDGET_SECONDS"
+DEFAULT_SUITE_BUDGET_SECONDS = 300.0
+#: ``-m fast`` is the inner loop; it gets its own much smaller ceiling.
+FAST_SUITE_BUDGET_SECONDS = 30.0
+
+#: Run ledger tests through the opt-in ``dolt sql-server`` backend by default.
 #: This is a *test harness* default only: the product's default backend is
-#: still the embedded driver (one ``dolt sql`` process per batch).  Set
-#: ``TETRAMARK_DRIVER=embedded`` (the ``embedded`` lane does) to exercise that
-#: default backend; the ``embedded_driver`` budget tests below only mean
-#: something there.  The suite is still real Dolt either way.
-os.environ.setdefault("TETRAMARK_DRIVER", "server")
+#: still the embedded driver (one ``dolt sql`` process per batch).  The
+#: ``embedded_driver``-marked tests switch back per test (fixture below), so a
+#: plain ``uv run pytest`` still executes the process-budget tests on the
+#: embedded driver in the same session.  The suite is real Dolt either way.
+os.environ.setdefault(DRIVER_ENV, "server")
+
+
+@pytest.fixture(autouse=True)
+def _backend_for_test(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Select the backend per test.
+
+    Ledger tests default to the server driver (fast, same real Dolt); tests
+    marked ``embedded_driver`` pin the per-statement embedded driver's process
+    budget and must run on that backend.  The fixture runs before the
+    function-scoped ``dolt_env`` fixture, so every env mapping a test passes to
+    ``init_ledger``/``open``/a CLI subprocess carries the right value.
+    """
+    mode = (
+        "embedded"
+        if request.node.get_closest_marker("embedded_driver") is not None
+        else "server"
+    )
+    monkeypatch.setenv(DRIVER_ENV, mode)
 
 
 def _server_lane() -> bool:
-    """Whether this pytest process selected the ``dolt sql-server`` backend."""
-    return os.environ.get("TETRAMARK_DRIVER", "").strip().lower() == "server"
+    """Whether the process environment selected the ``dolt sql-server`` backend."""
+    return os.environ.get(DRIVER_ENV, "").strip().lower() == "server"
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
-    """Skip embedded-process budget tests when the server lane is selected.
+def _suite_budget_seconds(config: pytest.Config) -> float | None:
+    """The wall-clock budget for this run, or ``None`` when disabled."""
+    raw = os.environ.get(SUITE_BUDGET_ENV)
+    if raw is not None:
+        if not raw.strip():
+            return None
+        try:
+            return float(raw)
+        except ValueError as error:
+            raise pytest.UsageError(
+                f"{SUITE_BUDGET_ENV} must be a number of seconds or empty, "
+                f"got {raw!r}"
+            ) from error
+    markexpr = str(config.getoption("markexpr", default="") or "")
+    if "fast" in markexpr:
+        return FAST_SUITE_BUDGET_SECONDS
+    return DEFAULT_SUITE_BUDGET_SECONDS
 
-    ``tests/test_*_round_trips*.py``, ``test_find_batch.py`` and the driver
-    contract tests count ``EmbeddedDriver._invoke`` calls to pin "one dolt
-    process per batch".  Under ``TETRAMARK_DRIVER=server`` the ledger never uses
-    that driver, so the counts are zero and the budget is not the subject of the
-    lane.  They stay enforced whenever the backend is the default embedded one.
-    """
-    if not _server_lane():
+
+#: The controller session while it runs (``None`` inside xdist workers).
+_CONTROLLER: pytest.Session | None = None
+#: ``(duration, nodeid)`` for every test call, for the over-budget report.
+_SLOW_TESTS: list[tuple[float, str]] = []
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Start the wall-clock budget on the controller (never on xdist workers)."""
+    global _CONTROLLER, _SLOW_TESTS
+    if hasattr(session.config, "workerinput"):
         return
-    skip = pytest.mark.skip(
-        reason="TETRAMARK_DRIVER=server: budget test for the embedded driver"
-    )
-    for item in items:
-        if item.get_closest_marker("embedded_driver") is not None:
-            item.add_marker(skip)
+    _CONTROLLER = session
+    _SLOW_TESTS = []
+    session._tetramark_started = time.monotonic()  # type: ignore[attr-defined]
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Collect per-test call durations for the over-budget report.
+
+    xdist workers run this hook locally too, but ``_CONTROLLER`` is only set in
+    the controller process, whose report objects cover every worker's tests.
+    """
+    if _CONTROLLER is None or report.when != "call":
+        return
+    _SLOW_TESTS.append((report.duration, report.nodeid))
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Kill every ``dolt sql-server`` this worker started and report its starts.
-
-    The driver keeps servers alive between commands (that cache is what makes
-    the lane fast), so a pytest run must not leave one behind for the next
-    process on the machine.
-    """
+    """Stop servers, then enforce the wall-clock budget on the controller."""
     try:
         from tetramark.driver.server import (
             server_start_count,
             shutdown_all_servers,
         )
     except Exception:  # pragma: no cover - PyMySQL absent or module not imported
-        return
-    shutdown_all_servers()
-    stats_path = os.environ.get("TETRAMARK_SERVER_STATS")
-    if _server_lane() and stats_path:
-        line = f"tetramark-server-stats: starts={server_start_count()}\n"
-        try:
-            # The lane script points this at a file so every xdist worker's
-            # count can be summed after the run.
-            with open(stats_path, "a", encoding="utf-8") as handle:
-                handle.write(line)
-        except OSError:  # pragma: no cover - unusable stats path
-            print(line, end="", file=sys.stderr, flush=True)
+        pass
+    else:
+        shutdown_all_servers()
+        stats_path = os.environ.get("TETRAMARK_SERVER_STATS")
+        if _server_lane() and stats_path:
+            line = f"tetramark-server-stats: starts={server_start_count()}\n"
+            try:
+                # The lane script points this at a file so every xdist worker's
+                # count can be summed after the run.
+                with open(stats_path, "a", encoding="utf-8") as handle:
+                    handle.write(line)
+            except OSError:  # pragma: no cover - unusable stats path
+                print(line, end="", file=sys.stderr, flush=True)
 
-
-def pytest_unconfigure(config: pytest.Config) -> None:
-    """Second cleanup point: xdist workers and early exits still stop servers."""
-    try:
-        from tetramark.driver.server import shutdown_all_servers
-    except Exception:  # pragma: no cover - PyMySQL absent or module not imported
+    if hasattr(session.config, "workerinput"):
         return
-    shutdown_all_servers()
+    started = getattr(session, "_tetramark_started", None)
+    if started is None:  # pragma: no cover - sessionstart always ran
+        return
+    elapsed = time.monotonic() - started
+    budget = _suite_budget_seconds(session.config)
+    if budget is None or elapsed <= budget:
+        return
+    slow = sorted(_SLOW_TESTS, reverse=True)[:25]
+    print(
+        f"\n!! SUITE TIME BUDGET EXCEEDED: {elapsed:.1f}s > {budget:g}s "
+        f"(override with {SUITE_BUDGET_ENV}=<seconds>, empty to disable)",
+        file=sys.stderr,
+    )
+    for duration, nodeid in slow:
+        print(f"   {duration:7.2f}s  {nodeid}", file=sys.stderr)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def isolated_env(root: Path, home: Path) -> dict[str, str]:
