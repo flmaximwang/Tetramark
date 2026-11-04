@@ -384,7 +384,7 @@ wheels = [
 
 [[package]]
 name = "tetramark"
-version = "0.8.16"
+version = "0.8.17"
 source = { editable = "." }
 dependencies = [
     { name = "prompt-toolkit" },
