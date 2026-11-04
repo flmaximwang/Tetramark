@@ -17,7 +17,7 @@ defaults to the embedded driver.
 * **Server driver (default in the test harness).** The same statements run over the MySQL protocol
   against one `dolt sql-server` per ledger: **~0.3 s once** for the server, then **~0.3 ms per
   statement**. That is what makes the *whole* suite — including the embedded budget tests — fit in
-  **under three minutes (177–189 s)** on the reference machine. The data is identical: same Dolt binary, same `.dolt`
+  **under three minutes (177–192 s)** on the reference machine. The data is identical: same Dolt binary, same `.dolt`
   directory.
 
 The backend is selected per ledger operation from the effective environment: the `env=` mapping a
@@ -50,7 +50,7 @@ The limits are enforced by the suite itself, not by a wrapper:
   optional external artifact (currently the 0.4.2 lab-ledger snapshot when it is absent).
 
 Measured after Tetramark-0i8 (reference machine, 10-core macOS, `-n auto --dist worksteal`):
-**177–189 s, 1337 passed, 1 skipped, 0 leftover `dolt sql-server`** (two final runs: 188.8 s, 187.9 s).
+**177–192 s, 1337 passed, 1 skipped, 0 leftover `dolt sql-server`** (final runs: 188.8 s, 187.9 s, and 192.0 s from a clean tree).
 The fast lane is ~2.5 s (729 passed).
 
 ## 3. Server lifecycle
@@ -167,7 +167,7 @@ number of `dolt sql-server` processes the workers started, and fails if one surv
 
 Before a release run and record:
 
-- `uv run pytest` — green, **inside the 300 s guard** (reference: 177–189 s, 1337 passed, 1 optional
+- `uv run pytest` — green, **inside the 300 s guard** (reference: 177–192 s, 1337 passed, 1 optional
   skip), no leftover `dolt sql-server`;
 - `uv run pytest -q -m fast` — green, inside the 30 s guard;
 - `TETRAMARK_DRIVER=embedded uv run pytest` — green (the product's default backend, ~12 min);
