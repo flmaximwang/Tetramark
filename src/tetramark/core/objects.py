@@ -49,6 +49,7 @@ from tetramark.core.filters import (
     filter_fields,
     parse_filters,
     regex_usage_error,
+    validate_patterns,
 )
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
 from tetramark.errors import LedgerError, UsageError
@@ -1493,6 +1494,11 @@ def _list_records(
 
     extra_start = len(batch)
     batch.extend(extra)
+    # No kind carries the filters (a combination no kind can express), so no
+    # query compiles their patterns: validate them here, otherwise an invalid
+    # pattern would silently return an empty listing.
+    if extra_start == 0:
+        validate_patterns(ledger.driver, filters, option="--where")
     # One process for every kind (plus the batch-only ``extra`` reads); an
     # empty batch must not start one at all.
     try:

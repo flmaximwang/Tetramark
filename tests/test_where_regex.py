@@ -240,10 +240,12 @@ def test_an_invalid_pattern_is_a_usage_error_naming_the_filter(base_ledger) -> N
         ledger.entities.ls(where=["name~["])
 
     message = str(error.value)
-    # The usage error names the filter to fix, not the raw driver error.
+    # The usage error names the filter to fix, not the raw driver error, and
+    # says it once.
     assert "invalid regular expression" in message
     assert "name~[" in message
     assert "--where" in message
+    assert message.count("regular expression") == 1
 
 
 def test_an_unknown_field_still_lists_the_valid_ones(base_ledger) -> None:
@@ -252,6 +254,42 @@ def test_an_unknown_field_still_lists_the_valid_ones(base_ledger) -> None:
 
     with pytest.raises(UsageError, match="valid fields"):
         ledger.entities.ls(where=["bogus~x"])
+
+
+def test_a_cross_kind_combination_still_validates_the_pattern(full_ledger) -> None:
+    """No kind carries the filters, so the pattern must be checked on its own."""
+    ledger = full_ledger
+    ledger.entities.add("item", name="alpha", values={"category": "lab"})
+    ledger.entities.add("everything", name="thing", values={"code": "ABC"})
+
+    # ``category`` is an item field and ``code`` an everything field: no kind
+    # can express both, so the listing visits no kind and is empty ...
+    assert ledger.entities.ls(where=["category=lab", "code=ABC"]) == []
+    assert ledger.entities.ls(where=["category~^l", "code~^A"]) == []
+    # ... but an invalid pattern is still a usage error naming the filter.
+    with pytest.raises(UsageError) as error:
+        ledger.entities.ls(where=["category~[", "code~x"])
+    assert "category~[" in str(error.value)
+
+
+def test_a_cross_kind_stock_combination_still_validates_the_pattern(
+    full_ledger,
+) -> None:
+    """The stock listing validates the pattern when no stock kind carries it."""
+    ledger = full_ledger
+    item = ledger.entities.add("item", name="alpha")
+    everything = ledger.entities.add(
+        "everything", name="thing", values={"code": "ABC"}
+    )
+    ledger.stocks.add("lot", entity=item["id"], values={"supplier": "Acme"})
+    ledger.stocks.add("prep", entity=everything["id"], values={"batch": "B1"})
+
+    # ``supplier`` is a lot field and ``batch`` a prep field.
+    assert ledger.stocks.ls(where=["supplier=Acme", "batch=B1"]) == []
+    assert ledger.stocks.ls(where=["supplier~^Ac", "batch~^B"]) == []
+    with pytest.raises(UsageError) as error:
+        ledger.stocks.ls(where=["supplier~[", "batch~x"])
+    assert "supplier~[" in str(error.value)
 
 
 def test_the_mapping_api_is_equality_only(base_ledger) -> None:

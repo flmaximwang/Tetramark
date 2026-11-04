@@ -1,8 +1,9 @@
 """Shared ``--where`` filters: ``field=value`` and ``field~pattern``.
 
-One filter backend serves every listing that filters rows (spec §6): the
+One filter backend serves the entity/stock/box listings (spec §6): the
 ``--where`` option of ``tm entity list``, ``tm stock list`` and ``tm box list``
-and the ``where=`` argument of the Python API.  A filter is written as
+and the ``where=`` argument of their Python API facades.  A filter is written
+as
 
 * ``field=value`` -- the column equals the value: a kind field is coerced by
   its schema (an enum is checked, a ref is resolved to the id it stores), a
@@ -53,6 +54,7 @@ __all__ = [
     "filter_fields",
     "parse_filters",
     "regex_usage_error",
+    "validate_patterns",
 ]
 
 #: The operator of an exact filter (``field=value``).
@@ -71,9 +73,6 @@ _PROBE_SQL = "SELECT %s REGEXP %s"
 
 #: The subject the probe compiles the pattern against.
 _PROBE_SUBJECT = "x"
-
-#: Dolt's wording for a pattern it cannot compile.
-_REGEX_REASON = "the given regular expression is invalid"
 
 #: The part of a driver error that says the pattern is the problem.
 _REGEX_MARKER = "regular expression"
@@ -200,6 +199,8 @@ def coerce_value(
     wrote; a kind field is coerced like a ``--set`` value (an enum is checked,
     a ref is resolved to the id it stores, ...).
     """
+    # Local import: objects.py imports this module, so a module-level import
+    # here would be a cycle.
     from tetramark.core.objects import _coerce_field
 
     schema_field = kind.fields.get(field)
@@ -227,19 +228,25 @@ def regex_usage_error(
     """
     if not _is_regex_error(error):
         return None
-    for item in filters:
-        if item.operator != REGEXP:
-            continue
-        try:
-            driver.query(_PROBE_SQL, (_PROBE_SUBJECT, item.value))
-        except LedgerError as probe:
-            if not _is_regex_error(probe):
-                continue
-            return UsageError(
-                f"invalid regular expression in the {option} filter "
-                f"{item.text!r}: {_regex_reason(probe)}"
-            )
-    return None
+    item = _offending_pattern(driver, filters)
+    if item is None:
+        return None
+    return UsageError(_invalid_pattern_message(item, option=option))
+
+
+def validate_patterns(
+    driver: Any, filters: Iterable[Filter], *, option: str = "--where"
+) -> None:
+    """Compile every pattern, raising the usage error for an invalid one.
+
+    The database compiles a pattern, so this asks it.  A caller needs it only
+    when no query carries the filters (a filter combination no kind can
+    express): nothing else would compile the patterns there, and an invalid
+    one must still be reported instead of silently returning no rows.
+    """
+    item = _offending_pattern(driver, filters)
+    if item is not None:
+        raise UsageError(_invalid_pattern_message(item, option=option))
 
 
 def _split_filters(
@@ -283,9 +290,21 @@ def _is_regex_error(error: BaseException) -> bool:
     return _REGEX_MARKER in str(error).lower()
 
 
-def _regex_reason(error: BaseException) -> str:
-    """Dolt's own wording for a pattern it cannot compile."""
-    text = str(error)
-    if _REGEX_REASON in text:
-        return _REGEX_REASON
-    return "the pattern could not be compiled"
+def _offending_pattern(driver: Any, filters: Iterable[Filter]) -> Filter | None:
+    """The first ``~`` filter whose pattern the database refuses, or ``None``."""
+    for item in filters:
+        if item.operator != REGEXP:
+            continue
+        try:
+            driver.query(_PROBE_SQL, (_PROBE_SUBJECT, item.value))
+        except LedgerError as probe:
+            # A failure that is not about the pattern is none of this
+            # module's business: keep looking (and report it elsewhere).
+            if _is_regex_error(probe):
+                return item
+    return None
+
+
+def _invalid_pattern_message(item: Filter, *, option: str) -> str:
+    """The usage error text: it names the filter the user has to fix."""
+    return f"invalid regular expression in the {option} filter {item.text!r}"
