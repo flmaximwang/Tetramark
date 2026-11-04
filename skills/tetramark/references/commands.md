@@ -68,6 +68,16 @@ tm presets show NAME|PATH
   It never lists sibling ledgers; `--format csv` is a usage error. See spec §6.1.
 - `presets list` lists the source a bare name resolves from; `presets show NAME|PATH` prints one
   include-resolved preset as YAML.
+- A new ledger is **spec 6**: the shipped presets declare no status vocabulary, and `tm init` starts
+  its tubes `stored` (or whatever the creation `--status` says). An older ledger still opens with its
+  own stored preset copies — spec 5's per-kind status sets keep working — and `tm` warns
+  `ledger is spec N, tm is spec N+1: follow migration/spec/N-to-N+1/README.md to upgrade it manually`.
+  The spec 5 → 6 step is **manual** (`migration/spec/5-to-6/README.md`): every pending historical
+  preset step runs first, then the whole preset closure is replaced with the status-free copies, the
+  statuses are remapped (one `migrated: <old status>` event per remapped aliquot), and
+  `tm schema plan`/`apply` writes `spec_version` 6, the preset versions, the `aliquot.status` `CHECK`
+  and the regenerated tests in one commit. Past events are never rewritten; the new enum stock
+  properties are not backfilled.
 
 ## Schema
 
@@ -80,11 +90,40 @@ tm schema apply [--allow-destructive]
 - `show` prints the effective (presets + local kinds/rules) schema as YAML; with `KIND`, only that kind.
 - `plan` diffs YAML against the live DB, tags each step `additive` or `destructive`, prints SQL.
 - `apply` executes the plan in one transaction and one Dolt commit. Destructive steps are refused
-  unless `--allow-destructive` is passed. After apply, `plan` must say `schema is up to date`.
+  unless `--allow-destructive` is passed. After apply, `plan` must say `schema is up to date`. On a
+  format upgrade the same commit writes `ledger_meta.spec_version`/`preset_versions`, the fixed-status
+  `CHECK` and the regenerated `dolt_tests`.
 
 `kinds_dir` and `rules_dir` in `ledger.yaml` are resolved against the ledger directory and must stay
 inside it (P13): an absolute path, a `..` escape or a symlink leaving the ledger is a usage error, so
 the ledger stays copyable. See `skills/tetramark-schema/` for authoring and evolution rules.
+
+## Aliquot status (fixed)
+
+Every aliquot has one status from one hardcoded set that every stock kind shares (spec §1.1). No
+preset or ledger declares `status_sets:`/`statuses:` any more; `tm schema show KIND` prints the same
+four-entry `statuses:` block for every stock kind.
+
+| status | in stock | can change to |
+|---|---|---|
+| `pending` | no | `stored`, `missing`, `consumed` |
+| `stored` | yes | `missing`, `consumed` |
+| `missing` | no | `stored`, `consumed` |
+| `consumed` | no | none (final) |
+
+Creation (`--status` on `tm stock add`/`tm aliquot add`, the CSV `status` column) accepts any of the
+four; only `stored` counts as in stock, so `tm aliquot list` shows `stored` tubes by default and only
+a `stored` tube may carry a box position. A later change (`tm aliquot status ALQ NEW`) must follow the
+table. `--force` requires `--note TEXT`, overrides the transition check and records
+`aliquot_event.forced = TRUE`; putting a wrongly `consumed` tube back means placing it again — a
+`move` of a not-in-stock tube restores `stored`.
+
+Detailed life states are **stock properties or event messages**, not statuses: optional enum `fate`
+on `mouse_cohort` and `fish_group`/`fish_clutch` (euthanized, found_dead, transferred, cancelled) and
+on `fly_culture` (discarded, lost), and optional enum `condition` on `worm_culture` (growing,
+starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized` or
+`--set condition=starved`, or record a one-off in the event's `--note`. `thawed` is `consumed`: a cryo
+vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
 ## Entities
 
@@ -126,7 +165,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 ```
 
 - `--aliquots N` creates N tubes (default 1; `0` for a batch with no tube yet).
-- `--status` sets the creation status of the new aliquots (any status of the stock kind's set).
+- `--status` sets the creation status of the new aliquots: any of the four fixed statuses (spec
+  §1.1); the default is `stored`.
 - `--box` with `--slot` places the newly created aliquots; slots are matched to aliquots in order.
 - `--quantity`/`--unit` set the quantity of **each** new aliquot.
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
@@ -165,11 +205,11 @@ tm aliquot purge ALQ [--json]
 ```
 
 - Alias strings like `STOCK`/`ALQ` mean a full ID (`1226FP01`) or an alias (`p035`).
-- `list` prints the tubes an experiment can use: only statuses whose set entry has `in_stock: true`
-  by default, because a list is the "what is available" view, not the history. `--all` adds every
-  status and `--not-in-stock` shows only the tubes that left stock (the missing/consumed/thawed
-  audit). `--status S` is repeatable (OR) and turns the default scope off, so `--status missing`
-  works; `--all` with it is redundant but legal, `--not-in-stock` with it intersects. `STOCK` limits
+- `list` prints the tubes an experiment can use: only `stored` tubes by default, because a list is
+  the "what is available" view, not the history. `--all` adds every status and `--not-in-stock`
+  shows only the tubes that left stock (the missing/consumed audit). `--status S` is repeatable (OR)
+  and turns the default scope off, so `--status missing` works; `--all` with it is redundant but
+  legal, `--not-in-stock` with it intersects. `STOCK` limits
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
   plus every box nested inside it. `--where` matches aliquot core columns exactly and ANDs with the
   rest; filter status with `--status`, never `--where status=…`. The table and CSV print
@@ -177,20 +217,23 @@ tm aliquot purge ALQ [--json]
   the same record `show` prints, one per tube, ordered by stock id and numeric seq.
 - `show` prints one tube: the aliquot row, its sorted `aliases`, the owning stock's `stock_kind` and
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
-  printed on its own line) and the derived `in_stock` flag. `ALQ` is the full `<stock>.<seq>` id or
-  one of the tube's aliases, including the old ids `tm stock renumber` keeps; `--json` prints the
+  printed on its own line) and the derived `in_stock` flag (true exactly when the status is `stored`).
+  `ALQ` is the full `<stock>.<seq>` id or one of the tube's aliases, including the old ids
+  `tm stock renumber` keeps; `--json` prints the
   same record with the full ids. A tube that is not in stock has no position (`box_id`, `slot` and
   `path` are empty; `null` in JSON). The tube's events are in `tm history ALQ`; the stock kind's own
   fields are in `tm stock show`, and `list STOCK` is the rich per-stock tube listing.
 - `use` subtracts `AMOUNT` in the aliquot's own unit and sets `consumed` when the quantity reaches
   zero; the event stores the purpose.
-- `status` sets one of the stock kind's status vocabulary words; `--force` requires `--note` and is
-  the only way to make an unforced-illegal change.
-- An aliquot's **position follows its status**: a status with `in_stock: true` needs a box (and a slot
-  in a slotted box), and any other status clears `box_id`/`slot` in the same write. The status/use
+- `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
+  `--force --note TEXT` overrides an illegal transition deliberately (the event records
+  `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
+  change.
+- An aliquot's **position follows its status**: a `stored` aliquot needs a box (and a slot in a
+  slotted box), and any other status clears `box_id`/`slot` in the same write. The status/use
   event keeps the old position in its `from_*` columns, so `history` still shows where the tube was.
-- `move` of a not-in-stock aliquot also sets its in-stock status; when the stock kind's set has
-  several in-stock statuses it asks for `--status` instead of guessing.
+- `move` of a not-in-stock aliquot also sets it to `stored`; with `--status` the normal transition
+  check runs and the result must still be `stored`.
 - `purge` hard-deletes an aliquot and its events. It is the only hard delete; prefer `status consumed`.
 
 ## Boxes
@@ -321,8 +364,9 @@ tm import all DIRECTORY [--json]
 tm export KIND|all [--out|-o DIRECTORY] [--json]
 ```
 
-`import` validates every row first and writes all-or-nothing in one commit. `KIND` is a kind name or
-a core object (`entity`, `stock`, `aliquot`, `box`); `--object` forces the object type when the file
+`import` validates every row first and writes all-or-nothing in one commit. On an aliquot row the
+`status` column is a creation status — any of the four fixed statuses (§1.1). `KIND` is a kind name
+or a core object (`entity`, `stock`, `aliquot`, `box`); `--object` forces the object type when the file
 has no `kind` column. `import all` expects the file names `export all` writes (`boxes.csv`,
 `aliases.csv`, one CSV per kind) and imports them in dependency order: entities, boxes, stocks,
 aliquots, aliases.

@@ -22,6 +22,13 @@ tm adopt ~/lab/legacy_db --preset molbio --author "Name <you@example.com>"
 if the upward search meets one before a ledger, `tm` exits 2 telling you to `cd` into the ledger
 directory (or pass `--ledger PATH`).
 
+An older ledger is never upgraded implicitly: `tm` warns `ledger is spec N, tm is spec N+1: follow
+migration/spec/N-to-N+1/README.md`. The current spec 5 → 6 step is **manual** — every pending
+historical preset step first, then replace the whole preset closure with the status-free copies,
+remap the statuses (one `migrated: <old status>` event per remapped aliquot) and let
+`tm schema plan`/`apply` write `spec_version` 6, the preset versions and the `CHECK`; see
+`migration/spec/5-to-6/README.md`.
+
 ## 1. Register a new plasmid and its glycerol stock in a box
 
 ```sh
@@ -130,7 +137,7 @@ To enumerate instead of search — what is available, and where everything is:
 tm aliquot list                      # every in-stock tube (the "what can an experiment use" view)
 tm aliquot list 1226FP01             # one stock's available tubes
 tm aliquot list --box FR-1           # everything in the freezer, nested boxes included
-tm aliquot list --not-in-stock       # the missing/consumed/thawed audit
+tm aliquot list --not-in-stock       # the missing + consumed audit (there is no `thawed` status)
 tm aliquot list --status missing     # one status (an explicit status leaves the shelf view)
 ```
 
@@ -232,7 +239,7 @@ tm box add incubator INC-25
 tm stock add fly_culture --entity w1118 --box INC-25 \
   --quantity 30 --unit individuals \
   --set temperature_c=25 --set generation=P1 --set food_type=standard
-# -> fly_culture 7726KU06, aliquot 7726KU06.1 (alive)
+# -> fly_culture 7726KU06, aliquot 7726KU06.1 (stored)
 
 # Worm: a strain on a plate, plus the frozen backup (the real colony).
 tm entity add worm_strain --name N2 --set allele=N2 \
@@ -257,12 +264,17 @@ tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J \
   --set supplier="Jackson Laboratory" --set mgi_id=MGI:3029029 --alias b6j
 tm box add cage MC-01
 tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
-  --quantity 1 --unit mouse --box MC-01 --status alive
+  --quantity 1 --unit mouse --box MC-01 --status stored
 ```
 
-Every new aliquot gets a status from its stock kind's set (`fly`, `worm`, `animal` or `cryo`);
-`tm schema show KIND` prints the set and its allowed transitions. Use `tm aliquot status ALQ NEW`
-to move a culture/vial/animal, and `tm aliquot use` for quantities.
+Every aliquot uses the **same fixed status set** — `pending`, `stored`, `missing`, `consumed` — and
+only `stored` is in stock. Creation accepts any of the four; a later change follows the transitions
+(`tm aliquot status ALQ consumed` finishes a culture/vial/animal, `missing` parks one that may come
+back). `tm schema show KIND` prints the same fixed set for every kind. The detailed life state is an
+optional enum **stock property**, never a status: `tm stock edit FLY --set fate=discarded` (fly:
+discarded/lost), `tm stock edit MOUSE_OR_FISH --set fate=euthanized` (mouse, fish:
+euthanized/found_dead/transferred/cancelled), `tm stock edit WORM --set condition=starved` (worm:
+growing/starved/contaminated). Use `tm aliquot use` for quantities.
 
 ## 11. Record a cross (dam/sire are aliquots)
 
@@ -304,9 +316,9 @@ litter through the core `parent_stock_id` (`--parent`); the litter aliquot is th
 tm entity add mouse_strain --name B6J-Apobec --set background=C57BL/6J --alias b6j
 tm box add cage MC-01
 tm stock add mouse_cohort --entity b6j --set sex=f --set birth_on=2026-05-01 \
-  --quantity 1 --unit mouse --box MC-01 --status alive      # 7726KU01.1
+  --quantity 1 --unit mouse --box MC-01 --status stored      # 7726KU01.1
 tm stock add mouse_cohort --entity b6j --set sex=m --set birth_on=2026-05-01 \
-  --quantity 1 --unit mouse --box MC-01 --status alive      # 7726KU02.1
+  --quantity 1 --unit mouse --box MC-01 --status stored      # 7726KU02.1
 
 # The litter: one stock, no --set genotype, one group aliquot of 7 pups.
 tm box add cage MC-02
@@ -322,7 +334,8 @@ tm stock add mouse_cohort --entity b6j --parent 7726KU03 \
   --box MC-04 --aliquots 4 --quantity 1 --unit mouse \
   --set genotype=Apobec-/- --set sex=m --set birth_on=2026-07-01
 
-tm aliquot status 7726KU03.1 euthanized
+tm aliquot status 7726KU03.1 consumed --note "genotyped and split into G+ and G- stocks"
+tm stock edit 7726KU03 --set fate=euthanized    # optional detail: what happened to the animals
 tm lineage 7726KU04 --up      # pup stock -> litter -> dam and sire aliquots -> breeders
 tm lineage 7726KU04 --down    # the split stocks below this one
 ```
@@ -333,20 +346,20 @@ the untyped litter and its finished aliquot.
 ## 13. Thaw a cryo vial
 
 Frozen stocks (`worm_cryo`, `mouse_sperm_cryo`, `mouse_embryo_cryo`, `fish_sperm_cryo`, cellbio's
-`cell_vial`) use the `cryo` set: created `stored`, thawed with a status change, and `thawed` is
-final. Record the thaw on the aliquot — do not edit the stock fields.
+`cell_vial`) have no separate vocabulary: a vial is **`stored`** in the freezer, and thawing it makes
+the tube **`consumed`** — `thawed` is `consumed`. Record the thaw on the aliquot, never by editing the
+stock fields.
 
 ```sh
-tm aliquot status 7726KW01.1 thawed
-tm aliquot status 7726KW01.1 stored   # refused: thawed is final
+tm aliquot status 7726KW01.1 consumed --note "thawed 2026-11-04; chunked onto NGM plates"
+tm aliquot status 7726KW01.1 stored   # refused: consumed is final
 ```
 
-If the thaw was a mistake, override deliberately (requires a note; records `forced = TRUE`, which
-`tm check` accepts):
+To undo a wrong `consumed`, place the vial again: a `move` of a not-in-stock tube restores `stored`
+(and records where it went).
 
 ```sh
-tm aliquot status 7726KW01.1 stored \
-  --force --note "thaw was recorded on the wrong vial"
+tm aliquot move 7726KW01.1 --box FR-1 --slot A1 -m "thaw was recorded on the wrong vial"
 ```
 
 ## 14. Inspect one tube
