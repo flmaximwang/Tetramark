@@ -13,6 +13,16 @@ A missing file does not block a release: the workflow falls back to GitHub's gen
 the run with a warning. Missing notes are never a failure — a missing *tag* is the failure worth
 automating away.
 
+## The releases
+
+| Version | Notes | What changed |
+|---|---|---|
+| [0.7.1](v0.7.1.md) | `v0.7.1.md` | `tm aliquot show`: read one tube |
+| [0.7.0](v0.7.0.md) | `v0.7.0.md` | batched Dolt access: commands ~10× faster |
+| [0.6.1](v0.6.1.md) | `v0.6.1.md` | `tm find` matches part of an alias |
+| [0.6.0](v0.6.0.md) | `v0.6.0.md` | interactive `add-form` |
+| [0.5.1](v0.5.1.md) | `v0.5.1.md` | full-word subcommands (`ls` → `list`, `rm` → `remove`) |
+
 ## Template
 
 ```markdown
