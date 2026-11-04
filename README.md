@@ -118,6 +118,7 @@ tm stock add bacterial_glycerol --entity p035 \
   --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
 
+tm aliquot show 1226L401.1           # the tube's <stock>.<seq> id, as `stock add` printed it
 tm box show WFL-12-01
 tm find pZET035
 tm check
@@ -129,10 +130,12 @@ From anywhere else, point at the directory explicitly:
 tm --ledger ~/lab/lab101 find pZET035      # -l ~/lab/lab101 works too
 ```
 
-`box show` prints the grid, `find` resolves the alias and its box location, and `check` runs the
-generated Dolt tests (exit 0 when no non-info test fails). Writes to one ledger are serialized by a
-per-ledger lock: a second writer waits briefly, then exits with a typed `ledger busy` error instead
-of interleaving (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.
+`aliquot show` prints one tube's status, quantity, aliases and box path (the id is the
+`<stock>.<seq>` that `stock add` printed), `box show` prints the grid, `find` resolves the alias and
+its box location, and `check` runs the generated Dolt tests (exit 0 when no non-info test fails).
+Writes to one ledger are serialized by a per-ledger lock: a second writer waits briefly, then exits
+with a typed `ledger busy` error instead of interleaving (`$TETRAMARK_LOCK_TIMEOUT` changes the
+wait). Reads never lock.
 
 `tm init --preset NAME` resolves a bare `NAME` through `$TETRAMARK_PRESETS_DIR` when set, otherwise
 through the presets bundled with tetramark; a value containing `/` or ending in `.yaml` is a path
