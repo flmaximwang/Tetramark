@@ -23,7 +23,11 @@ tm = "tetramark.cli.app:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.4",
     "pytest-xdist>=3.8.0",
+    # Opt-in server backend (TETRAMARK_DRIVER=server): the driver imports this
+    # lazily, so the embedded default install never needs it.
+    "pymysql>=1.2.3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -45,8 +49,13 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -n auto --dist loadfile"
+addopts = "-ra -n auto --dist worksteal"
+# A hung dolt server or deadlocked fixture must fail the run, not stall it.
+# A test that legitimately needs longer overrides this with
+# @pytest.mark.timeout(<seconds>) and a comment explaining why.
+timeout = 60
 markers = [
     "embedded: test deliberately runs against the embedded driver (no dolt sql-server)",
+    "embedded_driver: test pins the embedded driver's per-statement round trips; runs with TETRAMARK_DRIVER=embedded even when the session defaults to the server backend",
     "fast: Dolt-free unit test (no database, no dolt binary). Fast lane: `uv run pytest -q -m fast` (seconds); never put it on an integration test.",
 ]

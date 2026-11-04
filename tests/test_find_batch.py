@@ -22,6 +22,12 @@ from conftest import PRESETS
 from tetramark.core.ledger import Ledger
 from tetramark.driver.embedded import EmbeddedDriver
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: the ``embedded_driver`` marker makes conftest switch them to that
+#: backend even though the rest of the session defaults to the server.
+pytestmark = pytest.mark.embedded_driver
+
 #: ``full`` extends ``chain``/``base`` with every field type and geometry:
 #: 12 entity/stock/box kinds against base's 9.  The old per-statement path paid
 #: two dolt processes per kind, so this shape makes the fan-out obvious.

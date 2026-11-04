@@ -241,9 +241,10 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
             )
 
     # 2. Aliases: an exact alias is its own tier; a prefix or substring of an
-    #    alias ranks just below the matching name tier.
+    #    alias ranks just below the matching name tier (Tetramark-i09).  The
+    #    hits ride in the same batch, so the search stays one round trip.
     add(
-        "alias",
+        "alias_hits",
         f"SELECT {_quote('object_type')}, {_quote('object_id')}, {_quote('alias')} "
         f"FROM {_quote('alias')} WHERE LOCATE(LOWER(%s), LOWER({_quote('alias')})) > 0 "
         f"ORDER BY {_quote('object_type')}",
@@ -363,8 +364,9 @@ def find(ledger: Ledger, query: str) -> list[dict[str, Any]]:
                 match="id",
             )
 
-    # 2. Exact aliases.
-    for row in fetched[positions["alias"]]:
+    # 2. Aliases: rank exact/prefix/contains, then resolve the identity from
+    #    the batched maps (no follow-up query per hit).
+    for row in fetched[positions["alias_hits"]]:
         object_type = str(row["object_type"])
         object_id = str(row["object_id"])
         alias = str(row["alias"]).lower()

@@ -11,6 +11,8 @@ Two Dolt quirks are handled here:
 * JSON result rows omit columns whose value is ``NULL``.  A second run with
   ``-r csv`` supplies the column list (the CSV header is printed even for zero
   rows), so ``query`` always returns dictionaries with every column present.
+  A caller that proved every selected column is ``NOT NULL`` can pass
+  ``fill_columns=False`` to skip that second run: one ``dolt sql`` process less.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,30 +33,41 @@ from tetramark.driver.base import (
     Params,
     check_branch_name,
     commit_statements,
+    is_ddl,
     is_nothing_to_commit,
     looks_like_error,
     render_sql,
+    render_statement,
     revision_database,
 )
 from tetramark.errors import LedgerError, UnreachableError, UsageError
 
 __all__ = ["EmbeddedDriver"]
 
-#: Statements Dolt commits regardless of the surrounding transaction.
-_DDL = re.compile(
-    r"(?is)^\s*(?:/\*.*?\*/\s*|--[^\n]*\n\s*|#[^\n]*\n\s*)*"
-    r"(?:CREATE|ALTER|DROP|RENAME|TRUNCATE|GRANT|REVOKE|COMMENT)\b"
+#: A batch statement is preceded by ``SELECT 'TM_STMT_<n>'``; the JSON result
+#: of that marker tells a failed batch how far Dolt got (see ``execute_many``).
+_MARKER_SQL = "SELECT '{prefix}{index}' AS `marker`"
+_MARKER_PREFIX = "TM_STMT_"
+_MARKER_LINE = re.compile(
+    r'^\s*\{\s*"rows"\s*:\s*\[\s*\{\s*"marker"\s*:\s*"TM_STMT_(\d+)"\s*\}\s*\]\s*\}\s*$'
 )
 
 
 class EmbeddedDriver(Driver):
-    """Talk to a Dolt database by shelling out to ``dolt sql`` in its directory."""
+    """Talk to a Dolt database by shelling out to ``dolt sql`` in its directory.
+
+    ``branch`` selects a session-scoped revision database.  By default the
+    branch is checked to exist immediately (one ``dolt sql`` run); a caller that
+    folds that check into its own read batch passes ``validate_branch=False``
+    and must validate the branch itself before relying on it.
+    """
 
     def __init__(
         self,
         path: str | Path,
         *,
         branch: str | None = None,
+        validate_branch: bool = True,
         dolt_binary: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
@@ -71,13 +84,22 @@ class EmbeddedDriver(Driver):
         if not (self._path / ".dolt").is_dir():
             raise UnreachableError(f"not a Dolt database: {self._path}")
         if branch is not None:
-            self._branch = self._require_branch(branch)
+            name = check_branch_name(branch)
+            if validate_branch:
+                # The existence query runs on the checked-out database, so it
+                # must happen before ``_branch`` selects a revision database.
+                self._require_branch(name)
+            self._branch = name
 
     def _require_branch(self, branch: str) -> str:
         """Fail with a usage error when ``branch`` does not exist (never create)."""
         name = check_branch_name(branch)
+        # ``name`` is the dolt_branches primary key, hence NOT NULL: the row's
+        # column is always present, so the CSV metadata run can be skipped.
         rows = self.query(
-            "SELECT `name` FROM dolt_branches WHERE `name` = %s", (name,)
+            "SELECT `name` FROM dolt_branches WHERE `name` = %s",
+            (name,),
+            fill_columns=False,
         )
         if not rows:
             raise UsageError(
@@ -103,7 +125,14 @@ class EmbeddedDriver(Driver):
         return self._branch
 
     # -- reads / writes ---------------------------------------------------
-    def query(self, sql: str, params: Params = None) -> list[dict[str, Any]]:
+    def query(
+        self, sql: str, params: Params = None, *, fill_columns: bool = True
+    ) -> list[dict[str, Any]]:
+        """Run one read; ``fill_columns=False`` skips the CSV header run.
+
+        The caller must have proved every selected column is ``NOT NULL``:
+        without the CSV run a ``NULL`` column is simply absent from the row.
+        """
         rendered = render_sql(sql, params)
         if self._pending:
             # There is no session to query *inside* the pending transaction, so
@@ -111,13 +140,18 @@ class EmbeddedDriver(Driver):
             # the state from there.  The buffer itself stays pending, ready for
             # the real commit when the context manager exits.
             batch = ";\n".join(["START TRANSACTION", *self._pending, rendered, "ROLLBACK"])
-            # Column names do not depend on the pending data, so ask for the
-            # header with the bare query instead of replaying the buffer.
-            return self._with_columns(self._query_json(batch), rendered)
-        return self._with_columns(self._query_json(rendered), rendered)
+            rows = self._query_json(batch)
+        else:
+            rows = self._query_json(rendered)
+        if not fill_columns:
+            return rows
+        return self._with_columns(rows, rendered)
 
     def query_many(
-        self, statements: Sequence[tuple[str, Params]]
+        self,
+        statements: Sequence[tuple[str, Params]],
+        *,
+        fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
         """Run a whole read batch in one ``dolt sql`` process (plus one CSV run).
 
@@ -129,6 +163,10 @@ class EmbeddedDriver(Driver):
         be aligned (an unexpected Dolt output shape), the statements fall back to
         individual :meth:`query` calls: the batching only changes speed, never
         the result.
+
+        ``fill_columns=False`` is the explicit opt-out for a batch whose every
+        selected column is ``NOT NULL``: the CSV run is skipped, so the batch is
+        a single ``dolt sql`` process and a ``NULL`` column is not restored.
         """
         ordered = list(statements)
         if not ordered:
@@ -136,15 +174,21 @@ class EmbeddedDriver(Driver):
         if self._pending:
             # Inside the deferred transaction there is no session to batch in;
             # the per-statement path replays the buffer and previews the state.
-            return [self.query(sql, params) for sql, params in ordered]
+            return [
+                self.query(sql, params, fill_columns=fill_columns)
+                for sql, params in ordered
+            ]
         rendered = [render_sql(sql, params) for sql, params in ordered]
         # A newline before the separator keeps a query that ends in a
         # ``--`` line comment from swallowing the next statement.
         batch = "\n;\n".join(rendered)
         result_sets = _parse_result_sets(self._invoke(batch, "json"), keep_empty=True)
         if len(result_sets) != len(rendered):
-            return [self.query(sql, params) for sql, params in ordered]
-        if not any(result_sets):
+            return [
+                self.query(sql, params, fill_columns=fill_columns)
+                for sql, params in ordered
+            ]
+        if not fill_columns or not any(result_sets):
             return result_sets
         columns = self._batch_columns(batch, [len(rows) for rows in result_sets])
         if columns is None:  # pragma: no cover - defensive: unexpected Dolt output
@@ -161,7 +205,7 @@ class EmbeddedDriver(Driver):
     def execute(self, sql: str, params: Params = None) -> None:
         rendered = render_sql(sql, params)
         if self._pending is not None:
-            if _DDL.match(rendered):
+            if is_ddl(rendered):
                 # Dolt 2.3.5 does not roll DDL back, so it must run outside the
                 # deferred DML transaction.  Flush the DML that logically came
                 # first; otherwise a schema change would see the old rows.
@@ -171,6 +215,29 @@ class EmbeddedDriver(Driver):
             self._pending.append(rendered)
             return
         self._run(rendered)
+
+    def execute_many(self, statements: Sequence[str | tuple[str, Params]]) -> None:
+        """Run a whole DDL batch in one ``dolt sql`` process.
+
+        Dolt applies DDL immediately, so the batch is one script (statement
+        order preserved) instead of one process per statement.  Inside
+        :meth:`transaction` the DML buffered so far is flushed first, in its
+        own transaction, and only then does the batch run -- exactly the order
+        the statements were called in.
+
+        A failure keeps the Dolt error text but names the failing statement:
+        each statement is preceded by a ``SELECT 'TM_STMT_<n>'`` marker, and
+        the markers Dolt printed before it stopped say which statement was
+        running.  Nothing is re-run to find it, so the DDL that already applied
+        stays applied once.
+        """
+        ordered = list(statements)
+        if not ordered:
+            return
+        rendered = [render_statement(statement) for statement in ordered]
+        if self._pending is not None:
+            self._flush()
+        self._run_batch(rendered)
 
     @contextmanager
     def transaction(self) -> Iterator[EmbeddedDriver]:
@@ -215,11 +282,55 @@ class EmbeddedDriver(Driver):
             if is_nothing_to_commit(str(error)):
                 return None
             raise
-        for rows in reversed(result_sets):
-            for row in rows:
-                if "hash" in row:
-                    return str(row["hash"])
-        return None
+        return _commit_hash(result_sets)
+
+    def commit_pending(
+        self,
+        transaction: AbstractContextManager[Driver],
+        message: str,
+        author: str | None = None,
+    ) -> str | None:
+        """Flush the buffered DML and create the Dolt commit in ONE process.
+
+        ``transaction`` is the entered context manager returned by
+        :meth:`transaction`; this call ends it, so it must be called once in
+        place of ``transaction.__exit__`` plus :meth:`commit`.  The usual
+        ``START TRANSACTION; <buffered DML>; COMMIT`` script and
+        :func:`commit_statements` are rendered into one script and run as one
+        ``dolt sql`` process, then this returns the commit hash (``None`` when
+        Dolt said there was nothing to commit).
+
+        Failure behaves like the two-process path: if a statement before the
+        DOLT commit fails, Dolt rolls the transaction back (or leaves the DDL
+        it already applied) and the error surfaces as a
+        :class:`~tetramark.errors.LedgerError`.  As before, a failure *after*
+        the SQL ``COMMIT`` (e.g. DOLT_COMMIT refusing) leaves the rows in the
+        working set, uncommitted in Dolt's history.
+        """
+        if self._pending is None:
+            # Defensive: no deferred transaction to fold in.  Behave exactly
+            # like the base class rather than commit inside a stale buffer.
+            return super().commit_pending(transaction, message, author)
+        pending = list(self._pending)
+        try:
+            statements = list(commit_statements(message, author))
+            if pending:
+                statements = ["START TRANSACTION", *pending, "COMMIT", *statements]
+            # The transaction ends here: closing it below must not run the DML
+            # again (``_flush`` only runs a non-empty buffer).
+            self._pending = []
+            try:
+                result_sets = self._run(";\n".join(statements))
+            except LedgerError as error:
+                if is_nothing_to_commit(str(error)):
+                    return None
+                raise
+        finally:
+            # Ends the transaction even when the combined script failed; an
+            # unexpected error before ``_pending`` was cleared still closes
+            # it (and flushes the DML) exactly as the old two-step path did.
+            transaction.__exit__(None, None, None)
+        return _commit_hash(result_sets)
 
     # -- plumbing ---------------------------------------------------------
     def _query_json(self, sql: str) -> list[dict[str, Any]]:
@@ -303,6 +414,62 @@ class EmbeddedDriver(Driver):
             check_stdout=result_format == "json",
         )
         return process.stdout
+
+    def _run_batch(self, rendered: Sequence[str]) -> None:
+        """Run one script made of ``rendered``, each statement behind a marker."""
+        parts: list[str] = []
+        for index, sql in enumerate(rendered, start=1):
+            parts.append(_MARKER_SQL.format(prefix=_MARKER_PREFIX, index=index))
+            parts.append(sql)
+        try:
+            self._invoke("\n;\n".join(parts), "json")
+        except LedgerError as error:
+            raise _batch_error(error, rendered) from error
+
+
+def _batch_error(error: LedgerError, rendered: Sequence[str]) -> LedgerError:
+    """Name the failing statement of a batch without re-running any of it.
+
+    ``_check_output`` puts both captured streams in the message, so the markers
+    Dolt printed are in it too: marker ``n`` is emitted immediately before
+    statement ``n``, therefore the highest marker seen is the statement that
+    was running when Dolt stopped.  The marker lines are removed from the
+    reported output; the Dolt error text itself is kept verbatim.
+    """
+    total = len(rendered)
+    failing = 0
+    kept: list[str] = []
+    for line in str(error).splitlines():
+        marker = _MARKER_LINE.match(line)
+        if marker is not None:
+            failing = max(failing, int(marker.group(1)))
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept).strip()
+
+    if failing:
+        statement = " ".join(rendered[failing - 1].split())
+        if len(statement) > 160:
+            statement = statement[:157] + "..."
+        context = f"statement {failing} of {total} failed: {statement}"
+    else:
+        # Dolt failed before the first statement's marker was printed (e.g. the
+        # session's revision database could not be selected, or the output was
+        # lost): the batch failed as a whole and the statement is not named.
+        context = (
+            f"a batch of {total} statement(s) failed; the failing statement "
+            "could not be identified"
+        )
+    return LedgerError(f"{context}\n{cleaned}" if cleaned else context)
+
+
+def _commit_hash(result_sets: Sequence[Sequence[dict[str, Any]]]) -> str | None:
+    """The hash of the ``DOLT_COMMIT`` result in a commit script's output."""
+    for rows in reversed(result_sets):
+        for row in rows:
+            if "hash" in row:
+                return str(row["hash"])
+    return None
 
 
 def _check_output(

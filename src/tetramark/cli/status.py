@@ -138,7 +138,11 @@ def collect_status(ledger: Ledger) -> dict[str, Any]:
     """
     branch = ledger.branch
     if branch is None:
-        rows = ledger.driver.query("SELECT active_branch() AS `branch`")
+        # ``active_branch()`` is one NOT NULL value, so the read can skip the
+        # CSV header run: status adds at most one dolt process after open.
+        rows = ledger.driver.query(
+            "SELECT active_branch() AS `branch`", fill_columns=False
+        )
         value = rows[0].get("branch") if rows else None
         branch = None if value is None else str(value)
 

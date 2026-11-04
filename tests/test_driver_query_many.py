@@ -19,6 +19,12 @@ import pytest
 from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError
 
+#: These tests pin budgets by counting the embedded driver's ``dolt sql``
+#: processes; the opt-in server backend has no such per-statement process, so
+#: the ``embedded_driver`` marker makes conftest switch them to that
+#: backend even though the rest of the session defaults to the server.
+pytestmark = pytest.mark.embedded_driver
+
 
 @pytest.fixture
 def embedded_driver(dolt_repo: Path, dolt_env: dict[str, str]) -> EmbeddedDriver:

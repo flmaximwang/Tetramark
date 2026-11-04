@@ -1,88 +1,76 @@
-# Test harness — embedded-only pytest fixtures
+# Test harness — one command, two real backends, hard wall-clock limits
 
-Status: **shipped in 0.5.0**. This page replaces the 0.2.0 *server-backed* harness design: P14
-removed `ServerDriver`, the `tm server` commands and the per-worker `dolt sql-server`. The old
-server-harness performance numbers are kept as historical context in §2 so they are not mistaken for
-today's target.
+Status: **0.6.1** (Tetramark-0i8). Every test still runs against the real `dolt` binary — never a
+mock. **`uv run pytest` is the whole suite**: ledger tests use a managed `dolt sql-server`, the
+`embedded_driver` process-budget tests switch to the embedded one-`dolt sql`-process backend in the
+same session, and the session fails itself if it takes more than **300 s**. The product itself still
+defaults to the embedded driver.
 
 ## 1. Cost model
 
-Everything runs against the real `dolt` binary — no mocks — and most SQL statements are one `dolt sql`
-subprocess in the ledger directory; an independent read batch such as `tm find` is one JSON process
-plus, when it returns rows, one CSV header pass. On an idle machine that is **60–100 ms per statement**
-(0.2–0.4 s under ten-worker load), because Dolt starts a process and opens the database for each batch.
+* **Embedded driver (default in the product).** A batch of SQL is one `dolt sql` subprocess in the
+  ledger directory: roughly **60–100 ms per process** on an idle machine, 0.2–0.4 s under
+  ten-worker load. Tetramark-0i8.x removed every avoidable process (init 3, schema plan 2,
+  list 2, show 2 batches, a write session 2, open 1, …), which brought the suite from 1643 s to ~13 min. That
+  is the floor of this backend: the suite still executes thousands of processes and this machine
+  tops out at 17–23 `dolt sql` starts/s.
+* **Server driver (default in the test harness).** The same statements run over the MySQL protocol
+  against one `dolt sql-server` per ledger: **~0.3 s once** for the server, then **~0.3 ms per
+  statement**. That is what makes the *whole* suite — including the embedded budget tests — fit in
+  **about 3.5 minutes (212 s)** on the reference machine. The data is identical: same Dolt binary, same `.dolt`
+  directory.
 
-The consequence for tests is simple: **never run a full `tm init` per test**. A standard init executes
-100+ statements (roughly 10 s); a test that does that for every case makes the suite unusable.
+The backend is selected per ledger operation from the effective environment: the `env=` mapping a
+caller passes to `init_ledger`/`adopt_ledger`/`open()` when there is one (tests always pass one),
+else `os.environ`. `tests/conftest.py` defaults the session to `TETRAMARK_DRIVER=server` and an
+autouse fixture switches `embedded_driver`-marked tests to `embedded` (and back) before their other
+fixtures run.
 
-The harness therefore builds each **standard ledger shape once per pytest session per xdist worker**
-and hands out directory copies:
+## 2. One command and its limits
 
-- `LedgerTemplates` lazily runs one real `init_ledger` for each shape (`tests/data/presets/base`,
-  `tests/data/presets/full`, the repository's `presets/base.yaml`);
-- `embedded_ledger_factory` / `ledger_factory` `shutil.copytree` the closed ledger into
-  `tmp_path/<name>` (≈0.05 s) and rewrite only `name:` in `ledger.yaml`;
-- a factory call that asks for a non-standard shape (another `id_prefix`, `author`, preset list,
-  `statuses`) keeps the real init path — a template must be exactly what init would have produced;
-- tests whose subject *is* what init generates pass `real_init=True`;
-- historical shapes the current tool can no longer create (`tests/data/ledgers/molbio-v1`, …) are
-  checked in as real Dolt databases and copied; their builders are tested against the fixture itself.
+```sh
+uv run pytest                 # THE full suite: 300 s wall-clock ceiling, 60 s per test
+uv run pytest -q -m fast      # Dolt-free unit tests: 30 s ceiling
+```
 
-The environment is isolated the same way: `DOLT_ROOT_PATH`, `HOME`, `XDG_CONFIG_HOME` and the
-`GIT_CONFIG_*` variables point into `tmp_path`, so the developer's global Dolt/Git configuration is
-never read or written. No ledger-selection environment variable exists (`TETRAMARK_LEDGER` /
-`TETRAMARK_WORKSPACE` are gone); `$TETRAMARK_PRESETS_DIR` is popped unless a test sets it explicitly.
+The limits are enforced by the suite itself, not by a wrapper:
 
-There is no server, port, pid or lifecycle to manage in 0.5.0, so there are no leaked
-`dolt sql-server` processes and no `pgrep` checks. Write-lock coverage uses `fcntl.flock` directly
-(same process and a subprocess waiter), which needs no server either.
+- **Session wall clock — 300 s.** `tests/conftest.py` starts a timer on the pytest controller at
+  `pytest_sessionstart`, collects every test's call duration, and on `pytest_sessionfinish` prints
+  the elapsed time and the 25 slowest tests, sets the exit status non-zero, and fails the run even
+  if every test passed. `TETRAMARK_SUITE_BUDGET_SECONDS=<seconds>` overrides the budget for
+  profiling; an empty value disables the guard.
+- **Fast lane — 30 s.** The same guard selects 30 s when the mark expression contains `fast`.
+- **Per-test timeout — 60 s.** `pytest-timeout` is in the dev group and
+  `[tool.pytest.ini_options] timeout = 60` makes a hung Dolt server or deadlocked fixture fail the
+  run instead of stalling it. A test that legitimately needs longer raises it locally with
+  `@pytest.mark.timeout(<seconds>)` **and** a comment explaining why; do not pad the global value.
+- **No skips to save time.** The 88 `embedded_driver` budget tests are not skipped under the server
+  default: they run with the embedded driver in the same session. The only allowed skip is an
+  optional external artifact (currently the 0.4.2 lab-ledger snapshot when it is absent).
 
-## 2. The lanes and their budgets
+Measured after Tetramark-0i8 (reference machine, 10-core macOS, `-n auto --dist worksteal`):
+**212 s, 1351 passed, 1 skipped, 0 leftover `dolt sql-server`** after the PR #15 review; the increase comes from `embedded`-marked tests (e.g. `test_form_dolt.py`) now correctly running on the embedded driver. The fast lane is ~4 s.
+The fast lane is ~2.5 s (729 passed).
 
-Two lanes, plus a release acceptance run:
+## 3. Server lifecycle
 
-| Lane | Command | Budget | What belongs there |
-|---|---|---|---|
-| **fast** | `pytest -q -m fast` | **seconds** — 0.5.0 baseline **597 passed in 2.38 s**; keep it that way | Dolt-free unit tests: resolution, YAML/schema model, id strategies, renderers, CLI help/panels, error messages |
-| **full** | `pytest` (addopts: `-n auto --dist loadfile`) | **≤ ~33 min** on this 10-CPU machine (0.5.0 baseline 1643.22 s = 27:23, +20 %) | everything, including every real-Dolt integration flow |
-| **release** | full lane + the heavy migration/lab subset | green, no new failures | `tests/test_migrate.py`, the read-only 0.4.2 lab-ledger check when `.dsh/tm-l8g/lab-snapshot` exists, docs flows, and `scripts/test-lanes.sh` |
+- the server starts **lazily** on the first statement, on a free loopback port, and is polled until
+  PyMySQL can connect;
+- `driver.close()` closes the connection but keeps the server in a small **LRU cache keyed by the
+  ledger's resolved path** (`$TETRAMARK_SERVER_CACHE`, default 6; `0` disables reuse and kills the
+  server on close). Without the cache every `tm` command in a doc test would pay the 0.3 s start;
+- the cache validates the directory's `(st_dev, st_ino)` and Tetramark's own
+  `<ledger>/.dolt/tetramark-server.json` sidecar (path + inode), so a copied or replaced directory
+  never reuses another path's server. Dolt's own `.dolt/sql-server.info` stays in place so a plain
+  `dolt sql` in that directory auto-routes — that is Dolt's documented behaviour and it keeps
+  subprocess helpers (raw `dolt sql`, CLI subprocesses) working;
+- a subprocess (CLI, migration script) **borrows** the parent's server through that sidecar instead
+  of failing to start a second one (a database directory allows only one `dolt sql-server`);
+- every owned server is killed on eviction, on `pytest_sessionfinish`/`pytest_unconfigure`, and at
+  interpreter exit. A green run leaves **zero** `dolt sql-server` children.
 
-Rules:
-
-- **Never put a database test on the fast lane.** If it opens a `Ledger`, calls `init_ledger`/`open`,
-  or shells out to `dolt`, it is not `fast`. A fast test that starts costing seconds is a bug.
-- **`-n auto`, not `-n 4`.** The suite is dominated by independent directory copies and per-worker
-  subprocesses; on the developer machine `-n 4` is measurably **slower** than `-n auto`, so the
-  addopts default stays `-n auto --dist loadfile`. Measure on the target machine rather than copying
-  a worker count from another one.
-- **Full-lane budget: ≤ measured baseline +20 %.** The 0.5.0 baseline is **1091 passed, 0 failed,
-  0 skipped in 1643.22 s (27:23) with `-n auto` on 10 workers** (ticket .11's report,
-  `.dsh/tm-l8g/reports/tm-l8g.11.md`); the budget is therefore **≤ ~33 min** on this machine.
-  `scripts/test-lanes.sh` carries that baseline as `FULL_LANE_BASELINE_SECONDS` (1643) and fails
-  above 1.2 × baseline; re-measure with the script on another machine and override the variable.
-  New real-Dolt tests are allowed only if they reuse the session templates and their cost is
-  justified in the ticket report; prefer extending an existing flow over adding another init.
-- **`scripts/test-lanes.sh` is the enforcement point.** The repository has no CI, so this script —
-  run before a merge and before a release — is what turns the budgets into a failing exit code. It
-  runs both lanes with `--durations`, prints their wall times and fails when the full lane exceeds
-  the baseline by more than 20 % (override the baseline for a different machine with
-  `FULL_LANE_BASELINE_SECONDS`; setting it to an empty value measures without gating).
-  Script defaults: fast-lane budget **10 s** (measured: 2.38 s for 597 tests), full-lane baseline
-  **1643 s** (the measured 0.5.0 value, gate at 1.2 ×). In sandboxes where `uv run` does not work,
-  point the script at a venv pytest:
-  `PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh fast` (or `full`).
-- **The wall time is content-bound, not worker-bound.** The same suite run with `-n 4` took
-  1637 s / 27:17 — the same ~27 min. The five heaviest modules are `test_migrate.py` (~872 s
-  single-process), `test_schema_diff.py` (~580 s), `test_docs_commands.py` (~508 s of call time,
-  ~322 s standalone), `test_presets.py` (~386 s) and `test_ledger_init.py` (~180 s). A single test
-  can take 300 s because `--dist loadfile` gives one file to one worker. Optimise the content, not
-  the worker count.
-
-The **server-harness numbers are historical**: the 758 s → 154.83 s result and the “≤180 s” goal
-belong to the 0.2.0 server design that P14 removed. They are context for how the suite used to be
-measured, not the 0.5.0 target; do not quote them as the current budget.
-
-## 3. Fixtures and layout
+## 4. Fixtures and layout
 
 ```
 tests/conftest.py
@@ -91,72 +79,98 @@ tests/conftest.py
   template_ledgers                                session LedgerTemplates (per worker)
   embedded_ledger_factory / ledger_factory        copy a session template (or real init)
   make_ledger / dolt_repo                         bare Dolt databases for adopt/raw tests
+  autouse _backend_for_test                       server by default, embedded for embedded_driver
+  pytest_sessionstart / pytest_runtest_logreport  wall-clock budget and slowest-test report
+  pytest_sessionfinish / pytest_unconfigure       kill every cached dolt sql-server
 tests/data/presets/                               preset fixtures used by the templates
 tests/data/ledgers/                               checked-in historical databases + builders
+tests/test_server_driver.py                       server-backend contract, cache, cleanup, borrowing
 ```
 
 - Use `ledger_factory([...])` for "a normal ledger of this shape"; it returns an opened `Ledger`.
+  Under the server default that `Ledger` talks to a `dolt sql-server`, exactly like `tm` would.
+- **Session templates are built once per pytest worker and then copied.** `LedgerTemplates.ledger()`
+  closes the `Ledger` `init_ledger` returns and (with the server backend) stops its cached server before
+  publishing the path, so `install()` always copies a **closed** directory: no server is mutating
+  it and no discovery file points at a live port.
+- **Budget tests may build their fixture data through the server and then reopen the same ledger
+  embedded.** Building rows is setup, not the read under test; the process counts are cleared after
+  setup. `tests/test_list_round_trips.py`, `test_csv_round_trips.py` and
+  `test_lineage_round_trips.py` follow this pattern: one populated ledger per worker, reopened with
+  the embedded driver, read-only tests share it.
 - Use `dolt_repo` / `make_ledger` when the test is about a bare database or `tm adopt`.
-- Pass `-l/--ledger <ledger.path>` (or `monkeypatch.chdir` into the ledger) in CLI tests; there is no
-  `--workspace` and no `TETRAMARK_WORKSPACE`, and a test must never create a `workspace.yaml`.
-- Isolated Dolt config: a test that shells out directly uses `dolt_run`/`dolt_env`, never the
-  developer's global config. The lab directory `~/Documents/Lab/Dolt` is only ever **read** in the
-  optional read-only snapshot test (copy it under `tmp_path` first if a test needs to write).
+- Isolated Dolt config: `DOLT_ROOT_PATH`, `HOME`, `XDG_CONFIG_HOME` and the `GIT_CONFIG_*`
+  variables point into `tmp_path`, so the developer's global Dolt/Git configuration is never read or
+  written. No ledger-selection environment variable exists.
+- The lab directory `~/Documents/Lab/Dolt` is only ever **read** in the optional read-only snapshot
+  test (copy it under `tmp_path` first if a test needs to write).
 
-## 4. Markers and selection
+## 5. Markers and selection
 
 - `fast` — Dolt-free; the only mark the fast lane runs. The module owns it with
   `pytestmark = pytest.mark.fast` (or per-test decorators) and the module must not import/execute
   Dolt work at collection time.
-- `embedded` — the test deliberately exercises the embedded driver and needs the real `dolt` binary.
-  In 0.5.0 that is every real-database test; `-m embedded` selects the integration set, while the
-  unmarked remainder is likewise embedded whenever it touches a ledger.
-- Default addopts: `-ra -n auto --dist loadfile`.
+- `embedded` — the test exercises the embedded driver explicitly and needs the real `dolt` binary
+  (historical selection mark; `-m embedded` still works).
+- `embedded_driver` — the test **pins the embedded driver's process budget** by counting
+  `EmbeddedDriver._invoke` calls (`tests/test_*_round_trips*.py`, `test_find_batch.py`,
+  `test_driver_query_many.py`, `test_driver_contract.py`). The autouse fixture switches the backend
+  to `embedded` for the test, so those counts are real even though the rest of the session uses the
+  server driver. Never replace the marker with a skip.
+- Default addopts: `-ra -n auto --dist worksteal`.
 
 Common commands:
 
 ```sh
-uv run pytest -q -m fast                # fast lane (seconds)
-uv run pytest                           # full lane (-n auto from addopts)
-uv run pytest -n0 tests/test_status.py  # one file, no xdist
-uv run pytest -q -m embedded            # real-Dolt integration set
-uv run pytest -k "backup or lock"       # focused by keyword
+uv run pytest                                    # full suite (both backends, 300 s guard)
+uv run pytest -q -m fast                         # fast lane (seconds, 30 s guard)
+uv run pytest -n0 tests/test_status.py           # one file, no xdist
+uv run pytest -q -m embedded                     # real-Dolt integration set
+uv run pytest -k "backup or lock"                # focused by keyword
+TETRAMARK_DRIVER=embedded uv run pytest          # whole suite on the default backend (~12 min)
+TETRAMARK_SUITE_BUDGET_SECONDS=600 uv run pytest # profiling only
 ```
 
-In a restricted sandbox without `uv`, the repository's `.dsh/tm-l8g/t.sh <worktree> <pytest args>` and
-`tm.sh` wrappers run the same commands against a worktree (`PYTHONPATH=<worktree>/src`). They are a
-measurement-environment helper, not a product requirement.
+`scripts/test-lanes.sh` runs the same plain commands (fast, then full), prints wall times and the
+number of `dolt sql-server` processes the workers started, and fails if one survives
+(`LEFTOVER_CHECK=0` disables that check on a machine with an unrelated server;
+`PYTEST=/path/to/.venv/bin/pytest scripts/test-lanes.sh full` works when `uv run` does not). It does
+**not** set `TETRAMARK_DRIVER` and adds no budget of its own: the suite is authoritative.
 
-## 5. Rules for adding tests
+## 6. Rules for adding tests
 
 1. **Keep the fast lane fast.** New pure-Python tests are marked fast; a test that needs Dolt is not.
-2. **Reuse the session templates.** A test that just needs a ledger uses `ledger_factory`; only a test
-   about init/adopt/preset generation pays for a real init (`real_init=True`).
+2. **Reuse the session templates.** A test that just needs a ledger uses `ledger_factory`; only a
+   test about init/adopt/preset generation pays for a real init (`real_init=True`).
 3. **Justify real-Dolt cost.** One end-to-end flow per behaviour is enough; extend an existing flow
-   instead of adding a second ledger. Put the cost in the ticket report when adding a new module.
+   instead of adding a second ledger. Share populated fixtures across read-only tests.
 4. **Docs are executable.** `tests/test_docs_commands.py` runs the flows documented in the README,
    the command reference, the migration recipe and the schema skill; when a doc example changes, that
-   test changes with it. Documentation and its test stay in one change.
+   test changes with it.
 5. **Never weaken a test to make a lane green.** Adapt paths/flags (e.g. `-l PATH` instead of
-   `--workspace`) and fixture names; keep the assertion.
+   `--workspace`) and fixture names; keep the assertion. Do not re-add skips or widen budgets.
 6. **Never mock Dolt** and never hand-fake a database directory; copy a template, a fixture or run a
-   real init.
-7. **No server, no ports.** Do not start/stop `dolt sql-server` in tests; do not add a pid/port
-   fixture. The write lock is tested with `flock` directly.
-8. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard test
-   greps for it. Resolution tests use stub directories and belong to the fast lane.
+   real init. The server default still starts the real `dolt sql-server` — no MySQL mock, no faked
+   rows.
+7. **Database tests never manage a server by hand.** They use the driver (embedded or server, chosen
+   by the marker/environment). The only server lifecycle code is `tetramark/driver/server.py`; tests
+   assert its cleanup through `tests/test_server_driver.py`.
+8. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard
+   test greps for it. Resolution tests use stub directories and belong to the fast lane.
 9. **Isolate the environment.** Use the fixtures; never rely on the developer's Dolt/Git config or on
    `~/Documents/Lab`.
-10. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes or
-    lock files survive a green run (lock files are left in place inside `tmp_path` on purpose).
+10. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes
+    survive a green run. The pytest hooks kill cached servers; `scripts/test-lanes.sh` checks for
+    leftovers.
 
-## 6. Release acceptance
+## 7. Release acceptance
 
-Before a release (ticket .13/.14) run and record:
+Before a release run and record:
 
-- `uv run pytest -q -m fast` — green, seconds;
-- `uv run pytest` — green, with test/skip counts and wall time (the 0.5.0 baseline lives in the .11
-  report);
-- the heavy migration/lab subset — green: `tests/test_migrate.py` and the read-only 0.4.2 snapshot
-  test (skipped cleanly when the snapshot directory is absent);
-- `scripts/test-lanes.sh` — fast and full lanes inside budget (exit 0).
+- `uv run pytest` — green, **inside the 300 s guard** (reference: ~212 s, 1351 passed, 1 optional
+  skip), no leftover `dolt sql-server`;
+- `uv run pytest -q -m fast` — green, inside the 30 s guard;
+- `TETRAMARK_DRIVER=embedded uv run pytest` — green (the product's default backend, ~12 min);
+- the heavy migration/lab subset is part of the full run; the 0.4.2 snapshot test skips cleanly when
+  its directory is absent;
+- `scripts/test-lanes.sh` (fast + full, with stats and the leftover check) — exit 0.

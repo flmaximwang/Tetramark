@@ -55,6 +55,7 @@ from tetramark.core.objects import (
     _parse_quantity_unit,
     _require_fields,
     _update,
+    OBJECT_TYPES,
     box_kind_columns,
     box_kind_from,
     default_aliquot_status,
@@ -74,6 +75,7 @@ from tetramark.schema.model import (
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checkers only
     from tetramark.core.ledger import Ledger
+    from tetramark.driver.base import Driver, Params
 
 __all__ = [
     "CsvImportError",
@@ -125,6 +127,50 @@ _STOCK_PLACEMENT = frozenset(
 
 _INT_RE = re.compile(r"[+-]?\d+")
 _ALIAS_SEPARATOR = ";"
+
+# ---------------------------------------------------------------------------
+# The reads the CSV paths make
+# ---------------------------------------------------------------------------
+#
+# Every read below is independent of the others, so they are sent as one
+# ``Driver.query_many`` batch: one ``dolt sql`` process for the rows plus one
+# for the column names (JSON omits a column whose value is NULL, so the CSV
+# run supplies the column lists).  A batch that cannot run falls back to one
+# query per read, so the batching only changes speed, never the result.
+
+#: The identity registries the import planner resolves references against.
+#: The order is the order the results are read back in.
+_IDENTITY_SQL: tuple[str, ...] = (
+    "SELECT `id`, `kind` FROM `entity`",
+    "SELECT `id`, `kind` FROM `stock`",
+    "SELECT `id`, `name`, `kind` FROM `box`",
+    # The aliquot's own id is read as well: a reference to an aliquot is
+    # resolved by that column, not by the derived ``<stock>.<seq>`` form.
+    "SELECT `id`, `stock_id`, `seq` FROM `aliquot`",
+    "SELECT `object_type`, `object_id`, `alias` FROM `alias`",
+    "SELECT `id`, `parent_box_id` FROM `box`",
+)
+
+#: The placement state the import planner checks new rows against.
+_PLACEMENT_SQL: tuple[str, ...] = (
+    "SELECT `box_id`, `label` FROM `slot`",
+    "SELECT `box_id`, `slot`, COUNT(*) AS `n` FROM `aliquot` "
+    "WHERE `box_id` IS NOT NULL AND `slot` IS NOT NULL "
+    "GROUP BY `box_id`, `slot`",
+    "SELECT `parent_box_id`, `parent_slot` FROM `box` "
+    "WHERE `parent_box_id` IS NOT NULL AND `parent_slot` IS NOT NULL",
+    "SELECT `box_id`, COUNT(*) AS `n` FROM `aliquot` "
+    "WHERE `box_id` IS NOT NULL GROUP BY `box_id`",
+    "SELECT `parent_box_id`, COUNT(*) AS `n` FROM `box` "
+    "WHERE `parent_box_id` IS NOT NULL GROUP BY `parent_box_id`",
+)
+
+#: The alias rows an export reads (the same rows feed ``aliases.csv`` and the
+#: ``alias`` column of every other file).
+_ALIAS_SQL = (
+    "SELECT `object_type`, `object_id`, `alias` FROM `alias` "
+    "ORDER BY `object_type`, `object_id`, `alias`"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -251,9 +297,25 @@ class _RowPlan:
     )
 
 
+@dataclass(frozen=True)
+class _UniqueTarget:
+    """One unique-value read the import planner needs (one per unique field)."""
+
+    kind_name: str
+    field_name: str
+    field: Field
+    sql: str
+
+
 # ---------------------------------------------------------------------------
 # Small value helpers
 # ---------------------------------------------------------------------------
+
+
+def _kind_text(row: Mapping[str, Any]) -> str:
+    """The ``kind`` of a row, as the reference resolution reports it."""
+    value = row.get("kind")
+    return str(value) if value else ""
 
 
 def _quote(name: str) -> str:
@@ -425,87 +487,90 @@ class _Planner:
         self._aliquot_seqs: dict[str, set[int]] = {}
         self._aliases: dict[tuple[str, str], str] = {}
         self._box_parents: dict[str, str | None] = {}
-        self._load_identity()
+
+        # The rows the *database* holds, read once up front.  A reference is
+        # resolved against these first and against the rows this import plans
+        # second, so the two are kept apart.
+        self._db_entity_kinds: dict[str, str] = {}
+        self._db_stock_kinds: dict[str, str] = {}
+        self._db_box_kinds: dict[str, str] = {}
+        self._db_box_names: dict[str, str] = {}
+        self._db_aliquot_stock: dict[str, str] = {}
+        self._db_aliases: dict[tuple[str, str], str] = {}
+        #: Whether the one-batch snapshot read every table the schema defines.
+        #: When it did not, reference resolution keeps to the live queries (see
+        #: :meth:`_coerce_ref`).
+        self._snapshot_complete = True
 
         # Placement state.
         self._slot_labels: set[tuple[str, str]] = set()
         self._slot_counts: dict[tuple[str, str], int] = {}
         self._child_slots: set[tuple[str, str]] = set()
         self._box_occupancy: dict[str, int] = {}
-        self._load_placement()
 
         # Unique values already present (existing rows only; planned rows are
         # added after a row validates).
         self._unique_seen: dict[tuple[str, str], set[Any]] = {}
-        self._load_unique_values()
+
+        self._load_snapshot()
 
     def new_box_views(self) -> list[dict[str, Any]]:
         """The ``id``/``name``/``kind`` rows of the boxes this import creates."""
         return list(self._new_box_views)
 
     # -- snapshot of the live ledger --------------------------------------
-    def _load_identity(self) -> None:
-        for row in self.driver.query("SELECT `id`, `kind` FROM `entity`"):
-            self._entity_kinds[str(row["id"])] = str(row["kind"])
-        for row in self.driver.query("SELECT `id`, `kind` FROM `stock`"):
-            self._stock_kinds[str(row["id"])] = str(row["kind"])
-        for row in self.driver.query("SELECT `id`, `name`, `kind` FROM `box`"):
-            box_id = str(row["id"])
-            self._box_kinds[box_id] = str(row["kind"])
-            self._box_names[str(row["name"])] = box_id
-        for row in self.driver.query("SELECT `stock_id`, `seq` FROM `aliquot`"):
-            stock_id = str(row["stock_id"])
-            seq = int(row["seq"])
-            self._aliquot_ids.add(f"{stock_id}.{seq}")
-            self._aliquot_seqs.setdefault(stock_id, set()).add(seq)
-        for row in self.driver.query(
-            "SELECT `object_type`, `object_id`, `alias` FROM `alias`"
-        ):
-            self._aliases[
-                (str(row["object_type"]), str(row["alias"]))
-            ] = str(row["object_id"])
-        for row in self.driver.query(
-            "SELECT `id`, `parent_box_id` FROM `box`"
-        ):
-            self._box_parents[str(row["id"])] = (
-                str(row["parent_box_id"])
-                if row.get("parent_box_id") is not None
-                else None
-            )
+    def _load_snapshot(self) -> None:
+        """Load the live state the planner plans against.
 
-    def _load_placement(self) -> None:
-        for row in self.driver.query("SELECT `box_id`, `label` FROM `slot`"):
-            self._slot_labels.add((str(row["box_id"]), str(row["label"])))
-        for row in self.driver.query(
-            "SELECT `box_id`, `slot`, COUNT(*) AS `n` FROM `aliquot` "
-            "WHERE `box_id` IS NOT NULL AND `slot` IS NOT NULL "
-            "GROUP BY `box_id`, `slot`"
-        ):
-            self._slot_counts[
-                (str(row["box_id"]), str(row["slot"]))
-            ] = int(row["n"])
-        for row in self.driver.query(
-            "SELECT `parent_box_id`, `parent_slot` FROM `box` "
-            "WHERE `parent_box_id` IS NOT NULL AND `parent_slot` IS NOT NULL"
-        ):
-            self._child_slots.add(
-                (str(row["parent_box_id"]), str(row["parent_slot"]))
-            )
-        for row in self.driver.query(
-            "SELECT `box_id`, COUNT(*) AS `n` FROM `aliquot` "
-            "WHERE `box_id` IS NOT NULL GROUP BY `box_id`"
-        ):
-            self._box_occupancy[str(row["box_id"])] = int(row["n"])
-        for row in self.driver.query(
-            "SELECT `parent_box_id`, COUNT(*) AS `n` FROM `box` "
-            "WHERE `parent_box_id` IS NOT NULL GROUP BY `parent_box_id`"
-        ):
-            box_id = str(row["parent_box_id"])
-            self._box_occupancy[box_id] = (
-                self._box_occupancy.get(box_id, 0) + int(row["n"])
-            )
+        The identity registries, the placement state and the unique values are
+        independent reads, so they are sent as one ``query_many`` batch: one
+        ``dolt sql`` process for the rows plus one for the column names.
 
-    def _load_unique_values(self) -> None:
+        A batch that cannot run (a ledger whose tables drifted away from its
+        schema, where a unique-value read hits a table that is not there)
+        falls back to the historical one-query-at-a-time reads, so the planner
+        sees exactly the same state either way -- including the tolerance for
+        a missing table or column.
+        """
+        targets = self._unique_targets()
+        statements: list[tuple[str, Params | None]] = [
+            *((sql, None) for sql in _IDENTITY_SQL),
+            *((sql, None) for sql in _PLACEMENT_SQL),
+            *((target.sql, None) for target in targets),
+        ]
+        try:
+            results = self.driver.query_many(statements)
+        except LedgerError:
+            results = None
+        if results is None or len(results) != len(statements):
+            # One failing read takes the whole batch with it; the individual
+            # reads can skip the one that fails.  The snapshot is no longer a
+            # trustworthy picture of the schema's tables, so reference
+            # resolution stays on the live queries as well.
+            self._snapshot_complete = False
+            self._load_identity()
+            self._load_placement()
+            self._load_unique_values()
+            return
+
+        identity_end = len(_IDENTITY_SQL)
+        placement_end = identity_end + len(_PLACEMENT_SQL)
+        self._apply_identity(*results[:identity_end])
+        self._apply_placement(*results[identity_end:placement_end])
+        for target, rows in zip(targets, results[placement_end:]):
+            self._unique_seen[(target.kind_name, target.field_name)] = {
+                (
+                    row["v"]
+                    if target.field.type is FieldType.sequence
+                    else _unique_value(target.field, row["v"])
+                )
+                for row in rows
+                if row.get("v") is not None
+            }
+
+    def _unique_targets(self) -> list[_UniqueTarget]:
+        """One read per unique field of every kind the schema defines."""
+        targets: list[_UniqueTarget] = []
         for object_type in ("entity", "stock", "box"):
             for kind_name, kind in self.schema.kinds_for(object_type).items():
                 table = table_name(object_type, kind_name)
@@ -517,21 +582,139 @@ class _Planner:
                         if field_schema.type is FieldType.sequence
                         else field_name
                     )
-                    try:
-                        rows = self.driver.query(
-                            f"SELECT {_quote(column)} AS `v` FROM {_quote(table)}"
+                    targets.append(
+                        _UniqueTarget(
+                            kind_name=kind_name,
+                            field_name=field_name,
+                            field=field_schema,
+                            sql=f"SELECT {_quote(column)} AS `v` FROM {_quote(table)}",
                         )
-                    except LedgerError:  # pragma: no cover - schema/DB mismatch
-                        continue
-                    self._unique_seen[(kind_name, field_name)] = {
-                        (
-                            row["v"]
-                            if field_schema.type is FieldType.sequence
-                            else _unique_value(field_schema, row["v"])
-                        )
-                        for row in rows
-                        if row.get("v") is not None
-                    }
+                    )
+        return targets
+
+    def _apply_identity(
+        self,
+        entity_rows: list[dict[str, Any]],
+        stock_rows: list[dict[str, Any]],
+        box_rows: list[dict[str, Any]],
+        aliquot_rows: list[dict[str, Any]],
+        alias_rows: list[dict[str, Any]],
+        parent_rows: list[dict[str, Any]],
+    ) -> None:
+        """Fill the identity registries from the rows the snapshot read."""
+        for row in entity_rows:
+            self._entity_kinds[str(row["id"])] = str(row["kind"])
+            self._db_entity_kinds[str(row["id"])] = _kind_text(row)
+        for row in stock_rows:
+            self._stock_kinds[str(row["id"])] = str(row["kind"])
+            self._db_stock_kinds[str(row["id"])] = _kind_text(row)
+        for row in box_rows:
+            box_id = str(row["id"])
+            self._box_kinds[box_id] = str(row["kind"])
+            self._box_names[str(row["name"])] = box_id
+            self._db_box_kinds[box_id] = _kind_text(row)
+            self._db_box_names[str(row["name"])] = box_id
+        for row in aliquot_rows:
+            stock_id = str(row["stock_id"])
+            seq = int(row["seq"])
+            self._aliquot_ids.add(f"{stock_id}.{seq}")
+            self._aliquot_seqs.setdefault(stock_id, set()).add(seq)
+            self._db_aliquot_stock[str(row["id"])] = stock_id
+        for row in alias_rows:
+            key = (str(row["object_type"]), str(row["alias"]))
+            self._aliases[key] = str(row["object_id"])
+            self._db_aliases[key] = str(row["object_id"])
+        for row in parent_rows:
+            self._box_parents[str(row["id"])] = (
+                str(row["parent_box_id"])
+                if row.get("parent_box_id") is not None
+                else None
+            )
+
+    def _apply_placement(
+        self,
+        slot_rows: list[dict[str, Any]],
+        slot_counts: list[dict[str, Any]],
+        child_slots: list[dict[str, Any]],
+        box_counts: list[dict[str, Any]],
+        parent_counts: list[dict[str, Any]],
+    ) -> None:
+        """Fill the placement state from the rows the snapshot read."""
+        for row in slot_rows:
+            self._slot_labels.add((str(row["box_id"]), str(row["label"])))
+        for row in slot_counts:
+            self._slot_counts[
+                (str(row["box_id"]), str(row["slot"]))
+            ] = int(row["n"])
+        for row in child_slots:
+            self._child_slots.add(
+                (str(row["parent_box_id"]), str(row["parent_slot"]))
+            )
+        for row in box_counts:
+            self._box_occupancy[str(row["box_id"])] = int(row["n"])
+        for row in parent_counts:
+            box_id = str(row["parent_box_id"])
+            self._box_occupancy[box_id] = (
+                self._box_occupancy.get(box_id, 0) + int(row["n"])
+            )
+
+    def _load_identity(self) -> None:
+        """The identity registries, one query each (the fallback path)."""
+        self._apply_identity(
+            self.driver.query("SELECT `id`, `kind` FROM `entity`"),
+            self.driver.query("SELECT `id`, `kind` FROM `stock`"),
+            self.driver.query("SELECT `id`, `name`, `kind` FROM `box`"),
+            self.driver.query("SELECT `id`, `stock_id`, `seq` FROM `aliquot`"),
+            self.driver.query(
+                "SELECT `object_type`, `object_id`, `alias` FROM `alias`"
+            ),
+            self.driver.query("SELECT `id`, `parent_box_id` FROM `box`"),
+        )
+
+    def _load_placement(self) -> None:
+        """The placement state, one query each (the fallback path)."""
+        self._apply_placement(
+            self.driver.query("SELECT `box_id`, `label` FROM `slot`"),
+            self.driver.query(
+                "SELECT `box_id`, `slot`, COUNT(*) AS `n` FROM `aliquot` "
+                "WHERE `box_id` IS NOT NULL AND `slot` IS NOT NULL "
+                "GROUP BY `box_id`, `slot`"
+            ),
+            self.driver.query(
+                "SELECT `parent_box_id`, `parent_slot` FROM `box` "
+                "WHERE `parent_box_id` IS NOT NULL AND `parent_slot` IS NOT NULL"
+            ),
+            self.driver.query(
+                "SELECT `box_id`, COUNT(*) AS `n` FROM `aliquot` "
+                "WHERE `box_id` IS NOT NULL GROUP BY `box_id`"
+            ),
+            self.driver.query(
+                "SELECT `parent_box_id`, COUNT(*) AS `n` FROM `box` "
+                "WHERE `parent_box_id` IS NOT NULL GROUP BY `parent_box_id`"
+            ),
+        )
+
+    def _load_unique_values(self) -> None:
+        """The unique values, one query each (the fallback path).
+
+        A read whose table or column is not there is skipped, exactly as the
+        batched path skips it (a batch cannot skip one failing statement, so
+        the batch falls back to this path).
+        """
+        for target in self._unique_targets():
+            try:
+                rows = self.driver.query(target.sql)
+            except LedgerError:  # pragma: no cover - schema/DB mismatch
+                continue
+            self._unique_seen[(target.kind_name, target.field_name)] = {
+                (
+                    row["v"]
+                    if target.field.type is FieldType.sequence
+                    else _unique_value(target.field, row["v"])
+                )
+                for row in rows
+                if row.get("v") is not None
+            }
 
     # -- public planning entry points -------------------------------------
     def add_file(
@@ -760,12 +943,9 @@ class _Planner:
 
         resolved_kind = self._stock_kinds.get(stock_id)
         if resolved_kind is None:
-            rows = self.driver.query(
-                "SELECT `kind` FROM `stock` WHERE `id` = %s", (stock_id,)
-            )
-            if rows:
-                resolved_kind = str(rows[0]["kind"])
-        if resolved_kind is None:
+            # The registry holds every stock the database has (plus the ones
+            # this import plans), so an unknown stock is unknown to the
+            # database as well.
             raise UsageError(f"unknown stock {stock_id!r}")
         if kind_name is not None and resolved_kind != kind_name:
             raise UsageError(
@@ -831,21 +1011,20 @@ class _Planner:
     def _resolve_any(
         self, object_type: str, ref: str
     ) -> tuple[str, str] | None:
-        """Resolve an id or alias; return ``(id, kind)`` (kind may be "")."""
+        """Resolve an id or alias; return ``(id, kind)`` (kind may be "").
+
+        The live rows are the ones the snapshot read, so a reference costs no
+        Dolt process; the lookup itself is the one the database answered
+        before: the id first, then (for a box) the name, then the alias.
+        """
         if object_type == "aliquot":
-            rows = self.driver.query(
-                "SELECT `id`, `stock_id` FROM `aliquot` WHERE `id` = %s", (ref,)
-            )
-            if rows:
-                stock_id = str(rows[0]["stock_id"])
-                return str(rows[0]["id"]), self._stock_kinds.get(stock_id, "")
+            stock_id = self._db_aliquot_stock.get(ref)
+            if stock_id is not None:
+                return ref, self._stock_kinds.get(stock_id, "")
             owner = self._aliases.get(("aliquot", ref))
             if owner is not None:
-                rows = self.driver.query(
-                    "SELECT `stock_id` FROM `aliquot` WHERE `id` = %s", (owner,)
-                )
-                if rows:
-                    stock_id = str(rows[0]["stock_id"])
+                stock_id = self._db_aliquot_stock.get(owner)
+                if stock_id is not None:
                     return owner, self._stock_kinds.get(stock_id, "")
                 if owner in self._aliquot_ids:
                     stock_id = parse_aliquot_id(owner)[0]
@@ -855,18 +1034,18 @@ class _Planner:
                 return ref, self._stock_kinds.get(stock_id, "")
             return None
 
-        table = object_type
-        rows = self.driver.query(
-            f"SELECT `id`, `kind` FROM {_quote(table)} WHERE `id` = %s", (ref,)
-        )
-        if rows:
-            return str(rows[0]["id"]), str(rows[0].get("kind") or "")
+        db_kinds = {
+            "entity": self._db_entity_kinds,
+            "stock": self._db_stock_kinds,
+            "box": self._db_box_kinds,
+        }.get(object_type)
+        kind = db_kinds.get(ref) if db_kinds is not None else None
+        if kind is not None:
+            return ref, kind
         if object_type == "box":
-            rows = self.driver.query(
-                f"SELECT `id`, `kind` FROM `box` WHERE `name` = %s", (ref,)
-            )
-            if rows:
-                return str(rows[0]["id"]), str(rows[0].get("kind") or "")
+            box_id = self._db_box_names.get(ref)
+            if box_id is not None:
+                return box_id, self._db_box_kinds.get(box_id, "")
         owner = self._aliases.get((object_type, ref))
         if owner is not None:
             if object_type == "entity":
@@ -936,9 +1115,122 @@ class _Planner:
             return object_type, object_id
         return None
 
+    def _live_ref(self, target: str, raw: str) -> str | None:
+        """The id ``raw`` resolves to among the *live* rows, or ``None``.
+
+        The lookup is the one the database answered before the snapshot was
+        batched: the id in the target's own table first, then an alias that
+        points at a row of that table.
+        """
+        kind = self.schema.kinds.get(target)
+        if kind is not None:
+            object_type = kind.object.value
+            ids = self._db_kind_ids(target)
+        elif target in OBJECT_TYPES:
+            object_type = target
+            ids = self._db_core_ids(target)
+        else:  # pragma: no cover - the loader rejects an unknown target
+            return None
+        if raw in ids:
+            return raw
+        owner = self._db_aliases.get((object_type, raw))
+        if owner is not None and str(owner) in ids:
+            return str(owner)
+        return None
+
+    def _live_ref_problem(self, target: str, raw: str) -> str:
+        """The message the live resolution reports when ``raw`` does not resolve.
+
+        ``core.objects._resolve_ref`` words these two cases; the snapshot holds
+        exactly the rows it queried, so the message is the same.
+        """
+        kind = self.schema.kinds.get(target)
+        if kind is not None:
+            object_type = kind.object.value
+        elif target in OBJECT_TYPES:
+            object_type = target
+        else:  # pragma: no cover - the loader rejects an unknown target
+            return f"field refers to unknown target {target!r}"
+        core = {
+            "entity": self._db_entity_kinds,
+            "stock": self._db_stock_kinds,
+            "box": self._db_box_kinds,
+        }.get(object_type)
+        value = core.get(raw) if core is not None else None
+        if value is not None:
+            return f"{raw!r} is a {value!r} {object_type}, not a {target!r}"
+        return (
+            f"cannot resolve {raw!r} for reference to {target!r} "
+            "(no such id, and no alias for it)"
+        )
+
+    def _db_kind_ids(self, kind_name: str) -> set[str]:
+        """The ids of the live rows of one kind.
+
+        A kind's rows are the core rows whose ``kind`` is that kind, so the
+        planner never has to read every kind table one by one.
+        """
+        kind = self.schema.kinds.get(kind_name)
+        if kind is None:  # pragma: no cover - the loader guarantees the kind
+            return set()
+        core = {
+            "entity": self._db_entity_kinds,
+            "stock": self._db_stock_kinds,
+            "box": self._db_box_kinds,
+        }.get(kind.object.value)
+        if core is None:  # pragma: no cover - kinds are entity/stock/box
+            return set()
+        return {
+            identifier for identifier, value in core.items() if value == kind_name
+        }
+
+    def _db_core_ids(self, object_type: str) -> set[str]:
+        """The ids of the live rows of one core object type."""
+        rows = {
+            "entity": self._db_entity_kinds,
+            "stock": self._db_stock_kinds,
+            "box": self._db_box_kinds,
+            "aliquot": self._db_aliquot_stock,
+        }.get(object_type)
+        return set(rows) if rows is not None else set()
+
     def _coerce_ref(
         self, field_schema: Field, value: str, *, label: str
     ) -> tuple[str, tuple[str, str] | None]:
+        """Resolve a ``ref`` value: the live rows first, then the planned ones.
+
+        The live resolution reads the snapshot the planner already loaded, so a
+        reference costs no Dolt process; it reports the same message as
+        ``core.objects._resolve_ref`` when the reference does not resolve.  A
+        ledger whose tables drifted away from its schema keeps to that
+        function's live queries, because the snapshot did not see every table.
+        """
+        if not self._snapshot_complete:  # pragma: no cover - schema/DB mismatch
+            return self._coerce_ref_per_query(field_schema, value, label=label)
+        target = field_schema.to
+        assert target is not None
+        live = self._live_ref(target, value)
+        if live is not None and (
+            field_schema.pattern is None
+            or re.fullmatch(field_schema.pattern, live) is not None
+        ):
+            return live, None
+        problem = (
+            f"field {label!r} does not match the pattern "
+            f"{field_schema.pattern!r} (got {live!r})"
+            if live is not None
+            else self._live_ref_problem(target, value)
+        )
+        resolved = self._resolve_virtual_ref(target, value)
+        if resolved is None:
+            raise UsageError(problem)
+        object_type, object_id = resolved
+        return object_id, self._planned_key(object_type, object_id)
+
+    def _coerce_ref_per_query(
+        self, field_schema: Field, value: str, *, label: str
+    ) -> tuple[str, tuple[str, str] | None]:
+        """The historical reference resolution: one query per lookup."""
         try:
             coerced = _coerce_field(
                 field_schema,
@@ -1641,11 +1933,9 @@ class _Planner:
             )
 
     def _db_box_ids(self) -> set[str]:
+        """The ids of the boxes the *database* holds (not the ones imported)."""
         if not hasattr(self, "_db_boxes_cache"):
-            self._db_boxes_cache = {
-                str(row["id"])
-                for row in self.driver.query("SELECT `id` FROM `box`")
-            }
+            self._db_boxes_cache = set(self._db_box_kinds)
         return self._db_boxes_cache
 
     def _box_label(self, box_id: str) -> str:
@@ -2108,12 +2398,9 @@ def _export_header(base: Sequence[str], fields: Iterable[str]) -> list[str]:
     return _dedupe([*base, *fields, "alias"])
 
 
-def _alias_map(ledger: Ledger) -> dict[tuple[str, str], list[str]]:
+def _alias_map(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[str]]:
     result: dict[tuple[str, str], list[str]] = {}
-    for row in ledger.driver.query(
-        "SELECT `object_type`, `object_id`, `alias` FROM `alias` "
-        "ORDER BY `object_type`, `object_id`, `alias`"
-    ):
+    for row in rows:
         key = (str(row["object_type"]), str(row["object_id"]))
         result.setdefault(key, []).append(str(row["alias"]))
     return result
@@ -2127,17 +2414,163 @@ def _fields_for_export(kind: Kind) -> list[str]:
     ]
 
 
+def _entity_view_sql(kind_name: str) -> str:
+    """The rows of one entity kind, as the export reads them."""
+    return f"SELECT * FROM {_quote(f'v_entity_{kind_name}')} ORDER BY `id`"
+
+
+def _stock_view_sql(kind_name: str) -> str:
+    """The rows of one stock kind, as the export reads them."""
+    return f"SELECT * FROM {_quote(f'v_stock_{kind_name}')} ORDER BY `id`"
+
+
+def _box_select_sql(ledger: Ledger, kind_name: str) -> str:
+    """The row shape the per-kind box views used to expose (spec 5).
+
+    Spec 5 dropped the per-kind ``v_box_<kind>`` views; the same row shape
+    comes from joining the core ``box`` row with its ``box_<kind>`` row.
+    """
+    kind = ledger.schema.kind(kind_name)
+    select_items = [
+        f"{expression} AS {_quote(column)}"
+        for column, expression in box_kind_columns(kind).items()
+    ]
+    return (
+        f"SELECT {', '.join(select_items)} FROM {box_kind_from(kind_name)} "
+        f"ORDER BY c.{_quote('id')}"
+    )
+
+
+class _ExportRows:
+    """The rows an export reads, in as few Dolt processes as possible.
+
+    The reads are independent, so they run as one ``query_many`` batch: one
+    ``dolt sql`` process for the rows plus one for the column names (JSON
+    omits a column whose value is NULL, so the CSV run supplies the column
+    lists).
+
+    A batch that cannot run (a ledger whose tables drifted away from its
+    schema) falls back to one query per read, exactly as the export did
+    before it was batched: the batching only changes speed, never the result.
+    """
+
+    def __init__(
+        self, driver: Driver, statements: Sequence[tuple[str, str]]
+    ) -> None:
+        self._driver = driver
+        self._statements = list(statements)
+        self._rows: dict[str, list[dict[str, Any]]] | None = None
+        self._per_query = False
+
+    def rows(self, key: str) -> list[dict[str, Any]]:
+        """The rows of one read, in the order the database returned them."""
+        if self._rows is None and not self._per_query:
+            try:
+                results = self._driver.query_many(
+                    [(sql, None) for _, sql in self._statements]
+                )
+            except LedgerError:
+                self._per_query = True
+            else:
+                if len(results) != len(self._statements):
+                    # A backend that lost a result set: read one at a time.
+                    self._per_query = True
+                else:
+                    self._rows = {
+                        name: rows
+                        for (name, _), rows in zip(self._statements, results)
+                    }
+                    return self._rows.get(key, [])
+        if self._rows is None:
+            # The fallback keeps every read it has already paid for; exporting
+            # reads each key more than once (aliases, box names, ...).
+            self._rows = {}
+        if key in self._rows:
+            return self._rows[key]
+        for name, sql in self._statements:
+            if name == key:
+                rows = self._driver.query(sql)
+                self._rows[key] = rows
+                return rows
+        self._rows[key] = []
+        return []
+
+
+def _export_statements(ledger: Ledger, kind: str) -> list[tuple[str, str]]:
+    """The reads an export of ``kind`` needs, in the order it reads them."""
+    text = str(kind).strip()
+    lowered = text.lower()
+    statements: list[tuple[str, str]] = [("aliases", _ALIAS_SQL)]
+    if lowered == "all":
+        for kind_name in sorted(ledger.schema.entity_kinds):
+            statements.append((f"entity:{kind_name}", _entity_view_sql(kind_name)))
+        for kind_name in sorted(ledger.schema.box_kinds):
+            statements.append(
+                (f"box:{kind_name}", _box_select_sql(ledger, kind_name))
+            )
+        for kind_name in sorted(ledger.schema.stock_kinds):
+            statements.append((f"stock:{kind_name}", _stock_view_sql(kind_name)))
+        statements.append(("stock_kinds", "SELECT `id`, `kind` FROM `stock`"))
+        statements.append(("box_names", "SELECT `id`, `name` FROM `box`"))
+        statements.append(("aliquots", "SELECT * FROM `aliquot` ORDER BY `id`"))
+        return statements
+    if lowered in ("box", "boxes"):
+        for kind_name in sorted(ledger.schema.box_kinds):
+            statements.append(
+                (f"box:{kind_name}", _box_select_sql(ledger, kind_name))
+            )
+        return statements
+    if lowered in ("aliquot", "aliquots"):
+        statements.append(("stock_kinds", "SELECT `id`, `kind` FROM `stock`"))
+        statements.append(("box_names", "SELECT `id`, `name` FROM `box`"))
+        statements.append(("aliquots", "SELECT * FROM `aliquot` ORDER BY `id`"))
+        return statements
+    if lowered in ("alias", "aliases"):
+        return statements
+    schema_kind = ledger.schema.kinds.get(text)
+    if schema_kind is None:  # pragma: no cover - checked before the reads
+        raise UsageError(f"unknown kind {kind!r}")
+    if schema_kind.object is ObjectType.entity:
+        statements.append((f"entity:{text}", _entity_view_sql(text)))
+    elif schema_kind.object is ObjectType.stock:
+        statements.append((f"stock:{text}", _stock_view_sql(text)))
+    else:
+        statements.append((f"box:{text}", _box_select_sql(ledger, text)))
+    return statements
+
+
+def _check_export_target(ledger: Ledger, kind: str, lowered: str) -> None:
+    """Refuse an export the ledger cannot write, before it reads anything."""
+    if lowered == "all":
+        reserved = {"boxes", "aliquots", "aliases"}
+        clashes = sorted(name for name in ledger.schema.kinds if name in reserved)
+        if clashes:
+            raise UsageError(
+                "cannot export all: kind(s) "
+                + ", ".join(repr(name) for name in clashes)
+                + " would collide with the fixed CSV names"
+            )
+        return
+    if lowered in ("box", "boxes", "aliquot", "aliquots", "alias", "aliases"):
+        return
+    if ledger.schema.kinds.get(str(kind).strip()) is None:
+        valid = ", ".join(sorted(ledger.schema.kinds))
+        raise UsageError(
+            f"unknown kind {kind!r}; choose from: {valid}, all, boxes, aliquots, aliases"
+        )
+
+
 def _export_entity_kind(
     ledger: Ledger,
     kind_name: str,
     destination: Path,
     aliases: Mapping[tuple[str, str], list[str]],
+    rows: _ExportRows,
 ) -> int:
     kind = ledger.schema.kind(kind_name)
     header = _export_header(_CORE_COLUMNS["entity"], _fields_for_export(kind))
-    rows = ledger.driver.query(f"SELECT * FROM {_quote(f'v_entity_{kind_name}')} ORDER BY `id`")
     data = []
-    for row in rows:
+    for row in rows.rows(f"entity:{kind_name}"):
         record = dict(row)
         record["alias"] = _ALIAS_SEPARATOR.join(
             aliases.get(("entity", str(row["id"])), [])
@@ -2151,12 +2584,12 @@ def _export_stock_kind(
     kind_name: str,
     destination: Path,
     aliases: Mapping[tuple[str, str], list[str]],
+    rows: _ExportRows,
 ) -> int:
     kind = ledger.schema.kind(kind_name)
     header = _export_header(_CORE_COLUMNS["stock"], _fields_for_export(kind))
-    rows = ledger.driver.query(f"SELECT * FROM {_quote(f'v_stock_{kind_name}')} ORDER BY `id`")
     data = []
-    for row in rows:
+    for row in rows.rows(f"stock:{kind_name}"):
         record = dict(row)
         record["entity"] = row.get("entity_id")
         record["parent_stock"] = row.get("parent_stock_id")
@@ -2175,6 +2608,7 @@ def _export_boxes(
     ledger: Ledger,
     destination: Path,
     aliases: Mapping[tuple[str, str], list[str]],
+    rows: _ExportRows,
     *,
     only_kind: str | None = None,
 ) -> int:
@@ -2190,18 +2624,7 @@ def _export_boxes(
 
     data: list[dict[str, Any]] = []
     for kind_name in sorted(kinds):
-        # Spec 5 dropped the per-kind box views; read the same row shape by
-        # joining the core `box` row with its `box_<kind>` row.
-        kind = ledger.schema.kind(kind_name)
-        select_items = [
-            f"{expression} AS {_quote(column)}"
-            for column, expression in box_kind_columns(kind).items()
-        ]
-        rows = ledger.driver.query(
-            f"SELECT {', '.join(select_items)} FROM {box_kind_from(kind_name)} "
-            f"ORDER BY c.{_quote('id')}"
-        )
-        for row in rows:
+        for row in rows.rows(f"box:{kind_name}"):
             record = dict(row)
             record["parent"] = row.get("parent_box_id")
             record["parent_slot"] = row.get("parent_slot")
@@ -2213,32 +2636,29 @@ def _export_boxes(
     return _write_csv(destination, header, data)
 
 
-def _export_aliases(ledger: Ledger, destination: Path) -> int:
+def _export_aliases(destination: Path, rows: _ExportRows) -> int:
     header = list(_CORE_COLUMNS["alias"])
-    rows = ledger.driver.query(
-        "SELECT `object_type`, `object_id`, `alias` FROM `alias` "
-        "ORDER BY `object_type`, `object_id`, `alias`"
+    return _write_csv(
+        destination, header, [dict(row) for row in rows.rows("aliases")]
     )
-    return _write_csv(destination, header, [dict(row) for row in rows])
 
 
 def _export_aliquots(
     ledger: Ledger,
     destination: Path,
     aliases: Mapping[tuple[str, str], list[str]],
+    rows: _ExportRows,
 ) -> int:
     header = _export_header(_CORE_COLUMNS["aliquot"], ())
 
     stock_kinds = {
-        str(row["id"]): str(row["kind"])
-        for row in ledger.driver.query("SELECT `id`, `kind` FROM `stock`")
+        str(row["id"]): str(row["kind"]) for row in rows.rows("stock_kinds")
     }
     box_names = {
-        str(row["id"]): str(row["name"])
-        for row in ledger.driver.query("SELECT `id`, `name` FROM `box`")
+        str(row["id"]): str(row["name"]) for row in rows.rows("box_names")
     }
     data: list[dict[str, Any]] = []
-    for row in ledger.driver.query("SELECT * FROM `aliquot` ORDER BY `id`"):
+    for row in rows.rows("aliquots"):
         record = dict(row)
         kind_name = stock_kinds.get(str(row["stock_id"]), "")
         record["kind"] = kind_name
@@ -2263,7 +2683,13 @@ def export_csv(
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise UsageError(f"cannot create export directory {directory}: {error}") from error
-    aliases = _alias_map(ledger)
+
+    text = str(kind).strip()
+    lowered = text.lower()
+    _check_export_target(ledger, kind, lowered)
+
+    rows = _ExportRows(ledger.driver, _export_statements(ledger, text))
+    aliases = _alias_map(rows.rows("aliases"))
     files: list[Path] = []
     counts: dict[str, int] = {}
 
@@ -2272,75 +2698,62 @@ def export_csv(
         counts[path.name] = writer(path)
         files.append(path)
 
-    text = str(kind).strip()
-    lowered = text.lower()
-
     if lowered == "all":
-        reserved = {"boxes", "aliquots", "aliases"}
-        clashes = sorted(name for name in ledger.schema.kinds if name in reserved)
-        if clashes:
-            raise UsageError(
-                "cannot export all: kind(s) "
-                + ", ".join(repr(name) for name in clashes)
-                + " would collide with the fixed CSV names"
-            )
         for kind_name in sorted(ledger.schema.entity_kinds):
             emit(
                 f"{kind_name}.csv",
                 lambda path, kind_name=kind_name: _export_entity_kind(
-                    ledger, kind_name, path, aliases
+                    ledger, kind_name, path, aliases, rows
                 ),
             )
         emit(
             "boxes.csv",
-            lambda path: _export_boxes(ledger, path, aliases),
+            lambda path: _export_boxes(ledger, path, aliases, rows),
         )
         for kind_name in sorted(ledger.schema.stock_kinds):
             emit(
                 f"{kind_name}.csv",
                 lambda path, kind_name=kind_name: _export_stock_kind(
-                    ledger, kind_name, path, aliases
+                    ledger, kind_name, path, aliases, rows
                 ),
             )
         emit(
             "aliquots.csv",
-            lambda path: _export_aliquots(ledger, path, aliases),
+            lambda path: _export_aliquots(ledger, path, aliases, rows),
         )
-        emit("aliases.csv", lambda path: _export_aliases(ledger, path))
+        emit("aliases.csv", lambda path: _export_aliases(path, rows))
         return ExportResult(directory=directory, files=tuple(files), counts=counts)
 
     if lowered in ("box", "boxes"):
-        emit("boxes.csv", lambda path: _export_boxes(ledger, path, aliases))
+        emit("boxes.csv", lambda path: _export_boxes(ledger, path, aliases, rows))
         return ExportResult(directory=directory, files=tuple(files), counts=counts)
     if lowered in ("aliquot", "aliquots"):
         emit(
             "aliquots.csv",
-            lambda path: _export_aliquots(ledger, path, aliases),
+            lambda path: _export_aliquots(ledger, path, aliases, rows),
         )
         return ExportResult(directory=directory, files=tuple(files), counts=counts)
     if lowered in ("alias", "aliases"):
-        emit("aliases.csv", lambda path: _export_aliases(ledger, path))
+        emit("aliases.csv", lambda path: _export_aliases(path, rows))
         return ExportResult(directory=directory, files=tuple(files), counts=counts)
 
     schema_kind = ledger.schema.kinds.get(text)
-    if schema_kind is None:
-        valid = ", ".join(sorted(ledger.schema.kinds))
-        raise UsageError(
-            f"unknown kind {kind!r}; choose from: {valid}, all, boxes, aliquots, aliases"
-        )
+    assert schema_kind is not None  # checked by _check_export_target
     if schema_kind.object is ObjectType.entity:
         emit(
             f"{text}.csv",
-            lambda path: _export_entity_kind(ledger, text, path, aliases),
+            lambda path: _export_entity_kind(ledger, text, path, aliases, rows),
         )
     elif schema_kind.object is ObjectType.stock:
         emit(
             f"{text}.csv",
-            lambda path: _export_stock_kind(ledger, text, path, aliases),
+            lambda path: _export_stock_kind(ledger, text, path, aliases, rows),
         )
     else:
         emit(
             f"{text}.csv",
-            lambda path: _export_boxes(ledger, path, aliases, only_kind=text),
+            lambda path: _export_boxes(
+                ledger, path, aliases, rows, only_kind=text
+            ),
         )
     return ExportResult(directory=directory, files=tuple(files), counts=counts)
