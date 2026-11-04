@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from rich.console import Console
 
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import stock_add_message
@@ -18,6 +19,7 @@ from tetramark.cli.options import (
     write_command,
 )
 from tetramark.cli.output import emit_read, output_format
+from tetramark.ops.render import render_stock_aliquots
 
 stock_app = group("Stocks: logical batches/preparations of one entity.")
 
@@ -105,16 +107,25 @@ def show_stock_command(
     ref: str = typer.Argument(..., help="Stock id or alias."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Show one stock, its kind fields and its aliquots.
+    """Show one stock, its kind fields and its tubes as cards.
 
-    The embedded aliquot rows stay compact; `tm aliquot list STOCK` prints the
-    rich per-tube rows (label, box path, aliases and in-stock flag).
+    Each tube is a card with its id, status, quantity and label, its box path
+    and its aliases. `--json` keeps the record with the enriched rows;
+    `tm aliquot list STOCK` is the tabular tube view.
     """
     ledger = resolve_ledger(ctx)
     try:
+        record = ledger.stocks.show(ref)
+        fmt = output_format(ctx, as_json)
+        if fmt != "table":
+            emit_read(record, fmt=fmt)
+            return
         emit_read(
-            ledger.stocks.show(ref), fmt=output_format(ctx, as_json)
+            {key: value for key, value in record.items() if key != "aliquots"},
+            fmt="table",
         )
+        typer.echo()
+        Console().print(render_stock_aliquots(record.get("aliquots") or []))
     finally:
         ledger.close()
 

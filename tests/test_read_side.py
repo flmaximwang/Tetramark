@@ -12,7 +12,11 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 from tetramark.errors import LedgerError
-from tetramark.ops.render import box_csv_rows, render_box_text
+from tetramark.ops.render import (
+    box_csv_rows,
+    render_box_text,
+    render_stock_aliquots_text,
+)
 
 from conftest import PRESETS
 
@@ -539,3 +543,45 @@ def test_cli_format_applies_to_list_and_show(cli_env: None, ledger_factory) -> N
 
     bad = invoke(ledger, "--format", "yaml", "entity", "list")
     assert bad.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Stock show: one card per aliquot
+# ---------------------------------------------------------------------------
+
+
+def test_stock_show_aliquot_cards_render_the_tube_details() -> None:
+    """Each tube is a card: id/status, quantity/label, path and aliases."""
+    text = render_stock_aliquots_text(
+        [
+            {
+                "id": "1226L401.1",
+                "status": "stored",
+                "quantity": "500",
+                "unit": "ul",
+                "label": "first tube",
+                "path": "FR-1/SH-1/BOX:A1",
+                "aliases": ["tube-A"],
+            },
+            {
+                "id": "1226L401.2",
+                "status": "pending",
+                "quantity": None,
+                "unit": None,
+                "label": None,
+                "path": None,
+                "aliases": [],
+            },
+        ]
+    )
+
+    assert "aliquots  2" in text
+    assert "1226L401.1 · stored" in text
+    assert "500 ul" in text
+    assert "label: first tube" in text
+    assert "FR-1/SH-1/BOX:A1" in text
+    assert "aliases: tube-A" in text
+    assert "1226L401.2 · pending" in text
+    assert "no quantity" in text
+    assert "not in stock" in text
+    assert render_stock_aliquots_text([]) == "aliquots  (none)"
