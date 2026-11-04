@@ -145,6 +145,7 @@ rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session 
 ```sh
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] \
   [--quantity Q --unit U] [--json]
+tm aliquot show ALQ [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] [--json]
 tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT] [--note TEXT] [--json]
 tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
@@ -152,6 +153,13 @@ tm aliquot purge ALQ [--json]
 ```
 
 - Alias strings like `STOCK`/`ALQ` mean a full ID (`1226FP01`) or an alias (`p035`).
+- `show` prints one tube: the aliquot row, its sorted `aliases`, the owning stock's `stock_kind` and
+  `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
+  printed on its own line) and the derived `in_stock` flag. `ALQ` is the full `<stock>.<seq>` id or
+  one of the tube's aliases, including the old ids `tm stock renumber` keeps; `--json` prints the
+  same record with the full ids. A tube that is not in stock has no position (`box_id`, `slot` and
+  `path` are empty; `null` in JSON). The tube's events are in `tm history ALQ`; the stock kind's own
+  fields are in `tm stock show`.
 - `use` subtracts `AMOUNT` in the aliquot's own unit and sets `consumed` when the quantity reaches
   zero; the event stores the purpose.
 - `status` sets one of the stock kind's status vocabulary words; `--force` requires `--note` and is
