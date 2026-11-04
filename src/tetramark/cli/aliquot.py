@@ -2,14 +2,43 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import typer
 
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import aliquots_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
+from tetramark.cli.output import emit_read, output_format, short_uuid_ids
 
 aliquot_app = group("Aliquots: the physical tubes that occupy box slots.")
+
+#: Record fields the human table does not print as key/value rows: ``path``
+#: gets its own line and ``object`` (always ``aliquot``) is noise for a human.
+#: JSON keeps both, exactly as the core returns them.
+_TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "object")
+
+#: Record fields holding a uuid id, shortened in the human table only (the way
+#: ``tm stock list`` shortens ids); JSON and CSV keep the full ids.
+_TEXT_UUID_KEYS: tuple[str, ...] = ("stock_id", "entity_id", "box_id")
+
+
+def _text_record(record: dict[str, Any]) -> dict[str, Any]:
+    """One aliquot record as the entity/stock show key/value table renders it.
+
+    The fields keep the record's own order; uuid ids become their shortest
+    unique prefixes.  ``path`` is dropped here because it prints on its own
+    line after the table, and ``object`` is dropped as human noise.
+    """
+    rows = {
+        key: value for key, value in record.items() if key not in _TEXT_ONLY_KV_KEYS
+    }
+    shortened = short_uuid_ids([rows.get(key) for key in _TEXT_UUID_KEYS])
+    for key, value in zip(_TEXT_UUID_KEYS, shortened, strict=True):
+        if key in rows:
+            rows[key] = value
+    return rows
 
 
 @aliquot_app.command("add")
@@ -68,6 +97,35 @@ def add_aliquots_form_command(
 ) -> None:
     """Interactively add aliquots to a stock (for people; agents use 'add')."""
     run_add_form_command(ctx, "aliquot", as_json=as_json)
+
+
+@aliquot_app.command("show")
+def show_aliquot_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(
+        ..., help="Aliquot id (<stock>.<seq>, never shortened) or one of its aliases."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """Show one tube: its status, quantity, stock and box path.
+
+    The record covers the aliquot row, its sorted aliases, the owning stock's
+    kind and entity, the box/slot and the path read from the box nesting.  The
+    tube's events are in `tm history ALQ`; the stock kind's own fields are in
+    `tm stock show`.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        record = ledger.aliquots.show(ref)
+        fmt = output_format(ctx, as_json)
+        if fmt != "table":
+            emit_read(record, fmt=fmt)
+            return
+        emit_read(_text_record(record), fmt="table")
+        if record.get("path"):
+            typer.echo(f"path: {record['path']}")
+    finally:
+        ledger.close()
 
 
 @aliquot_app.command("move")

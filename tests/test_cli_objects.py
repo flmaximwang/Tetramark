@@ -823,3 +823,211 @@ def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
     )
     assert restored["old_status"] == "contaminated"
     assert restored["status"] == "growing"
+
+
+# ---------------------------------------------------------------------------
+# tm aliquot show (Tetramark-i93.3)
+# ---------------------------------------------------------------------------
+
+#: The tube's record fields, in the order the core returns them.  ``path`` gets
+#: its own output line and ``object`` is not printed in the human table.
+ALIQUOT_SHOW_ROWS = [
+    "id",
+    "stock_id",
+    "seq",
+    "status",
+    "quantity",
+    "unit",
+    "label",
+    "notes",
+    "created_at",
+    "aliases",
+    "stock_kind",
+    "entity_id",
+    "box_id",
+    "slot",
+    "in_stock",
+]
+
+
+def make_placed_tube(ledger) -> dict:
+    """Create one item and one tube at Freezer-1/Shelf-2/Box:A3 via the CLI."""
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "shelf", "Freezer-1")
+    write(ledger, "box", "add", "shelf", "Shelf-2", "--in", "Freezer-1")
+    box = json.loads(
+        write(ledger, "box", "add", "grid96", "Box", "--in", "Shelf-2", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "1",
+            "--box",
+            "Box",
+            "--slot",
+            "A3",
+            "--quantity",
+            "100",
+            "--unit",
+            "ul",
+            "--json",
+        ).output
+    )
+    return {
+        "entity": entity,
+        "box": box,
+        "stock": stock,
+        "aliquot": stock["aliquots"][0],
+    }
+
+
+def test_cli_aliquot_show_prints_rows_and_the_path_on_its_own_line(
+    cli_env: None, ledger_factory
+) -> None:
+    """Text output is the show key/value table plus one ``path:`` line."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+
+    result = read(ledger, "aliquot", "show", alq)
+    lines = result.output.splitlines()
+
+    # One row per record field, in the record's order: no ``path`` row (it
+    # prints on its own line) and no ``object`` row (human noise).
+    rows = [line for line in lines if line and not line.startswith("path:")]
+    assert [row.split()[0] for row in rows] == ALIQUOT_SHOW_ROWS
+
+    # The path closes the output as its own line, in its human shape.
+    assert lines[-1] == "path: Freezer-1/Shelf-2/Box:A3"
+    assert sum(line.startswith("path:") for line in lines) == 1
+
+    # Values: the aliquot id is never shortened; uuid ids are (git style).
+    assert alq in result.output
+    assert "stored" in result.output
+    assert "100.000000" in result.output
+    assert "in_stock" in result.output and "true" in result.output
+    assert made["stock"]["id"] in result.output  # datecode id: kept whole
+    assert made["entity"]["id"][:8] in result.output
+    assert made["entity"]["id"] not in result.output
+    assert made["box"]["id"][:8] in result.output
+    assert made["box"]["id"] not in result.output
+
+
+def test_cli_aliquot_show_json_is_the_core_record(
+    cli_env: None, ledger_factory
+) -> None:
+    """JSON (and CSV) are the machine formats: full ids, path as a field."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-json", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+
+    record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    assert list(record) == sorted(record)  # the JSON is key-sorted
+    assert set(record) == {
+        "id",
+        "stock_id",
+        "seq",
+        "status",
+        "quantity",
+        "unit",
+        "label",
+        "notes",
+        "created_at",
+        "aliases",
+        "stock_kind",
+        "entity_id",
+        "box_id",
+        "slot",
+        "path",
+        "in_stock",
+        "object",
+    }
+    assert record["id"] == alq
+    assert record["object"] == "aliquot"
+    assert record["stock_id"] == made["stock"]["id"]
+    assert record["entity_id"] == made["entity"]["id"]
+    assert record["box_id"] == made["box"]["id"]
+    assert record["slot"] == "A3"
+    assert record["path"] == "Freezer-1/Shelf-2/Box:A3"
+    assert record["status"] == "stored"
+    assert record["quantity"] == "100.000000"
+    assert record["in_stock"] is True
+
+    # The global --json flag is honoured like on every other read command.
+    global_json = read(ledger, "--json", "aliquot", "show", alq)
+    assert json.loads(global_json.output) == record
+
+    # --format csv keeps the full ids and carries the path as a column.
+    csv_output = read(ledger, "--format", "csv", "aliquot", "show", alq).output
+    header = csv_output.splitlines()[0].split(",")
+    assert header == sorted(record)
+    assert "Freezer-1/Shelf-2/Box:A3" in csv_output
+    assert made["box"]["id"] in csv_output
+
+
+def test_cli_aliquot_show_resolves_an_alias(cli_env: None, ledger_factory) -> None:
+    """A tube's alias is a handle, like the id: same record, aliases listed."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-alias", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    write(ledger, "alias", "add", "aliquot", alq, "tube-1")
+
+    text = read(ledger, "aliquot", "show", "tube-1")
+    assert alq in text.output
+    assert "tube-1" in text.output
+
+    record = json.loads(read(ledger, "aliquot", "show", "tube-1", "--json").output)
+    assert record["id"] == alq
+    assert record["aliases"] == ["tube-1"]
+
+
+def test_cli_aliquot_show_of_a_tube_not_in_stock_has_no_path_line(
+    cli_env: None, ledger_factory
+) -> None:
+    """Nothing is printed for ``path``; the JSON field stays ``null``."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-pending", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "beta", "--json").output
+    )
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "1",
+            "--json",
+        ).output
+    )
+    alq = stock["aliquots"][0]
+
+    result = read(ledger, "aliquot", "show", alq)
+    assert "path:" not in result.output
+    assert "in_stock" in result.output and "false" in result.output
+
+    record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    assert record["path"] is None
+    assert record["box_id"] is None
+    assert record["slot"] is None
+    assert record["in_stock"] is False
+
+
+@pytest.mark.fast
+def test_cli_aliquot_show_help_names_history_and_stock_show() -> None:
+    """The help points at the two other reads instead of duplicating them."""
+    result = CliRunner().invoke(app, ["aliquot", "show", "-h"])
+    assert result.exit_code == 0, result.output
+    help_text = " ".join(result.output.split())
+    assert "tm history" in help_text
+    assert "tm stock show" in help_text
