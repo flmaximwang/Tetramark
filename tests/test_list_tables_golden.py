@@ -16,7 +16,7 @@ are not counted.  ``aliquots_in_stock`` sums the in-stock tubes of all the
 entity's stocks, so an entity with no stocks prints ``0 0``.
 
 ``tests/data/golden/box_list.table`` pins the default table of ``tm box list``:
-the column set and order (``name kind path occupied capacity``), the nested
+the column set and order (``id name kind path occupied capacity``), the nested
 ``path``, and the two counts.  ``occupied`` counts the aliquots plus the
 immediate child boxes directly in a box (items, not slots); nested contents do
 not roll up.  ``capacity`` is slots times ``slot_capacity`` for ``grid``/``named``
@@ -224,7 +224,13 @@ def test_box_list_golden_table(cli_env: None, ledger_factory) -> None:
     )
     _build_boxes(ledger)
 
-    _assert_golden(_table(ledger, "box", "list"), "box_list.table")
+    table = _table(ledger, "box", "list")
+    boxes = _json(ledger, "box", "list", "--json")
+    # Box ids are generated; pin their rendered width while keeping the golden stable.
+    for row in boxes:
+        assert row["id"][:8] in table
+        table = table.replace(row["id"][:8], "<box-id>")
+    _assert_golden(table, "box_list.table")
 
     # JSON keeps the native types: both counts are ints, and the unlimited
     # incubator's capacity is null (the table prints it blank).

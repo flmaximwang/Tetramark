@@ -1,8 +1,8 @@
-name  kind       path     occupied  capacity
-D-1   drawer     I-1/D-1  0         1
-F-1   freezer    F-1      0         6
-G-1   grid8x12   G-1      2         96
-G-2   grid9x9    G-2      0         81
-I-1   incubator  I-1      1
-R-1   rack       R-1      2         10
-S-1   shelf      S-1      0         12
+id        name  kind       path     occupied  capacity
+<box-id>  D-1   drawer     I-1/D-1  0         1
+<box-id>  F-1   freezer    F-1      0         6
+<box-id>  G-1   grid8x12   G-1      2         96
+<box-id>  G-2   grid9x9    G-2      0         81
+<box-id>  I-1   incubator  I-1      1
+<box-id>  R-1   rack       R-1      2         10
+<box-id>  S-1   shelf      S-1      0         12

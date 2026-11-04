@@ -97,7 +97,7 @@ tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything l
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
-tm box show NAME            # terminal grid / list; --json gives {box, geometry, path, aliases, slots:[...]}
+tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
 tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
@@ -357,11 +357,19 @@ in full, never truncated.
 - `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. `entity_name` is
   the owning design's name. `status` is derived from the aliquots: `empty` when the stock has none,
   `active` when at least one is in stock, and `depleted` when every aliquot has left stock.
-- `tm box list` prints `name kind path occupied capacity`. `occupied` counts the aliquots and the
-  immediate child boxes directly in the box, counting items rather than slots; the contents of nested
-  boxes do not roll up into the parent. `capacity` is the number of slots times the kind's
+- `tm box list` prints `id name kind path occupied capacity`. The table shortens `id` to a unique
+  prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
+  `occupied` counts the aliquots and the immediate child boxes directly in the box, counting items
+  rather than slots; the contents of nested boxes do not roll up into the parent. `capacity` is the number of slots times the kind's
   `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, and blank
   (`null` in JSON) when a slotless box is unlimited.
+
+`tm box show` starts with `<name>  <kind>  id: <short>  path: ...`, where `<short>` is the
+first eight characters of the box UUID. JSON includes `id` as the full UUID; CSV keeps its
+slot rows (`slot row col occupants`).
+
+`tm aliquot --help` directs placement changes to `move`, quantity changes to `use`, and
+status changes to `status`.
 
 ### 6.3 The interactive form — `tm <object> add-form`
 

@@ -10,7 +10,7 @@ renderer is split in two:
   colouring included) and :func:`render_box_text` renders it without colour
   for snapshots.
 
-The dictionary shape is ``{box, kind, geometry, path, aliases, slots}``; a
+The dictionary shape is ``{id, box, kind, geometry, path, aliases, slots}``; a
 slotless box has no slots, so its contents are returned as ``occupants``
 instead.  ``aliases`` is the box's sorted alias list (e.g. a legacy label); the
 generated ``v_box_slots`` view exposes the same data as ``occupant_alias_list``.
@@ -84,6 +84,7 @@ def box_view(ledger: Ledger, ref: str) -> dict[str, Any]:
         raise ValueError(f"box kind {kind_name!r} has no geometry")
 
     view: dict[str, Any] = {
+        "id": box_id,
         "box": str(box_row["name"]),
         "kind": kind_name,
         "geometry": _geometry_json(kind),
@@ -203,7 +204,10 @@ def render_box(view: dict[str, Any]) -> Group:
     """
     header = Text()
     header.append(str(view["box"]), style="bold")
-    header.append(f"  {view['kind']}  path: {view['path']}", style="dim")
+    header.append(
+        f"  {view['kind']}  id: {view['id'][:8]}  path: {view['path']}",
+        style="dim",
+    )
 
     blocks: list[Any] = [header]
     aliases = view.get("aliases") or []
