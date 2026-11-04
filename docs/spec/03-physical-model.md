@@ -115,6 +115,7 @@ Views (generated):
   aliases: the aliquot's aliases when the occupant is an aliquot, the box's aliases when it is a
   nested box, NULL for an empty slot).
 - `v_aliquot_location` — aliquot with full box path (`Freezer-1/Shelf-2/WFL-08-01:A3`) and `alias_list`.
+  `tm aliquot show` reads this view for the tube's `path` (§6).
 - `v_stock_status` — stock + derived status (`active` when at least one aliquot is in stock;
   `depleted` when it has aliquots but none in stock; `empty` when it has none) +
   `aliquots_in_stock`/`aliquots_total` + `quantity_in_stock` + `unit` + `alias_list`. "In stock" means
