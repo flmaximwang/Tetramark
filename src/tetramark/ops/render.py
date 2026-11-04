@@ -22,6 +22,7 @@ import io
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from rich import box
+from rich.columns import Columns
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
@@ -440,12 +441,19 @@ def render_aliquot_card(row: Mapping[str, Any]) -> Panel:
 
 
 def render_stock_aliquots(aliquots: Sequence[Mapping[str, Any]]) -> Text | Group:
-    """The ``aliquots`` section of ``tm stock show``: a count and the cards."""
+    """The ``aliquots`` section of ``tm stock show``: a count and the cards.
+
+    Cards flow left to right and wrap onto the next row when the console width
+    is full (``rich.columns.Columns`` keeps the row-major order), so a stock
+    with a few short tubes uses one row instead of one line per tube.
+    """
     if not aliquots:
         return Text("aliquots  (none)", style="dim")
-    blocks: list[Any] = [Text(f"aliquots  {len(aliquots)}", style="dim")]
-    blocks.extend(render_aliquot_card(row) for row in aliquots)
-    return Group(*blocks)
+    cards = [render_aliquot_card(row) for row in aliquots]
+    return Group(
+        Text(f"aliquots  {len(aliquots)}", style="dim"),
+        Columns(cards, padding=(0, 1), expand=False),
+    )
 
 
 def render_stock_aliquots_text(
