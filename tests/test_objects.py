@@ -896,6 +896,80 @@ def test_aliquot_show_refuses_an_unknown_or_empty_ref(ledger_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Wrong-type hints: the not-found error names the other show verb (spec §6)
+# ---------------------------------------------------------------------------
+
+
+def test_aliquot_show_of_a_stock_hints_at_stock_show(ledger_factory) -> None:
+    """``tm aliquot show <stock>`` says the ref is a stock, by id or alias."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    ledger.aliases.add("stock", stock["id"], "LOT1")
+
+    with pytest.raises(LedgerError) as by_id:
+        ledger.aliquots.show(stock["id"])
+    assert str(by_id.value) == (
+        f"unknown aliquot {stock['id']!r}: {stock['id']} is a stock; "
+        f"try tm stock show {stock['id']}"
+    )
+    # The not-found exit code is unchanged: a business error, not usage.
+    assert by_id.value.exit_code == 1
+
+    with pytest.raises(LedgerError) as by_alias:
+        ledger.aliquots.show("LOT1")
+    assert str(by_alias.value) == (
+        "unknown aliquot 'LOT1': LOT1 is a stock; try tm stock show LOT1"
+    )
+    assert by_alias.value.exit_code == 1
+
+
+def test_stock_show_of_an_aliquot_hints_at_aliquot_show(ledger_factory) -> None:
+    """``tm stock show <aliquot>`` says the ref is an aliquot, by id or alias."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", alq, "tube-1")
+
+    with pytest.raises(LedgerError) as by_id:
+        ledger.stocks.show(alq)
+    assert str(by_id.value) == (
+        f"unknown stock {alq!r}: {alq} is an aliquot; "
+        f"try tm aliquot show {alq}"
+    )
+    assert by_id.value.exit_code == 1
+
+    with pytest.raises(LedgerError) as by_alias:
+        ledger.stocks.show("tube-1")
+    assert str(by_alias.value) == (
+        "unknown stock 'tube-1': tube-1 is an aliquot; "
+        "try tm aliquot show tube-1"
+    )
+    assert by_alias.value.exit_code == 1
+
+
+def test_wrong_type_hints_stay_off_for_other_misses(ledger_factory) -> None:
+    """Only the other show type gets a hint; unknown, empty and third types don't."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+
+    with pytest.raises(LedgerError, match=r"^unknown aliquot 'nope'$"):
+        ledger.aliquots.show("nope")
+    with pytest.raises(LedgerError, match=r"^unknown aliquot ''$"):
+        ledger.aliquots.show("")
+    with pytest.raises(LedgerError, match=rf"^unknown aliquot {item['id']!r}$"):
+        ledger.aliquots.show(item["id"])
+
+    with pytest.raises(LedgerError, match=r"^unknown stock 'nope'$"):
+        ledger.stocks.show("nope")
+    with pytest.raises(LedgerError, match=r"^unknown stock ''$"):
+        ledger.stocks.show("")
+    with pytest.raises(LedgerError, match=rf"^unknown stock {item['id']!r}$"):
+        ledger.stocks.show(item["id"])
+
+
+# ---------------------------------------------------------------------------
 # Boxes
 # ---------------------------------------------------------------------------
 
