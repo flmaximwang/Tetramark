@@ -7,6 +7,7 @@ isolates ``DOLT_ROOT_PATH``, ``HOME`` and Git config inside ``tmp_path``).
 from __future__ import annotations
 
 import hashlib
+import inspect
 import uuid
 from decimal import Decimal
 
@@ -428,13 +429,13 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
     assert moved["slot"] == "A3"
 
     before = commit_count(ledger)
-    used = ledger.aliquots.use(alq, "50", "ul", purpose="prep")
+    used = ledger.aliquots.use(alq, "50", "ul", message="prep")
     assert commit_count(ledger) == before + 1
     assert Decimal(used["quantity"]) == Decimal("150")
     assert used["status"] == "stored"
 
     before = commit_count(ledger)
-    emptied = ledger.aliquots.use(alq, "150", "ul")
+    emptied = ledger.aliquots.use(alq, "150", "ul", message="used up")
     assert commit_count(ledger) == before + 1
     assert Decimal(emptied["quantity"]) == 0
     assert emptied["status"] == "consumed"
@@ -462,7 +463,8 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
         "status",
     ]
     assert Decimal(str(history[2]["amount"])) == Decimal("50")
-    assert history[2]["purpose"] == "prep"
+    assert history[2]["note"] == "prep"
+    assert history[2]["purpose"] is None
     assert history[1]["from_slot"] == "A1"
     assert history[1]["to_slot"] == "A3"
     assert history[4]["old_status"] == "consumed"
@@ -480,22 +482,198 @@ def test_aliquot_use_errors(ledger_factory) -> None:
     alq = stock["aliquots"][0]
 
     with pytest.raises(LedgerError, match="unit mismatch"):
-        ledger.aliquots.use(alq, "1", "ml")
+        ledger.aliquots.use(alq, "1", "ml", message="prep")
     with pytest.raises(LedgerError, match="only"):
-        ledger.aliquots.use(alq, "101", "ul")
+        ledger.aliquots.use(alq, "101", "ul", message="prep")
     for bad in ("0", "-1", "nope"):
         with pytest.raises(UsageError, match="positive|decimal"):
-            ledger.aliquots.use(alq, bad, "ul")
+            ledger.aliquots.use(alq, bad, "ul", message="prep")
+
+    # Amount and unit come together: only one of them is a usage error.
+    with pytest.raises(UsageError, match="must be given together"):
+        ledger.aliquots.use(alq, "1", message="prep")
+    with pytest.raises(UsageError, match="must be given together"):
+        ledger.aliquots.use(alq, unit="ul", message="prep")
+
+    # The message is required and must not be blank.
+    with pytest.raises(UsageError, match="message is required"):
+        ledger.aliquots.use(alq, "1", "ul", message="   ")
 
     no_quantity = ledger.stocks.add("lot", entity=item["id"])
     with pytest.raises(LedgerError, match="no quantity"):
-        ledger.aliquots.use(no_quantity["aliquots"][0], "1", "ul")
+        ledger.aliquots.use(no_quantity["aliquots"][0], "1", "ul", message="prep")
 
-    ledger.aliquots.use(alq, "100", "ul")
+    ledger.aliquots.use(alq, "100", "ul", message="used up")
     with pytest.raises(LedgerError, match="already consumed"):
-        ledger.aliquots.use(alq, "1", "ul")
+        ledger.aliquots.use(alq, "1", "ul", message="prep")
     with pytest.raises(LedgerError, match="unknown aliquot"):
-        ledger.aliquots.use("nope.1", "1", "ul")
+        ledger.aliquots.use("nope.1", "1", "ul", message="prep")
+
+
+def test_aliquot_use_whole_equals_an_explicit_use(ledger_factory) -> None:
+    """No amount means "use everything left" (spec §6)."""
+    ledger = make_ledger(ledger_factory, name="use-whole")
+    item = new_item(ledger)
+    box = new_box(ledger, "GRID", "grid96")
+    first = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=1,
+        box="GRID",
+        slots=["A1"],
+        quantity=200,
+        unit="ml",
+    )
+    second = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=1,
+        box="GRID",
+        slots=["A2"],
+        quantity=200,
+        unit="ml",
+    )
+    whole = first["aliquots"][0]
+    explicit = second["aliquots"][0]
+
+    result = ledger.aliquots.use(whole, message="used it all")
+    assert result["used_amount"] == "200"
+    assert result["used_unit"] == "ml"
+    assert result["quantity"] == "0.000000"
+    assert result["status"] == "consumed"
+    assert result["message"] == "used it all"
+
+    # Passing the remainder explicitly is the very same operation.
+    other = ledger.aliquots.use(explicit, "200", "ml", message="used it all")
+    assert other["used_amount"] == result["used_amount"]
+    assert other["used_unit"] == result["used_unit"]
+    assert other["quantity"] == result["quantity"]
+    assert other["status"] == result["status"]
+
+    whole_event = events(ledger, whole)[-1]
+    explicit_event = events(ledger, explicit)[-1]
+    assert whole_event["event"] == "use"
+    assert Decimal(str(whole_event["amount"])) == Decimal("200")
+    assert whole_event["unit"] == "ml"
+    assert whole_event["note"] == "used it all"
+    assert whole_event["purpose"] is None
+    assert whole_event["old_status"] == "stored"
+    assert whole_event["new_status"] == "consumed"
+    # The emptied tube leaves its box; the event keeps the old position.
+    assert whole_event["from_box_id"] == box["id"]
+    assert whole_event["from_slot"] == "A1"
+    assert whole_event["to_box_id"] is None
+    assert whole_event["to_slot"] is None
+    assert ledger.driver.query(
+        "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (whole,)
+    ) == [{"box_id": None, "slot": None}]
+    # The explicit use records exactly the same event.
+    assert Decimal(str(explicit_event["amount"])) == Decimal("200")
+    assert explicit_event["unit"] == "ml"
+    assert explicit_event["note"] == "used it all"
+    assert explicit_event["purpose"] is None
+    assert explicit_event["from_slot"] == "A2"
+
+
+def test_aliquot_use_without_a_quantity_uses_it_whole(ledger_factory) -> None:
+    """A tube with no quantity can only be used whole (event amount NULL)."""
+    ledger = make_ledger(ledger_factory, name="use-no-quantity")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+    assert ledger.aliquots.show(alq)["quantity"] is None
+
+    # A partial use of such a tube is refused.
+    with pytest.raises(LedgerError, match="no quantity"):
+        ledger.aliquots.use(alq, "1", "ul", message="prep")
+
+    result = ledger.aliquots.use(alq, message="used it all")
+    assert result["used_amount"] is None
+    assert result["used_unit"] is None
+    assert result["quantity"] is None
+    assert result["status"] == "consumed"
+    assert result["message"] == "used it all"
+
+    event = events(ledger, alq)[-1]
+    assert event["event"] == "use"
+    assert event["amount"] is None
+    assert event["note"] == "used it all"
+    assert event["purpose"] is None
+    assert event["old_status"] == "pending"
+    assert event["new_status"] == "consumed"
+
+
+def test_aliquot_use_works_on_every_status(ledger_factory) -> None:
+    """``use`` works on every tube; only a consumed tube is refused."""
+    ledger = make_ledger(ledger_factory, name="use-statuses")
+    item = new_item(ledger)
+    new_box(ledger, "GRID", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=3, quantity=100, unit="ul"
+    )
+    pending, stored, missing = stock["aliquots"]
+    ledger.aliquots.move(stored, box="GRID", slot="A1", message="placed")
+    ledger.aliquots.status(missing, "missing")
+
+    for tube, status in (
+        (pending, "pending"),
+        (stored, "stored"),
+        (missing, "missing"),
+    ):
+        assert ledger.aliquots.show(tube)["status"] == status
+        # A partial use changes nothing but the quantity.
+        partial = ledger.aliquots.use(tube, "10", "ul", message="assay")
+        assert partial["status"] == status
+        assert partial["quantity"] == "90.000000"
+        # Emptying the tube consumes it, whatever it was before.
+        emptied = ledger.aliquots.use(tube, message="the rest")
+        assert emptied["status"] == "consumed"
+
+    # Only an already consumed tube is refused.
+    with pytest.raises(LedgerError, match="already consumed"):
+        ledger.aliquots.use(pending, "1", "ul", message="again")
+
+
+def test_aliquot_use_message_is_required_trimmed_and_stored(
+    ledger_factory,
+) -> None:
+    """The message is the reason of an irreversible action (spec §1)."""
+    ledger = make_ledger(ledger_factory, name="use-message")
+    item = new_item(ledger)
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, quantity=100, unit="ul"
+    )
+    alq = stock["aliquots"][0]
+
+    # The message is a required keyword argument and must not be blank.
+    with pytest.raises(TypeError):
+        ledger.aliquots.use(alq, "1", "ul")  # type: ignore[call-arg]
+    with pytest.raises(UsageError, match="message is required"):
+        ledger.aliquots.use(alq, "1", "ul", message="")
+    with pytest.raises(UsageError, match="message is required"):
+        ledger.aliquots.use(alq, "1", "ul", message=" \t ")
+
+    # The API takes no ``purpose``/``note`` arguments any more.
+    assert list(inspect.signature(ledger.aliquots.use).parameters) == [
+        "ref",
+        "amount",
+        "unit",
+        "message",
+    ]
+    with pytest.raises(TypeError):
+        ledger.aliquots.use(  # type: ignore[call-arg]
+            alq, "1", "ul", message="x", purpose="old"
+        )
+    with pytest.raises(TypeError):
+        ledger.aliquots.use(  # type: ignore[call-arg]
+            alq, "1", "ul", message="x", note="old"
+        )
+
+    result = ledger.aliquots.use(alq, "1", "ul", message="  for the assay  ")
+    assert result["message"] == "for the assay"
+    event = events(ledger, alq)[-1]
+    assert event["note"] == "for the assay"
+    assert event["purpose"] is None
 
 
 def test_aliquot_move_placement_errors(ledger_factory) -> None:
@@ -614,13 +792,13 @@ def test_aliquot_use_to_zero_clears_the_position(ledger_factory) -> None:
     alq = stock["aliquots"][0]
 
     # A partial use keeps the position.
-    ledger.aliquots.use(alq, "4", "ul")
+    ledger.aliquots.use(alq, "4", "ul", message="prep")
     assert ledger.driver.query(
         "SELECT `box_id`, `slot`, `status` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"box_id": box["id"], "slot": "B2", "status": "stored"}]
 
     before = commit_count(ledger)
-    emptied = ledger.aliquots.use(alq, "6", "ul")
+    emptied = ledger.aliquots.use(alq, "6", "ul", message="used up")
     assert emptied["status"] == "consumed"
     assert commit_count(ledger) == before + 1
     assert ledger.driver.query(
@@ -809,7 +987,7 @@ def test_aliquot_purge_removes_events(ledger_factory) -> None:
         unit="ul",
     )
     alq = stock["aliquots"][0]
-    ledger.aliquots.use(alq, "10", "ul")
+    ledger.aliquots.use(alq, "10", "ul", message="prep")
     assert events(ledger, alq)
 
     before = commit_count(ledger)
@@ -1671,7 +1849,7 @@ def test_every_command_is_exactly_one_commit(ledger_factory) -> None:
     )
     alq = added["ids"][0]
     step(lambda: ledger.aliquots.move(alq, box="BOX", slot="A3", message="moved"))
-    step(lambda: ledger.aliquots.use(alq, "1", "ul"))
+    step(lambda: ledger.aliquots.use(alq, "1", "ul", message="prep"))
     step(lambda: ledger.aliquots.status(alq, "missing"))
     step(lambda: ledger.aliases.add("aliquot", alq, "ALQ"))
     step(lambda: ledger.aliases.rm("aliquot", "ALQ"))
@@ -1870,7 +2048,7 @@ def test_cryo_set_uses_stored_on_creation_and_has_no_consumed(ledger_factory) ->
         "UPDATE `aliquot` SET `quantity` = 1, `unit` = 'ml' WHERE `id` = %s", (alq,)
     )
     ledger.driver.commit("test: give the vial a quantity")
-    used = ledger.aliquots.use(alq, "1", "ml")
+    used = ledger.aliquots.use(alq, "1", "ml", message="thawed for the assay")
     assert used["status"] == "stored"
     assert Decimal(used["quantity"]) == Decimal("0")
     assert ledger.driver.query(

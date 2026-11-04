@@ -149,7 +149,7 @@ def make_source(ledger):
     ledger.aliases.add("stock", prep["id"], "S1")
     ledger.aliases.add("aliquot", prep["aliquots"][1], "TUBE2")
     ledger.aliquots.status(prep["aliquots"][0], "missing")
-    ledger.aliquots.use(prep["aliquots"][1], "100", "ul", purpose="test")
+    ledger.aliquots.use(prep["aliquots"][1], "100", "ul", message="test")
     return {
         "entities": [first, second, item],
         "boxes": [plate, shelf, rack, named, tub, grid],

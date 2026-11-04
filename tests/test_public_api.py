@@ -59,6 +59,24 @@ def test_open_has_no_workspace_parameter() -> None:
     )
 
 
+@pytest.mark.fast
+def test_aliquots_use_takes_an_optional_amount_and_a_required_message() -> None:
+    """``ledger.aliquots.use(ref, amount=None, unit=None, *, message)``."""
+    from tetramark.core.objects import AliquotOps
+
+    parameters = inspect.signature(AliquotOps.use).parameters
+    assert list(parameters) == ["self", "ref", "amount", "unit", "message"]
+    # AMOUNT and UNIT are optional but come together (both default to None).
+    assert parameters["amount"].default is None
+    assert parameters["unit"].default is None
+    # The message is required and keyword-only.
+    assert parameters["message"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["message"].default is inspect.Parameter.empty
+    # ``purpose``/``note`` are gone for good.
+    assert "purpose" not in parameters
+    assert "note" not in parameters
+
+
 # ---------------------------------------------------------------------------
 # Behaviour on a real ledger
 # ---------------------------------------------------------------------------

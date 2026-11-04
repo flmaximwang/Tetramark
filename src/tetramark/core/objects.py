@@ -85,6 +85,7 @@ __all__ = [
     "list_stocks",
     "move_aliquot",
     "move_box",
+    "plain_decimal",
     "purge_aliquot",
     "read_rename_map",
     "remove_alias",
@@ -643,6 +644,26 @@ def _parse_quantity_unit(quantity: Any, unit: Any) -> tuple[Decimal | None, str 
     if len(text) > 32:
         raise UsageError("unit must be at most 32 characters")
     return amount, text
+
+
+def plain_decimal(value: Any) -> str:
+    """A decimal number as a plain string, without trailing zeros.
+
+    The database stores quantities in ``DECIMAL(18,6)``, so a tube that holds
+    200 ml reads back as ``200.000000``.  A human line says ``200``; this
+    helper renders the number that way (``Decimal("150.000000")`` becomes
+    ``"150"``, ``Decimal("12.500000")`` becomes ``"12.5"``).  A value that is
+    not a number is returned unchanged.
+    """
+    if value is None:
+        return ""
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if not number.is_finite():
+        return str(value)
+    return format(number.normalize(), "f")
 
 
 def _parse_count(value: Any, *, option: str) -> int:
@@ -2172,29 +2193,55 @@ def move_aliquot(
 def use_aliquot(
     ledger: Ledger,
     ref: str,
-    amount: Any,
-    unit: str,
+    amount: Any = None,
+    unit: str | None = None,
     *,
-    purpose: str | None = None,
-    note: str | None = None,
+    message: str,
 ) -> dict[str, Any]:
-    """Consume ``amount`` of an aliquot; reaching zero marks it ``consumed``.
+    """Consume part or all of an aliquot, recording a ``use`` event.
 
-    When the aliquot reaches zero the status change goes through the same
-    transition check as ``tm aliquot status`` (:func:`ensure_status_change`).
-    A stock kind whose set has no ``consumed`` status (the bundled ``cryo``
-    set) keeps its current status: the set has no "used up" state, and the
-    operator records the physical fate with ``tm aliquot status``.
+    ``amount`` and ``unit`` come together: passing only one of them is a
+    usage error.  Leaving both out means "use everything left" — the event
+    then records the tube's remaining quantity and unit, exactly like an
+    explicit ``use REF <rest> <unit>`` would.  A tube whose quantity is
+    NULL can only be used whole: the event records a NULL amount and the
+    tube is consumed, while a partial use of such a tube is refused.
+
+    Reaching zero moves the tube to ``consumed`` (every status of the
+    fixed set may go there) and clears its box slot in the same write; the
+    event keeps the old position in ``from_*``.  A legacy ledger whose
+    stored status set has no ``consumed`` (the bundled ``cryo`` set) keeps
+    the current status: the set has no "used up" state, and the operator
+    records the physical fate with ``tm aliquot status``.
+
+    A use is an action in the physical world that cannot simply be
+    reversed, so ``message`` is required (spec §1, §6): it is trimmed,
+    refused when empty, and stored in ``aliquot_event.note`` (``purpose``
+    stays NULL).
     """
-    try:
-        used = Decimal(str(amount).strip())
-    except (InvalidOperation, ValueError):
-        raise UsageError(f"amount must be a decimal number (got {amount!r})") from None
-    if not used.is_finite() or used <= 0:
-        raise UsageError(f"amount must be a positive number (got {amount!r})")
-    unit_text = str(unit).strip()
-    if not unit_text:
-        raise UsageError("unit must not be empty")
+    message_text = str(message).strip()
+    if not message_text:
+        raise UsageError("a use message is required and must not be empty")
+    if (amount is None) != (unit is None):
+        raise UsageError(
+            "amount and unit must be given together: pass both, or neither "
+            "(without an amount the whole tube is used)"
+        )
+
+    used: Decimal | None = None
+    unit_text: str | None = None
+    if amount is not None:
+        try:
+            used = Decimal(str(amount).strip())
+        except (InvalidOperation, ValueError):
+            raise UsageError(
+                f"amount must be a decimal number (got {amount!r})"
+            ) from None
+        if not used.is_finite() or used <= 0:
+            raise UsageError(f"amount must be a positive number (got {amount!r})")
+        unit_text = str(unit).strip()
+        if not unit_text:
+            raise UsageError("unit must not be empty")
 
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
@@ -2204,24 +2251,52 @@ def use_aliquot(
         old_status = str(row.get("status"))
         if old_status == "consumed":
             raise LedgerError(f"aliquot {alq_id!r} is already consumed")
-        if row.get("quantity") is None:
-            raise LedgerError(f"aliquot {alq_id!r} has no quantity to use")
-        current = Decimal(str(row["quantity"]))
-        if row.get("unit") is None or str(row["unit"]) != unit_text:
-            raise LedgerError(
-                f"unit mismatch for aliquot {alq_id!r}: it holds "
-                f"{row.get('unit')!r}, not {unit_text!r}"
-            )
-        remaining = current - used
-        if remaining < 0:
-            raise LedgerError(
-                f"cannot use {used} {unit_text} from aliquot {alq_id!r}: "
-                f"only {current} left"
-            )
+        stored_unit = row.get("unit")
+        stored_unit_text = None if stored_unit is None else str(stored_unit)
+        stored_quantity = row.get("quantity")
+
+        event_amount: Decimal | None
+        event_unit: str | None
+        remaining: Decimal | None
+        emptied: bool
+        if stored_quantity is None:
+            # A tube without a quantity can only be used whole: the event
+            # records a NULL amount and the tube is consumed.
+            if used is not None:
+                raise LedgerError(
+                    f"aliquot {alq_id!r} has no quantity: it can only be used "
+                    "whole (omit the amount)"
+                )
+            event_amount = None
+            event_unit = stored_unit_text
+            remaining = None
+            emptied = True
+        else:
+            current = Decimal(str(stored_quantity))
+            if used is None:
+                # "Use everything left": the event records the remaining
+                # quantity and unit, exactly like an explicit use of them.
+                used = current
+                unit_text = stored_unit_text
+            elif stored_unit_text is None or stored_unit_text != unit_text:
+                raise LedgerError(
+                    f"unit mismatch for aliquot {alq_id!r}: it holds "
+                    f"{stored_unit!r}, not {unit_text!r}"
+                )
+            remaining = current - used
+            if remaining < 0:
+                raise LedgerError(
+                    f"cannot use {used} {unit_text} from aliquot {alq_id!r}: "
+                    f"only {current} left"
+                )
+            event_amount = used
+            event_unit = unit_text
+            emptied = remaining == 0
+
         new_status = old_status
         #: ``(from_box_id, from_slot)`` of a position this use clears (spec 5).
         cleared_from: tuple[Any, Any] = (None, None)
-        if remaining == 0:
+        if emptied:
             stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
             assert stock_row is not None  # FK guarantees it
             kind_name = str(stock_row["kind"])
@@ -2233,10 +2308,9 @@ def use_aliquot(
                 # clear the position in the same write; the event keeps it.
                 if not status_is_in_stock(status_set, new_status):
                     cleared_from = (row.get("box_id"), row.get("slot"))
-        updates: dict[str, Any] = {
-            "quantity": remaining,
-            "status": new_status,
-        }
+        updates: dict[str, Any] = {"status": new_status}
+        if remaining is not None:
+            updates["quantity"] = remaining
         if cleared_from != (None, None):
             updates["box_id"] = None
             updates["slot"] = None
@@ -2245,8 +2319,8 @@ def use_aliquot(
             session,
             aliquot_id=alq_id,
             event="use",
-            amount=used,
-            unit=unit_text,
+            amount=event_amount,
+            unit=event_unit,
             from_box_id=cleared_from[0],
             from_slot=cleared_from[1],
             to_box_id=None,
@@ -2254,15 +2328,19 @@ def use_aliquot(
             old_status=old_status,
             new_status=new_status,
             actor=ledger.actor,
-            purpose=purpose,
-            note=note,
+            note=message_text,
         )
         return {
             "object": "aliquot",
             "id": alq_id,
-            "quantity": str(remaining),
-            "unit": unit_text,
+            "used_amount": (
+                None if event_amount is None else plain_decimal(event_amount)
+            ),
+            "used_unit": event_unit,
+            "quantity": None if remaining is None else str(remaining),
+            "unit": event_unit,
             "status": new_status,
+            "message": message_text,
         }
 
 
@@ -3751,15 +3829,12 @@ class AliquotOps:
     def use(
         self,
         ref: str,
-        amount: Any,
-        unit: str,
+        amount: Any = None,
+        unit: str | None = None,
         *,
-        purpose: str | None = None,
-        note: str | None = None,
+        message: str,
     ) -> dict[str, Any]:
-        return use_aliquot(
-            self.ledger, ref, amount, unit, purpose=purpose, note=note
-        )
+        return use_aliquot(self.ledger, ref, amount, unit, message=message)
 
     def status(
         self,
