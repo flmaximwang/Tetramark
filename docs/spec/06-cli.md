@@ -90,6 +90,7 @@ tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
+tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]   # = tm aliquot add --quantity AMOUNT --unit UNIT.
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path, events
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
@@ -148,6 +149,17 @@ Creating aliquots accepts any of the four fixed statuses `pending`, `stored`, `m
 (`--status`, or the import `status` column); changing one follows the fixed transitions (§1.1).
 `--force` requires `--note`, records `aliquot_event.forced = TRUE` and is the only way to make an
 unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
+
+`tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]` is
+positional sugar for `tm aliquot add STOCK --quantity AMOUNT --unit UNIT` with the same options:
+`AMOUNT` is the quantity of **each** new tube (zero is allowed) and `UNIT` is its unit. This is
+the only reading that needs no new concept: the aliquot row stores a quantity with its unit, and a
+unit without a quantity is not representable, so the two positionals always come together. Both
+commands call the same write — `ledger.aliquots.add(stock, quantity=AMOUNT, unit=UNIT, …)` — print
+the same human line and JSON and make the same single commit
+(`add(aliquot): <stock_id> x<N>`). A negative `AMOUNT` is Click's usage error (exit 2); there is no
+`--` escape. Use `tm stock aliquot` when every new tube has a known amount, and `tm aliquot add`
+for tubes without a quantity.
 
 An aliquot's **position follows its status** (spec 5): `stored` needs a position (a box, plus a slot
 when that box is slotted), and changing to any other status clears `box_id`/`slot` in the same write.
