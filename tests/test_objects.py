@@ -793,6 +793,109 @@ def test_purge_refuses_an_aliquot_used_as_a_source(ledger_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Aliquot reads
+# ---------------------------------------------------------------------------
+
+
+def test_aliquot_show_reads_the_tube_its_stock_and_its_path(
+    ledger_factory,
+) -> None:
+    """``show`` answers the questions about one tube in one read."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], quantity=100, unit="ul")
+    alq = stock["aliquots"][0]
+    ledger.aliquots.move(alq, box="BOX", slot="A3")
+
+    shown = ledger.aliquots.show(alq)
+
+    assert shown["id"] == alq
+    assert shown["stock_id"] == stock["id"]
+    assert shown["seq"] == 1
+    assert shown["status"] == "stored"
+    assert Decimal(str(shown["quantity"])) == Decimal("100")
+    assert shown["unit"] == "ul"
+    assert shown["label"] is None
+    assert shown["notes"] is None
+    assert shown["created_at"] is not None
+    assert shown["aliases"] == []
+    assert shown["stock_kind"] == "lot"
+    assert shown["entity_id"] == item["id"]
+    assert shown["box_id"] is not None
+    assert shown["slot"] == "A3"
+    assert shown["path"] == "BOX:A3"
+    assert shown["in_stock"] is True
+    assert shown["object"] == "aliquot"
+
+
+def test_aliquot_show_of_a_tube_that_is_not_in_stock(ledger_factory) -> None:
+    """A tube that left the stock has no position and no path."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+
+    shown = ledger.aliquots.show(alq)
+
+    assert shown["status"] == "pending"
+    assert shown["in_stock"] is False
+    assert shown["box_id"] is None
+    assert shown["slot"] is None
+    assert shown["path"] is None
+
+
+def test_aliquot_show_resolves_an_alias(ledger_factory) -> None:
+    """A tube is found by its alias, like every other object."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", alq, "tube-1")
+
+    shown = ledger.aliquots.show("tube-1")
+
+    assert shown["id"] == alq
+    assert shown["aliases"] == ["tube-1"]
+
+
+def test_aliquot_show_resolves_the_old_id_of_a_renumbered_tube(
+    ledger_factory,
+) -> None:
+    """``tm stock renumber`` keeps the old tube id as an alias; it still shows."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    alq = stock["aliquots"][0]
+
+    renamed = ledger.stocks.renumber([stock["id"]], auto=True)
+    new_stock = renamed["renames"][0]["new"]
+    new_alq = f"{new_stock}.1"
+    assert new_alq != alq
+
+    shown = ledger.aliquots.show(alq)
+
+    assert shown["id"] == new_alq
+    assert shown["stock_id"] == new_stock
+    assert alq in shown["aliases"]
+
+
+def test_aliquot_show_refuses_an_unknown_or_empty_ref(ledger_factory) -> None:
+    """An unknown or empty ref is a not-found error, like every other show."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+
+    with pytest.raises(LedgerError, match="unknown aliquot 'nope'"):
+        ledger.aliquots.show("nope")
+    with pytest.raises(LedgerError, match="unknown aliquot ''"):
+        ledger.aliquots.show("")
+    # A prefix of an aliquot id is not a handle: the id is never shortened.
+    with pytest.raises(LedgerError, match="unknown aliquot"):
+        ledger.aliquots.show(stock["aliquots"][0][:6])
+
+
+# ---------------------------------------------------------------------------
 # Boxes
 # ---------------------------------------------------------------------------
 

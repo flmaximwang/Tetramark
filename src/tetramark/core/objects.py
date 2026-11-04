@@ -2164,6 +2164,117 @@ def purge_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Aliquot reads
+# ---------------------------------------------------------------------------
+
+
+def _aliquot_id_sql() -> str:
+    """The id of the aliquot ``REF`` names: an exact id, then an alias.
+
+    An aliquot id is ``<stock>.<seq>`` and is never shortened (spec §6), so
+    the unique-prefix branch of :func:`_resolved_id_sql` is deliberately not
+    used here: a prefix of an aliquot id is not a handle.  The alias branch
+    checks that the tube still exists, exactly as the resolver's per-alias
+    fetch does, so an alias of a purged tube resolves to nothing.
+    """
+    table = _quote("aliquot")
+    key = _quote("id")
+    return (
+        "COALESCE("
+        f"(SELECT {key} FROM {table} WHERE {key} = %s LIMIT 1), "
+        f"(SELECT a.{_quote('object_id')} FROM {_quote('alias')} a "
+        f"WHERE a.{_quote('object_type')} = 'aliquot' "
+        f"AND a.{_quote('alias')} = %s "
+        f"AND EXISTS (SELECT 1 FROM {table} o "
+        f"WHERE o.{key} = a.{_quote('object_id')}) LIMIT 1)"
+        ")"
+    )
+
+
+def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
+    """One aliquot: its row, aliases, owning stock and location (spec §6).
+
+    Everything is read in one batch: the aliquot row, its sorted aliases, the
+    owning stock's kind and entity, and the path from ``v_aliquot_location``.
+    ``in_stock`` is derived from the stock kind's status set (spec 4): it says
+    whether the tube's status counts as physically in stock.  A tube that is
+    not in stock carries no position, so its ``box_id``, ``slot`` and ``path``
+    are NULL.
+
+    The stock kind's own fields are not part of the record — ``tm stock show``
+    owns them — and the record carries no event timeline (``tm history`` owns
+    that).
+    """
+    if not ref:
+        raise LedgerError(f"unknown aliquot {ref!r}")
+    id_sql = _aliquot_id_sql()
+    params = (str(ref), str(ref))
+    batch: list[tuple[str, Any]] = [
+        (
+            f"SELECT * FROM {_quote('aliquot')} WHERE {_quote('id')} = {id_sql}",
+            params,
+        ),
+        (
+            f"SELECT {_quote('alias')} FROM {_quote('alias')} "
+            f"WHERE {_quote('object_type')} = 'aliquot' "
+            f"AND {_quote('object_id')} = {id_sql} "
+            f"ORDER BY {_quote('alias')}",
+            params,
+        ),
+        (
+            "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id` "
+            f"FROM {_quote('stock')} s WHERE s.{_quote('id')} = "
+            f"(SELECT a.{_quote('stock_id')} FROM {_quote('aliquot')} a "
+            f"WHERE a.{_quote('id')} = {id_sql})",
+            params,
+        ),
+        (
+            "SELECT COALESCE(l.`location`, l.`box_path`) AS `path` "
+            f"FROM {_quote('v_aliquot_location')} l "
+            f"WHERE l.{_quote('aliquot_id')} = {id_sql}",
+            params,
+        ),
+    ]
+    fetched = ledger.driver.query_many(batch)
+
+    rows = fetched[0]
+    if not rows:
+        raise LedgerError(f"unknown aliquot {ref!r}")
+    row = dict(rows[0])
+    stock_rows = fetched[2]
+    stock_kind = str(stock_rows[0]["stock_kind"]) if stock_rows else ""
+    entity_id = str(stock_rows[0]["entity_id"]) if stock_rows else ""
+    location_rows = fetched[3]
+    path = location_rows[0]["path"] if location_rows else None
+
+    status = str(row["status"])
+    in_stock = False
+    if stock_kind:
+        status_set = aliquot_status_set(ledger, stock_kind)
+        in_stock = status_is_in_stock(status_set, status)
+
+    return {
+        "id": str(row["id"]),
+        "stock_id": str(row["stock_id"]),
+        "seq": int(row["seq"]),
+        "status": status,
+        "quantity": row["quantity"],
+        "unit": row["unit"],
+        "label": row["label"],
+        "notes": row["notes"],
+        "created_at": row["created_at"],
+        "aliases": [str(alias["alias"]) for alias in fetched[1]],
+        "stock_kind": stock_kind,
+        "entity_id": entity_id,
+        "box_id": row["box_id"],
+        "slot": row["slot"],
+        "path": path,
+        "in_stock": in_stock,
+        "object": "aliquot",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Boxes
 # ---------------------------------------------------------------------------
 
@@ -2981,6 +3092,9 @@ class AliquotOps:
             unit=unit,
             status=status,
         )
+
+    def show(self, ref: str) -> dict[str, Any]:
+        return show_aliquot(self.ledger, ref)
 
     def move(
         self,
