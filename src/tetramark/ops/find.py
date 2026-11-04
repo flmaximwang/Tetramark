@@ -31,9 +31,10 @@ only entity/stock/box kinds that have *every* filtered field take part, and
 aliquots never do.  With no query, the filters alone list the matching objects
 (``match`` is ``"filter"``), sorted by object type, kind and id.
 
-The whole search is one read batch fetched by a single
-:meth:`Driver.query_many`; only an invalid pattern costs probe queries on the
-error path.  :func:`search` is one pure pass and :func:`find` the thin
+The statements are built first and fetched by a single
+:meth:`Driver.query_many`; only an invalid pattern (error-path probes) or an
+``=`` filter on a ``ref`` field (the shared coercion may resolve the ref) can
+cost extra queries.  :func:`search` is one pure pass and :func:`find` the thin
 orchestration around it, so Tetramark-53r.1 can add a zero-hit rewrite fallback
 without changing the search core.
 """
@@ -531,21 +532,34 @@ def _fetch(
 
 
 def search(
-    ledger: Ledger, query: str, *, regex: bool = False, where: Where = ()
+    ledger: Ledger,
+    query: str,
+    *,
+    regex: bool = False,
+    where: Where = (),
+    filters: tuple[Filter, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """One search pass over one ledger (the pure core of :func:`find`).
 
-    Exactly one read batch is built and fetched, and the hits carry no ``rank``
-    (the orchestration numbers them).  A zero-hit result is honest: no rewrite
-    fallback lives here.  Tetramark-53r.1 adds that in :func:`find`, which may
-    call this function again with a rewritten query and merge the hits.
+    The hits are sorted but carry no ``rank`` (the orchestration numbers them).
+    Exactly one search batch is built and fetched, though a ``=`` filter on a
+    ``ref`` field may still resolve its ref through the shared coercion.  A
+    zero-hit result is honest: no rewrite fallback lives here.  Tetramark-53r.1
+    adds that in :func:`find`, which may call this function again with a
+    rewritten query and merge the hits.
+
+    ``where`` is the filter syntax; ``filters`` is its already-parsed form,
+    which :func:`find` passes so the filters are parsed once (the two are
+    alternatives -- ``filters`` wins when both are given).
     """
-    filters = parse_filters(where, option="--where")
-    _check_where_fields(ledger, filters)
+    parsed = (
+        parse_filters(where, option="--where") if filters is None else filters
+    )
+    _check_where_fields(ledger, parsed)
     text = str(query).strip()
     if not text:
         raise UsageError("the search query must not be empty")
-    return _search_pass(ledger, text, regex=regex, filters=filters)
+    return _search_pass(ledger, text, regex=regex, filters=parsed)
 
 
 def find(
@@ -563,7 +577,7 @@ def find(
     entity/stock/box listings and applies to every hit (AND); aliquots are
     excluded whenever it is given.  With ``where`` and no query, every matching
     object is listed with ``match == "filter"``, sorted by object type, kind and
-    id.  Neither a query nor a filter is a usage error.
+    id.  Passing neither a query nor a filter is a usage error.
     """
     filters = parse_filters(where, option="--where")
     _check_where_fields(ledger, filters)
@@ -576,10 +590,10 @@ def find(
             )
         results = _filter_pass(ledger, filters)
     else:
-        results = _search_pass(ledger, text, regex=regex, filters=filters)
-        # Tetramark-53r.1 plugs the zero-hit rewrite fallback in here: it may
-        # search again and merge/annotate the hits.  _search_pass stays one
-        # pass and knows nothing about rewrites.
+        # The one tested seam for Tetramark-53r.1: the query branch goes
+        # through search(), so a zero-hit rewrite fallback can search again
+        # with a rewritten query and merge/annotate the unranked hits here.
+        results = search(ledger, text, regex=regex, filters=filters)
     return _rank(results)
 
 

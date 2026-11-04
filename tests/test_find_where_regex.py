@@ -24,6 +24,8 @@ from typer.testing import CliRunner
 from tetramark.cli.app import app
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import LedgerError, UsageError
+from tetramark.ops import find as find_module
+from tetramark.ops.find import find, search
 
 from conftest import PRESETS
 
@@ -180,6 +182,51 @@ def test_where_filters_query_hits(where_ledger) -> None:
     ] == [plasmid["id"]]
 
 
+def test_where_keeps_positive_id_and_alias_hits(where_ledger) -> None:
+    ledger = where_ledger
+    host = ledger.entities.add("item", name="host")
+    stock = ledger.stocks.add(
+        "lot", entity=host["id"], values={"supplier": "acme"}
+    )
+    plasmid = ledger.entities.add("plasmid", name="pUC19")
+    ledger.aliases.add("entity", plasmid["id"], "pUC-ALIAS")
+
+    # A positive id hit survives the filter and keeps the id tier.
+    by_id = ledger.find(stock["id"], where=["kind=lot"])
+    assert [row["id"] for row in by_id] == [stock["id"]]
+    assert [row["match"] for row in by_id] == ["id"]
+    assert [row["score"] for row in by_id] == [1000]
+    assert [row["rank"] for row in by_id] == [1]
+
+    # So does a positive alias hit, at the alias tier.
+    by_alias = ledger.find("pUC-ALIAS", where=["kind=plasmid"])
+    assert [row["id"] for row in by_alias] == [plasmid["id"]]
+    assert [row["match"] for row in by_alias] == ["alias"]
+    assert [row["score"] for row in by_alias] == [900]
+    assert [row["rank"] for row in by_alias] == [1]
+
+
+def test_where_filters_on_a_stock_kind_field(where_ledger) -> None:
+    ledger = where_ledger
+    item = ledger.entities.add("item", name="host")
+    acme = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}
+    )
+    ledger.stocks.add("lot", entity=item["id"], values={"supplier": "other"})
+
+    hits = ledger.find(where=["supplier=acme"])
+
+    assert [row["id"] for row in hits] == [acme["id"]]
+    assert hits[0]["object"] == "stock"
+    assert hits[0]["kind"] == "lot"
+    assert hits[0]["match"] == "filter"
+
+    # A kind field composes with a query and with a regex filter as well.
+    assert [
+        row["id"] for row in ledger.find("acme", where=["supplier~^ac"])
+    ] == [acme["id"]]
+
+
 def test_where_alone_lists_every_matching_object(where_ledger) -> None:
     ledger = where_ledger
     first = ledger.entities.add("item", name="pUC19")
@@ -283,6 +330,76 @@ def test_neither_a_query_nor_a_filter_is_a_usage_error(where_ledger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The search() seam (Tetramark-53r.1)
+# ---------------------------------------------------------------------------
+
+
+def test_search_is_the_pure_one_pass_seam(where_ledger) -> None:
+    """``search`` is one unranked pass with no rewrite fallback of its own."""
+    ledger = where_ledger
+    plasmid = ledger.entities.add("plasmid", name="pUC19")
+
+    hits = search(ledger, r"^puc\d+$", regex=True)
+
+    assert [row["id"] for row in hits] == [plasmid["id"]]
+    assert hits[0]["match"] == "name"
+    assert hits[0]["score"] == 800
+    # Ranks belong to the orchestration, not to the pure pass.
+    assert "rank" not in hits[0]
+
+    # A miss is an empty list: no rewrite fallback lives in search().
+    assert search(ledger, "no-such-object") == []
+
+    # The where syntax is accepted directly as well.
+    filtered = search(ledger, "pUC19", where=["kind=plasmid"])
+    assert [row["id"] for row in filtered] == [plasmid["id"]]
+    assert "rank" not in filtered[0]
+
+
+def test_search_runs_one_pass_and_find_delegates_to_it(
+    where_ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = where_ledger
+    ledger.entities.add("item", name="alpha")
+    scans: list[tuple[str, bool]] = []
+
+    def fake_pass(ledger_arg, text, *, regex, filters):
+        scans.append((text, regex))
+        return []
+
+    monkeypatch.setattr(find_module, "_search_pass", fake_pass)
+    assert search(ledger, "alpha", regex=True, where=["kind=item"]) == []
+    assert scans == [("alpha", True)]
+
+    # find()'s query branch goes through search() with the parsed filters.
+    delegated: list[dict[str, object]] = []
+
+    def fake_search(ledger_arg, query, **kwargs):
+        delegated.append({"query": query, **kwargs})
+        return [
+            {
+                "object": "entity",
+                "kind": "item",
+                "id": "x",
+                "name": None,
+                "score": 10,
+                "match": "name",
+                "summary": "",
+                "location": "",
+                "aliases": [],
+            }
+        ]
+
+    monkeypatch.setattr(find_module, "search", fake_search)
+    rows = find(ledger, "alpha", where=["kind=item"])
+
+    assert delegated[0]["query"] == "alpha"
+    assert delegated[0]["regex"] is False
+    assert delegated[0]["filters"]  # parsed once, passed as Filter objects
+    assert rows[0]["rank"] == 1
+
+
+# ---------------------------------------------------------------------------
 # The CLI
 # ---------------------------------------------------------------------------
 
@@ -296,6 +413,8 @@ def test_cli_regex_json_and_table(cli_env: None, regex_ledger) -> None:
     payload = json.loads(result.output)
     assert payload[0]["id"] == item["id"]
     assert payload[0]["match"] == "name"
+    assert payload[0]["score"] == 800
+    assert payload[0]["rank"] == 1
 
     table = run_cli(ledger, "find", "--regex", r"^pUC\d+$")
     assert table.exit_code == 0, table.output
@@ -329,7 +448,11 @@ def test_cli_where_with_and_without_a_query(cli_env: None, where_ledger) -> None
         ledger, "find", "pUC19", "--where", "kind=plasmid", "--json"
     )
     assert filtered.exit_code == 0, filtered.output
-    assert [row["id"] for row in json.loads(filtered.output)] == [plasmid["id"]]
+    filtered_payload = json.loads(filtered.output)
+    assert [row["id"] for row in filtered_payload] == [plasmid["id"]]
+    assert filtered_payload[0]["match"] == "name"
+    assert filtered_payload[0]["score"] == 800
+    assert filtered_payload[0]["rank"] == 1
 
     listed = run_cli(ledger, "find", "--where", "name~^pUC", "--json")
     assert listed.exit_code == 0, listed.output
@@ -337,6 +460,31 @@ def test_cli_where_with_and_without_a_query(cli_env: None, where_ledger) -> None
     # Both entities match the filter, sorted by object type, kind and id.
     assert [row["id"] for row in payload] == [item["id"], plasmid["id"]]
     assert [row["match"] for row in payload] == ["filter", "filter"]
+    assert [row["score"] for row in payload] == [0, 0]
+    assert [row["rank"] for row in payload] == [1, 2]
+
+
+def test_cli_empty_query_and_short_where_are_filter_mode(
+    cli_env: None, where_ledger
+) -> None:
+    ledger = where_ledger
+    plasmid = ledger.entities.add("plasmid", name="pUC19")
+    item = ledger.entities.add("item", name="pUC19-item")
+
+    # An explicitly empty QUERY with --where is the no-query filter mode.
+    empty = run_cli(ledger, "find", "", "--where", "name~^pUC", "--json")
+    assert empty.exit_code == 0, empty.output
+    payload = json.loads(empty.output)
+    assert [row["id"] for row in payload] == [item["id"], plasmid["id"]]
+    assert [row["match"] for row in payload] == ["filter", "filter"]
+
+    # The -w short option is the same option.
+    short = run_cli(ledger, "find", "-w", "kind=plasmid", "--json")
+    assert short.exit_code == 0, short.output
+    short_payload = json.loads(short.output)
+    assert [row["id"] for row in short_payload] == [plasmid["id"]]
+    assert short_payload[0]["score"] == 0
+    assert short_payload[0]["rank"] == 1
 
 
 def test_cli_where_reports_unknown_fields_and_no_matches(
