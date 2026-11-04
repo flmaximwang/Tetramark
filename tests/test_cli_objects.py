@@ -16,6 +16,9 @@ from tetramark.errors import LedgerError, UsageError
 from conftest import PRESETS
 
 BASE = PRESETS / "base"
+BOXFIELDS = PRESETS / "boxfields"
+EXTRAS = PRESETS / "extras"
+FULL = PRESETS / "full"
 
 
 @pytest.fixture
@@ -2278,3 +2281,327 @@ def test_cli_stock_aliquot_help_names_amount_unit_and_aliquot_add() -> None:
     assert "STOCK AMOUNT UNIT" in text
     assert "AMOUNT" in text and "UNIT" in text
     assert "tm aliquot add" in text
+
+
+# ---------------------------------------------------------------------------
+# Edit: box kind fields, rename-only names, clear-empty (Tetramark-p1j)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_box_edit_notes_kind_fields_and_empty_values(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC1/AC2/AC5: box edit reports the record, coerces fields and clears empties."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-edit", id_prefix="77")
+    added = json.loads(
+        write(ledger, "box", "add", "fieldbox", "BOX-1", "--json").output
+    )
+
+    edited = json.loads(
+        write(
+            ledger,
+            "box",
+            "edit",
+            "BOX-1",
+            "--set",
+            "notes=first",
+            "--set",
+            "code=abc",
+            "--set",
+            "count=7",
+            "--json",
+        ).output
+    )
+    assert edited["object"] == "box"
+    assert set(edited) == {
+        "id",
+        "kind",
+        "name",
+        "parent_box_id",
+        "parent_slot",
+        "created_at",
+        "notes",
+        "code",
+        "count",
+        "label",
+        "object",
+    }
+    assert edited["id"] == added["id"]
+    assert edited["kind"] == "fieldbox"
+    assert edited["name"] == "BOX-1"
+    assert edited["notes"] == "first"
+    assert edited["code"] == "abc"
+    assert edited["count"] == 7
+    assert edited["label"] == "unnamed"
+
+    human = write(ledger, "box", "edit", "BOX-1", "-s", "count=8")
+    assert human.output.strip() == "Edited box BOX-1 (fieldbox)"
+
+    cleared = json.loads(
+        write(
+            ledger,
+            "box",
+            "edit",
+            "BOX-1",
+            "--set",
+            "notes=",
+            "--set",
+            "code=",
+            "--set",
+            "count=",
+            "--json",
+        ).output
+    )
+    assert cleared["notes"] is None
+    assert cleared["code"] is None
+    assert cleared["count"] is None
+
+    # Invalid values are usage errors (exit 2) and write nothing.
+    before = commit_count(ledger)
+    for args, message in (
+        (("--set", "code=ABC"), "pattern"),
+        (("--set", "code=" + "a" * 33), "32"),
+        (("--set", "count=not-an-int"), "integer"),
+        (("--set", "label="), "required and cannot be cleared"),
+    ):
+        refused = invoke(ledger, "box", "edit", "BOX-1", *args)
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert message in str(refused.exception)
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_edit_name_is_rename_only_and_rename_still_works(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC3/AC8: ``name`` is rename-only; add ``--name`` and rename still work."""
+    ledger = ledger_factory([EXTRAS], name="cli-name-guard", id_prefix="77")
+    # A kind with its own name field (item) and one without it (local_entity):
+    # ``entity add --name`` fills the core name for both.
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    local = json.loads(
+        write(
+            ledger, "entity", "add", "local_entity", "--name", "beta", "--json"
+        ).output
+    )
+    assert item["name"] == "alpha"
+    assert local["name"] == "beta"
+    write(ledger, "box", "add", "grid96", "BOX")
+    before = commit_count(ledger)
+
+    for ref in (item["id"], local["id"]):
+        refused = invoke(ledger, "entity", "edit", ref, "--set", "name=gamma")
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert str(refused.exception) == (
+            f"name is rename-only; use tm entity rename {ref} NEW_NAME"
+        )
+    # The guard fires before resolution, naming the raw ref as typed.
+    refused = invoke(ledger, "entity", "edit", "MISSING", "--set", "name=gamma")
+    assert isinstance(refused.exception, UsageError)
+    assert str(refused.exception) == (
+        "name is rename-only; use tm entity rename MISSING NEW_NAME"
+    )
+    refused = invoke(ledger, "box", "edit", "BOX", "--set", "name=BOX-2")
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert str(refused.exception) == (
+        "name is rename-only; use tm box rename BOX NEW_NAME"
+    )
+    refused = invoke(ledger, "entity", "edit", item["id"], "--set", "id=x")
+    assert isinstance(refused.exception, UsageError)
+    assert str(refused.exception) == "id is structural and cannot be edited"
+    assert commit_count(ledger) == before
+
+    # Both rename verbs still work and keep the old name as an alias.
+    renamed = json.loads(
+        write(ledger, "entity", "rename", item["id"], "gamma", "--json").output
+    )
+    assert renamed["name"] == "gamma"
+    assert renamed["old_name"] == "alpha"
+    assert json.loads(
+        read(ledger, "entity", "show", "alpha", "--json").output
+    )["name"] == "gamma"
+    write(ledger, "box", "rename", "BOX", "BOX-2")
+    shown = json.loads(read(ledger, "box", "show", "BOX", "--json").output)
+    assert shown["box"] == "BOX-2"
+
+
+def test_cli_edit_structural_and_unknown_field_refusals(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC3/AC4: structural fields name the remedy; unknown fields list valid ones."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-edit-refusals", id_prefix="77")
+    write(ledger, "box", "add", "fieldbox", "BOX-1")
+    before = commit_count(ledger)
+
+    cases = [
+        (
+            ("box", "edit", "BOX-1", "--set", "parent_box_id=x"),
+            "parent_box_id is structural; move a box with tm box move BOX-1 "
+            "--in PARENT [--slot S]",
+        ),
+        (
+            ("box", "edit", "BOX-1", "--set", "parent_slot=top"),
+            "parent_slot is structural; move a box with tm box move BOX-1 "
+            "--in PARENT [--slot S]",
+        ),
+        (
+            ("box", "edit", "BOX-1", "--set", "id=x"),
+            "id is structural and cannot be edited",
+        ),
+        (
+            ("box", "edit", "BOX-1", "--set", "kind=x"),
+            "kind is structural and cannot be edited",
+        ),
+        (
+            ("box", "edit", "BOX-1", "--set", "created_at=x"),
+            "created_at is structural and cannot be edited",
+        ),
+        (
+            ("box", "edit", "BOX-1", "--set", "nope=1"),
+            "unknown field(s) 'nope' for box kind 'fieldbox'; "
+            "valid fields: code, count, label, notes",
+        ),
+    ]
+    for args, expected in cases:
+        refused = invoke(ledger, *args)
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert str(refused.exception) == expected
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_stock_edit_clears_values_and_required_is_refused(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC5/AC6: stock edit clears empties; a required field cannot be cleared."""
+    ledger = ledger_factory([FULL], name="cli-stock-edit", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    lot = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--set",
+            "supplier=acme",
+            "--set",
+            "received_on=2024-01-02",
+            "--json",
+        ).output
+    )
+    edited = json.loads(
+        write(
+            ledger,
+            "stock",
+            "edit",
+            lot["id"],
+            "--set",
+            "supplier=",
+            "--set",
+            "received_on=",
+            "--json",
+        ).output
+    )
+    assert edited["supplier"] is None
+    assert edited["received_on"] is None
+
+    bacterial = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "bacterial",
+            "--entity",
+            item["id"],
+            "--set",
+            "strain=DH5a",
+            "--json",
+        ).output
+    )
+    before = commit_count(ledger)
+    refused = invoke(ledger, "stock", "edit", bacterial["id"], "--set", "strain=")
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert str(refused.exception) == (
+        "field 'strain' is required and cannot be cleared"
+    )
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_edit_dry_run_json_writes_nothing(cli_env: None, ledger_factory) -> None:
+    """AC9: --dry-run reports the planned record and SQL, and writes nothing."""
+    ledger = ledger_factory([BASE], name="cli-edit-dry", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    before = commit_count(ledger)
+    result = invoke(
+        ledger,
+        "--dry-run",
+        "entity",
+        "edit",
+        item["id"],
+        "--set",
+        "category=lab",
+        "--json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["dry_run"] is True
+    assert payload["result"]["category"] == "lab"
+    assert "UPDATE `entity_item`" in payload["sql"]
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+    assert ledger.driver.query("SELECT `category` FROM `entity_item`") == [
+        {"category": None}
+    ]
+
+
+def test_cli_check_is_clean_after_a_sequence_of_edits(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC10: box/entity/stock edits leave the ledger passing ``tm check``."""
+    ledger = ledger_factory([FULL], name="cli-check-edits", id_prefix="77")
+    item = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "alpha", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "BOX")
+    stock = json.loads(
+        write(ledger, "stock", "add", "lot", "--entity", item["id"], "--json").output
+    )
+
+    write(ledger, "entity", "edit", item["id"], "--set", "category=lab")
+    write(ledger, "box", "edit", "BOX", "--set", "notes=box note")
+    write(ledger, "stock", "edit", stock["id"], "--set", "supplier=acme")
+    # An exactly empty value clears on all three verbs (AC5).
+    cleared_entity = json.loads(
+        write(
+            ledger, "entity", "edit", item["id"], "--set", "category=", "--json"
+        ).output
+    )
+    cleared_box = json.loads(
+        write(ledger, "box", "edit", "BOX", "--set", "notes=", "--json").output
+    )
+    cleared_stock = json.loads(
+        write(
+            ledger, "stock", "edit", stock["id"], "--set", "supplier=", "--json"
+        ).output
+    )
+    assert cleared_entity["category"] is None
+    assert cleared_box["notes"] is None
+    assert cleared_stock["supplier"] is None
+
+    report = json.loads(read(ledger, "check", "--json").output)
+    assert report["ok"] is True
+    assert report["failed"] == 0

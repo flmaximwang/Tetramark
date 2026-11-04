@@ -120,7 +120,7 @@ def edit_entity_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
 ) -> None:
-    """Update fields of an existing entity."""
+    """Update notes or kind fields; names change only through rename."""
     ledger = resolve_ledger(ctx)
     try:
         result = ledger.entities.edit(ref, values=set_values)

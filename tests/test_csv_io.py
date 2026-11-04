@@ -23,6 +23,7 @@ from tetramark.ops.io_csv import (
 from conftest import PRESETS
 
 BASE = PRESETS / "base"
+BOXFIELDS = PRESETS / "boxfields"
 FULL = PRESETS / "full"
 
 
@@ -690,3 +691,62 @@ def test_cli_dry_run_prints_the_import_sql(
     assert "INSERT INTO" in result.output
     assert ledger.entities.ls() == []
     assert commit_count(ledger) == before
+
+
+# ---------------------------------------------------------------------------
+# Import allowlist split: name and box kind fields (Tetramark-p1j)
+# ---------------------------------------------------------------------------
+
+
+def test_import_keeps_csv_name_and_box_kind_fields(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """AC8: import still writes ``entity.name`` and a box kind's own fields.
+
+    The add/edit core allowlist split made ``name`` edit-only-rename, but an
+    import creates rows: it must keep using the add allowlist.
+    """
+    ledger = ledger_factory([BASE], name="csv-name")
+    path = write_csv(
+        tmp_path / "items.csv",
+        "name,category\n"
+        "widget,reagent\n",
+    )
+    before = commit_count(ledger)
+    result = import_csv(ledger, "item", path)
+    assert result.rows == 1
+    assert commit_count(ledger) == before + 1
+    assert ledger.driver.query(
+        "SELECT `name` FROM `entity` WHERE `kind` = 'item'"
+    ) == [{"name": "widget"}]
+    assert ledger.driver.query(
+        "SELECT `name`, `category` FROM `entity_item`"
+    ) == [{"name": "widget", "category": "reagent"}]
+
+    boxes = ledger_factory([BOXFIELDS], name="csv-boxfields")
+    box_path = write_csv(
+        tmp_path / "boxes.csv",
+        "id,kind,name,code,count,label\n"
+        "B-1,fieldbox,BOX-1,abc,7,tagged\n",
+    )
+    before = commit_count(boxes)
+    imported = import_csv(boxes, "box", box_path)
+    assert imported.rows == 1
+    assert commit_count(boxes) == before + 1
+    assert boxes.driver.query(
+        "SELECT `id`, `kind`, `name` FROM `box`"
+    ) == [{"id": "B-1", "kind": "fieldbox", "name": "BOX-1"}]
+    assert boxes.driver.query(
+        "SELECT `id`, `code`, `count`, `label` FROM `box_fieldbox`"
+    ) == [{"id": "B-1", "code": "abc", "count": 7, "label": "tagged"}]
+    assert boxes.check().passed
+
+    # A cheap export/import round trip keeps the box kind fields too.
+    out = tmp_path / "export-boxfields"
+    export_csv(boxes, "all", out_dir=out)
+    target = ledger_factory([BOXFIELDS], name="csv-boxfields-target")
+    import_csv(target, "all", out)
+    assert target.driver.query(
+        "SELECT `id`, `code`, `count`, `label` FROM `box_fieldbox`"
+    ) == [{"id": "B-1", "code": "abc", "count": 7, "label": "tagged"}]
+    assert target.check().passed
