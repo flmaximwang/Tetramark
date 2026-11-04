@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 from tetramark.core.ledger import Ledger, open as open_ledger
-from tetramark.errors import LedgerError
+from tetramark.errors import LedgerError, UnreachableError
 from tetramark.ops.find import resolve_any
 from tetramark.ops.lineage import lineage
 from tetramark.schema.model import Rewrite, SchemaError
@@ -515,3 +515,46 @@ def test_show_keeps_the_wrong_type_hint_instead_of_the_find_hint(
     message = str(caught.value)
     assert "is a stock; try tm stock show" in message
     assert "try tm find" not in message
+
+
+def test_unreachable_database_keeps_its_exit_code_and_gets_no_hint(
+    rewrite_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The find hint is for a not-found miss; exit 3 must pass through.
+
+    ``show``, ``tm alias add`` and ``stock add --entity`` catch ``LedgerError``
+    to append the hint, so they must re-raise ``UnreachableError`` untouched:
+    wrapping it would turn a database outage into a not-found exit 1.
+    """
+    ledger = rewrite_factory([STRIP_OLD])
+    add_item(ledger, "alpha")
+    stock_id = ledger.next_id("stock")
+
+    # A genuine miss still gets the hint while the database is reachable.
+    with pytest.raises(LedgerError) as missed:
+        ledger.entities.show("old-alpha")
+    assert str(missed.value) == (
+        "unknown entity 'old-alpha'; try tm find old-alpha"
+    )
+
+    def unreachable(*args: object, **kwargs: object) -> None:
+        raise UnreachableError("dolt is unreachable")
+
+    monkeypatch.setattr(ledger.driver, "query", unreachable)
+    monkeypatch.setattr(ledger.driver, "query_many", unreachable)
+
+    operations = {
+        "entity show": lambda: ledger.entities.show("x"),
+        "stock show": lambda: ledger.stocks.show("x"),
+        "alias add": lambda: ledger.aliases.add("entity", "x", "X"),
+        "stock add --entity": lambda: ledger.stocks.add(
+            "lot", entity="x", id=stock_id
+        ),
+    }
+    for label, operation in operations.items():
+        with pytest.raises(UnreachableError) as caught:
+            operation()
+        assert caught.value.exit_code == 3, label
+        assert str(caught.value) == "dolt is unreachable", label
+        assert "try tm find" not in str(caught.value), label
+

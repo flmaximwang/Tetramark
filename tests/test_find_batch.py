@@ -126,7 +126,14 @@ def test_find_rewrites_ride_in_the_same_batch(
                 "name": "prefix",
                 "pattern": r"^demo-(?P<rest>.+)$",
                 "replacement": r"\g<rest>",
-            }
+            },
+            # A second rule makes "one batch per rule" distinguishable from
+            # "one batch for all rules" (it must not add a query_many call).
+            {
+                "name": "suffix",
+                "pattern": r"^demo-(?P<rest>.+)$",
+                "replacement": r"\g<rest>-tube",
+            },
         ]
     }
     path.write_text(
@@ -147,7 +154,7 @@ def test_find_rewrites_ride_in_the_same_batch(
 
     monkeypatch.setattr(EmbeddedDriver, "query_many", counted_query_many)
 
-    # --with-rewrite searches the original query and every rule's rewrite in
+    # --with-rewrite searches the original query and both rules' rewrites in
     # one batch: one query_many call, two dolt processes.
     results = ledger.find("demo-alpha", with_rewrite=True)
     assert [row["id"] for row in results] == [demo["id"], alpha["id"]]
@@ -157,8 +164,8 @@ def test_find_rewrites_ride_in_the_same_batch(
     )
 
     # The default fallback cannot know it needs the rules before the first
-    # pass, so a miss costs one batch and the batched rewrite search a second
-    # one (not one batch per rule).
+    # pass, so a miss costs one batch and both rules' rewrites a second one
+    # (not one batch per rule: with two rules that would be three calls).
     query_many_calls.clear()
     assert ledger.find("demo-nothing") == []
     assert len(query_many_calls) == 2, (

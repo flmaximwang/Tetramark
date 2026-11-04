@@ -52,7 +52,12 @@ from tetramark.core.filters import (
     validate_patterns,
 )
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
-from tetramark.errors import LedgerError, UsageError, try_find_hint
+from tetramark.errors import (
+    LedgerError,
+    UnreachableError,
+    UsageError,
+    try_find_hint,
+)
 from tetramark.schema.ddl import (
     CORE_COLUMNS,
     box_view_name,
@@ -805,7 +810,9 @@ def _resolve_core_with_hint(
     """
     try:
         return _resolve_core(session, object_type, ref)
-    except UsageError:
+    except (UsageError, UnreachableError):
+        # A usage error keeps its exit code, and an unreachable database is
+        # not a not-found miss: neither may become a hint-carrying exit 1.
         raise
     except LedgerError as error:
         raise LedgerError(f"{error}{try_find_hint(ref)}") from error
@@ -1744,8 +1751,9 @@ def show_entity(ledger: Ledger, ref: str) -> dict[str, Any]:
     """
     try:
         record, aliases, _ = _read_record_batch(ledger, "entity", ref)
-    except UsageError:
-        # An ambiguous id prefix is a usage error; it keeps its exit code.
+    except (UsageError, UnreachableError):
+        # An ambiguous id prefix keeps its usage exit code, and an unreachable
+        # database keeps exit 3: neither is a not-found miss.
         raise
     except LedgerError as error:
         raise LedgerError(f"{error}{try_find_hint(ref)}") from error
@@ -2042,8 +2050,9 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
                 ),
             ],
         )
-    except UsageError:
-        # An ambiguous id prefix is a usage error; it keeps its exit code.
+    except (UsageError, UnreachableError):
+        # An ambiguous id prefix keeps its usage exit code, and an unreachable
+        # database keeps exit 3: neither is a not-found miss.
         raise
     except LedgerError as error:
         hint = _wrong_type_hint(ledger, "stock", ref)
