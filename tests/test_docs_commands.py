@@ -266,6 +266,17 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "--quantity", "50", "--unit", "ul",
     )
     assert added["ids"] == [f"{stock_id}.3", f"{stock_id}.4"]
+
+    # The documented `stock aliquot` one-liner: positional AMOUNT UNIT is the
+    # same write as `aliquot add --quantity AMOUNT --unit UNIT`.
+    sugared = run_json(
+        "stock", "aliquot", stock_id, "50", "ul", "--count", "1"
+    )
+    assert sugared["ids"] == [f"{stock_id}.5"]
+    sugared_tube = run_json("aliquot", "show", sugared["ids"][0])
+    assert sugared_tube["quantity"] == "50.000000"
+    assert sugared_tube["unit"] == "ul"
+
     run(
         "aliquot", "move", f"{stock_id}.4", "--box", "BOX-1", "--slot", "C3",
         "-m", "moved to BOX-1",
@@ -336,10 +347,16 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
     ] == [f"{stock_id}.4"]
     assert [
         row["id"] for row in run_json("aliquot", "list", "--not-in-stock")
-    ] == [f"{stock_id}.4"]
+    ] == [f"{stock_id}.4", f"{stock_id}.5"]
     assert {
         row["id"] for row in run_json("aliquot", "list", "--all")
-    } == {f"{stock_id}.1", f"{stock_id}.2", f"{stock_id}.3", f"{stock_id}.4"}
+    } == {
+        f"{stock_id}.1",
+        f"{stock_id}.2",
+        f"{stock_id}.3",
+        f"{stock_id}.4",
+        f"{stock_id}.5",
+    }
     assert [
         row["id"] for row in run_json("aliquot", "list", "--box", "FR-1")
     ] == [f"{stock_id}.1", f"{stock_id}.2", f"{stock_id}.3"]
