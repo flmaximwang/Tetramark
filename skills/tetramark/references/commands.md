@@ -125,6 +125,52 @@ starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized
 `--set condition=starved`, or record a one-off in the event's `--note`. `thawed` is `consumed`: a cryo
 vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
+## Filters (`--where`, `tm find`)
+
+`tm entity list`, `tm stock list`, `tm box list` and `tm find` share one filter syntax; the Python
+`where=` argument is the same code.
+
+```sh
+tm entity list [KIND] [--where FILTER ...] [--json]
+tm stock list [KIND] [--where FILTER ...] [--json]
+tm box list [--where FILTER ...] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--json]
+```
+
+- `FILTER` is `field=value` (exact) or `field~pattern` (regex). It is split at the first `=` or `~`, so
+  the value may contain either; the field name must be an identifier and is case-sensitive.
+- `=` applies the field's schema coercion on a kind field (`enum` checked, `ref` resolves an id or
+  alias, numbers/dates parsed); a core column is compared as written, so `entity_id` takes the stored
+  id, not an alias.
+- `~` matches the column's **text form** with a regex: a *search* (unanchored; anchor with `^`/`$`),
+  **case-sensitive** (`(?i)` ignores case), compiled by Dolt in its ICU dialect (`\d`, `\p{L}`,
+  lookarounds; not Python `re`). An `int`/`date`/`datetime`/`created_at` column matches its printed
+  value (`length_bp~^15`, `created_at~^2026-11-04`); a `ref` matches the stored id, never an alias;
+  `NULL` never matches.
+- Rules: one `=` per field (a second is a usage error), no `=`+`~` on one field, any number of `~` per
+  field (ANDed), no empty pattern (`name~`), an invalid pattern is a usage error that names the filter,
+  and an unknown field is a usage error listing the valid fields.
+- Valid fields: the object's core filter columns (`id`, `kind`, `name` for entity/box, `created_at`,
+  `notes`, plus `entity_id`/`parent_stock_id`/`source_aliquot_id` for stock and
+  `parent_box_id`/`parent_slot` for box) and the fields of the kinds in scope. A listing only reads
+  kinds that have every filtered field. A computed kind column works with `~` (its text form) but not
+  `=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not filterable. `tm find`
+  accepts the union over entity/stock/box kinds, applies the filters to every hit, and excludes
+  aliquots whenever a filter is given.
+- With no `QUERY`, `tm find --where ...` lists every match (`match` = `filter`) sorted by object type,
+  kind and id; passing neither a QUERY nor `--where` is a usage error. No match exits 1 for `find`
+  (`no match for '<Q>'`, or `no objects match the --where filters`); a listing with no rows prints
+  `(none)` (empty in JSON) and exits 0. A bad filter or regex exits 2.
+- Python: `where=` takes a mapping (equality only, e.g. `{"name": "pUC19"}`) or a list of strings with
+  both operators. Listings and `find` read in one batch.
+
+`tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
+of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
+error with no literal fallback. `--where ~` and `-E` use the database (ICU) dialect; the
+`find.rewrites` rules (Tetramark-53r.1) are Python `re` and do not share it.
+
+`tm aliquot list --where` is its own exact-only `FIELD=VALUE` filter, not this syntax.
+
 ## Entities
 
 ```sh
@@ -133,12 +179,12 @@ tm entity add KIND [--name NAME] [--set FIELD=VALUE ...] [--alias ALIAS ...] \
 tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm entity rename ID|ALIAS NEW_NAME [--json]
-tm entity list [KIND] [--where FIELD=VALUE ...] [--json]
+tm entity list [KIND] [--where FILTER ...] [--json]
 ```
 
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
-`--where` filters match the kind's columns and can be repeated (AND).
+`--where` takes the shared filters (see **Filters** above) and can be repeated (AND).
 `rename` sets the name (and the kind's `name` field) and keeps the old name as an alias in the same
 commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
 already another entity's alias.
@@ -160,7 +206,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm stock list [KIND] [--where FIELD=VALUE ...] [--json]
+tm stock list [KIND] [--where FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 ```
 
@@ -172,7 +218,8 @@ tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
   owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),
-  `active` (at least one in stock) or `depleted` (every aliquot has left stock).
+  `active` (at least one in stock) or `depleted` (every aliquot has left stock). `--where` takes the
+  shared filters (see **Filters** above).
 - `stock show` includes the aliquot list and the stock's sorted aliases (`aliases`; an `aliases`
   row in table output).
 
@@ -212,7 +259,8 @@ tm aliquot purge ALQ [--json]
   legal, `--not-in-stock` with it intersects. `STOCK` limits
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
   plus every box nested inside it. `--where` matches aliquot core columns exactly and ANDs with the
-  rest; filter status with `--status`, never `--where status=…`. The table and CSV print
+  rest; it is the aliquot's own exact-only `FIELD=VALUE` filter, not the shared `field~pattern` syntax
+  of **Filters** above. Filter status with `--status`, never `--where status=…`. The table and CSV print
   `id stock_kind status quantity unit label path` (path is empty when not in stock); `--json` prints
   the same record `show` prints, one per tube, ordered by stock id and numeric seq.
 - `show` prints one tube: the aliquot row, its sorted `aliases`, the owning stock's `stock_kind` and
@@ -261,7 +309,7 @@ argument, and a missing, blank or whitespace-only `message` is refused exactly l
 ```sh
 tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--json]
 tm box show NAME|ID|ALIAS [--json]
-tm box list [--kind KIND] [--where FIELD=VALUE ...] [--json]
+tm box list [--kind KIND] [--where FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 ```
@@ -269,7 +317,8 @@ tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 `box list` prints `name kind path occupied capacity`. `occupied` counts the aliquots and the immediate
 child boxes directly in the box (items, not slots; nested contents do not roll up), and `capacity` is
 slots × `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, or
-blank when unlimited.
+blank when unlimited. `--where` filters the core box columns and the box kind's fields; the derived
+`path`/`occupied`/`capacity` columns are output, not filters (see **Filters** above).
 
 `box add` materialises the slots implied by the geometry (`grid8x12` → 96, `grid9x9` → 81, `rack` →
 the named positions, `shelf`/`freezer`/`drawer` → none). `--slot` is only valid for a slotted parent;
@@ -335,7 +384,7 @@ Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
 ```sh
 tm alias add OBJECT_TYPE OBJECT_ID ALIAS [--json]
 tm alias remove [OBJECT_TYPE] ALIAS [--json]
-tm find QUERY [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
@@ -344,9 +393,14 @@ tm history ID|ALIAS|BOX [--json]
 An incomplete object id is accepted wherever a command takes an `ID|ALIAS`: when its prefix matches
 exactly one object it resolves, and a prefix that matches several is a usage error (exit 2) naming
 the candidates — a full id or exact alias always wins first.
-`find` matches ids exactly and aliases, names and kind string/text fields by exact, prefix or
-substring text (case-insensitive, literal), ranks exact id → exact alias → exact name → name prefix
-→ alias prefix → name substring → alias substring → fields, and shows summary and location. `history` merges aliquot events and the Dolt commits that touched the object.
+`find` without `-E` matches ids exactly and aliases, names and kind string/text fields by exact,
+prefix or substring text (case-insensitive, literal), ranks exact id → exact alias → exact name → name
+prefix → alias prefix → name substring → alias substring → fields, and shows summary and location.
+`-E`/`--regex` makes QUERY a case-insensitive ICU regex over the same places, ranked id > alias > name
+> field (prefix and substring matches merged; ties by object type, kind and id); an invalid pattern is
+a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
+hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
+object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
 
 Aliases are also visible in the generated views: every `v_entity_<kind>`, `v_stock_<kind>`,
 `v_stock_status` and `v_aliquot_location` row has a sorted, `;`-separated `alias_list` (NULL when
