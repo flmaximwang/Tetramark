@@ -58,7 +58,14 @@ from tetramark.migrate import (
 )
 from tetramark.schema.ddl import view_statements
 from tetramark.schema.loader import load_ledger_schema
-from tetramark.schema.model import SPEC_VERSION, EffectiveSchema
+from tetramark.schema.model import EffectiveSchema
+
+#: The spec format this historical preset step upgrades to.  Pinned: a
+#: later ``SPEC_VERSION`` bump must not retarget a frozen preset step.  A ledger
+#: on a newer format still runs it only while the preset counters/kinds are
+#: still those of this historical step; the manual spec/5-to-6 upgrade runs
+#: after the pending preset steps.
+REQUIRED_SPEC = 5
 
 #: The repository root: this file is ``migration/presets/proteins/1-to-2/``.
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -106,17 +113,17 @@ def _refuse(message: str) -> LedgerError:
 
 
 def _require_ready(ledger: Ledger) -> None:
-    """The ledger must be spec 5, base 4, and load the v2 target content."""
+    """The ledger must be at least spec 5, base 4, and load the v2 target content."""
     raw = ledger.meta.get(META_SPEC_VERSION)
     try:
         current = int(str(raw).strip())
     except (TypeError, ValueError):
         current = 0
-    if current != SPEC_VERSION:
+    if current < REQUIRED_SPEC:
         raise LedgerError(
             f"refusing to migrate proteins 1 -> 2: ledger {ledger.name!r} is at "
             f"spec_version {current}, but the v2 preset needs spec "
-            f"{SPEC_VERSION}. Run migration/spec/4-to-5/migrate.py first; "
+            f"{REQUIRED_SPEC}. Run migration/spec/4-to-5/migrate.py first; "
             "nothing was written."
         )
     recorded = _recorded_versions(ledger)

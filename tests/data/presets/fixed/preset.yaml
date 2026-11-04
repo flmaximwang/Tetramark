@@ -1,0 +1,29 @@
+preset: fixed
+version: 1
+description: >-
+  Spec-6 fixture preset: no status_sets and no per-kind statuses, so every
+  stock kind shares the hardcoded pending/stored/missing/consumed set.  Keep
+  the legacy fixtures (base, chain, full) untouched: they must keep proving
+  that a spec-4/5 closure still loads unchanged.
+mixins:
+  named_fields:
+    name: {type: string, required: true, unique: true}
+    description: {type: text, long: true}
+kinds:
+  item:
+    object: entity
+    mixins: [named_fields]
+    fields:
+      category: {type: string, length: 32}
+  lot:
+    object: stock
+    entity_kinds: [item]
+    fields:
+      supplier: {type: string, default: unknown}
+      received_on: {type: date}
+  shelf:
+    object: box
+    geometry: {type: slotless, capacity: 4}
+  rack:
+    object: box
+    geometry: {type: named, slots: [top, middle, bottom]}

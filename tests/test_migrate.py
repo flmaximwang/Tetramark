@@ -281,6 +281,20 @@ def expected_installed_tests(ledger: Ledger) -> int:
     return len(tests)
 
 
+def assert_fingerprint_refreshed(ledger: Ledger) -> None:
+    """A migration step writes the current fingerprint, nothing stale.
+
+    The ledger may still be on an older *format* (a preset step keeps
+    ``spec_version``), so the manual-upgrade hint is expected; no fingerprint
+    warning is.
+    """
+    assert not any("fingerprint does not match" in text for text in ledger.warnings)
+    spec = int(str(ledger.meta.get("spec_version") or 0))
+    if spec < model.SPEC_VERSION:
+        hint = f"ledger is spec {spec}, tm is spec {model.SPEC_VERSION}"
+        assert any(hint in text for text in ledger.warnings), ledger.warnings
+
+
 def tm_check_open(ledger: Ledger):
     """``tm check`` on an already-open ledger, without reopening it.
 
@@ -558,7 +572,7 @@ def test_migration_can_run_on_a_branch(
 def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
     ledger_factory,
 ) -> None:
-    """The documented fact: no spec guard, a fingerprint warning, writes allowed."""
+    """No spec guard: a stale fingerprint and an upgrade hint, writes allowed."""
     ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     spec1_head = head(ledger)
@@ -569,12 +583,17 @@ def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
     try:
         messages = [str(item.message) for item in caught]
         assert any("fingerprint does not match" in text for text in messages), messages
+        assert any(
+            "ledger is spec 1, tm is spec 6: follow migration/spec/1-to-2"
+            in text
+            for text in messages
+        ), messages
         assert reopened.warnings  # collected on the ledger too
         assert reopened.check_fingerprint(warn=False) is False
         # Opening does not rewrite, refuse or upgrade anything.
         assert reopened.meta["spec_version"] == "1"
         assert head(reopened) == spec1_head
-        # The fingerprint warning is the only notice: no spec_version guard.
+        # Notices only: neither warning refuses or upgrades anything.
         current = plan(reopened)
         assert current.destructive == []
         assert current.meta_stale is True
@@ -1133,7 +1152,7 @@ def test_molbio_1_to_2_migrates_renames_moves_glycerol_and_vendors_the_preset(
     )
     try:
         # The vendored v2 copy reopens without a fingerprint warning.
-        assert reopened.warnings == []
+        assert_fingerprint_refreshed(reopened)
         assert reopened.check_fingerprint(warn=False) is True
         assert reopened.schema.preset_versions == {"base": 2, "molbio": 2}
         assert reopened.meta["fingerprint"] == reopened.schema.fingerprint()
@@ -1509,7 +1528,7 @@ def test_molbio_1_to_2_keeps_other_presets_in_the_target_schema_and_ledger(
         assert reopened.driver.query("SELECT `size` FROM `entity_widget`") == [
             {"size": 3}
         ]
-        assert reopened.warnings == []
+        assert_fingerprint_refreshed(reopened)
         assert reopened.check_fingerprint(warn=False) is True
         checked = tm_check_open(reopened)
         assert checked.exit_code == 0, checked.output
@@ -2577,7 +2596,7 @@ def test_molbio_2_to_3_adds_the_oligo_tables_and_keeps_every_row(
 
     reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
-        assert reopened.warnings == []
+        assert_fingerprint_refreshed(reopened)
         assert reopened.check_fingerprint(warn=False) is True
         assert json.loads(reopened.meta["preset_versions"]) == MOLBIO_V3_VERSIONS
         assert reopened.schema.preset_versions == {
@@ -2937,7 +2956,7 @@ def test_cell_culture_1_to_2_adds_the_vial_fields_and_the_cell_biosample_kind(
 
     reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
-        assert reopened.warnings == []
+        assert_fingerprint_refreshed(reopened)
         assert reopened.check_fingerprint(warn=False) is True
         assert json.loads(reopened.meta["preset_versions"]) == {
             "base": 3,
@@ -3321,7 +3340,7 @@ def test_pattern_presets_1_to_2_migration_chain(
 
     proteins_era = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
-        assert proteins_era.warnings == []
+        assert_fingerprint_refreshed(proteins_era)
         assert proteins_era.check_fingerprint(warn=False) is True
         expected_versions = {**PATTERN_V1_VERSIONS, "proteins": 2}
         assert json.loads(proteins_era.meta["preset_versions"]) == expected_versions
@@ -3430,7 +3449,7 @@ def test_pattern_presets_1_to_2_migration_chain(
 
     reopened = open_ledger(ledger.path, allow_legacy_statuses=True)
     try:
-        assert reopened.warnings == []
+        assert_fingerprint_refreshed(reopened)
         assert reopened.check_fingerprint(warn=False) is True
         expected_versions = {
             **PATTERN_V1_VERSIONS,

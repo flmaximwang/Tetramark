@@ -1355,6 +1355,7 @@ def open(
             meta=meta,
         )
         result.check_fingerprint()
+        result.check_spec_version()
     except BaseException:
         _close_driver(driver, discard=True)
         raise
@@ -1504,6 +1505,31 @@ class Ledger:
             f"ledger {self.name!r}: the live schema fingerprint does not match "
             f"{LEDGER_FILE} (live: {live or 'missing'}, expected: {expected}); "
             "run 'tm schema plan' to see the pending changes"
+        )
+        if warn:
+            warnings.warn(message, UserWarning, stacklevel=2)
+            self.warnings.append(message)
+        return False
+
+    def check_spec_version(self, *, warn: bool = True) -> bool:
+        """Say so when the ledger's format is older than this tool (spec §5).
+
+        An old ledger still opens and works: its own preset copies keep the
+        shape they were written with (e.g. spec 5's per-kind status sets).  The
+        hint names the manual upgrade README so the operator knows what to run;
+        it never refuses, rewrites or upgrades anything.
+        """
+        raw = self.meta.get(META_SPEC_VERSION)
+        try:
+            stored = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return True
+        if stored >= SPEC_VERSION:
+            return stored == SPEC_VERSION
+        message = (
+            f"ledger is spec {stored}, tm is spec {SPEC_VERSION}: follow "
+            f"migration/spec/{stored}-to-{stored + 1}/README.md to upgrade it "
+            "manually"
         )
         if warn:
             warnings.warn(message, UserWarning, stacklevel=2)

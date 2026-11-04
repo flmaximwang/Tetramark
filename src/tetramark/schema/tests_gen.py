@@ -49,6 +49,8 @@ from tetramark.schema.model import (
     BOX_NAME_MAX_LENGTH,
     BOX_VIEW_PREFIX,
     CORE_VIEW_NAMES,
+    FIXED_STATUSES,
+    FIXED_TRANSITIONS,
     EffectiveSchema,
     Field,
     FieldType,
@@ -550,9 +552,12 @@ def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
         tests.append(not_in_stock)
     tests.append(_box_name_test())
     tests.extend(_slotless_capacity_tests(schema))
-    status = _status_known_test(schema)
-    if status is not None:
-        tests.append(status)
+    # Spec 6: the fixed status set is a DB CHECK on ``aliquot.status``, so the
+    # generated membership test survives only for the legacy per-kind sets.
+    if not schema.uses_fixed_statuses:
+        status = _status_known_test(schema)
+        if status is not None:
+            tests.append(status)
     transitions = _status_transition_test(schema)
     if transitions is not None:
         tests.append(transitions)
@@ -560,7 +565,7 @@ def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
 
 
 # ---------------------------------------------------------------------------
-# Status sets (spec §4)
+# Status sets (spec §4 legacy / spec §6 fixed)
 # ---------------------------------------------------------------------------
 
 
@@ -629,7 +634,9 @@ def _transition_pairs(schema: EffectiveSchema) -> dict[str, list[str]]:
 
 
 def _status_transition_test(schema: EffectiveSchema) -> TestDefinition | None:
-    """Every unforced ``status`` event follows its stock kind's ``to:`` rules."""
+    """Every unforced ``status`` event follows the model's transition rules."""
+    if schema.uses_fixed_statuses:
+        return _fixed_status_transition_test()
     pairs = _transition_pairs(schema)
     if not pairs:  # pragma: no cover - caller skips a kind-less schema
         return None
@@ -650,6 +657,60 @@ def _status_transition_test(schema: EffectiveSchema) -> TestDefinition | None:
         f"AND e.{_q('forced')} = FALSE "
         f"AND NOT ({case})"
     )
+    body, detail = _transition_queries(condition)
+    return TestDefinition(
+        name="core_status_event_allowed",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description=(
+            "every unforced status event follows its stock kind's allowed "
+            "transitions (--force records forced = TRUE)"
+        ),
+    )
+
+
+def _fixed_status_transition_test() -> TestDefinition:
+    """Follow the fixed transitions, ignoring pre-migration history (spec 6).
+
+    A manual 5-to-6 upgrade remaps ``aliquot.status`` and adds one
+    ``migrated: <old status>`` event per remapped row; past events keep the
+    old vocabulary (``alive>crossed``, ``planned>alive``, ``thawed``, ...).
+    That history must not fail ``tm check``, so the rule only judges an event
+    when **both** endpoints are fixed names.  A genuine unforced
+    ``stored>pending`` still fails.
+    """
+    names = ", ".join(_lit(name) for name in FIXED_STATUSES)
+    allowed = [
+        f"{old}>{new}"
+        for old in FIXED_STATUSES
+        for new in FIXED_TRANSITIONS[old]
+    ]
+    pair_expr = ", ".join(_lit(pair) for pair in allowed)
+    condition = (
+        f"e.{_q('event')} = {_lit('status')} "
+        f"AND e.{_q('forced')} = FALSE "
+        f"AND e.{_q('old_status')} IN ({names}) "
+        f"AND e.{_q('new_status')} IN ({names}) "
+        f"AND CONCAT(e.{_q('old_status')}, '>', e.{_q('new_status')}) "
+        f"NOT IN ({pair_expr})"
+    )
+    body, detail = _transition_queries(condition)
+    return TestDefinition(
+        name="core_status_event_allowed",
+        group=CORE_GROUP,
+        query=_count(body),
+        detail=detail,
+        description=(
+            "every unforced status event between fixed statuses follows the "
+            "fixed transitions; events carrying the pre-migration vocabulary "
+            "are history and are not checked (--force records forced = TRUE)"
+        ),
+    )
+
+
+def _transition_queries(condition: str) -> tuple[str, str]:
+    """The count query and the ``check -v`` detail query of a transition rule."""
     body = (
         f"SELECT e.{_q('id')}\n"
         f"FROM {_q('aliquot_event')} e\n"
@@ -669,16 +730,7 @@ def _status_transition_test(schema: EffectiveSchema) -> TestDefinition | None:
         f"WHERE {condition}\n"
         f"ORDER BY e.{_q('id')}"
     )
-    return TestDefinition(
-        name="core_status_event_allowed",
-        group=CORE_GROUP,
-        query=_count(body),
-        detail=detail,
-        description=(
-            "every unforced status event follows its stock kind's allowed "
-            "transitions (--force records forced = TRUE)"
-        ),
-    )
+    return body, detail
 
 
 # ---------------------------------------------------------------------------
