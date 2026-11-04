@@ -53,6 +53,7 @@ __all__ = [
     "coerce_value",
     "filter_fields",
     "parse_filters",
+    "pattern_is_invalid",
     "regex_usage_error",
     "validate_patterns",
 ]
@@ -232,6 +233,20 @@ def regex_usage_error(
     if item is None:
         return None
     return UsageError(_invalid_pattern_message(item, option=option))
+
+
+def pattern_is_invalid(driver: Any, pattern: str) -> bool:
+    """Whether the database refuses ``pattern`` (it compiles it, not we).
+
+    ``tm find -E`` uses this on its error path: its query is a regex, not a
+    ``--where`` filter, so :func:`regex_usage_error` does not apply.  Each call
+    costs one probe query; a successful search never pays for it.
+    """
+    try:
+        driver.query(_PROBE_SQL, (_PROBE_SUBJECT, pattern))
+    except LedgerError as probe:
+        return _is_regex_error(probe)
+    return False
 
 
 def validate_patterns(
