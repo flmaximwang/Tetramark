@@ -1,4 +1,4 @@
-"""Golden tables for ``tm stock list`` and ``tm entity list`` (Tetramark-uue).
+"""Golden tables for ``tm stock list``, ``tm entity list`` and ``tm box list``.
 
 ``tests/data/golden/stock_list.table`` pins the default table of ``tm stock
 list``: the column set and order (``id kind entity_id entity_name
@@ -15,6 +15,14 @@ entity's stocks whose derived status is ``active``; depleted and empty stocks
 are not counted.  ``aliquots_in_stock`` sums the in-stock tubes of all the
 entity's stocks, so an entity with no stocks prints ``0 0``.
 
+``tests/data/golden/box_list.table`` pins the default table of ``tm box list``:
+the column set and order (``name kind path occupied capacity``), the nested
+``path``, and the two counts.  ``occupied`` counts the aliquots plus the
+immediate child boxes directly in a box (items, not slots); nested contents do
+not roll up.  ``capacity`` is slots times ``slot_capacity`` for ``grid``/``named``
+geometry, the declared capacity for slotless geometry, and blank for an
+unlimited slotless box.
+
 The rows are built with explicit ids (uuid entities, datecode stocks) so the
 goldens are stable run to run.  The comparison is line by line after ``rstrip``:
 rich pads the last column with trailing spaces, the golden files themselves
@@ -24,14 +32,16 @@ change with::
     TETRAMARK_UPDATE_GOLDENS=1 uv run pytest tests/test_list_tables_golden.py
 
 The tables are the same on both backends: ``list_stocks``/``list_entities``
-normalise the view's DOUBLE SUM to an int, so the counts print ``0``/``1`` on
-the server and embedded lanes alike.  The module is deliberately **not**
-marked, like the other CLI tests: it runs on the session's default backend.
+normalise the view's DOUBLE SUM to an int and ``list_boxes`` int-casts the
+occupancy SUM, so the counts print ``0``/``1`` on the server and embedded lanes
+alike.  The module is deliberately **not** marked, like the other CLI tests: it
+runs on the session's default backend.
 """
 
 from __future__ import annotations
 
 import difflib
+import json
 import os
 from pathlib import Path
 
@@ -70,6 +80,15 @@ def _table(ledger, *args: str) -> str:
     assert result.exit_code == 0, result.output
     lines = [line.rstrip() for line in result.output.splitlines()]
     return "\n".join(lines) + "\n"
+
+
+def _json(ledger, *args: str) -> list[dict]:
+    """The JSON payload a list command prints."""
+    result = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), *args]
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)
 
 
 def _assert_golden(rendered: str, golden_name: str) -> None:
@@ -156,6 +175,28 @@ def _build_entities(ledger) -> None:
     )
 
 
+def _build_boxes(ledger) -> None:
+    """One box per kind: a nested drawer, empty slotless boxes, placed tubes."""
+    item = ledger.entities.add("item", name="alpha")
+    # The unlimited incubator holds one child box (the drawer), which makes it
+    # the box with one direct occupant; the drawer itself is empty.
+    ledger.boxes.add("incubator", "I-1")
+    ledger.boxes.add("drawer", "D-1", parent="I-1")
+    ledger.boxes.add("freezer", "F-1")
+    ledger.boxes.add("grid8x12", "G-1")
+    ledger.boxes.add("grid9x9", "G-2")
+    ledger.boxes.add("rack", "R-1")
+    ledger.boxes.add("shelf", "S-1")
+
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=4
+    )
+    ledger.aliquots.move(stock["aliquots"][0], box="G-1", slot="A1")
+    ledger.aliquots.move(stock["aliquots"][1], box="G-1", slot="A2")
+    ledger.aliquots.move(stock["aliquots"][2], box="R-1", slot="1")
+    ledger.aliquots.move(stock["aliquots"][3], box="R-1", slot="2")
+
+
 def test_stock_list_golden_table(cli_env: None, ledger_factory) -> None:
     """The default list table: columns, full entity name, derived statuses."""
     ledger = ledger_factory(
@@ -174,3 +215,23 @@ def test_entity_list_golden_table(cli_env: None, ledger_factory) -> None:
     _build_entities(ledger)
 
     _assert_golden(_table(ledger, "entity", "list"), "entity_list.table")
+
+
+def test_box_list_golden_table(cli_env: None, ledger_factory) -> None:
+    """The default table: columns, nested path, direct occupancy and capacity."""
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml"], name="golden-box-list", id_prefix="77"
+    )
+    _build_boxes(ledger)
+
+    _assert_golden(_table(ledger, "box", "list"), "box_list.table")
+
+    # JSON keeps the native types: both counts are ints, and the unlimited
+    # incubator's capacity is null (the table prints it blank).
+    rows = {row["name"]: row for row in _json(ledger, "box", "list", "--json")}
+    assert rows["G-1"]["occupied"] == 2
+    assert type(rows["G-1"]["occupied"]) is int
+    assert rows["G-1"]["capacity"] == 96
+    assert type(rows["G-1"]["capacity"]) is int
+    assert rows["I-1"]["occupied"] == 1
+    assert rows["I-1"]["capacity"] is None

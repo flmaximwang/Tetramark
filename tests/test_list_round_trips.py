@@ -107,6 +107,9 @@ def build_rows(ledger: Ledger) -> dict[str, Any]:
     # A child box in a slot (the other occupant kind of a slotted box).
     rack = ledger.boxes.add("rack", "RACK-1")
     nested = ledger.boxes.add("rack", "INNER-2", parent="RACK-1", slot="top")
+    # The ``full`` preset's grid9x9 has slot_capacity 2, so its capacity is
+    # twice its 81 slots.
+    grid2 = ledger.boxes.add("grid9x9", "GRID-2")
     ledger.aliases.add("box", grid["id"], "LEGACY-BOX")
     placed = ledger.stocks.add(
         "lot",
@@ -121,7 +124,7 @@ def build_rows(ledger: Ledger) -> dict[str, Any]:
     return {
         "entities": [item, plasmid, everything],
         "stocks": [lot, bacterial, prep, placed],
-        "boxes": [grid, shelf, inner, rack, nested],
+        "boxes": [grid, shelf, inner, rack, nested, grid2],
         "grid": grid,
         "shelf": shelf,
         "lot": lot,
@@ -239,11 +242,24 @@ def test_box_list_runs_one_batched_read(
 
     rows = ledger.boxes.ls()
 
-    # Every kind's boxes plus the all-box path rows, in one batch.
+    # Every kind's boxes plus the all-box path and occupancy rows, in one batch.
     assert invoke_log == ["json", "csv"]
     paths = {row["name"]: row["path"] for row in rows}
     assert paths["BOX-1"] == "BOX-1"
     assert paths["INNER-1"] == "SHELF-1/INNER-1"
+    # Occupancy counts the aliquots and child boxes directly in a box (items,
+    # not slots); nested contents do not roll up, so SHELF-1 stays at 2 even
+    # though INNER-1 sits inside it.  Capacity is slots times slot_capacity for
+    # slotted kinds and the declared capacity for slotless ones.
+    occupancy = {row["name"]: (row["occupied"], row["capacity"]) for row in rows}
+    assert occupancy == {
+        "BOX-1": (1, 96),
+        "SHELF-1": (2, 4),
+        "INNER-1": (0, 3),
+        "RACK-1": (1, 3),
+        "INNER-2": (0, 3),
+        "GRID-2": (0, 162),
+    }
 
 
 def test_box_show_runs_one_batched_read(

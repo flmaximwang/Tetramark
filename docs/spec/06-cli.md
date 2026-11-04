@@ -299,6 +299,11 @@ in full, never truncated.
 - `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. `entity_name` is
   the owning design's name. `status` is derived from the aliquots: `empty` when the stock has none,
   `active` when at least one is in stock, and `depleted` when every aliquot has left stock.
+- `tm box list` prints `name kind path occupied capacity`. `occupied` counts the aliquots and the
+  immediate child boxes directly in the box, counting items rather than slots; the contents of nested
+  boxes do not roll up into the parent. `capacity` is the number of slots times the kind's
+  `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, and blank
+  (`null` in JSON) when a slotless box is unlimited.
 
 ### 6.3 The interactive form — `tm <object> add-form`
 

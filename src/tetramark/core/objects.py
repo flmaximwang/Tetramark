@@ -1059,6 +1059,20 @@ def _box_paths(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
 #: :meth:`Driver.query_many` batch as everything else (never a round trip more).
 _BOX_PATH_ROWS_SQL = "SELECT `id`, `name`, `parent_box_id` FROM `box`"
 
+#: The direct-occupancy counts ``box list`` prints: one row per box that has
+#: something directly in it.  Aliquots count whatever their status, child boxes
+#: count as one item each, and the contents of nested boxes do not roll up.  It
+#: rides the box list's read batch.
+_BOX_OCCUPIED_SQL = (
+    "SELECT `box_id`, SUM(`n`) AS `occupied` FROM ("
+    "SELECT `box_id`, COUNT(*) AS `n` FROM `aliquot` "
+    "WHERE `box_id` IS NOT NULL GROUP BY `box_id` "
+    "UNION ALL "
+    "SELECT `parent_box_id` AS `box_id`, COUNT(*) AS `n` FROM `box` "
+    "WHERE `parent_box_id` IS NOT NULL GROUP BY `parent_box_id`"
+    ") `per_box` GROUP BY `box_id`"
+)
+
 #: The per-entity stock counts ``entity list`` prints: one aggregate over the
 #: rows of the already-derived ``v_stock_status`` view, so the in-stock
 #: statuses are not re-derived here.  It rides the list's read batch.
@@ -2622,14 +2636,29 @@ def list_boxes(
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    # The path rows ride in the same batch as the per-kind listings, so the
-    # nested path costs no extra round trip.
+    # The path and occupancy rows ride in the same batch as the per-kind
+    # listings, so neither costs an extra round trip.
     records, extra = _list_records(
-        ledger, "box", kind_name, where, extra=[(_BOX_PATH_ROWS_SQL, None)]
+        ledger,
+        "box",
+        kind_name,
+        where,
+        extra=[(_BOX_PATH_ROWS_SQL, None), (_BOX_OCCUPIED_SQL, None)],
     )
     paths = _box_paths(extra[0])
+    occupied = {str(row["box_id"]): row["occupied"] for row in extra[1]}
     for record in records:
+        kind = ledger.schema.kind(str(record["kind"]))
+        geometry = _box_geometry(kind)
+        capacity = (
+            len(geometry.labels) * kind.slot_capacity
+            if geometry.is_slotted
+            else geometry.capacity
+        )
         record["path"] = paths.get(str(record["id"]), str(record.get("name")))
+        # The server driver may return the SUM as a float; the count is an int.
+        record["occupied"] = int(occupied.get(str(record["id"]), 0))
+        record["capacity"] = capacity
     return records
 
 
