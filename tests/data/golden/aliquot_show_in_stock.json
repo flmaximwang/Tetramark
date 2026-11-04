@@ -1,0 +1,19 @@
+{
+  "aliases": [],
+  "box_id": "<box-id>",
+  "created_at": "<timestamp>",
+  "entity_id": "<entity-id>",
+  "id": "<stock-id>.1",
+  "in_stock": true,
+  "label": "alpha-1",
+  "notes": "tube one",
+  "object": "aliquot",
+  "path": "Freezer-1/Shelf-2/Box:A3",
+  "quantity": "100.000000",
+  "seq": 1,
+  "slot": "A3",
+  "status": "stored",
+  "stock_id": "<stock-id>",
+  "stock_kind": "lot",
+  "unit": "ul"
+}

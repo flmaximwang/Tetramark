@@ -60,3 +60,41 @@ def test_find_without_hits_skips_the_csv_run(
 
     assert ledger.find("nothing-like-this") == []
     assert invoke_log == ["json"]
+
+
+def test_aliquot_show_reads_one_tube_in_one_batch(
+    ledger_factory, invoke_log: list[str]
+) -> None:
+    """``tm aliquot show``: one JSON batch and one CSV run, not one per query.
+
+    The command is a thin wrapper over ``ledger.aliquots.show``, whose record
+    needs four reads (the tube, its sorted aliases, its stock's kind/entity and
+    its ``v_aliquot_location`` path).  They belong to one ``query_many`` batch,
+    so showing a tube costs two ``dolt sql`` processes whatever the record
+    contains -- not the four (plus four CSV runs) a query-per-read would.
+    """
+    ledger = ledger_factory()
+    item = ledger.entities.add("item", name="alpha")
+    ledger.boxes.add("grid96", "BOX")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        quantity=100,
+        unit="ul",
+        box="BOX",
+        slots=["A3"],
+    )
+    alq = stock["aliquots"][0]
+    invoke_log.clear()
+
+    shown = ledger.aliquots.show(alq)
+
+    # The marker's autouse fixture selected the embedded driver for this test;
+    # the counts below are that driver's processes.
+    assert isinstance(ledger.driver, EmbeddedDriver)
+    assert shown["id"] == alq
+    assert shown["path"] == "BOX:A3"
+    # One ``-r json`` process for the whole batch, one ``-r csv`` process for
+    # the column names JSON omits when a value is NULL (``label``, ``notes``,
+    # ``box_id``, ``slot`` and ``path`` are NULL on a typical tube).
+    assert invoke_log == ["json", "csv"]

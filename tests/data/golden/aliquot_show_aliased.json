@@ -1,0 +1,22 @@
+{
+  "aliases": [
+    "tube-1",
+    "tube-alpha"
+  ],
+  "box_id": null,
+  "created_at": "<timestamp>",
+  "entity_id": "<entity-id>",
+  "id": "<stock-id>.1",
+  "in_stock": false,
+  "label": null,
+  "notes": null,
+  "object": "aliquot",
+  "path": null,
+  "quantity": null,
+  "seq": 1,
+  "slot": null,
+  "status": "pending",
+  "stock_id": "<stock-id>",
+  "stock_kind": "lot",
+  "unit": null
+}
