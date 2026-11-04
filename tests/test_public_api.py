@@ -114,3 +114,21 @@ def test_open_takes_the_branch_as_the_second_positional_argument(
 
     with pytest.raises(UsageError, match="does not exist"):
         tetramark.open(ledger.path, "no-such-branch", env=dolt_env)
+
+
+@pytest.mark.embedded
+def test_open_exposes_the_object_facades(ledger_factory, dolt_env) -> None:
+    """The opened ledger is the public API: every object type has a facade."""
+    ledger = ledger_factory(name="public-api-facades")
+
+    opened = tetramark.open(ledger.path, env=dolt_env)
+    try:
+        item = opened.entities.add("item", name="alpha")
+        stock = opened.stocks.add("lot", entity=item["id"])
+        aliquot = stock["aliquots"][0]
+
+        assert opened.entities.show(item["id"])["id"] == item["id"]
+        assert opened.stocks.show(stock["id"])["id"] == stock["id"]
+        assert opened.aliquots.show(aliquot)["id"] == aliquot
+    finally:
+        opened.close()
