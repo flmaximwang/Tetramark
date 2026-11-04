@@ -423,7 +423,7 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
     alq = added["ids"][0]
 
     before = commit_count(ledger)
-    moved = ledger.aliquots.move(alq, box="BOX", slot="A3")
+    moved = ledger.aliquots.move(alq, box="BOX", slot="A3", message="moved")
     assert commit_count(ledger) == before + 1
     assert moved["slot"] == "A3"
 
@@ -509,21 +509,21 @@ def test_aliquot_move_placement_errors(ledger_factory) -> None:
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=4)
 
     with pytest.raises(LedgerError, match="needs --slot"):
-        ledger.aliquots.move(stock["aliquots"][0], box="GRID")
+        ledger.aliquots.move(stock["aliquots"][0], box="GRID", message="moved")
     with pytest.raises(LedgerError, match="has no slot"):
-        ledger.aliquots.move(stock["aliquots"][0], box="GRID", slot="Z99")
+        ledger.aliquots.move(stock["aliquots"][0], box="GRID", slot="Z99", message="moved")
     with pytest.raises(LedgerError, match="no slots"):
-        ledger.aliquots.move(stock["aliquots"][0], box="FREE", slot="A1")
+        ledger.aliquots.move(stock["aliquots"][0], box="FREE", slot="A1", message="moved")
     with pytest.raises(LedgerError, match="child box"):
-        ledger.aliquots.move(stock["aliquots"][0], box="NAMED", slot="top")
+        ledger.aliquots.move(stock["aliquots"][0], box="NAMED", slot="top", message="moved")
     with pytest.raises(LedgerError, match="unknown box"):
-        ledger.aliquots.move(stock["aliquots"][0], box="NOPE")
+        ledger.aliquots.move(stock["aliquots"][0], box="NOPE", message="moved")
 
     # slot_capacity 2 on grid9x9
-    ledger.aliquots.move(stock["aliquots"][0], box="TWO", slot="B1")
-    ledger.aliquots.move(stock["aliquots"][1], box="TWO", slot="B1")
+    ledger.aliquots.move(stock["aliquots"][0], box="TWO", slot="B1", message="moved")
+    ledger.aliquots.move(stock["aliquots"][1], box="TWO", slot="B1", message="moved")
     with pytest.raises(LedgerError, match="full"):
-        ledger.aliquots.move(stock["aliquots"][2], box="TWO", slot="B1")
+        ledger.aliquots.move(stock["aliquots"][2], box="TWO", slot="B1", message="moved")
 
 
 def test_aliquot_status_vocabulary_and_slot_consistency(ledger_factory) -> None:
@@ -549,7 +549,7 @@ def test_aliquot_status_vocabulary_and_slot_consistency(ledger_factory) -> None:
     # A slotless box has no slot requirement; moving restores the in-stock
     # status in the same write (spec 5).
     new_box(ledger, "FREE", "slotlessbox")
-    moved = ledger.aliquots.move(alq, box="FREE")
+    moved = ledger.aliquots.move(alq, box="FREE", message="moved")
     assert moved["status"] == "stored"
     assert moved["old_status"] == "pending"
     assert ledger.driver.query(
@@ -647,7 +647,7 @@ def test_aliquot_move_restores_the_single_in_stock_status(ledger_factory) -> Non
         "SELECT `status`, `box_id` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"status": "pending", "box_id": None}]
 
-    moved = ledger.aliquots.move(alq, box="GRID", slot="A1")
+    moved = ledger.aliquots.move(alq, box="GRID", slot="A1", message="moved")
     assert moved["old_status"] == "pending"
     assert moved["status"] == "stored"
     assert moved["box_id"] == box["id"] and moved["slot"] == "A1"
@@ -661,8 +661,46 @@ def test_aliquot_move_restores_the_single_in_stock_status(ledger_factory) -> Non
     assert last["to_slot"] == "A1"
 
     # An aliquot already in stock keeps its status on a plain move.
-    again = ledger.aliquots.move(alq, box="GRID", slot="A2")
+    again = ledger.aliquots.move(alq, box="GRID", slot="A2", message="moved")
     assert again["old_status"] == "stored" and again["status"] == "stored"
+
+
+def test_aliquot_move_requires_and_records_a_trimmed_message(
+    ledger_factory,
+) -> None:
+    """The move message is required, trimmed, and stored in the event note."""
+    ledger = make_ledger(ledger_factory, name="move-message")
+    item = new_item(ledger)
+    box = new_box(ledger, "GRID", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+
+    before = commit_count(ledger)
+    for blank in ("", "   ", "\t\n "):
+        with pytest.raises(UsageError, match="message"):
+            ledger.aliquots.move(alq, box="GRID", slot="A1", message=blank)
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (alq,)
+    ) == [{"status": "pending", "box_id": None, "slot": None}]
+
+    moved = ledger.aliquots.move(
+        alq, box="GRID", slot="A1", message="  moved to the cold room  "
+    )
+    assert moved["old_status"] == "pending"
+    assert moved["status"] == "stored"
+    assert moved["box_id"] == box["id"] and moved["slot"] == "A1"
+
+    event = events(ledger, alq)[-1]
+    assert event["event"] == "move"
+    assert event["note"] == "moved to the cold room"
+    assert event["purpose"] is None
+    assert event["from_slot"] is None and event["to_slot"] == "A1"
+
+    history = ledger.history(alq)
+    assert history["events"][-1]["event"] == "move"
+    assert history["events"][-1]["note"] == "moved to the cold room"
+    assert history["events"][-1]["purpose"] is None
 
 
 def test_aliquot_move_with_several_in_stock_statuses_needs_status(
@@ -684,25 +722,33 @@ def test_aliquot_move_with_several_in_stock_statuses_needs_status(
 
     # ``worm`` has two in-stock statuses: the bare move is ambiguous.
     with pytest.raises(LedgerError, match="several in-stock statuses"):
-        ledger.aliquots.move(alq, box="GRID", slot="A1")
+        ledger.aliquots.move(alq, box="GRID", slot="A1", message="moved")
     with pytest.raises(UsageError, match="not in stock"):
-        ledger.aliquots.move(alq, box="GRID", slot="A1", status="contaminated")
+        ledger.aliquots.move(
+            alq, box="GRID", slot="A1", status="contaminated", message="moved"
+        )
     with pytest.raises(UsageError, match="unknown status"):
-        ledger.aliquots.move(alq, box="GRID", slot="A1", status="nope")
+        ledger.aliquots.move(alq, box="GRID", slot="A1", status="nope", message="moved")
 
     # --status picks the in-stock status to restore; no transition check runs
     # for a tube that was not in stock.
-    restored = ledger.aliquots.move(alq, box="GRID", slot="A1", status="growing")
+    restored = ledger.aliquots.move(
+        alq, box="GRID", slot="A1", status="growing", message="moved"
+    )
     assert restored["old_status"] == "contaminated"
     assert restored["status"] == "growing"
     assert restored["slot"] == "A1"
 
     # An in-stock move with --status follows the normal transition rule.
-    starred = ledger.aliquots.move(alq, box="GRID", slot="A2", status="starved")
+    starred = ledger.aliquots.move(
+        alq, box="GRID", slot="A2", status="starved", message="moved"
+    )
     assert starred["old_status"] == "growing"
     assert starred["status"] == "starved"
     # Naming the current status is a plain move, not a transition error.
-    same = ledger.aliquots.move(alq, box="GRID", slot="A3", status="starved")
+    same = ledger.aliquots.move(
+        alq, box="GRID", slot="A3", status="starved", message="moved"
+    )
     assert same["status"] == "starved"
 
 
@@ -806,7 +852,7 @@ def test_aliquot_show_reads_the_tube_its_stock_and_its_path(
     new_box(ledger, "BOX", "grid96")
     stock = ledger.stocks.add("lot", entity=item["id"], quantity=100, unit="ul")
     alq = stock["aliquots"][0]
-    ledger.aliquots.move(alq, box="BOX", slot="A3")
+    ledger.aliquots.move(alq, box="BOX", slot="A3", message="moved")
 
     shown = ledger.aliquots.show(alq)
 
@@ -983,7 +1029,7 @@ def test_aliquot_list_defaults_to_the_tubes_an_experiment_can_use(
     new_box(ledger, "BOX", "grid96")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
     first, second, third = stock["aliquots"]
-    ledger.aliquots.move(first, box="BOX", slot="A1")
+    ledger.aliquots.move(first, box="BOX", slot="A1", message="moved")
     ledger.aliquots.status(second, "missing", note="not in the box")
 
     listed = ledger.aliquots.ls()
@@ -1008,7 +1054,7 @@ def test_aliquot_list_status_filter_widens_the_default_scope(ledger_factory) -> 
     new_box(ledger, "BOX", "grid96")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
     first, second, third = stock["aliquots"]
-    ledger.aliquots.move(first, box="BOX", slot="A1")
+    ledger.aliquots.move(first, box="BOX", slot="A1", message="moved")
     ledger.aliquots.status(second, "missing", note="gone")
     ledger.aliquots.status(third, "consumed", note="used up")
 
@@ -1040,10 +1086,10 @@ def test_aliquot_list_box_filter_includes_every_nested_box(ledger_factory) -> No
     ledger.aliases.add("box", rack["id"], "RACK-A")
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
     first, second, third = stock["aliquots"]
-    ledger.aliquots.move(first, box="R-1", slot="top")
-    ledger.aliquots.move(second, box="G-2", slot="B2")
+    ledger.aliquots.move(first, box="R-1", slot="top", message="moved")
+    ledger.aliquots.move(second, box="G-2", slot="B2", message="moved")
     # A slotless box holds a tube directly as well as child boxes.
-    ledger.aliquots.move(third, box="SH-1")
+    ledger.aliquots.move(third, box="SH-1", message="moved")
 
     assert [row["id"] for row in ledger.aliquots.ls(box="SH-1")] == [
         first,
@@ -1082,8 +1128,8 @@ def test_aliquot_list_filters_by_stock_kind_stock_and_where(ledger_factory) -> N
     prep = ledger.stocks.add("prep", entity=everything["id"])
     first, second = lot["aliquots"]
     only = prep["aliquots"][0]
-    ledger.aliquots.move(first, box="BOX", slot="A1")
-    ledger.aliquots.move(only, box="BOX", slot="A2")
+    ledger.aliquots.move(first, box="BOX", slot="A1", message="moved")
+    ledger.aliquots.move(only, box="BOX", slot="A2", message="moved")
     ledger.driver.execute(
         "UPDATE `aliquot` SET `label` = 'first tube' WHERE `id` = %s", (first,)
     )
@@ -1105,7 +1151,7 @@ def test_aliquot_list_filters_by_stock_kind_stock_and_where(ledger_factory) -> N
     # A child stock is its own listing: a stock filter never follows lineage.
     child = ledger.stocks.add("lot", entity=item["id"], parent=lot["id"])
     child_tube = child["aliquots"][0]
-    ledger.aliquots.move(child_tube, box="BOX", slot="A3")
+    ledger.aliquots.move(child_tube, box="BOX", slot="A3", message="moved")
     assert [row["id"] for row in ledger.aliquots.ls(stock=lot["id"])] == [first]
     assert child_tube in [row["id"] for row in ledger.aliquots.ls()]
 
@@ -1117,7 +1163,7 @@ def test_aliquot_list_refuses_unknown_filters_and_empty_values(ledger_factory) -
     new_box(ledger, "BOX", "grid96")
     stock = ledger.stocks.add("lot", entity=item["id"])
     alq = stock["aliquots"][0]
-    ledger.aliquots.move(alq, box="BOX", slot="A1")
+    ledger.aliquots.move(alq, box="BOX", slot="A1", message="moved")
 
     with pytest.raises(LedgerError, match=r"^unknown stock 'NOPE'$"):
         ledger.aliquots.ls("NOPE")
@@ -1624,7 +1670,7 @@ def test_every_command_is_exactly_one_commit(ledger_factory) -> None:
         )
     )
     alq = added["ids"][0]
-    step(lambda: ledger.aliquots.move(alq, box="BOX", slot="A3"))
+    step(lambda: ledger.aliquots.move(alq, box="BOX", slot="A3", message="moved"))
     step(lambda: ledger.aliquots.use(alq, "1", "ul"))
     step(lambda: ledger.aliquots.status(alq, "missing"))
     step(lambda: ledger.aliases.add("aliquot", alq, "ALQ"))
@@ -1747,7 +1793,7 @@ def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
     # after the tube is physically placed again.
     with pytest.raises(LedgerError, match="tm aliquot move"):
         ledger.aliquots.status(alq, "stored")
-    moved = ledger.aliquots.move(alq, box="BOX", slot="A1")
+    moved = ledger.aliquots.move(alq, box="BOX", slot="A1", message="moved")
     assert moved["status"] == "stored"
     assert moved["old_status"] == "missing"
 

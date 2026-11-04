@@ -352,7 +352,7 @@ def _history_fixture(ledger):
         ledger, item["id"], box="H1", slots=("A1",), quantity="100"
     )
     aliquot = stock["aliquots"][0]
-    ledger.aliquots.move(aliquot, box="H2", slot="B2")
+    ledger.aliquots.move(aliquot, box="H2", slot="B2", message="moved to H2")
     ledger.aliquots.use(aliquot, "40", "ul", purpose="prep")
     return item, stock, aliquot
 
@@ -373,6 +373,8 @@ def test_history_shows_create_move_use_in_order(ledger_factory) -> None:
     move = result["events"][1]
     assert move["from_slot"] == "A1" and move["to_slot"] == "B2"
     assert move["from_box"] == "H1" and move["to_box"] == "H2"
+    assert move["note"] == "moved to H2"
+    assert move["purpose"] is None
     use = result["events"][2]
     assert use["purpose"] == "prep"
 

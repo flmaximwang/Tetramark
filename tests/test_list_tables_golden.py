@@ -147,7 +147,7 @@ def _build_stocks(ledger) -> None:
         values={"supplier": "acme"},
         aliquots=2,
     )
-    ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1")
+    ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1", message="moved")
 
 
 def _build_entities(ledger) -> None:
@@ -164,7 +164,7 @@ def _build_entities(ledger) -> None:
     active = ledger.stocks.add(
         "lot", entity=alpha["id"], values={"supplier": "acme"}, aliquots=2
     )
-    ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1")
+    ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1", message="moved")
     # depleted: two tubes, both unplaced, so neither is in stock.
     ledger.stocks.add(
         "lot", entity=design["id"], values={"supplier": "acme"}, aliquots=2
@@ -191,10 +191,10 @@ def _build_boxes(ledger) -> None:
     stock = ledger.stocks.add(
         "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=4
     )
-    ledger.aliquots.move(stock["aliquots"][0], box="G-1", slot="A1")
-    ledger.aliquots.move(stock["aliquots"][1], box="G-1", slot="A2")
-    ledger.aliquots.move(stock["aliquots"][2], box="R-1", slot="1")
-    ledger.aliquots.move(stock["aliquots"][3], box="R-1", slot="2")
+    ledger.aliquots.move(stock["aliquots"][0], box="G-1", slot="A1", message="moved")
+    ledger.aliquots.move(stock["aliquots"][1], box="G-1", slot="A2", message="moved")
+    ledger.aliquots.move(stock["aliquots"][2], box="R-1", slot="1", message="moved")
+    ledger.aliquots.move(stock["aliquots"][3], box="R-1", slot="2", message="moved")
 
 
 def test_stock_list_golden_table(cli_env: None, ledger_factory) -> None:

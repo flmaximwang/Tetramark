@@ -2085,6 +2085,7 @@ def move_aliquot(
     box: str,
     slot: str | None = None,
     status: str | None = None,
+    message: str,
 ) -> dict[str, Any]:
     """Move an aliquot to a box/slot, recording a ``move`` event.
 
@@ -2095,7 +2096,14 @@ def move_aliquot(
     in-stock status of the set.  An aliquot that is already in stock keeps its
     status; ``status`` then goes through the normal transition check
     (:func:`ensure_status_change`) and the result still has to be in stock.
+
+    A move is a real-world action that cannot simply be reversed, so
+    ``message`` is required (spec §1, §6): it is trimmed, refused when empty,
+    and stored in ``aliquot_event.note`` (``purpose`` stays NULL).
     """
+    message_text = str(message).strip()
+    if not message_text:
+        raise UsageError("a move message is required and must not be empty")
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
 
@@ -2150,6 +2158,7 @@ def move_aliquot(
             old_status=old_status,
             new_status=new_status,
             actor=ledger.actor,
+            note=message_text,
         )
         record = _load_record(session, ledger, "aliquot", alq_id)
     # A dry run buffers the UPDATE; report the destination it would write.
@@ -3733,8 +3742,11 @@ class AliquotOps:
         box: str,
         slot: str | None = None,
         status: str | None = None,
+        message: str,
     ) -> dict[str, Any]:
-        return move_aliquot(self.ledger, ref, box=box, slot=slot, status=status)
+        return move_aliquot(
+            self.ledger, ref, box=box, slot=slot, status=status, message=message
+        )
 
     def use(
         self,
