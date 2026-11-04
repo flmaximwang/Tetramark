@@ -24,6 +24,8 @@ scripts/
   release.yml             # a version bump landing on main -> annotated tag + GitHub release
 skills/tetramark/SKILL.md (+ references/)
 skills/tetramark-schema/SKILL.md (+ references/)
+                          # The wheel ships this directory as tetramark/skills/ (package data),
+                          # so `tm skill path` finds a manual in an installed tool.
 docs/spec/                # this specification, one file per chapter
 docs/guides/              # how-to guides (migration, upgrade, releasing, test harness)
 docs/releases/            # release notes, v<version>.md: title + body of the GitHub release
