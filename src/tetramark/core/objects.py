@@ -42,6 +42,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tetramark.core.events import purge_events, record_event
+from tetramark.core.filters import (
+    build_conditions,
+    check_fields,
+    coerce_value,
+    filter_fields,
+    parse_filters,
+    regex_usage_error,
+)
 from tetramark.core.ids import IdError, aliquot_id, next_aliquot_id, parse_aliquot_id
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
@@ -1425,6 +1433,11 @@ def _list_records(
     list`` uses that for the path rows); their results come back in order.
     Empty kinds still contribute nothing, and the records keep the kind order
     plus each query's ``ORDER BY``.
+
+    The filters themselves are parsed and turned into SQL conditions by
+    :mod:`tetramark.core.filters`, the one backend ``--where`` shares with
+    ``tm find``: ``field=value`` is exact (with the schema's coercion for a
+    kind field), ``field~pattern`` matches the column's text form.
     """
     if kind_name is not None:
         _kind_for(ledger, object_type, kind_name)
@@ -1432,16 +1445,11 @@ def _list_records(
     else:
         kinds = sorted(ledger.schema.kinds_for(object_type))
 
-    filters = _parse_pairs(where, option="--where")
+    filters = parse_filters(where, option="--where")
     valid: set[str] = set(_CORE_FILTERS[object_type])
     for name in kinds:
         valid |= set(ledger.schema.kinds[name].fields)
-    unknown = sorted(set(filters) - valid)
-    if unknown:
-        raise UsageError(
-            f"unknown field(s) {', '.join(repr(name) for name in unknown)} in --where; "
-            f"valid fields: {', '.join(sorted(valid))}"
-        )
+    check_fields(filters, valid, option="--where")
 
     records: list[dict[str, Any]] = []
     batch: list[tuple[str, Any]] = []
@@ -1450,31 +1458,21 @@ def _list_records(
         columns = set(_CORE_FILTERS[object_type]) | set(kind.fields)
         # A kind that cannot express every filter would otherwise contribute
         # rows that ignore the filter; leave it out entirely.
-        if not set(filters).issubset(columns):
+        if not filter_fields(filters).issubset(columns):
             continue
         # Spec 5 dropped the per-kind box views; read the same row shape by
         # joining the core `box` row with its `box_<kind>` row.
         column_sql: dict[str, str] | None = (
             box_kind_columns(kind) if object_type == "box" else None
         )
-        conditions: list[str] = []
-        params: list[Any] = []
-        for field, raw in filters.items():
-            if field in kind.fields:
-                value = _coerce_field(
-                    kind.fields[field],
-                    raw,
-                    ledger=ledger,
-                    session=ledger.driver,
-                    label=field,
-                )
-            else:
-                value = raw
-            if column_sql is not None:
-                conditions.append(f"{column_sql[field]} = %s")
-            else:
-                conditions.append(f"{_quote(field)} = %s")
-            params.append(value)
+        expressions = column_sql or {field: _quote(field) for field in columns}
+        conditions, params = build_conditions(
+            filters,
+            expressions=expressions,
+            coerce=lambda field, raw: coerce_value(
+                kind, field, raw, ledger=ledger, session=ledger.driver
+            ),
+        )
         if column_sql is not None:
             select_items = [
                 f"{expression} AS {_quote(column)}"
@@ -1497,7 +1495,16 @@ def _list_records(
     batch.extend(extra)
     # One process for every kind (plus the batch-only ``extra`` reads); an
     # empty batch must not start one at all.
-    fetched = ledger.driver.query_many(batch) if batch else []
+    try:
+        fetched = ledger.driver.query_many(batch) if batch else []
+    except LedgerError as error:
+        # The database compiles a pattern, so only a failed query knows that
+        # one is invalid; the filter backend turns that into a usage error
+        # that names the filter the user has to fix.
+        usage = regex_usage_error(ledger.driver, filters, error, option="--where")
+        if usage is None:
+            raise
+        raise usage from error
     for rows in fetched[:extra_start]:
         for row in rows:
             record = dict(row)
