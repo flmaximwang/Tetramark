@@ -64,7 +64,17 @@ not by `tm adopt`. (A parent `workspace.yaml` from a 0.4 data directory is ignor
 path is explicit, and discovery from inside the new ledger finds the ledger before the stale file.)
 
 An existing Tetramark ledger is upgraded in place first: run the step for every counter it still
-carries, oldest first, and only then import. A molbio-2 ledger (0.2.x) runs
+carries, oldest first, and only then import. **The current format is spec 6** — every aliquot uses
+one fixed status set (`docs/spec/01-concepts.md` §1.1) — and its step is **manual**:
+`migration/spec/5-to-6/README.md`. Run every pending historical preset step before it (the frozen
+steps target spec 5): then replace the whole `<ledger>/presets/` closure with the status-free copies,
+remap statuses (one `migrated: <old status>` event per remapped aliquot), add the `CHECK`, and let
+`tm schema plan`/`apply` write `spec_version` 6, `preset_versions` and the regenerated tests. Past
+events stay untouched and the new enum stock properties are not backfilled. An older ledger still
+opens with its own stored copies, and `tm` warns `ledger is spec N, tm is spec N+1: follow
+migration/spec/N-to-N+1/README.md to upgrade it manually`.
+
+The preset steps below keep their historical detail. A molbio-2 ledger (0.2.x) runs
 `migration/spec/3-to-4` while it is still spec 3 (place the current preset copies first, as that
 step's README says), then `migration/presets/base/2-to-3` and
 `migration/presets/molbio/2-to-3` — one commit each, in either order, because each step places the
@@ -75,8 +85,13 @@ molbio-2 ledger the two bundle/base steps keep the repository's cell_culture v2 
 (they place the frozen v1), so run the cell_culture step **after** them, never before. An older
 molbio-1/base-1 ledger runs the matching `1-to-2` steps first (their READMEs have the kind-mapping
 tables and the greps for hand-written rules); those historical steps ship the preset content they
-install next to their `migrate.py`, so they keep working after a later version is released.
-`tm init` always gives a ledger the current preset version (molbio 3, cellbio 1, cell_culture 2).
+install next to their `migrate.py`, so they keep working after a later version is released. After the
+last scripted step below spec 6 (for example `migration/spec/4-to-5` and its base step), finish with
+`migration/spec/5-to-6/README.md` and its README-only `migration/presets/*/N-to-N+1/` copies to reach
+spec 6 / base 5.
+
+`tm init` always creates a spec-6 ledger with the current presets: `molbio` 3 (`base` 5,
+`nucleic_acids` 3, `bacteria` 2, `proteins` 3, `cell_culture` 3), `cellbio` 1 and `angenet` 1.
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.
@@ -164,9 +179,10 @@ Old `box_01`/`box_02` are *views* of the same tube positions; `box_map_all` is t
 
 ## 5. Map status
 
-The old zsqlab workbooks have no status column on the tube tables: a tube either exists in a slot or
-it does not. Where a workbook used the three-state convention (在库 / 用完 / 丢失), map it as
-`stored` / `consumed` / `missing`. Map explicitly, never by inference:
+A ledger created from this checkout is **spec 6**: every aliquot has one status from the one fixed
+set — `pending`, `stored`, `missing`, `consumed` — and no stock kind has its own vocabulary or
+`status_sets:` block (`docs/spec/01-concepts.md` §1.1). `stored` is the only in-stock status. Map
+explicitly, never by inference:
 
 | Old evidence | New status |
 |---|---|
@@ -175,6 +191,27 @@ it does not. Where a workbook used the three-state convention (在库 / 用完 /
 | documented as used up in notes | `consumed` (keep the note in the event) |
 | documented as lost / not found | `missing` |
 | newly registered, not aliquoted yet | `pending` |
+
+The old zsqlab workbooks have no status column on the tube tables: a tube either exists in a slot or
+it does not. Where a workbook used the three-state convention (在库 / 用完 / 丢失), map it as
+`stored` / `consumed` / `missing`.
+
+A source that already carries a Tetramark per-kind vocabulary uses the same four names; map every
+old word to the fixed set (this is also the remap in `migration/spec/5-to-6/README.md`):
+
+| old status | new status |
+|---|---|
+| `planned` | `pending` |
+| `alive`, `crossed`, `growing`, `starved` | `stored` |
+| `lost` | `missing` |
+| `thawed`, `euthanized`, `found_dead`, `transferred`, `cancelled`, `discarded`, `contaminated` | `consumed` |
+
+`thawed` means `consumed`: a thawed cryo vial is gone, and a cryo vial is `stored` while it is in the
+freezer. A detailed life state that an old word carried (euthanized, starved, contaminated, …) is now
+an optional enum **stock property** — `fate` on mouse/fish/fly stocks, `condition` on a worm culture
+— or an event message, never a tube status. The spec 5 → 6 README has the remap SQL, the one
+`migrated: <old status>` event per remapped aliquot and the `CHECK`; it does not backfill the new
+properties (a stock's aliquots may disagree, so the operator decides per stock).
 
 A tube missing from the old table is **not** evidence of consumption; it may have been deleted. Put
 that decision in the migration record. `consumed`/`missing` tubes still keep their row and history;
@@ -189,7 +226,7 @@ Old `stock_pellets` + `stock_pellets_aliquots`: one pellet (culture) with N tube
 - one aliquot per old pellet aliquot (`<stock_id>.1`, `.2`, …);
 - `volume_ml` → aliquot `quantity`, unit `ml`;
 - the old pellet short code (`4a334ac2`) → alias on the stock;
-- old volume-usage records → `tm aliquot use <aliquot> <amount> ml --purpose ...` on the matching
+- old volume-usage records → `tm aliquot use <aliquot> <amount> ml -m "..."` on the matching
   aliquot, or a `consumed` status with a note if only the end state is known.
 
 Do not keep a stock-level scalar volume next to the aliquot volumes: the tubes are the inventory.

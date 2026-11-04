@@ -19,21 +19,20 @@ one Dolt commit; every read is a normal `tm` command.
 4. Global flags (`-l/--ledger PATH`, `-b/--branch`, `--dry-run`, `--no-commit`, `--json`,
    `--format`) go before the command: `tm -l ~/lab/lab101 --json entity list plasmid`.
 5. Every command uses the embedded driver (one `dolt sql` process per statement); there is no server
-   to start or stop. Writes are serialized by a per-ledger lock: a second writer waits ~10 s, then
-   exits with a typed `ledger busy` error (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never
-   lock; still never run two writers on one ledger.
-6. Presets ship with tetramark (wheel `tetramark/presets/`) and live in the repo's `presets/`. A bare
+   to start or stop. Writes are serialized by a per-ledger lock (`$TETRAMARK_LOCK_TIMEOUT` changes the
+   ~10 s wait); reads never lock, but never run two writers on one ledger.
+6. Presets ship with tetramark (wheel `tetramark/presets/`) and live in the repo's `presets/`; a bare
    `tm init --preset NAME` resolves through `$TETRAMARK_PRESETS_DIR` (when set), then the bundled
    copies, and copies the preset plus its `include:` closure into `<ledger>/presets/`. Every later
-   command opens only that copy, so to change a ledger's schema edit `<ledger>/presets/*.yaml` (or a
+   command opens only that copy; to change a ledger's schema edit `<ledger>/presets/*.yaml` (or a
    local `kinds_dir`/`rules_dir`, which must stay relative inside the ledger) — editing a checkout's
-   `presets/` does not affect existing ledgers. A bundled preset such as `molbio` is a **bundle**:
-   its kinds come from the parts it includes (`base`, `nucleic_acids`, `bacteria`, `proteins`,
-   `cell_culture`), so a kind the ledger shows may live in any of those files. `cellbio` is the
-   cell-biology bundle over `base`, `nucleic_acids`, `cell_culture`, `immuno` and `viral_vectors`;
-   `angenet` is the animal-genetics bundle over `base`, `nucleic_acids`, `biosamples` and the four
-   organism parts (`drosophila`, `c_elegans`, `zebrafish`, `mouse`). One ledger can list any
-   combination (`presets: [molbio, cellbio, angenet]`) and the shared parts load once.
+   `presets/` does not affect existing ledgers. The bundles assemble parts: `molbio` = `base`,
+   `nucleic_acids`, `bacteria`, `proteins`, `cell_culture`; `cellbio` = `base`, `nucleic_acids`,
+   `cell_culture`, `immuno`, `viral_vectors`; `angenet` = `base`, `nucleic_acids`, `biosamples` and
+   the four organism parts. One ledger can list any combination and the shared parts load once.
+7. A new ledger is **spec 6** (`base` version 5) and no shipped preset declares statuses. An older
+   ledger still opens with its own preset copies and `tm` warns `ledger is spec N, tm is spec N+1:
+   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step.
 
 ## Decision table
 
@@ -47,10 +46,11 @@ one Dolt commit; every read is a normal `tm` command.
 | Take a sample from a tube (lineage edge) | `tm stock add cell_biosample --entity LINE --source-aliquot ALQ` (cellbio; `animal_biosample` in angenet) |
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]` |
 | See one tube, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
-| Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S]` (also restores a not-in-stock tube) |
-| Use part of a tube | `tm aliquot use ALQ AMOUNT UNIT [--purpose TEXT]` |
-| Mark lost / consumed without a quantity | `tm aliquot status ALQ missing\|consumed\|stored` (follows the stock kind's `to:` rules) |
-| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event) |
+| Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG` (also restores a not-in-stock tube) |
+| Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
+| Mark lost / consumed / planned | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions) |
+| Record a detailed life state | `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event `--note` |
+| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move`) |
 | Hard-delete a tube (rare) | `tm aliquot purge ALQ` |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box | `tm box show NAME` (grid) or `--json` |
@@ -77,9 +77,9 @@ Full flags: `references/commands.md`. Multi-step flows: `references/recipes.md`.
 tm entity add plasmid --name pZET035 --set backbone=pZET035 --set resistance=kan --alias p035
 tm stock add bacterial_glycerol --entity p035 --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
-tm aliquot use 1226KO02.1 500 ml --purpose purification   # decrements; zero = consumed
+tm aliquot use 1226KO02.1 500 ml -m purification   # decrements; zero = consumed
 tm box move WFL-12-02 --in shelf-1
-tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3
+tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03"
 tm lineage p035 --up                                      # lineage:true edges + core links
 ```
 
@@ -100,18 +100,18 @@ tm stock add mouse_cohort --entity b6j --box MC-02 --quantity 7 --unit individua
   --set dam=ALQ_F --set sire=ALQ_M                            # genotype stays NULL
 tm stock add mouse_cohort --entity b6j --parent LITTER --box MC-03 --aliquots 3 \
   --quantity 1 --unit mouse --set genotype=G+ --set sex=f     # one per genotype x sex
-tm aliquot status LITTER.1 euthanized
+tm aliquot status LITTER.1 consumed --note "genotyped and split"   # gone for good
+tm stock edit LITTER --set fate=euthanized                   # optional detail, not a status
 tm lineage PUP --up                                           # litter and both parents
 ```
 
-Other angenet commands: register a colony with `tm entity add fly_line …` then
-`tm stock add fly_culture … --quantity 30 --unit individuals` (one animal:
-`--quantity 1 --unit mouse` in a `cage`); record a cross by pointing the progeny
-stock at parent aliquots with `--set dam=ALQ --set sire=ALQ`; thaw a cryo vial
-with `tm aliquot status VIAL thawed` (`thawed` is final).
-
-Full recipes - register a colony, record a cross, split a litter, thaw a cryo vial:
-`references/recipes.md` §10-13.
+Other angenet commands: `tm entity add fly_line …`, then `tm stock add fly_culture … --quantity 30
+--unit individuals` (one animal: `--quantity 1 --unit mouse` in a `cage`); record a cross by pointing
+the progeny stock at parent aliquots (`--set dam=ALQ --set sire=ALQ`); thaw a cryo vial with
+`tm aliquot status VIAL consumed` (`thawed` is `consumed`; a vial is `stored` in the freezer).
+Detailed states are optional enum stock properties: `fate` on mouse/fish/fly stocks, `condition` on
+worm cultures (growing, starved, contaminated), or an event `--note`. Full recipes - register a
+colony, record a cross, split a litter, thaw a cryo vial: `references/recipes.md` §10-13.
 
 ### Audit
 
@@ -130,21 +130,21 @@ tm check --group core
   `tm schema apply`. To change a rule, edit the schema (see the schema skill).
 - **`--dry-run` first for bulk work**, then run it for real:
   `tm --dry-run import all exports/`.
-- **Statuses follow the stock kind's set.** Each stock kind names a `status_set` with `in_stock` and
-  allowed `to:` transitions; creation accepts any status of the set, a later change must follow `to:`.
-  Check the set with `tm schema show KIND` and override only deliberately, with
-  `tm aliquot status … --force --note "why"` (the event then carries `forced = TRUE`).
-- **A tube has a position exactly when it is in stock.** Changing to a status that is not in stock
-  clears its box/slot (the event keeps the old position); a change to an in-stock status without a
-  position is refused — place it with `tm aliquot move ALQ --box NAME --slot S`.
+- **One fixed status set for every aliquot.** `pending` (planned, not here) → `stored` (physically
+  here; the only in-stock status) → `missing` (may come back) or `consumed` (gone for good, final),
+  and `missing` → `stored`/`consumed`; creation accepts any of the four. No preset or kind declares a
+  status set — there is no `status_sets:`, no per-kind `statuses:` and no `tube`/`cryo`/`animal`/`fly`/
+  `worm` vocabulary; `thawed` is `consumed`. A later change must follow the transitions; override only
+  deliberately with `--force --note "why"` (the event carries `forced = TRUE`). Detailed life states
+  are stock properties (`fate`, `condition`) or event messages.
+- **A tube has a position exactly when it is `stored`.** Changing to any other status clears its
+  box/slot (the event keeps the old position); `stored` without a position is refused — place it with
+  `tm aliquot move ALQ --box NAME --slot S -m MSG` (a move of a not-in-stock tube also restores `stored`).
 - **Box names are view-safe and grid boxes hold tubes only.** A `box add` name must not collide with
   a core view, is at most 58 characters and must differ from existing names beyond letter case; a box
   can be nested in a named or slotless box, not in a grid.
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; `purge` is a hard
   delete with no undo (only Dolt history can recover it).
-- **One writer at a time.** A write command takes an exclusive lock on the ledger
-  (`<ledger>/.dolt/tetramark.lock`) for its whole run; a second writer waits briefly and then exits
-  with a typed `ledger busy` error. Reads never lock. There is no `dolt sql-server` to start or stop.
 - **Do not move a tube by editing fields.** `aliquot move` records the event and checks slot capacity
-  and exclusivity; `stock edit` only changes stock metadata.
+  and exclusivity; `stock edit` only changes stock metadata. `use`/`move` need `-m/--message`.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.

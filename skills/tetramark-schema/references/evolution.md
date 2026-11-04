@@ -140,11 +140,35 @@ fingerprint is stale; `schema apply` still regenerates the tests (and commits). 
 `tm check --group rules:local` afterwards. Local rules are grouped `rules:local`; preset rules
 are `rules:preset`.
 
+## Format upgrades and the manual steps
+
+`ledger_meta` carries two counters: `spec_version` (the core ledger format, `SPEC_VERSION` in
+`src/tetramark/schema/model.py`) and `preset_versions` (a JSON object, one entry per loaded preset).
+Every bump ships exactly one folder under `migration/` in the same change, `spec/N-to-N+1/` or
+`presets/<name>/N-to-N+1/`. A step is **scripted** (`migrate.py`) or **README-only** (the operator
+runs the SQL/file edits by hand); the folder name and the README obligations are the same.
+
+**Spec 5 → 6 (one fixed status set) is README-only**: `migration/spec/5-to-6/README.md`. It cannot be
+a script because the change touches the ledger's preset copies as much as its rows. The order is:
+run every pending historical preset step first (they target spec 5), replace the whole
+`<ledger>/presets/` closure with the status-free copies, delete `status_sets:`/`statuses:` from local
+`kinds/`, remap `aliquot.status` with one `migrated: <old status>` status event per remapped aliquot,
+add the `ck_aliquot_status` `CHECK`, then `tm schema plan`/`apply`. The apply writes `spec_version` 6,
+`preset_versions`, the fingerprint, the CHECK and the regenerated `dolt_tests` in one commit. Past
+events are never rewritten — `core_status_event_allowed` only judges events whose two endpoints are
+fixed names, so old words in history are ignored — and the new enum stock properties are not
+backfilled. A closure that mixes the legacy per-kind sets with the fixed model is a load error.
+
+`tm` never upgrades an older ledger implicitly; it warns
+`ledger is spec N, tm is spec N+1: follow migration/spec/N-to-N+1/README.md to upgrade it manually`
+and keeps working against the ledger's own stored preset copies.
+
 ## What apply rewrites
 
 - generated kind tables, discriminator FKs, views and convenience views;
 - `dolt_tests` — fully replaced from the effective schema each time (never hand-edit);
-- the `ledger_meta` fingerprint, preset versions and `ledger.yaml` copy.
+- on a format upgrade: `ledger_meta.spec_version`, the fixed-status `CHECK` if the plan contains it,
+  `preset_versions`, the fingerprint and the `ledger.yaml` copy.
 
 It does not rewrite `ledger.yaml` itself; that is the source document you edit.
 

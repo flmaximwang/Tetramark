@@ -25,8 +25,9 @@ generates the DDL, views, foreign keys and `dolt_tests`. Never add or edit those
   inside the ledger directory** (P13): an absolute path, a `..` escape or a symlink leaving the
   ledger is refused when the ledger opens, so a copied ledger keeps working.
 - **`ledger.yaml`** also holds `presets`, `author`, `ids` and `branch`. Use `tm init` to create it;
-  edit it afterwards to select presets or local dirs. Status sets live on stock kinds (spec 4), not
-  in `ledger.yaml`.
+  edit it afterwards to select presets or local dirs. Aliquot status is not schema: every stock kind
+  uses the one fixed set (`pending`, `stored`, `missing`, `consumed`), and `status_sets:`/`statuses:`
+  in a preset or local kind is a load error (spec 6, §1.1).
 
 Name collisions between presets, includes and local files are errors. Includes are merged
 parent-first (included documents first), then local files.
@@ -96,7 +97,9 @@ generated test (Dolt CHECK cannot guarantee `REGEXP`).
 
 Kinds cannot define the reserved columns `id` and `kind` (and aliquot fields cannot define `id`).
 Core columns such as `name` and `notes` may be declared by a kind when they belong in its extension
-table; `named_fields` is the usual way to do that.
+table; `named_fields` is the usual way to do that. A stock kind declares **no** status vocabulary:
+detailed life states are optional enum stock properties (`fate` on the animal/fly stocks,
+`condition` on the worm culture) or event messages, never statuses.
 
 ## Box geometry
 
@@ -131,6 +134,11 @@ Each rule is one read-only `SELECT` plus an `expect`:
 4. `tm schema apply` — one transaction, one commit, generated tests replaced.
 5. `tm schema plan` again — must print `schema is up to date`.
 6. `tm check` — all non-info tests PASS.
+
+A preset `version:` bump ships `migration/presets/<name>/N-to-N+1/` in the same change; a
+`SPEC_VERSION` bump ships `migration/spec/N-to-N+1/`, scripted or README-only. Spec 6's fixed status
+set is the README-only example: `migration/spec/5-to-6/README.md` remaps the old vocabulary and the
+operator runs `tm schema apply` to write `spec_version`, `preset_versions`, the `CHECK` and the tests.
 
 The live fingerprint in `ledger_meta` warns when YAML and DB diverge; that is a prompt to run plan,
 not an error.
