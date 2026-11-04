@@ -1055,7 +1055,8 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
 # ---------------------------------------------------------------------------
 
 #: The tube's record fields, in the order the core returns them.  ``path`` gets
-#: its own output line and ``object`` is not printed in the human table.
+#: its own output line, ``events`` its own section and ``object`` is not
+#: printed in the human table.
 ALIQUOT_SHOW_ROWS = [
     "id",
     "stock_id",
@@ -1125,13 +1126,19 @@ def test_cli_aliquot_show_prints_rows_and_the_path_on_its_own_line(
     result = read(ledger, "aliquot", "show", alq)
     lines = result.output.splitlines()
 
+    # The events section closes the output: the field block is above it.
+    events_at = next(
+        index for index, line in enumerate(lines) if line.startswith("events  ")
+    )
+    field_lines = lines[:events_at]
+
     # One row per record field, in the record's order: no ``path`` row (it
     # prints on its own line) and no ``object`` row (human noise).
-    rows = [line for line in lines if line and not line.startswith("path:")]
+    rows = [line for line in field_lines if line and not line.startswith("path:")]
     assert [row.split()[0] for row in rows] == ALIQUOT_SHOW_ROWS
 
-    # The path closes the output as its own line, in its human shape.
-    assert lines[-1] == "path: Freezer-1/Shelf-2/Box:A3"
+    # The path closes the field block as its own line, in its human shape.
+    assert "path: Freezer-1/Shelf-2/Box:A3" in field_lines
     assert sum(line.startswith("path:") for line in lines) == 1
 
     # Values: the aliquot id is never shortened; uuid ids are (git style).
@@ -1174,6 +1181,7 @@ def test_cli_aliquot_show_json_is_the_core_record(
         "path",
         "in_stock",
         "object",
+        "events",
     }
     assert record["id"] == alq
     assert record["object"] == "aliquot"
@@ -1190,12 +1198,136 @@ def test_cli_aliquot_show_json_is_the_core_record(
     global_json = read(ledger, "--json", "aliquot", "show", alq)
     assert json.loads(global_json.output) == record
 
-    # --format csv keeps the full ids and carries the path as a column.
+    # --format csv keeps the full ids and carries the path as a column, but
+    # not the events: they are rows, not a cell.
     csv_output = read(ledger, "--format", "csv", "aliquot", "show", alq).output
     header = csv_output.splitlines()[0].split(",")
-    assert header == sorted(record)
+    assert header == sorted(set(record) - {"events"})
+    assert "events" not in header
     assert "Freezer-1/Shelf-2/Box:A3" in csv_output
     assert made["box"]["id"] in csv_output
+
+
+def test_cli_aliquot_show_json_carries_the_tube_events(
+    cli_env: None, ledger_factory
+) -> None:
+    """A fresh tube: its one create event, with the record's event keys."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-events", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+
+    record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+
+    assert len(record["events"]) == 1
+    event = record["events"][0]
+    assert set(event) == {
+        "id",
+        "event",
+        "at",
+        "amount",
+        "unit",
+        "from_box_id",
+        "from_box",
+        "from_slot",
+        "to_box_id",
+        "to_box",
+        "to_slot",
+        "old_status",
+        "new_status",
+        "forced",
+        "actor",
+        "purpose",
+        "note",
+    }
+    assert event["event"] == "create"
+    assert event["amount"] == "100.000000"
+    assert event["unit"] == "ul"
+    assert event["from_box"] is None
+    assert event["to_box"] == "Box"
+    assert event["to_slot"] == "A3"
+    assert event["old_status"] is None
+    assert event["new_status"] == "stored"
+    assert event["forced"] is False
+
+
+def test_cli_aliquot_show_json_events_are_the_tubes_trail(
+    cli_env: None, ledger_factory
+) -> None:
+    """After a move, a use and a status change the events are in order."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-trail", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    write(ledger, "box", "add", "grid96", "BOX2")
+    write(ledger, "aliquot", "move", alq, "--box", "BOX2", "--slot", "B1", "-m", "m")
+    write(ledger, "aliquot", "use", alq, "50", "ul", "-m", "assay")
+    write(ledger, "aliquot", "status", alq, "missing", "--note", "not found")
+
+    record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+
+    assert [event["event"] for event in record["events"]] == [
+        "create",
+        "move",
+        "use",
+        "status",
+    ]
+    create, move, use, status = record["events"]
+    assert create["to_box"] == "Box" and create["to_slot"] == "A3"
+    assert move["from_box"] == "Box" and move["from_slot"] == "A3"
+    assert move["to_box"] == "BOX2" and move["to_slot"] == "B1"
+    assert move["old_status"] == "stored" and move["new_status"] == "stored"
+    assert use["amount"] == "50.000000" and use["unit"] == "ul"
+    assert use["old_status"] == "stored" and use["new_status"] == "stored"
+    assert status["from_box"] == "BOX2" and status["from_slot"] == "B1"
+    assert status["old_status"] == "stored" and status["new_status"] == "missing"
+    assert status["forced"] is False
+
+
+def test_cli_aliquot_show_text_prints_one_line_per_event(
+    cli_env: None, ledger_factory
+) -> None:
+    """The text output closes with ``events  N`` and one line per event."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-show-events-text", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    write(ledger, "box", "add", "grid96", "BOX2")
+    write(ledger, "aliquot", "move", alq, "--box", "BOX2", "--slot", "B1", "-m", "m")
+
+    result = read(ledger, "aliquot", "show", alq)
+    lines = result.output.splitlines()
+
+    events_at = next(
+        index for index, line in enumerate(lines) if line.startswith("events  ")
+    )
+    assert lines[events_at] == "events  2"
+    event_lines = lines[events_at + 1 :]
+    assert len(event_lines) == 2
+    # The lines are the history renderer's own event lines: the create and
+    # the move, oldest first, each naming the boxes it names.
+    assert " create " in event_lines[0]
+    assert "to=Box:A3" in event_lines[0]
+    assert " move " in event_lines[1]
+    assert "from=Box:A3" in event_lines[1]
+    assert "to=BOX2:B1" in event_lines[1]
+
+
+def test_cli_aliquot_list_json_items_carry_no_events(
+    cli_env: None, ledger_factory
+) -> None:
+    """A list never reads a tube's event trail: its items have no events."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-list-events", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+
+    listed = json.loads(read(ledger, "aliquot", "list", "--json").output)
+
+    assert [row["id"] for row in listed] == [alq]
+    assert "events" not in listed[0]
+    # The show record of the same tube does carry them.
+    shown = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    assert shown["events"]
+    assert listed[0] == {
+        key: value for key, value in shown.items() if key != "events"
+    }
 
 
 def test_cli_aliquot_show_resolves_an_alias(cli_env: None, ledger_factory) -> None:
@@ -1475,9 +1607,11 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
     listed = json.loads(read(ledger, "aliquot", "list", "--json").output)
     assert [row["id"] for row in listed] == [first]
     assert listed[0]["aliases"] == ["tube-A"]
-    # A list row is the show record, and the read writes nothing.
+    # A list row is the show record without its events, and the read writes
+    # nothing.
     shown = json.loads(read(ledger, "aliquot", "show", first, "--json").output)
-    assert listed[0] == shown
+    assert listed[0] == {key: value for key, value in shown.items() if key != "events"}
+    assert "events" not in listed[0]
     assert commit_count(ledger) == before
 
     table = read(ledger, "aliquot", "list")

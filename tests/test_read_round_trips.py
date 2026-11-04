@@ -68,10 +68,11 @@ def test_aliquot_show_reads_one_tube_in_one_batch(
     """``tm aliquot show``: one JSON batch and one CSV run, not one per query.
 
     The command is a thin wrapper over ``ledger.aliquots.show``, whose record
-    needs four reads (the tube, its sorted aliases, its stock's kind/entity and
-    its ``v_aliquot_location`` path).  They belong to one ``query_many`` batch,
-    so showing a tube costs two ``dolt sql`` processes whatever the record
-    contains -- not the four (plus four CSV runs) a query-per-read would.
+    needs five reads (the tube, its sorted aliases, its stock's kind/entity,
+    its ``v_aliquot_location`` path and its own ``aliquot_event`` rows).  They
+    belong to one ``query_many`` batch, so showing a tube costs two ``dolt sql``
+    processes whatever the record contains -- not the five (plus five CSV runs)
+    a query-per-read would.
     """
     ledger = ledger_factory()
     item = ledger.entities.add("item", name="alpha")
@@ -94,6 +95,8 @@ def test_aliquot_show_reads_one_tube_in_one_batch(
     assert isinstance(ledger.driver, EmbeddedDriver)
     assert shown["id"] == alq
     assert shown["path"] == "BOX:A3"
+    # The events ride in the same batch: the tube's own create event.
+    assert [event["event"] for event in shown["events"]] == ["create"]
     # One ``-r json`` process for the whole batch, one ``-r csv`` process for
     # the column names JSON omits when a value is NULL (``label``, ``notes``,
     # ``box_id``, ``slot`` and ``path`` are NULL on a typical tube).

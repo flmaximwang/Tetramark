@@ -39,7 +39,13 @@ if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
     from tetramark.schema.model import EffectiveSchema
 
-__all__ = ["HISTORY_COLUMNS", "history", "history_rows", "render_history_text"]
+__all__ = [
+    "HISTORY_COLUMNS",
+    "event_line",
+    "history",
+    "history_rows",
+    "render_history_text",
+]
 
 #: Stable CSV header for :func:`history_rows`.
 HISTORY_COLUMNS: tuple[str, ...] = (
@@ -637,7 +643,7 @@ def render_history_text(result: dict[str, Any]) -> str:
     if not events:
         lines.append("  (none)")
     for event in events:
-        lines.append("  " + _event_line(event))
+        lines.append("  " + event_line(event))
 
     commits = result.get("commits") or []
     lines.append(f"Commits ({len(commits)}):")
@@ -648,7 +654,19 @@ def render_history_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _event_line(event: dict[str, Any]) -> str:
+def event_line(event: dict[str, Any]) -> str:
+    """One ``aliquot_event`` row as a single human line.
+
+    The line is the whole event in reading order: when it happened, what
+    happened, the tube it happened to, how much was used, where the tube came
+    from and went to, the status change and who did it.  Parts that the row
+    does not carry are left out, so a create event is short and a move names
+    both boxes.
+
+    The renderer is shared: ``tm history`` prints it under its event section
+    and ``tm aliquot show`` prints the tube's own events with it, so the two
+    renderings of the same row can never drift apart.
+    """
     parts = [
         str(event.get("at") or ""),
         str(event.get("event") or ""),

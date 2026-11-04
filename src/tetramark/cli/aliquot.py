@@ -12,6 +12,7 @@ from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_read, output_format, short_uuid_ids
 from tetramark.core.objects import plain_decimal
+from tetramark.ops.history import event_line
 
 aliquot_app = group(
     "Aliquots: the physical tubes that occupy box slots.\n\n"
@@ -19,9 +20,10 @@ aliquot_app = group(
 )
 
 #: Record fields the human table does not print as key/value rows: ``path``
-#: gets its own line and ``object`` (always ``aliquot``) is noise for a human.
-#: JSON keeps both, exactly as the core returns them.
-_TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "object")
+#: gets its own line, ``events`` its own section and ``object`` (always
+#: ``aliquot``) is noise for a human.  JSON keeps all three, exactly as the
+#: core returns them.
+_TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "events", "object")
 
 #: Record fields holding a uuid id, shortened in the human table only (the way
 #: ``tm stock list`` shortens ids); JSON and CSV keep the full ids.
@@ -47,7 +49,8 @@ def _text_record(record: dict[str, Any]) -> dict[str, Any]:
 
     The fields keep the record's own order; uuid ids become their shortest
     unique prefixes.  ``path`` is dropped here because it prints on its own
-    line after the table, and ``object`` is dropped as human noise.
+    line after the table, ``events`` because it prints as its own section
+    below it, and ``object`` is dropped as human noise.
     """
     rows = {
         key: value for key, value in record.items() if key not in _TEXT_ONLY_KV_KEYS
@@ -57,6 +60,26 @@ def _text_record(record: dict[str, Any]) -> dict[str, Any]:
         if key in rows:
             rows[key] = value
     return rows
+
+
+def _csv_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The record as the flat CSV row prints it: the tube's own fields only.
+
+    The events are a list of rows, not a cell, so the flat record leaves them
+    out; ``tm history ALQ --format csv`` prints them, one row per event.
+    """
+    return {key: value for key, value in record.items() if key != "events"}
+
+
+def _echo_events(events: list[dict[str, Any]]) -> None:
+    """The tube's event trail: a count and one line per event, oldest first.
+
+    The lines are the history renderer's own event lines, so the same event
+    reads the same here and in ``tm history``.
+    """
+    typer.echo(f"events  {len(events)}")
+    for event in events:
+        typer.echo(f"  {event_line(event)}")
 
 
 def _use_line(result: dict[str, Any]) -> str:
@@ -152,23 +175,31 @@ def show_aliquot_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Show one tube: its status, quantity, stock and box path.
+    """Show one tube: its status, quantity, stock, box path and events.
 
     The record covers the aliquot row, its sorted aliases, the owning stock's
-    kind and entity, the box/slot and the path read from the box nesting.  The
-    tube's events are in `tm history ALQ`; the stock kind's own fields are in
-    `tm stock show`, and the rich per-stock listing is `tm aliquot list STOCK`.
+    kind and entity, the box/slot, the path read from the box nesting and the
+    tube's own events, oldest first.  The table prints the fields, then the
+    path and one line per event; `--json` prints the whole record, events
+    included, and `--format csv` the flat record without the events (they are
+    rows, not a cell: `tm history ALQ --format csv` prints them).  The stock
+    kind's own fields are in `tm stock show`, and the Dolt commits are in
+    `tm history`.  The rich per-stock listing is `tm aliquot list STOCK`.
     """
     ledger = resolve_ledger(ctx)
     try:
         record = ledger.aliquots.show(ref)
         fmt = output_format(ctx, as_json)
-        if fmt != "table":
+        if fmt == "json":
             emit_read(record, fmt=fmt)
+            return
+        if fmt == "csv":
+            emit_read(_csv_record(record), fmt=fmt)
             return
         emit_read(_text_record(record), fmt="table")
         if record.get("path"):
             typer.echo(f"path: {record['path']}")
+        _echo_events(list(record.get("events") or []))
     finally:
         ledger.close()
 
@@ -218,7 +249,8 @@ def list_aliquots_command(
 
     Add `--all` for every status and `--not-in-stock` for the tubes that left
     stock.  The table prints id, stock kind, status, quantity, unit, label and
-    path; `--json` prints the same record `tm aliquot show` prints.
+    path; `--json` prints the same record `tm aliquot show` prints, without
+    the events: a list never reads a tube's event trail.
     """
     ledger = resolve_ledger(ctx)
     try:

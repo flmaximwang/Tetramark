@@ -1578,6 +1578,109 @@ def test_aliquot_show_reads_the_tube_its_stock_and_its_path(
     assert shown["object"] == "aliquot"
 
 
+def test_aliquot_show_of_a_fresh_tube_carries_its_create_event(
+    ledger_factory,
+) -> None:
+    """A tube that was only created has exactly one event: its creation."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], quantity=100, unit="ul", box="BOX", slots=["A3"]
+    )
+    alq = stock["aliquots"][0]
+
+    shown = ledger.aliquots.show(alq)
+
+    assert len(shown["events"]) == 1
+    create = shown["events"][0]
+    assert create["event"] == "create"
+    assert Decimal(str(create["amount"])) == Decimal("100")
+    assert create["unit"] == "ul"
+    assert create["from_box"] is None
+    assert create["from_box_id"] is None
+    assert create["to_box"] == "BOX"
+    assert create["to_slot"] == "A3"
+    assert create["old_status"] is None
+    assert create["new_status"] == "stored"
+    assert create["forced"] is False
+
+
+def test_aliquot_show_carries_the_tube_event_trail(ledger_factory) -> None:
+    """The record's events are the tube's trail, oldest first, boxes named."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    new_box(ledger, "OTHER", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], quantity=100, unit="ul", box="BOX", slots=["A3"]
+    )
+    alq = stock["aliquots"][0]
+    ledger.aliquots.move(alq, box="OTHER", slot="B1", message="moved")
+    ledger.aliquots.use(alq, "50", "ul", message="used some")
+    ledger.aliquots.status(alq, "missing", note="nowhere")
+
+    shown = ledger.aliquots.show(alq)
+
+    assert [event["event"] for event in shown["events"]] == [
+        "create",
+        "move",
+        "use",
+        "status",
+    ]
+    create, move, use, status = shown["events"]
+    assert create["to_box"] == "BOX" and create["to_slot"] == "A3"
+    assert create["new_status"] == "stored"
+    assert move["from_box"] == "BOX" and move["from_slot"] == "A3"
+    assert move["to_box"] == "OTHER" and move["to_slot"] == "B1"
+    assert move["old_status"] == "stored" and move["new_status"] == "stored"
+    assert move["note"] == "moved"
+    assert Decimal(str(use["amount"])) == Decimal("50") and use["unit"] == "ul"
+    assert use["old_status"] == "stored" and use["new_status"] == "stored"
+    assert use["note"] == "used some"
+    assert status["from_box"] == "OTHER" and status["from_slot"] == "B1"
+    assert status["old_status"] == "stored" and status["new_status"] == "missing"
+    assert status["forced"] is False
+    # Every event carries the shape the record promises.
+    assert set(create) == {
+        "id",
+        "event",
+        "at",
+        "amount",
+        "unit",
+        "from_box_id",
+        "from_box",
+        "from_slot",
+        "to_box_id",
+        "to_box",
+        "to_slot",
+        "old_status",
+        "new_status",
+        "forced",
+        "actor",
+        "purpose",
+        "note",
+    }
+
+
+def test_aliquot_list_records_carry_no_events(ledger_factory) -> None:
+    """A list never reads a tube's event trail: the rows stay flat."""
+    ledger = make_ledger(ledger_factory)
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add("lot", entity=item["id"], quantity=100, unit="ul")
+    alq = stock["aliquots"][0]
+    ledger.aliquots.move(alq, box="BOX", slot="A3", message="moved")
+
+    rows = ledger.aliquots.ls(all_statuses=True)
+
+    assert len(rows) == 1
+    assert "events" not in rows[0]
+    assert rows[0]["id"] == alq
+    # The show record of the same tube does carry them.
+    assert ledger.aliquots.show(alq)["events"]
+
+
 def test_aliquot_show_of_a_tube_that_is_not_in_stock(ledger_factory) -> None:
     """A tube that left the stock has no position and no path."""
     ledger = make_ledger(ledger_factory)
@@ -1747,8 +1850,11 @@ def test_aliquot_list_defaults_to_the_tubes_an_experiment_can_use(
 
     listed = ledger.aliquots.ls()
     assert [row["id"] for row in listed] == [first]
-    # A list row is the show record: same keys, same values.
-    assert listed[0] == ledger.aliquots.show(first)
+    # A list row is the show record: same keys, same values - except the
+    # events, which a list never reads.
+    shown = ledger.aliquots.show(first)
+    assert listed[0] == {key: value for key, value in shown.items() if key != "events"}
+    assert "events" not in listed[0]
     assert listed[0]["in_stock"] is True
 
     every = ledger.aliquots.ls(all_statuses=True)

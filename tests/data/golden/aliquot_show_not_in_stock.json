@@ -3,6 +3,27 @@
   "box_id": null,
   "created_at": "<timestamp>",
   "entity_id": "<entity-id>",
+  "events": [
+    {
+      "actor": "Ledger Factory",
+      "amount": "50.000000",
+      "at": "<timestamp>",
+      "event": "create",
+      "forced": false,
+      "from_box": null,
+      "from_box_id": null,
+      "from_slot": null,
+      "id": "<event-id>",
+      "new_status": "pending",
+      "note": null,
+      "old_status": null,
+      "purpose": null,
+      "to_box": null,
+      "to_box_id": null,
+      "to_slot": null,
+      "unit": "ul"
+    }
+  ],
   "id": "<stock-id>.1",
   "in_stock": false,
   "label": null,
