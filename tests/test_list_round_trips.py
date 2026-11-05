@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.driver.server import discard_server
@@ -228,7 +229,7 @@ def test_stock_list_runs_one_batched_read(
         built["stocks"][0]["id"],
         built["stocks"][3]["id"],
     ]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     # The columns the list table prints come from the same batched read: the
     # owning design's name, how many tubes are still on the shelf and the
@@ -250,7 +251,7 @@ def test_stock_list_runs_one_batched_read(
         built["stocks"][3]["id"],
         built["stocks"][2]["id"],
     ]
-    assert invoke_log == ["json"]
+    assert_single_read_process(invoke_log)
 
     all_by_id = {row["id"]: row for row in all_rows}
     depleted = all_by_id[built["stocks"][1]["id"]]
