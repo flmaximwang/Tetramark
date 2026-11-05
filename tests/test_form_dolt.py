@@ -411,26 +411,6 @@ def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:
     ]
     assert added["ids"] == stored_ids(add_ledger, add_stock["id"])
 
-    # A skipped status on an unplaced tube keeps the add command's placement
-    # default (pending), exactly like omitting the flag.
-    unplaced, _ = run_form(
-        form_ledger,
-        "aliquot",
-        "lot",  # kind (the stock's kind)
-        form_stock["id"],  # stock
-        "1",  # count
-        "",  # quantity: none
-        "",  # box: none
-        "",  # status: skip (the placement default)
-        "y",  # review: write
-    )
-    assert [
-        row["status"] for row in aliquot_view(form_ledger, form_stock["id"])
-    ] == ["stored", "stored", "pending"]
-    assert create_events(form_ledger, unplaced["ids"][0])[0]["new_status"] == (
-        "pending"
-    )
-
 
 def create_events(ledger, aliquot: str) -> list[dict]:
     """One tube's ``create`` events as the values the two write paths share."""
@@ -572,12 +552,12 @@ def stock_lineage_row(ledger, stock_id: str) -> dict:
     )
 
 
-def test_t5_aliquot_form_explicit_status_equals_add(ledger_factory) -> None:
-    """An explicitly chosen status is stored exactly like ``aliquot add --status``.
+def test_t5_aliquot_form_status_matches_add(ledger_factory) -> None:
+    """An explicit status and a skipped status both match ``aliquot add``.
 
-    The twin-ledger test above covers the *skipped* status (the placement
-    default); this one covers the status the user names, including the create
-    event that records it.  A custom per-kind set is covered Dolt-free in
+    The twin-ledger test above covers the placed default; this test covers
+    the status the user names (with its create event) and the unplaced
+    default on one ledger.  A custom per-kind set is covered Dolt-free in
     tests/test_form_state.py, where the core's own placement rules are pinned.
     """
     ledger = ledger_factory([BASE], name="aliquot-status")
@@ -617,6 +597,31 @@ def test_t5_aliquot_form_explicit_status_equals_add(ledger_factory) -> None:
             "new_status": "missing",
         }
     ]
+
+    # A skipped status on an unplaced tube keeps the add command's placement
+    # default (pending), exactly like omitting the flag.
+    default_tube, _ = run_form(
+        ledger,
+        "aliquot",
+        "lot",  # kind
+        form_stock["id"],  # stock
+        "1",  # count
+        "",  # quantity: none
+        "",  # box: none
+        "",  # status: skip (the placement default)
+        "y",  # review: write
+    )
+    default_add = ledger.aliquots.add(add_stock["id"], count=1)
+    assert create_events(ledger, default_tube["ids"][0]) == create_events(
+        ledger, default_add["ids"][0]
+    )
+    assert [row["status"] for row in aliquot_view(ledger, form_stock["id"])] == [
+        "missing",
+        "pending",
+    ]
+    assert aliquot_view(ledger, form_stock["id"]) == aliquot_view(
+        ledger, add_stock["id"]
+    )
 
 
 def test_box_form_stores_what_add_stores(ledger_factory) -> None:
