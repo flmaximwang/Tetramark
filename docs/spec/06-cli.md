@@ -133,6 +133,9 @@ tm backup [DIR] [--name NAME]     # DIR required unless a backup is already conf
 tm backup --list                  # same as: tm backup list
 ```
 
+`tm history ID` renders its event section with the §6.6 event lines and its `--json` events carry
+the same keys as `tm aliquot show` (the history lines add the tube id token).
+
 **Subcommand names are full words.** `ls` and `rm` are not abbreviations of any command: a listing
 subcommand is `list` and a removal subcommand is `remove`, and neither has a short spelling. A new
 subcommand is named with its full word from the start.
