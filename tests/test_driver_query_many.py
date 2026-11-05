@@ -258,7 +258,7 @@ def test_query_many_propagates_a_statement_error(driver: Driver) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_query_many_costs_at_most_two_dolt_processes(
+def test_query_many_costs_one_dolt_process(
     driver: Driver, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     table = make_table(driver)
@@ -291,7 +291,7 @@ def test_query_many_costs_at_most_two_dolt_processes(
     assert results[2] == [{"n": 2}]
     assert results[3] == []
     assert results[4] == [{"note": "first"}]
-    assert calls == ["json", "csv"], calls
+    assert calls == ["json"], calls
 
     # An all-empty batch needs no CSV run, but must stay aligned and cheap.
     calls.clear()
