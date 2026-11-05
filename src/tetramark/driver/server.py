@@ -603,6 +603,135 @@ def _spawn_server(
         time.sleep(_PROBE_INTERVAL_SECONDS)
 
 
+# ---------------------------------------------------------------------------
+# Orphan reaping
+# ---------------------------------------------------------------------------
+
+
+def _orphan_candidates() -> dict[int, int]:
+    """``{pid: port}`` of reparented ``dolt sql-server`` processes in our argv shape.
+
+    Only processes whose parent is ``init``/``launchd`` (ppid 1) qualify: a
+    server whose owner is alive is never a candidate, whoever owns it.
+    """
+    try:
+        listing = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - no ps
+        return {}
+    found: dict[int, int] = {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or fields[1] != "1":
+            continue
+        argv = fields[2:]
+        if len(argv) != 8 or Path(argv[0]).name != "dolt" or argv[1:] != [
+            "sql-server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            argv[5],
+            "--loglevel",
+            "error",
+        ]:
+            continue
+        try:
+            found[int(fields[0])] = int(argv[5])
+        except ValueError:
+            continue
+    return found
+
+
+def _process_cwds(pids: Sequence[int]) -> dict[int, Path]:
+    """The working directory of each pid that still has one we can read."""
+    cwds: dict[int, Path] = {}
+    for pid in pids:
+        try:
+            cwds[pid] = Path(os.readlink(f"/proc/{pid}/cwd"))
+        except OSError:
+            pass
+    missing = [pid for pid in pids if pid not in cwds]
+    if not missing or shutil.which("lsof") is None:
+        return cwds
+    try:
+        output = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, missing))],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - defensive
+        return cwds
+    current: int | None = None
+    for line in output.splitlines():
+        if line.startswith("p"):
+            current = int(line[1:])
+        elif line.startswith("n") and current is not None:
+            cwds[current] = Path(line[1:])
+    return cwds
+
+
+def _owner_is_gone(cwd: Path, port: int) -> bool:
+    """Whether ``cwd``'s sidecar names this port and a process that has exited."""
+    payload = _read_sidecar(cwd)
+    if payload is None:
+        return False
+    try:
+        return int(payload.get("port")) == port and not _pid_alive(
+            int(payload.get("pid"))
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def reap_orphaned_servers(*, scratch_root: str | Path | None = None) -> list[int]:
+    """Stop ``dolt sql-server`` processes Tetramark started and then abandoned.
+
+    A server outlives its owner when the owner is killed (``SIGKILL``, a
+    cancelled test run): ``atexit`` never runs and the server is reparented to
+    pid 1, where it keeps its memory forever.  A process is reaped only when it
+    is reparented, has exactly the argv :func:`_spawn_server` uses, and either
+
+    * its ledger's sidecar names that port and an owner pid that has exited, or
+    * its working directory lies under ``scratch_root`` (a test harness's own
+      temporary tree, whose directories may already be deleted).
+
+    Returns the pids that were signalled.
+    """
+    candidates = _orphan_candidates()
+    if not candidates:
+        return []
+    root = Path(scratch_root).resolve() if scratch_root is not None else None
+    victims: list[int] = []
+    for pid, cwd in _process_cwds(list(candidates)).items():
+        port = candidates[pid]
+        resolved = Path(os.path.realpath(cwd))
+        in_scratch = root is not None and resolved.is_relative_to(root)
+        if in_scratch or _owner_is_gone(resolved, port):
+            victims.append(pid)
+    for pid in victims:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and any(_pid_alive(p) for p in victims):
+        time.sleep(0.05)
+    for pid in victims:
+        if _pid_alive(pid):  # pragma: no cover - a server ignoring SIGTERM
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+    return victims
+
+
 def _drop(server: _Server, *, key: str | None = None) -> None:
     """Remove a server from the cache and stop it when we own it."""
     _SERVERS.pop(key if key is not None else str(server.path), None)

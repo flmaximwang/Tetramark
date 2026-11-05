@@ -29,9 +29,11 @@ def find_command(
         [],
         "--where",
         "-w",
-        help="Filter as field=value (exact) or field~pattern (regex); repeat to "
-        "AND filters; FIELD= matches empty. Aliquots are excluded; with no QUERY "
-        "all matching objects are listed.",
+        help="Filter as 'field=value' (exact), 'field~pattern' (regex), "
+        "'field!=value', 'field!~pattern' or 'field<value' / '<=' / '>' / "
+        "'>='; repeat to AND filters; 'FIELD=' matches empty, 'FIELD!=' "
+        "matches a value. Aliquots are excluded; with no QUERY all matching "
+        "objects are listed.",
     ),
     with_rewrite: bool = typer.Option(
         False,

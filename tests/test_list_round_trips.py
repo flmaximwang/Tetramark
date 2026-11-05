@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.driver.server import discard_server
@@ -196,7 +197,7 @@ def test_entity_list_runs_one_batched_read(
     ] == [("thing", 0, 0), ("alpha", 2, 2), ("pUC19", 0, 0)]
     # One JSON batch for every kind's rows, one CSV batch for the column
     # names JSON omits for NULL values.  The kinds are all in one process.
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
     assert len(invoke_log) <= 2
 
 
@@ -209,7 +210,7 @@ def test_entity_list_filtered_by_kind_runs_one_batched_read(
     rows = ledger.entities.ls("plasmid")
 
     assert [row["name"] for row in rows] == ["pUC19"]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
 
 def test_stock_list_runs_one_batched_read(
@@ -228,7 +229,7 @@ def test_stock_list_runs_one_batched_read(
         built["stocks"][3]["id"],
         built["stocks"][2]["id"],
     ]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     # The columns the list table prints come from the same batched read: the
     # owning design's name, how many tubes are still on the shelf and the
@@ -260,7 +261,7 @@ def test_aliquot_list_runs_one_batched_read(
     assert {row["path"] for row in rows} == {"BOX-1:A1", "SHELF-1"}
     # The rows and their aliases: one JSON batch, one CSV pass for the column
     # names JSON omits for NULL values.
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     # A box filter (a recursive box tree in the same statement) and a stock
     # filter (a resolved id in the same statement) stay one process too.
@@ -269,11 +270,11 @@ def test_aliquot_list_runs_one_batched_read(
     assert [(row["stock_id"], row["seq"]) for row in shelf] == [
         (built["lot"]["id"], 3)
     ]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     clear(invoke_log)
     assert [row["seq"] for row in ledger.aliquots.ls(built["lot"]["id"])] == [3]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     # A pinned status is the one deliberate second batch: the status vocabulary
     # is the stock kind's, so the stock is resolved first (unknown/ambiguous
@@ -283,7 +284,7 @@ def test_aliquot_list_runs_one_batched_read(
         row["seq"]
         for row in ledger.aliquots.ls(built["lot"]["id"], status=("stored",))
     ] == [3]
-    assert invoke_log == ["json", "csv", "json", "csv"]
+    assert invoke_log == ["json", "json"]
 
 
 def test_box_list_runs_one_batched_read(
@@ -295,7 +296,7 @@ def test_box_list_runs_one_batched_read(
     rows = ledger.boxes.ls()
 
     # Every kind's boxes plus the all-box path and occupancy rows, in one batch.
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
     paths = {row["name"]: row["path"] for row in rows}
     assert paths["BOX-1"] == "BOX-1"
     assert paths["INNER-1"] == "SHELF-1/INNER-1"
@@ -326,7 +327,7 @@ def test_box_show_runs_one_batched_read(
         assert view["box"] == "BOX-1"
         assert view["aliases"] == ["LEGACY-BOX"]
         assert len(invoke_log) <= 3
-        assert invoke_log == ["json", "csv"]
+        assert_single_read_process(invoke_log)
 
     # A slotted box with a child box in one of its slots reports that
     # occupant, too (both occupant kinds come from the same batch).
@@ -336,7 +337,7 @@ def test_box_show_runs_one_batched_read(
     assert top["occupants"] == [
         {"type": "box", "id": built["boxes"][4]["id"], "name": "INNER-2", "status": None}
     ]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
     # A slotless box reads its occupants from the same batch (no extra process
     # for the shape it does not use).
@@ -346,7 +347,7 @@ def test_box_show_runs_one_batched_read(
     assert [occupant["name"] for occupant in shelf["occupants"] if "name" in occupant] == [
         "INNER-1"
     ]
-    assert invoke_log == ["json", "csv"]
+    assert_single_read_process(invoke_log)
 
 
 def test_show_entity_and_stock_resolve_the_kind_after_the_core_row(
@@ -363,13 +364,13 @@ def test_show_entity_and_stock_resolve_the_kind_after_the_core_row(
     entity = ledger.entities.show(built["entities"][0]["id"])
     assert entity["category"] == "lab"
     assert len(invoke_log) <= 4
-    assert invoke_log == ["json", "csv", "json", "csv"]
+    assert invoke_log == ["json", "json"]
 
     clear(invoke_log)
     stock = ledger.stocks.show(built["lot"]["id"])
     assert len(stock["aliquots"]) == 3
     assert len(invoke_log) <= 4
-    assert invoke_log == ["json", "csv", "json", "csv"]
+    assert invoke_log == ["json", "json"]
 
 
 def test_empty_list_does_not_start_a_process(
