@@ -28,7 +28,7 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 
-from conftest import SKILL_BODY_LINE_LIMITS, skill_body_lines
+from conftest import SKILL_LINE_BUDGETS, skill_line_count
 
 runner = CliRunner()
 
@@ -328,8 +328,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "new_status",
         "forced",
         "actor",
-        "purpose",
-        "note",
+        "message",
     }
     assert first_shown["events"][0]["to_box"] == "BOX-2"
     assert first_shown["events"][0]["to_slot"] == "A1"
@@ -719,9 +718,9 @@ def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
     assert front["description"].startswith("Use when")
     for trigger in ("台账", "样品", "盒", "冻存", "库存", "管", "分装"):
         assert trigger in front["description"]
-    # Body lines only (the frontmatter is metadata, not the skill text); the
-    # same helper and ceilings guard both skills in test_skill_version.py.
-    assert len(skill_body_lines(skill_file)) <= SKILL_BODY_LINE_LIMITS["tetramark"]
+    # The whole file counts for the primary skill, frontmatter included; the
+    # same table and helper guard both skills in test_skill_version.py.
+    assert skill_line_count("tetramark") <= SKILL_LINE_BUDGETS["tetramark"][1]
 
     for relative in (
         "skills/tetramark/references/commands.md",
@@ -742,3 +741,21 @@ def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
     assert schema_front["description"].startswith("Use when")
     assert (root / "skills" / "tetramark-schema" / "references" / "presets.md").is_file()
     assert (root / "skills" / "tetramark-schema" / "references" / "evolution.md").is_file()
+
+
+def test_box_add_synopsis_and_help_document_set() -> None:
+    """AC14: both synopses and ``tm box add --help`` carry ``--set``."""
+    root = Path(__file__).resolve().parents[1]
+    spec = (root / "docs" / "spec" / "06-cli.md").read_text(encoding="utf-8")
+    commands = (
+        root / "skills" / "tetramark" / "references" / "commands.md"
+    ).read_text(encoding="utf-8")
+    assert "tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]" in spec
+    assert (
+        "tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] "
+        "[--set f=v ...] [--json]" in commands
+    )
+
+    result = runner.invoke(app, ["box", "add", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--set" in result.output

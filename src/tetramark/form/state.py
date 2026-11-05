@@ -801,6 +801,7 @@ class FormState:
         return {
             "kind": kind,
             "name": answers["name"],
+            "values": field_values,
             "parent": answers.get("parent"),
             "slot": answers.get("slot"),
             "notes": answers.get("notes"),

@@ -380,11 +380,9 @@ def test_history_shows_create_move_use_in_order(ledger_factory) -> None:
     move = result["events"][1]
     assert move["from_slot"] == "A1" and move["to_slot"] == "B2"
     assert move["from_box"] == "H1" and move["to_box"] == "H2"
-    assert move["note"] == "moved to H2"
-    assert move["purpose"] is None
+    assert move["message"] == "moved to H2"
     use = result["events"][2]
-    assert use["note"] == "prep"
-    assert use["purpose"] is None
+    assert use["message"] == "prep"
 
     messages = [commit["message"] for commit in result["commits"]]
     assert any(message.startswith("add(stock):") for message in messages)
@@ -524,6 +522,53 @@ def test_cli_history_json_and_csv(cli_env: None, ledger_factory) -> None:
     header = csv_result.output.splitlines()[0]
     assert header.startswith("section,at,event,aliquot_id")
     assert "event" in csv_result.output.splitlines()[1]
+
+
+def test_history_csv_has_sixteen_columns_and_a_shared_message(
+    cli_env: None, ledger_factory
+) -> None:
+    """Acceptance 3: the exact header, and both row kinds fill ``message``."""
+    from tetramark.ops.history import HISTORY_COLUMNS, history, history_rows
+
+    ledger = ledger_factory([BUNDLED_BASE], name="history-csv-shape")
+    _item, _stock, aliquot = _history_fixture(ledger)
+    rows = history_rows(history(ledger, aliquot))
+
+    assert len(HISTORY_COLUMNS) == 16
+    assert list(HISTORY_COLUMNS) == [
+        "section",
+        "at",
+        "event",
+        "aliquot_id",
+        "amount",
+        "unit",
+        "from_box",
+        "from_slot",
+        "to_box",
+        "to_slot",
+        "old_status",
+        "new_status",
+        "forced",
+        "actor",
+        "commit_hash",
+        "message",
+    ]
+    assert all(list(row) == list(HISTORY_COLUMNS) for row in rows)
+    # An event row: the event text is the shared message, no commit hash.
+    event_row = next(
+        row for row in rows if row["section"] == "event" and row["event"] == "move"
+    )
+    assert event_row["message"] == "moved to H2"
+    assert event_row["commit_hash"] == ""
+    # A commit row: the commit message is the same shared column.
+    commit_row = next(row for row in rows if row["section"] == "commit")
+    assert commit_row["message"]
+    assert commit_row["commit_hash"]
+
+    # The CLI prints exactly this header.
+    csv_result = invoke(ledger, "--format", "csv", "history", aliquot)
+    assert csv_result.exit_code == 0, csv_result.output
+    assert csv_result.output.splitlines()[0] == ",".join(HISTORY_COLUMNS)
 
 
 def test_cli_format_applies_to_list_and_show(cli_env: None, ledger_factory) -> None:

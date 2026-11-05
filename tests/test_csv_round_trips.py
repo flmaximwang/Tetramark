@@ -31,6 +31,7 @@ import pytest
 from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver import EmbeddedDriver
+from tetramark.driver.server import discard_server
 from tetramark.errors import LedgerError
 from tetramark.ops.io_csv import CsvImportError, export_csv, import_csv
 
@@ -106,6 +107,14 @@ def source(
     )
     make_source(ledger)
     ledger.close()
+    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
+    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
+    # the server reports integers as strings (``'1'``), so the fixture stops it
+    # before the embedded reopen.
+    discard_server(root / "ledger")
+    assert not (root / "ledger" / ".dolt" / "sql-server.info").exists(), (
+        "a cached sql-server would route the fixture's embedded reads through it"
+    )
     ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
     try:
         yield ledger
