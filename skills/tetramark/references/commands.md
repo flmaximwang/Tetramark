@@ -253,9 +253,9 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
   owning design's name, printed in full. By default it lists only the `active` stocks (at least one
   aliquot in stock); `--all` adds the `empty` and `depleted` ones, with the same columns. `status` is
-  derived from the aliquots: `empty` (none), `active` (at least one in stock) or `depleted` (every
-  aliquot has left stock); it is a derived column, not a `--where` field. `--where` takes the shared
-  filters (see **Filters** above).
+  derived from the aliquots: `empty` (none), `active` (at least one in stock) or `depleted` (it has
+  aliquots, but none in stock — an unplaced tube is not in stock either); it is a derived column, not
+  a `--where` field. `--where` takes the shared filters (see **Filters** above).
 - `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**

@@ -427,10 +427,11 @@ in full, never truncated.
   depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots of all the
   entity's stocks. Both are `0` for an entity without stocks.
 - `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. By default it
-  lists only the `active` rows; `--all` adds the `empty` and `depleted` rows, with the same columns.
-  `entity_name` is the owning design's name. `status` is derived from the aliquots: `empty` when the
-  stock has none, `active` when at least one is in stock, and `depleted` when every aliquot has left
-  stock.
+  lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
+  `depleted` rows, with the same columns. `entity_name` is the owning design's name. `status` is
+  derived from the aliquots: `empty` when the stock has none, `active` when at least one aliquot is
+  in stock, and `depleted` when it has aliquots but none of them is in stock (a tube that was never
+  placed in a box is not in stock either).
 - `tm box list` prints `id name kind path occupied capacity`. The table shortens `id` to a unique
   prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
   `occupied` counts the aliquots and the immediate child boxes directly in the box, counting items
