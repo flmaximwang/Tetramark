@@ -19,18 +19,36 @@ from __future__ import annotations
 import datetime as _dt
 from dataclasses import dataclass
 
-from tetramark.schema.model import UNSET, EffectiveSchema, Field, FieldType, Kind
+from tetramark.schema.model import (
+    UNSET,
+    EffectiveSchema,
+    Field,
+    FieldType,
+    GeometryType,
+    Kind,
+)
 
 __all__ = [
+    "FACT_LABEL_HEAD",
+    "FACT_LABEL_LIMIT",
+    "FACT_LABEL_TAIL",
     "OBJECT_TYPES",
     "FormPlan",
     "KindChoice",
     "Step",
+    "box_kind_facts",
     "build_kind_step",
     "build_plan",
     "default_text",
     "field_step",
 ]
+
+#: A fact label list with at most this many labels is shown in full.
+FACT_LABEL_LIMIT = 12
+#: Labels kept at the head of a longer list.
+FACT_LABEL_HEAD = 8
+#: Labels kept at the tail of a longer list.
+FACT_LABEL_TAIL = 2
 
 #: The four core objects a form can create.
 OBJECT_TYPES: tuple[str, ...] = ("entity", "stock", "aliquot", "box")
@@ -52,6 +70,9 @@ class KindChoice:
 
     name: str
     description: str | None = None
+    #: Structured ``(label, value)`` facts shown under the description (box
+    #: kind lists only; the other kind lists keep the empty default).
+    facts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,11 +133,73 @@ def field_step(name: str, field: Field) -> Step:
     )
 
 
+def _label_list(labels: list[str]) -> str:
+    """A bound label list: all of them, or first 8 ``…`` last 2, then ``(N)``."""
+    total = len(labels)
+    if total <= FACT_LABEL_LIMIT:
+        shown = labels
+    else:
+        shown = [*labels[:FACT_LABEL_HEAD], "…", *labels[-FACT_LABEL_TAIL:]]
+    return f"{' '.join(shown)} ({total})"
+
+
+def box_kind_facts(kind: Kind) -> tuple[tuple[str, str], ...]:
+    """One box kind's structured facts as ordered ``(label, value)`` rows.
+
+    Pure: every value comes from the parsed effective schema (the kind and its
+    geometry), never from the database.  The capacity row follows the same
+    formula as ``tm box list``: ``len(geometry.labels) * kind.slot_capacity``
+    for slotted kinds, ``geometry.capacity`` for slotless ones.
+    """
+    geometry = kind.geometry
+    if geometry is None:
+        return ()
+    if geometry.is_slotted:
+        slots = len(geometry.labels)
+        capacity_fact = (
+            f"{slots * kind.slot_capacity} aliquots "
+            f"({slots} slots × {kind.slot_capacity} per slot)"
+        )
+    elif geometry.capacity is not None:
+        capacity_fact = f"{geometry.capacity} (aliquots + child boxes)"
+    else:
+        capacity_fact = "unlimited"
+    if geometry.type is GeometryType.grid:
+        rows = geometry.row_labels
+        columns = geometry.col_labels
+        labels = geometry.labels
+        return (
+            ("geometry", f"grid, {len(rows)} rows × {len(columns)} columns"),
+            ("rows", _label_list(rows)),
+            ("columns", _label_list(columns)),
+            ("slots", f"{labels[0]} … {labels[-1]} ({len(labels)})"),
+            ("capacity", capacity_fact),
+            ("holds boxes", "no"),
+        )
+    if geometry.type is GeometryType.named:
+        labels = geometry.labels
+        return (
+            ("geometry", f"named, {len(labels)} slots"),
+            ("slots", _label_list(labels)),
+            ("capacity", capacity_fact),
+            ("holds boxes", "yes, one per free slot"),
+        )
+    return (
+        ("geometry", "slotless"),
+        ("capacity", capacity_fact),
+        ("holds boxes", "yes"),
+    )
+
+
 def _kind_choices(schema: EffectiveSchema, object_type: str) -> tuple[KindChoice, ...]:
     kind_object = KIND_OBJECT[object_type]
     kinds = schema.kinds_for(kind_object)
     return tuple(
-        KindChoice(name=name, description=kinds[name].description)
+        KindChoice(
+            name=name,
+            description=kinds[name].description,
+            facts=box_kind_facts(kinds[name]) if object_type == "box" else (),
+        )
         for name in sorted(kinds)
     )
 

@@ -460,6 +460,11 @@ Then come the **fields of the chosen kind in schema order**, each with its descr
 when it is required (for a box they follow its name and precede its parent). **Computed** fields are
 never asked; **sequence** fields are.
 
+At the kind step of `tm box add-form` each box kind also shows structured facts under its
+description: its geometry, the resolved row/column or slot labels, its slot count and capacity, and
+whether it holds boxes. They come from the effective schema only — the capacity is the same
+`tm box list` formula — so choosing a kind never queries occupancy.
+
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 
 | type | what the form accepts |

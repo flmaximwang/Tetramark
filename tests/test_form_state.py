@@ -23,7 +23,7 @@ from tetramark.form.editor import (
     strip_editor_text,
 )
 from tetramark.form.source import Choice, Reply, ScriptedSource
-from tetramark.form.spec import Step, build_plan
+from tetramark.form.spec import Step, box_kind_facts, build_plan
 from tetramark.form.state import (
     FormError,
     FormState,
@@ -43,6 +43,14 @@ FULL = load_schema(
 )
 SINGLE = load_schema(
     LedgerConfig(name="form", presets=[str(PRESETS / "base")]), base_dir=Path.cwd()
+)
+#: The repository's own base preset: the box geometries a new ledger starts with.
+REPO_BASE = load_schema(
+    LedgerConfig(
+        name="form",
+        presets=[str(Path(__file__).resolve().parents[1] / "presets" / "base.yaml")],
+    ),
+    base_dir=Path.cwd(),
 )
 
 TODAY = dt.date(2026, 11, 3)
@@ -195,6 +203,28 @@ def test_kind_step_lists_the_schema_kinds() -> None:
     ]
 
 
+def test_box_kind_facts_capacity_matches_the_box_list_formula() -> None:
+    """The shown capacity is the one ``tm box list`` computes from the schema."""
+    for kind in REPO_BASE.kinds_for("box").values():
+        geometry = kind.geometry
+        assert geometry is not None
+        facts = dict(box_kind_facts(kind))
+        capacity = (
+            len(geometry.labels) * kind.slot_capacity
+            if geometry.is_slotted
+            else geometry.capacity
+        )
+        if capacity is None:
+            assert facts["capacity"] == "unlimited"
+        elif geometry.is_slotted:
+            assert facts["capacity"] == (
+                f"{capacity} aliquots "
+                f"({len(geometry.labels)} slots × {kind.slot_capacity} per slot)"
+            )
+        else:
+            assert facts["capacity"] == f"{capacity} (aliquots + child boxes)"
+
+
 def test_entity_steps_follow_schema_order_and_skip_computed() -> None:
     steps = build_plan(FULL, "entity").steps("everything")
     keys = [step.key for step in steps]
@@ -278,6 +308,37 @@ def test_kind_by_number_or_name_and_unknown_kind() -> None:
     state.submit("nope")
     assert "unknown kind" in state.error
     assert state.kind is None
+
+
+def test_box_kind_step_selects_by_number_and_carries_facts() -> None:
+    state = state_for("box")
+    prompt = state.prompt()
+    assert [choice.value for choice in prompt.choices] == [
+        "grid96",
+        "grid9x9",
+        "namedbox",
+        "rack",
+        "shelf",
+        "slotlessbox",
+    ]
+    assert all(choice.facts for choice in prompt.choices)
+    assert dict(prompt.choices[0].facts)["geometry"] == "grid, 8 rows × 12 columns"
+
+    state.submit("1")
+    assert state.kind == "grid96"
+
+
+def test_shift_tab_back_to_the_kind_step_keeps_the_same_facts() -> None:
+    state = state_for("box")
+    before = state.prompt().choices
+    state.submit("1")  # grid96
+    assert state.current().key == "name"
+
+    state.back()  # Shift+Tab back to the kind step
+    assert state.current().key == "kind"
+    after = state.prompt().choices
+    assert after == before
+    assert all(choice.facts for choice in after)
 
 
 def test_required_empty_optional_skip_and_back_prefill() -> None:
@@ -620,6 +681,9 @@ def test_review_rows_jump_write_and_cancel() -> None:
     assert [row.number for row in rows] == [1, 2, 3, 4]
     assert [row.label for row in rows] == ["kind", "name", "parent", "notes"]
     assert [row.value for row in rows] == ["grid96", "BOX-1", "", ""]
+    # The review's kind row is the kind name only: the facts live on the kind
+    # step of the form, never in the review or the write payload.
+    assert (rows[0].label, rows[0].value) == ("kind", "grid96")
 
     state.review_input("2")
     assert state.mode == "input"

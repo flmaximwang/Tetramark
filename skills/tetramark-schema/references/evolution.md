@@ -29,6 +29,18 @@ ledger_meta fingerprint will be refreshed on apply
 - A warning at open time that the fingerprint does not match is normal after editing YAML. Run
   `schema plan` to see what changed; it is not an error.
 
+## Additive vs destructive
+
+**Additive** steps need no flags: a new kind, a new nullable or defaulted field, a new enum value,
+a new view/rule/test, a new aliquot-fields table, or relaxing a NOT NULL constraint.
+
+**Destructive** steps need `--allow-destructive`: dropping a kind or field, changing a type, adding
+NOT NULL without a default, adding UNIQUE, or removing an enum value.
+
+Generated columns and dependent foreign keys are dropped and rebuilt automatically. Renames are
+additive — see "Renaming instead of drop+add" below; tightening an existing column is the sequence
+in "Destructive change: tightening a field".
+
 ## Additive change: a local entity kind
 
 1. Create `<ledger>/kinds/equipment.yaml`:
@@ -90,8 +102,8 @@ Error: refusing to apply 1 destructive step(s) without --allow-destructive
 Safe procedure:
 
 1. `tm backup /path/to/archive/NAME` (or a configured backup / push) first.
-2. Make the field nullable, apply, and backfill (through `entity edit`, `import`, or a scripted
-   export/edit/import).
+2. Make the field nullable, apply, and backfill through `tm export`/`tm import`, the app, or
+   `entity edit`.
 3. Make it `required` and run `tm schema apply --allow-destructive`.
 4. `tm check`.
 
@@ -116,9 +128,8 @@ The plan emits `ALTER TABLE … RENAME TO` / `ALTER TABLE … RENAME COLUMN` ste
 data is preserved) instead of dropping the old table/column and creating an empty one. Renaming a
 kind also renames its generated table, its convenience view and FK names.
 
-Other destructive changes: dropping a kind/field, changing a type, adding UNIQUE, adding NOT NULL to
-an existing nullable column, removing an enum value. Dolt rebuilds any generated column or FK that
-depends on a changed column automatically.
+The other destructive changes, and Dolt's automatic rebuild of any generated column or FK that
+depends on a changed column, are listed in "Additive vs destructive" above.
 
 ## Local rules
 

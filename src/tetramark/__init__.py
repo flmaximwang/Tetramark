@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.8.32"
+__version__ = "0.8.34"
 
 __all__ = ["Ledger", "__version__", "adopt_ledger", "init_ledger", "open"]
 

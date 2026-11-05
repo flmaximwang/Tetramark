@@ -17,7 +17,10 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
-| [0.8.32](v0.8.32.md) | `v0.8.32.md` | aliquot events show their stored messages and resolved box names; unresolved refs are labelled, JSON gains two additive resolution flags |
+| [0.8.34](v0.8.34.md) | `v0.8.34.md` | aliquot events show their stored messages and resolved box names; unresolved refs are labelled, JSON gains two additive resolution flags |
+| [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
+| [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |
+| [0.8.31](v0.8.31.md) | `v0.8.31.md` | releases attach the wheel and sdist; the wheel ships the skills; pinned install docs |
 | [0.8.30](v0.8.30.md) | `v0.8.30.md` | isolated `tm` entry point, lazy package import, version-drift warning |
 | [0.8.29](v0.8.29.md) | `v0.8.29.md` | ledger discovery ignores Dolt's global config directory and no longer suggests `tm adopt` for it |
 | [0.8.28](v0.8.28.md) | `v0.8.28.md` | `aliquot_event.message` replaces `note`/`purpose` (spec 7): the event column is renamed, `purpose` is dropped, and a 6-to-7 migration ships |
