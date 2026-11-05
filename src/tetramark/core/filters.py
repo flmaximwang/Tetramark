@@ -25,10 +25,18 @@ Rules:
 * any number of ``~`` filters may address one field; they are ANDed;
 * an empty pattern (``name~``) is an error;
 * an invalid pattern is reported as a usage error naming the filter;
-* ``NULL`` never matches, and a ``ref`` field matches the id it stores.
+* ``field=`` (an empty value) means "the field is empty": ``NULL`` or ``''``
+  on a text-like column (the kind types ``string``/``text``/``enum``/
+  ``sequence``/``ref``, and every core column but ``created_at``), ``NULL``
+  only on a non-text one (the kind types ``int``/``decimal``/``bool``/
+  ``date``/``datetime``, and core ``created_at``); it skips the coercion and
+  the ``ref``/alias resolution;
+* ``NULL`` never matches a ``~`` pattern (not even ``field~^$``), and a
+  ``ref`` field matches the id it stores.
 
-A mapping (``where={"name": "pUC19"}``) means equality only; a list of strings
-(``where=["name~^pUC"]``) accepts both operators.
+A mapping (``where={"name": "pUC19"}``) means equality only, and a mapping
+value ``None`` or ``""`` means "is empty"; a list of strings
+(``where=["name~^pUC"]`` or ``where=["name="]``) accepts both operators.
 """
 
 from __future__ import annotations
