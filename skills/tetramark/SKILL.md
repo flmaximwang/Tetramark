@@ -58,7 +58,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box, or move the box itself | `tm box show NAME` (grid) or `--json`; `tm box move NAME --in PARENT [--slot S]` |
 | Rename an entity or box, or edit an entity, stock or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias); `tm entity\|stock\|box edit REF --set f=v` (notes + kind fields; a name is rename-only — `--set name=…` is refused) |
-| Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance=kan'` (`=` exact, `field=` = empty; `~` case-sensitive regex, `(?i)`) |
+| Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance!=amp'` (`=` exact, `!=` inequality, `~`/`!~` case-sensitive regex `(?i)`, ordered comparisons; `field=` empty, `field!=` filled in) |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
 | Register an organism line and its colony, or record a cross / pedigree link | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse`; `tm stock add fly_culture … --set dam=ALQ --set sire=ALQ` (refs to aliquots, `lineage: true`) |
 | Where material came from / what derives from it | `tm lineage ID [--up \| --down] [--depth N]` |
