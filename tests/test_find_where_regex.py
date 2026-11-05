@@ -879,7 +879,7 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json"]
+    assert_single_read_process(invoke_calls)
 
     query_many_calls.clear()
     invoke_calls.clear()
@@ -887,7 +887,7 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json"]
+    assert_single_read_process(invoke_calls)
 
     query_many_calls.clear()
     invoke_calls.clear()
@@ -895,7 +895,7 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json"]
+    assert_single_read_process(invoke_calls)
     # The batch really carries the search, the filter queries and the maps.
     assert len(query_many_calls[0]) >= 10
 

@@ -43,8 +43,9 @@ shares**. It is part of the core model, not the schema: no preset or ledger decl
 `stored` is the only in-stock status: the stock views count an aliquot in stock exactly when its
 status is `stored`. Creating an aliquot (`tm stock add`, `tm aliquot add`, `tm import`) accepts any
 of the four; changing one (`tm aliquot status`) must follow the table. `tm aliquot status ALQ NEW
---force --note TEXT` overrides the transition check and records `aliquot_event.forced = TRUE`; an
-unforced event that breaks a transition fails `tm check` (§4). A tube marked `consumed` by mistake
+--force -m TEXT` overrides the transition check, records `aliquot_event.forced = TRUE` and stores the
+trimmed reason in `aliquot_event.message`; an unforced event that breaks a transition fails
+`tm check` (§4). A tube marked `consumed` by mistake
 keeps its history: `tm aliquot move ALQ --box NAME -m MSG` re-places it and restores `stored` (a
 forced change back to `stored` still needs a position, so `move` is the working path).
 

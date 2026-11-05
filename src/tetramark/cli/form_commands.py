@@ -37,6 +37,20 @@ _MESSAGES: dict[str, Callable[[dict[str, Any]], str]] = {
 }
 
 
+def _next_aliquots_hint(stock_id: str) -> str:
+    """The line that points at the aliquot workflow after a stock is created."""
+    return (
+        "Next: add aliquots with 'tm aliquot add-form' or "
+        f"'tm aliquot add {stock_id} --count N --quantity Q --unit U'"
+    )
+
+
+def _wrote_for_real(ledger: Any) -> bool:
+    """Whether the form's last write reached the database (not ``--dry-run``)."""
+    session = getattr(ledger, "last_write", None)
+    return session is None or not session.dry_run
+
+
 def _stdin_is_tty() -> bool:
     """Whether stdin is a terminal (tests monkeypatch this hook)."""
     try:
@@ -55,7 +69,13 @@ def _make_source() -> Any:
 def run_add_form_command(
     ctx: typer.Context, object_type: str, *, as_json: bool
 ) -> None:
-    """Run the form for one object and report the result like ``add``."""
+    """Run the form for one object and report the result like ``add``.
+
+    A stock form prints one extra human-only line after the normal message,
+    pointing at ``tm aliquot add-form``/``tm aliquot add``: the stock form
+    deliberately creates no aliquots.  ``--json`` and ``--dry-run`` keep the
+    output identical to ``tm stock add --aliquots 0``.
+    """
     if not _stdin_is_tty():
         typer.echo(
             f"Error: 'tm {object_type} add-form' needs an interactive terminal; "
@@ -75,11 +95,14 @@ def run_add_form_command(
         if result is None:
             typer.echo("Cancelled; nothing written.")
             return
+        as_json_out = json_output(ctx, as_json)
         emit_write(
             ledger,
             result,
             _MESSAGES[object_type](result),
-            as_json=json_output(ctx, as_json),
+            as_json=as_json_out,
         )
+        if object_type == "stock" and not as_json_out and _wrote_for_real(ledger):
+            typer.echo(_next_aliquots_hint(result["id"]))
     finally:
         ledger.close()

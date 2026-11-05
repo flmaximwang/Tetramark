@@ -91,6 +91,21 @@ def test_aliquots_use_takes_an_optional_amount_and_a_required_message() -> None:
     assert "note" not in parameters
 
 
+@pytest.mark.fast
+def test_aliquots_status_takes_an_optional_message_and_no_note() -> None:
+    """``ledger.aliquots.status(ref, status, *, message=None, force=False)``."""
+    from tetramark.core.objects import AliquotOps
+
+    signature = inspect.signature(AliquotOps.status)
+    parameters = signature.parameters
+    assert list(parameters) == ["self", "ref", "status", "message", "force"]
+    assert parameters["message"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["message"].default is None
+    assert parameters["force"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["force"].default is False
+    assert "note" not in parameters
+
+
 # ---------------------------------------------------------------------------
 # Behaviour on a real ledger
 # ---------------------------------------------------------------------------

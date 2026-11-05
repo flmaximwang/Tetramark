@@ -1,8 +1,9 @@
 """Assertion helper for the one-process read invariant.
 
-`EmbeddedDriver.query` / `query_many` must never launch a second `dolt sql` process only to learn the
-column names - see PR #80. Tests count process invocations through this helper instead of pinning the
-literal sequence, so a future read-path change only has to edit this file.
+`EmbeddedDriver.query` / `query_many` must never launch a second `dolt sql`
+process only to learn the column names - see PR #80. Tests count process
+invocations through this helper instead of pinning the literal sequence, so a
+future read-path change only has to edit this file.
 """
 from __future__ import annotations
 
