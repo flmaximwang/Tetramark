@@ -1,8 +1,10 @@
-"""The shared filter backend: parsing ``field=value`` / ``field~pattern``.
+"""The shared filter backend: the operators of ``--where``.
 
 The parser and the SQL builder are pure, so the whole module runs in the fast
 lane: no Dolt, no ledger (Tetramark-6ms.1).  The database side of a pattern
-(what ``REGEXP`` means) is pinned by ``tests/test_where_regex.py``.
+(what ``REGEXP`` means) is pinned by ``tests/test_where_regex.py``, and the
+behaviour of the operators against real rows by
+``tests/test_where_operators.py`` (Tetramark-d0x.1).
 """
 
 from __future__ import annotations
@@ -14,6 +16,12 @@ from tetramark.cli.app import app
 from tetramark.core.filters import (
     EQUALS,
     REGEXP,
+    NOT_EQUALS,
+    NOT_REGEXP,
+    LESS,
+    LESS_EQUAL,
+    GREATER,
+    GREATER_EQUAL,
     Filter,
     build_conditions,
     check_fields,
@@ -54,17 +62,31 @@ def test_a_mapping_none_is_the_empty_filter_not_the_text_none() -> None:
 
 
 def test_a_malformed_filter_is_a_usage_error() -> None:
-    with pytest.raises(UsageError, match="expected field=value or field~pattern"):
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
         parse_filters(["name"])
-    with pytest.raises(UsageError, match="the field name is empty"):
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
         parse_filters(["=x"])
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
+        parse_filters([" =x"])
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
+        parse_filters(["f x=1"])
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
+        parse_filters(["f!x"])
 
 
 def test_a_field_name_must_be_an_identifier() -> None:
+    # A mapping key is a field name, never an operator.
     with pytest.raises(UsageError, match="not a valid field name"):
+        parse_filters({"name~x": "y"})
+    with pytest.raises(UsageError, match="not a valid field name"):
+        parse_filters({"na me": "x"})
+    # A list filter names its field with the identifier it starts with.
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
         parse_filters(["na me=x"])
-    with pytest.raises(UsageError, match="not a valid field name"):
+    with pytest.raises(UsageError, match="expected field=value, field~pattern"):
         parse_filters(["name;drop=x"])
+    with pytest.raises(UsageError, match="the field name is empty"):
+        parse_filters({"": "x"})
 
 
 def test_a_field_is_filtered_by_equals_at_most_once() -> None:
@@ -257,3 +279,202 @@ def test_the_where_help_mentions_the_pattern_operator(group: str) -> None:
     assert result.exit_code == 0, result.output
     assert "field~pattern" in result.output
     assert "(?i)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The operators (Tetramark-d0x.1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "field", "operator", "value"),
+    [
+        ("name=a<b", "name", EQUALS, "a<b"),
+        ("name=a!b", "name", EQUALS, "a!b"),
+        ("name==x", "name", EQUALS, "=x"),
+        ("name~a~b", "name", REGEXP, "a~b"),
+        ("f!=x", "f", NOT_EQUALS, "x"),
+        ("f!~GFP", "f", NOT_REGEXP, "GFP"),
+        ("count<10", "count", LESS, "10"),
+        ("count<=10", "count", LESS_EQUAL, "10"),
+        ("count>10", "count", GREATER, "10"),
+        ("length_bp>=1000", "length_bp", GREATER_EQUAL, "1000"),
+        (" name = x", "name", EQUALS, " x"),
+        ("name= x", "name", EQUALS, " x"),
+    ],
+)
+def test_the_operator_is_the_one_after_the_field_name(
+    text: str, field: str, operator: str, value: str
+) -> None:
+    """The value may hold any operator character; the name comes first."""
+    assert parse_filters([text]) == (Filter(field, operator, value),)
+
+
+def test_equals_cannot_be_mixed_with_any_other_operator() -> None:
+    with pytest.raises(UsageError, match="both '=' and '!='"):
+        parse_filters(["name=a", "name!=b"])
+    with pytest.raises(UsageError, match="both '=' and '!='"):
+        parse_filters(["name!=b", "name=a"])
+    with pytest.raises(UsageError, match="both '=' and '>='"):
+        parse_filters(["name=a", "name>=b"])
+    with pytest.raises(UsageError, match="both '=' and '>='"):
+        parse_filters(["name>=b", "name=a"])
+    # The message of a pattern is the one the filter backend always used.
+    with pytest.raises(UsageError, match="both '=' and '~'"):
+        parse_filters(["name~b", "name=a"])
+
+
+def test_the_other_operators_may_be_repeated_and_are_anded() -> None:
+    filters = parse_filters(
+        ["length_bp>=1000", "length_bp<5000", "name~^p", "name!~GFP"]
+    )
+    assert filters == (
+        Filter("length_bp", GREATER_EQUAL, "1000"),
+        Filter("length_bp", LESS, "5000"),
+        Filter("name", REGEXP, "^p"),
+        Filter("name", NOT_REGEXP, "GFP"),
+    )
+
+
+def test_an_empty_pattern_or_comparison_value_is_a_usage_error() -> None:
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["name~"])
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["name!~"])
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["count<"])
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["count<="])
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["count>"])
+    with pytest.raises(UsageError, match="must not be empty"):
+        parse_filters(["count>="])
+
+
+def test_the_conditions_of_every_operator() -> None:
+    """Every operator is one condition and one parameter."""
+    conditions, params = build_conditions(
+        parse_filters(
+            [
+                "name=a",
+                "kind!=b",
+                "note~^p",
+                "code!~x$",
+                "count>=10",
+                "size<5",
+            ]
+        ),
+        expressions={
+            "name": "`name`",
+            "kind": "`kind`",
+            "note": "`note`",
+            "code": "`code`",
+            "count": "`count`",
+            "size": "`size`",
+        },
+    )
+
+    assert conditions == [
+        "`name` = %s",
+        "(`kind` IS NULL OR `kind` <> %s)",
+        "`note` REGEXP %s",
+        "(`code` IS NULL OR NOT (`code` REGEXP %s))",
+        "`count` >= %s",
+        "`size` < %s",
+    ]
+    assert params == ["a", "b", "^p", "x$", "10", "5"]
+
+
+def test_an_empty_not_equals_filter_is_the_complement_of_the_empty_filter() -> None:
+    """``field!=`` means "the field has a value"; it excludes NULL and ''."""
+    kind = _kind_with(
+        label=Field(type=FieldType.string), count=Field(type=FieldType.int)
+    )
+
+    conditions, params = build_conditions(
+        parse_filters(["label!=", "count!="]),
+        expressions={"label": "`label`", "count": "`count`"},
+        empty=lambda field, expression: empty_condition(kind, field, expression),
+    )
+
+    assert conditions == [
+        "NOT ((`label` IS NULL OR `label` = ''))",
+        "NOT (`count` IS NULL)",
+    ]
+    assert params == []
+
+
+def test_an_empty_not_equals_filter_without_a_schema_matches_the_column_as_text() -> None:
+    conditions, params = build_conditions(
+        parse_filters(["name!="]), expressions={"name": "`name`"}
+    )
+
+    assert conditions == ["NOT ((`name` IS NULL OR `name` = ''))"]
+    assert params == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        Field(type=FieldType.bool),
+        Field(type=FieldType.enum, values=["a", "b"]),
+        Field(type=FieldType.sequence),
+        Field(type=FieldType.ref, to="item"),
+    ],
+)
+def test_an_ordered_comparison_on_a_field_without_an_order_is_a_usage_error(
+    field: Field,
+) -> None:
+    kind = _kind_with(value=field)
+
+    with pytest.raises(UsageError, match="has no order"):
+        build_conditions(
+            parse_filters(["value>1"]),
+            expressions={"value": "`value`"},
+            kind=kind,
+        )
+
+
+def test_an_ordered_comparison_on_a_computed_field_is_a_usage_error() -> None:
+    kind = _kind_with(
+        display=Field(
+            type=FieldType.computed, expr="UPPER(name)", sql_type=SqlType.string
+        )
+    )
+
+    with pytest.raises(UsageError, match="is computed"):
+        build_conditions(
+            parse_filters(["display>a"]),
+            expressions={"display": "`display`"},
+            kind=kind,
+        )
+
+
+def test_an_ordered_comparison_on_created_at_needs_an_iso_value() -> None:
+    kind = _kind_with()
+
+    conditions, params = build_conditions(
+        parse_filters(["created_at>2024-01-01"]),
+        expressions={"created_at": "`created_at`"},
+        kind=kind,
+    )
+
+    assert conditions == ["`created_at` > %s"]
+    assert params == ["2024-01-01"]
+
+    with pytest.raises(UsageError, match="is not an ISO date or datetime"):
+        build_conditions(
+            parse_filters(["created_at>yesterday"]),
+            expressions={"created_at": "`created_at`"},
+            kind=kind,
+        )
+
+
+def test_the_where_help_names_every_operator() -> None:
+    """The help says which operators exist (all of them single-quoted)."""
+    result = CliRunner().invoke(app, ["entity", "list", "--help"])
+
+    assert result.exit_code == 0, result.output
+    for operator in ("field=value", "field~pattern", "field!=value", "field!~pattern"):
+        assert operator in result.output
+    assert "field<value" in result.output

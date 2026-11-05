@@ -1638,6 +1638,8 @@ def _list_records(
             empty=lambda field, expression: empty_condition(
                 kind, field, expression
             ),
+            kind=kind,
+            option="--where",
         )
         if column_sql is not None:
             select_items = [
