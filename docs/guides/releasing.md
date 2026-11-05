@@ -5,7 +5,7 @@ Tagging is not a step any more. **Merging a version bump is the release**: the m
 merge commit and publishes the GitHub release. An agent that forgets `git tag` can no longer produce an
 untagged release, because the agent never tags anything.
 
-## The version lives in four locations
+## The version lives in five places (four rows below)
 
 | File | What it holds | Why it matters |
 |---|---|---|
@@ -31,7 +31,7 @@ version    0.8.25
 previous   0.8.24  -> moved
 tag        v0.8.25  absent -- the workflow will create it
 notes      docs/releases/v0.8.25.md  present
-checkout   main @ efd79e9  clean
+checkout   main @ <sha>  clean
 ready
 ```
 
