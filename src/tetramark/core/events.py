@@ -66,9 +66,9 @@ class Event:
     #: generated ``core_status_event_allowed`` test skips forced events.
     forced: bool = False
     actor: str | None = None
-    #: Why the event happened: the ``-m/--message`` text of ``use``/``move``,
-    #: the ``--note`` of a forced ``status`` change, ``spec 4-to-5`` for the
-    #: positions that step cleared, and so on.
+    #: Why the event happened: the ``-m/--message`` text of ``use``/``move``
+    #: or a ``status`` change, ``spec 4-to-5`` for the positions that step
+    #: cleared, and so on.
     message: str | None = None
 
 

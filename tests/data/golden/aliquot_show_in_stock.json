@@ -12,6 +12,7 @@
       "forced": false,
       "from_box": null,
       "from_box_id": null,
+      "from_box_resolved": null,
       "from_slot": null,
       "id": "<event-id>",
       "message": null,
@@ -19,6 +20,7 @@
       "old_status": null,
       "to_box": "Box",
       "to_box_id": "<box-id>",
+      "to_box_resolved": true,
       "to_slot": "A3",
       "unit": "ul"
     }

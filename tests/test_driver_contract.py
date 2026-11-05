@@ -16,8 +16,10 @@ from pathlib import Path
 
 import pytest
 
+from support.read_asserts import assert_single_read_process
 from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError, UnreachableError, UsageError
+from support.read_asserts import assert_single_read_process
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so
@@ -231,7 +233,7 @@ def test_embedded_query_many_runs_one_json_process(
     )
     assert results == [[{"a": 1, "b": None}], [], [{"d": 3}]]
     # One JSON batch for the rows, one CSV batch for the column headers.
-    assert calls == ["json"]
+    assert_single_read_process(calls)
 
 
 # -- backend specifics ----------------------------------------------------

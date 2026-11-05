@@ -98,7 +98,8 @@ def add_stock_form_command(
     ctx: typer.Context,
     as_json: bool = typer.Option(False, "--json", help="Print the created stock as JSON."),
 ) -> None:
-    """Interactively create a stock (for people; agents use 'add')."""
+    """Interactively create a stock without aliquots (for people; agents use 'add').
+    Add aliquots afterwards with 'tm aliquot add-form'."""
     run_add_form_command(ctx, "stock", as_json=as_json)
 
 
@@ -198,14 +199,27 @@ def list_stocks_command(
         "'>='; repeat to AND filters; 'FIELD=' matches empty, 'FIELD!=' "
         "matches a value. A regex is case-sensitive; '(?i)' ignores case.",
     ),
+    where_any: list[str] = typer.Option(
+        [],
+        "--where-any",
+        help="One OR group: a row must match one of these filters, ANDed "
+        "with every --where. Same syntax and operators as --where; a field "
+        "may repeat here, e.g. 'resistance=kan' or 'resistance=amp'.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
     """List stocks: only active stocks (at least one aliquot in stock) by
-    default; --all adds empty and depleted stocks.
+    default; --all adds empty and depleted stocks. `--where` ANDs, and
+    `--where-any` is one OR group ANDed with them.
     """
     ledger = resolve_ledger(ctx)
     try:
-        rows = ledger.stocks.ls(kind, where=where, all_statuses=all_flag)
+        rows = ledger.stocks.ls(
+            kind,
+            where=where,
+            where_any=where_any,
+            all_statuses=all_flag,
+        )
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),

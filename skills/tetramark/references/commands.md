@@ -126,7 +126,7 @@ four-entry `statuses:` block for every stock kind.
 Creation (`--status` on `tm stock add`/`tm aliquot add`, the CSV `status` column) accepts any of the
 four; only `stored` counts as in stock, so `tm aliquot list` shows `stored` tubes by default and only
 a `stored` tube may carry a box position. A later change (`tm aliquot status ALQ NEW`) must follow the
-table. `--force` requires `--note TEXT`, overrides the transition check and records
+table. `--force` requires `-m/--message TEXT`, overrides the transition check and records
 `aliquot_event.forced = TRUE`; putting a wrongly `consumed` tube back means placing it again — a
 `move` of a not-in-stock tube restores `stored`.
 
@@ -134,19 +134,19 @@ Detailed life states are **stock properties or event messages**, not statuses: o
 on `mouse_cohort` and `fish_group`/`fish_clutch` (euthanized, found_dead, transferred, cancelled) and
 on `fly_culture` (discarded, lost), and optional enum `condition` on `worm_culture` (growing,
 starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized` or
-`--set condition=starved`, or record a one-off in the event's `--note`. `thawed` is `consumed`: a cryo
+`--set condition=starved`, or record a one-off in the event's `-m/--message`. `thawed` is `consumed`: a cryo
 vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
-## Filters (`--where`, `tm find`)
+## Filters (`--where`, `--where-any`, `tm find`)
 
 `tm entity list`, `tm stock list`, `tm box list` and `tm find` share one filter syntax; the Python
-`where=` argument is the same code.
+`where=` / `where_any=` arguments are the same code.
 
 ```sh
-tm entity list [KIND] [--where FILTER ...] [--json]
-tm stock list [KIND] [--all] [--where FILTER ...] [--json]
-tm box list [--where FILTER ...] [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
+tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm box list [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 ```
 
 - `FILTER` is one of `field=value` (exact), `field~pattern` (regex), `field!=value`,
@@ -192,22 +192,35 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 - Rules: one `=` per field (a second is a usage error), no `=` mixed with another operator on one
   field, any number of the other operators per field (ANDed), no empty pattern (`name~`) or
   comparison value (`count<`), an invalid pattern is a usage error that names the filter, and an
-  unknown field is a usage error listing the valid fields.
+  unknown field is a usage error listing the valid fields. Those two per-field repetition rules are
+  `--where`'s alone (see `--where-any` below).
+- `--where-any` is the one **OR group** of an invocation: a row must satisfy every `--where` filter
+  AND at least one `--where-any` filter. It takes the same syntax, operators, coercion, type rules
+  and empty-value rules, but repeating a field is allowed (and is the canonical use), and there is no
+  cross-check with the `--where` set. For a kind, an alternative whose field the kind does not
+  declare is dropped; a kind with no surviving alternative contributes no rows. Errors name the
+  option (`invalid regular expression in the --where-any filter 'name~['`, `unknown field(s) 'nope'
+  in --where-any`). Without `--where-any` nothing changes. For example,
+  `tm stock list --where 'kind=plasmid_prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`
+  reads `kind=plasmid_prep AND (resistance=kan OR resistance=amp)`.
 - Valid fields: the object's core filter columns (`id`, `kind`, `name` for entity/box, `created_at`,
   `notes`, plus `entity_id`/`parent_stock_id`/`source_aliquot_id` for stock and
   `parent_box_id`/`parent_slot` for box) and the fields of the kinds in scope. A listing only reads
-  kinds that have every filtered field. A computed kind column works with `~` and `!~` (its text
+  kinds that have every `--where` field. A computed kind column works with `~` and `!~` (its text
   form) but not `=` or `!=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not
   filterable. `tm find` accepts the union over entity/stock/box kinds, applies the filters to every
-  hit, and excludes aliquots whenever a filter is given.
-- With no `QUERY`, `tm find --where ...` lists every match (`match` = `filter`) sorted by object type,
-  kind and id; passing neither a QUERY nor `--where` is a usage error. No match exits 1 for `find`
-  (`no match for '<Q>'`, or `no objects match the --where filters`); a listing with no rows prints
-  `(none)` (empty in JSON) and exits 0. A bad filter or regex exits 2.
-- Python: `where=` takes a mapping (equality only; an operator is never parsed from a key or a value,
-  and a `None`/`""` value means empty, e.g. `{"name": "pUC19"}` or `{"notes": None}`) or a list of
-  strings with every operator (`where=["od600>=2", "notes!="]`). Listings and `find` read in one
-  batch.
+  hit, and excludes aliquots whenever either group is given.
+- With no `QUERY`, `tm find --where-any ...` (like `--where ...`) lists every match (`match` =
+  `filter`) sorted by object type, kind and id; passing neither a QUERY nor a filter is a usage error
+  (`the search query must not be empty; pass a QUERY or at least one --where or --where-any filter`).
+  No match exits 1 for `find` (`no match for '<Q>'`, `no objects match the --where filters` for
+  `--where` only, or `no objects match the --where/--where-any filters` once `--where-any` is
+  given); a listing with no rows prints `(none)` (empty in JSON) and exits 0. A bad filter or regex
+  exits 2.
+- Python: `where=`/`where_any=` take a mapping (equality only; an operator is never parsed from a key
+  or a value, and a `None`/`""` value means empty, e.g. `{"name": "pUC19"}` or `{"notes": None}`) or
+  a list of strings with every operator (`where=["od600>=2", "notes!="]`). Listings and `find` read
+  in one batch.
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
 of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
@@ -227,12 +240,13 @@ tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm entity rename ID|ALIAS NEW_NAME [--json]
 tm entity purge ID|ALIAS [--json]
-tm entity list [KIND] [--where FILTER ...] [--json]
+tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 ```
 
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
-`--where` takes the shared filters (see **Filters** above) and can be repeated (AND).
+`--where` takes the shared filters (see **Filters** above) and can be repeated (AND);
+`--where-any` is the one OR group (a row matches one alternative, ANDed with every `--where`).
 `rename` sets the name (and the kind's `name` field) and keeps the old name as an alias in the same
 commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
 already another entity's alias.
@@ -259,7 +273,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm stock list [KIND] [--all] [--where FILTER ...] [--json]
+tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 tm stock purge ID|ALIAS [--json]
 tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...] [--json]
@@ -282,7 +296,8 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
   aliquot in stock); `--all` adds the `empty` and `depleted` ones, with the same columns. `status` is
   derived from the aliquots: `empty` (none), `active` (at least one in stock) or `depleted` (it has
   aliquots, but none in stock — an unplaced tube is not in stock either); it is a derived column, not
-  a `--where` field. `--where` takes the shared filters (see **Filters** above).
+  a `--where` field. `--where` takes the shared filters and `--where-any` OR group (see
+  **Filters** above).
 - `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**
@@ -320,7 +335,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
-tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
+tm aliquot status ALQ STATUS [-m/--message TEXT] [--force] [--json]
 tm aliquot label ALQ LABEL [--replace] [--json]
 tm aliquot purge ALQ [--json]
 ```
@@ -349,11 +364,13 @@ tm aliquot purge ALQ [--json]
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
   printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
   and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
-  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
-  ids), the `old_status`/`new_status`, `forced` and `actor`/`message`. The text output ends
-  with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
-  `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
-  single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
+  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot`, the
+  `from_box_resolved`/`to_box_resolved` flags (`null`/`true`/`false`), the `old_status`/`new_status`,
+  `forced` and `actor`; the stored `message` is the last text token as `message="..."`. A name with
+  no live box row prints as `[unresolved box <full id>]`, never a cause. The text output ends with
+  `events  N` and one line per event rendered by the same `event_line` helper `history` uses; `--json`
+  prints the whole record with the full ids, events included, `--format csv` keeps the flat single
+  row and drops `events` (unchanged; event rows are `tm history ALQ --format csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
@@ -370,10 +387,12 @@ tm aliquot purge ALQ [--json]
   (`used_amount` is `null` for a whole use of a tube with no quantity).
 - `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
   is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
-  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s old `--purpose`/`--note`
-  flags are removed outright (no aliases); `tm aliquot status --force --note` is unchanged.
+  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s former purpose and note
+  options are removed outright (no aliases); `tm aliquot status` takes the same `-m/--message`
+  (optional, required with `--force`), and its former note option is removed outright since 0.8.37
+  — no alias.
 - `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
-  `--force --note TEXT` overrides an illegal transition deliberately (the event records
+  `--force -m TEXT` overrides an illegal transition deliberately (the event records
   `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
   change.
 - An aliquot's **position follows its status**: a `stored` aliquot needs a box (and a slot in a
@@ -403,14 +422,15 @@ The Python API mirrors the CLI through `ledger.aliquots`:
 `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no event-text
 argument other than `message`, and a missing, blank or whitespace-only `message` is refused exactly
-like on the CLI.
+like on the CLI. `ledger.aliquots.status(ref, status, *, message=None, force=False)` takes the same
+optional message and has no `note` argument (`note=` raises `TypeError`).
 
 ## Boxes
 
 ```sh
 tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--set f=v ...] [--json]
 tm box show NAME|ID|ALIAS [--json]
-tm box list [--kind KIND] [--where FILTER ...] [--json]
+tm box list [--kind KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 tm box purge NAME|ID|ALIAS [--json]
@@ -484,8 +504,22 @@ blocks and writes the same thing.
   (the field name, its description and its pattern go below a git-style scissors line and are removed
   from what you edit, while `#` lines are kept), `Ctrl+C` aborts and writes nothing. A footer lists
   the keys.
-- The stock form asks: entity (ref, with search) → the kind's fields → aliquot count → box (`?`
-  lists the boxes) → slots (the next free slots are filled in by default; `?` shows the free slots).
+- The stock form asks: kind → entity (ref, with search) → the kind's fields → optional **parent
+  stock** and **source aliquot** (refs with search; lineage, same as `tm stock add --parent` /
+  `--source-aliquot`) → optional **notes**, and creates the stock with **no aliquots** (same as
+  `tm stock add ... --aliquots 0`); it then prints a `Next:` line — add tubes with
+  `tm aliquot add-form` or `tm aliquot add <stock>`.
+- The aliquot form asks kind → stock → count → optional per-tube quantity and its unit (the unit
+  only when a quantity was given) → box → slots → optional **creation status**. The status step
+  offers exactly the stock kind's set in its own order (number or name; Tab completes) and Enter
+  keeps the add command's placement default: placed in a box, the first of `stored`/`pending` the
+  set has; unplaced, the first of `pending`/`stored`; else the set's first in-stock status; else its
+  first status. It promises nothing about `stored`/`pending` for sets that lack them. It writes the
+  same as `tm aliquot add ... --quantity Q --unit U [--status S]`.
+- A kind that declares its own `notes` field is asked that field in schema order, and it is the
+  only notes question; otherwise the core notes step comes last (entity, stock, box). Every
+  writable creation property of `add` is asked except generated ids/timestamps — `--id` stays an
+  add-only option.
 - The review screen numbers every value (long values in short form): a number jumps back to that
   step, `y` writes, `q` cancels. The write lock is taken only on `y`; the write is the same
   `ledger.<objects>.add(...)` as `add`, prints the same message, and `--dry-run`/`--no-commit`/
@@ -499,7 +533,7 @@ Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
 ```sh
 tm alias add OBJECT_TYPE REF ALIAS [--json]
 tm alias remove [OBJECT_TYPE] ALIAS [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
@@ -514,15 +548,15 @@ prefix or substring text (case-insensitive, literal), ranks exact id → exact a
 prefix → alias prefix → name substring → alias substring → fields, and shows summary and location.
 `-E`/`--regex` makes QUERY a case-insensitive ICU regex over the same places, ranked id > alias > name
 > field (prefix and substring matches merged; ties by object type, kind and id); an invalid pattern is
-a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
-hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
-object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
+a usage error with no literal fallback. `--where` and `--where-any` apply the shared filters (see
+**Filters** above) to every hit and exclude aliquots; with no QUERY all matching objects are listed
+(`match` = `filter`) sorted by object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, replacement}`; Python
 `re.fullmatch` + `match.expand`, validated at open with the rule named). They rewrite a **literal**
 QUERY only: a query with no hits falls back to the first rule that hits — a stderr line names the rule
 and the rewritten query — and `--with-rewrite` adds every rule's hits below the original ones (`match`
-reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where` patterns and single-object
+reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where`/`--where-any` patterns and single-object
 `show`/`history`/`lineage`/`--entity`/alias resolution never rewrite; a plain not-found there ends
 with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep their own error).
 

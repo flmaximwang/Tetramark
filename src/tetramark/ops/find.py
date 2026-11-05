@@ -25,11 +25,14 @@ the database matches it case-insensitively: the pattern is prefixed with
 so the scores collapse to one per tier: id > alias > name > field.  An invalid
 pattern is a usage error; there is no literal fallback.
 
-``--where`` reuses the shared filter backend of :mod:`tetramark.core.filters`
-(``field=value`` / ``field~pattern``).  A hit must satisfy every filter (AND);
-only entity/stock/box kinds that have *every* filtered field take part, and
-aliquots never do.  With no query, the filters alone list the matching objects
-(``match`` is ``"filter"``), sorted by object type, kind and id.
+``--where`` and ``--where-any`` reuse the shared filter backend of
+:mod:`tetramark.core.filters` (``field=value`` / ``field~pattern``, the same
+operators).  A hit must satisfy every ``--where`` filter (AND) and at least one
+``--where-any`` filter (the one OR group); only entity/stock/box kinds that have
+*every* ``--where`` field take part, a kind drops the ``--where-any``
+alternatives whose field it lacks, and aliquots never take part.  With no
+query, the filters alone list the matching objects (``match`` is ``"filter"``),
+sorted by object type, kind and id.
 
 The statements are built first and fetched by a single
 :meth:`Driver.query_many`; only an invalid pattern (error-path probes) or an
@@ -40,10 +43,11 @@ without changing the search core.
 
 ``find.rewrites`` rules (``ledger.yaml``, see
 :class:`tetramark.schema.model.FindConfig`) may rewrite a *literal* query --
-never a ``-E`` pattern and never a ``--where`` pattern.  By default a query
-with zero hits is retried with every rule, in one batch, and the first rule that
-produces hits is shown; ``--with-rewrite`` always runs every rule next to the
-original query in the same batch and appends its hits below the original ones
+never a ``-E`` pattern and never a ``--where``/``--where-any`` pattern.  By
+default a query with zero hits is retried with every rule, in one batch, and
+the first rule that produces hits is shown; ``--with-rewrite`` always runs
+every rule next to the original query in the same batch and appends its hits
+below the original ones
 (ordered by rule, then tier; an object found both ways keeps its original
 entry).  A rewrite hit's ``match`` is ``"<tier> via <rule>"`` and its JSON row
 carries ``rewrite: {rule, query}``.  Single-object resolution
@@ -58,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 
 from tetramark.core.filters import (
     Filter,
+    build_any_condition,
     build_conditions,
     check_fields,
     coerce_value,
@@ -480,15 +485,21 @@ def _add_search_statements(
 
 
 def _add_filter_statements(
-    batch: _ReadBatch, ledger: Ledger, filters: tuple[Filter, ...]
+    batch: _ReadBatch,
+    ledger: Ledger,
+    filters: tuple[Filter, ...],
+    where_any: tuple[Filter, ...] = (),
 ) -> None:
-    """Append one id query per kind that can express every filter.
+    """Append one id query per kind that can express the filters.
 
-    A kind that lacks any filtered field contributes nothing (a listing must
-    never ignore a filter for a kind that cannot express it); aliquots have no
-    kind row and are never searched when ``--where`` is given.
+    A kind that lacks any ``--where`` field contributes nothing (a listing must
+    never ignore a filter for a kind that cannot express it), and so does a
+    kind that was given ``--where-any`` but declares none of its alternatives;
+    aliquots have no kind row and are never searched when either group is
+    given.  The surviving ``--where-any`` alternatives become one OR condition
+    appended to the kind's AND conditions.
     """
-    if not filters:
+    if not filters and not where_any:
         return
     fields = filter_fields(filters)
     for object_type in ("entity", "stock", "box"):
@@ -518,6 +529,25 @@ def _add_filter_statements(
                 kind=kind,
                 option="--where",
             )
+            any_condition, any_params = build_any_condition(
+                where_any,
+                expressions=expressions,
+                coerce=lambda field, raw: coerce_value(
+                    kind, field, raw, ledger=ledger, session=ledger.driver
+                ),
+                empty=lambda field, expression: empty_condition(
+                    kind, field, expression
+                ),
+                kind=kind,
+                option="--where-any",
+            )
+            # An OR group with no surviving alternative is false for this kind.
+            if any_condition is None:
+                if where_any:
+                    continue
+            else:
+                conditions.append(any_condition)
+                params.extend(any_params)
             from_sql = (
                 box_kind_from(kind_name)
                 if object_type == "box"
@@ -538,12 +568,14 @@ def _fetch(
     *,
     regex_query: str | None = None,
     filters: tuple[Filter, ...] = (),
+    where_any: tuple[Filter, ...] = (),
 ) -> list[list[dict[str, Any]]]:
     """Run the batch, turning a refused pattern into a usage error.
 
     The database compiles patterns, so an invalid one is only known when the
     batch runs.  The error path may cost probe queries: it identifies the
-    query's pattern first (``-E``), then the offending ``--where`` filter.
+    query's pattern first (``-E``), then the offending ``--where`` filter and
+    then the offending ``--where-any`` one.
     """
     try:
         return ledger.driver.query_many(batch.statements)
@@ -553,7 +585,11 @@ def _fetch(
         ):
             raise UsageError(_invalid_regex_message(regex_query)) from error
         usage = regex_usage_error(
-            ledger.driver, filters, error, option="--where"
+            ledger.driver,
+            filters,
+            error,
+            any_filters=where_any,
+            option="--where",
         )
         if usage is None:
             raise
@@ -571,7 +607,9 @@ def search(
     *,
     regex: bool = False,
     where: Where = (),
+    where_any: Where = (),
     filters: tuple[Filter, ...] | None = None,
+    any_filters: tuple[Filter, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """One search pass over one ledger (the pure core of :func:`find`).
 
@@ -582,18 +620,27 @@ def search(
     adds that in :func:`find`, which searches rewritten queries too and merges
     the hits; this function never ranks them.
 
-    ``where`` is the filter syntax; ``filters`` is its already-parsed form,
-    which :func:`find` passes so the filters are parsed once (the two are
-    alternatives -- ``filters`` wins when both are given).
+    ``where`` is the AND filter syntax and ``where_any`` the one OR group;
+    ``filters`` / ``any_filters`` are their already-parsed forms, which
+    :func:`find` passes so each group is parsed once (the two are alternatives
+    -- the parsed form wins when both are given).
     """
     parsed = (
         parse_filters(where, option="--where") if filters is None else filters
     )
-    _check_where_fields(ledger, parsed)
+    parsed_any = (
+        parse_filters(where_any, option="--where-any", allow_repeats=True)
+        if any_filters is None
+        else any_filters
+    )
+    _check_where_fields(ledger, parsed, option="--where")
+    _check_where_fields(ledger, parsed_any, option="--where-any")
     text = str(query).strip()
     if not text:
         raise UsageError("the search query must not be empty")
-    return _search_pass(ledger, text, regex=regex, filters=parsed)
+    return _search_pass(
+        ledger, text, regex=regex, filters=parsed, any_filters=parsed_any
+    )
 
 
 def find(
@@ -602,17 +649,19 @@ def find(
     *,
     regex: bool = False,
     where: Where = (),
+    where_any: Where = (),
     with_rewrite: bool = False,
 ) -> list[dict[str, Any]]:
-    """Search one ledger by id, alias, name, kind text and/or ``--where``.
+    """Search one ledger by id, alias, name, kind text and/or filters.
 
     ``query`` is literal unless ``regex`` is true, in which case it is a
     database (ICU) regular expression matched case-insensitively.  ``where``
-    takes the same ``field=value`` / ``field~pattern`` filters as the
-    entity/stock/box listings and applies to every hit (AND); aliquots are
-    excluded whenever it is given.  With ``where`` and no query, every matching
-    object is listed with ``match == "filter"``, sorted by object type, kind and
-    id.  Passing neither a query nor a filter is a usage error.
+    and ``where_any`` take the same ``field=value`` / ``field~pattern`` filters
+    as the entity/stock/box listings and apply to every hit: a hit must satisfy
+    every ``where`` filter AND at least one ``where_any`` filter.  Aliquots are
+    excluded whenever either group is given.  With filters and no query, every
+    matching object is listed with ``match == "filter"``, sorted by object
+    type, kind and id.  Passing neither a query nor a filter is a usage error.
 
     ``find.rewrites`` rules (``ledger.yaml``) rewrite a literal query only.
     By default they are a fallback for a query with zero hits: every rule is
@@ -621,23 +670,36 @@ def find(
     each rule's hits in rule order.  Rewrite hits carry
     ``match == "<tier> via <rule>"`` and ``rewrite == {"rule": ..., "query":
     ...}``; an object found both ways keeps its original entry.  A ``-E``
-    pattern and a ``--where`` pattern are never rewritten, and the filters
-    narrow rewrite hits exactly like original ones.
+    pattern, a ``--where`` pattern and a ``--where-any`` pattern are never
+    rewritten, and both filter groups narrow rewrite hits exactly like original
+    ones.
     """
     filters = parse_filters(where, option="--where")
-    _check_where_fields(ledger, filters)
+    any_filters = parse_filters(
+        where_any, option="--where-any", allow_repeats=True
+    )
+    _check_where_fields(ledger, filters, option="--where")
+    _check_where_fields(ledger, any_filters, option="--where-any")
     text = "" if query is None else str(query).strip()
     if not text:
-        if not filters:
+        if not filters and not any_filters:
             raise UsageError(
                 "the search query must not be empty; pass a QUERY or at least "
-                "one --where filter"
+                "one --where or --where-any filter"
             )
-        return _rank(_filter_pass(ledger, filters))
+        return _rank(_filter_pass(ledger, filters, any_filters))
 
     rewrites = [] if regex else ledger.config.find.rewrites_for(text)
     if not rewrites:
-        return _rank(search(ledger, text, regex=regex, filters=filters))
+        return _rank(
+            search(
+                ledger,
+                text,
+                regex=regex,
+                filters=filters,
+                any_filters=any_filters,
+            )
+        )
     if with_rewrite:
         # The original query and every rewrite in one batch.  Original hits
         # first, then each rule's tier-sorted hits in rule order; a duplicate
@@ -647,10 +709,13 @@ def find(
             [text, *(rewrite.query for rewrite in rewrites)],
             regex=False,
             filters=filters,
+            any_filters=any_filters,
         )
         return _merge_rewrites(groups[0], rewrites, groups[1:])
 
-    results = search(ledger, text, regex=regex, filters=filters)
+    results = search(
+        ledger, text, regex=regex, filters=filters, any_filters=any_filters
+    )
     if results:
         return _rank(results)
     # Zero hits: try every rule in one batch and show the first rule whose
@@ -661,6 +726,7 @@ def find(
         [rewrite.query for rewrite in rewrites],
         regex=False,
         filters=filters,
+        any_filters=any_filters,
     )
     for rewrite, hits in zip(rewrites, groups):
         if hits:
@@ -707,10 +773,21 @@ def _merge_rewrites(
 
 
 def _search_pass(
-    ledger: Ledger, text: str, *, regex: bool, filters: tuple[Filter, ...]
+    ledger: Ledger,
+    text: str,
+    *,
+    regex: bool,
+    filters: tuple[Filter, ...],
+    any_filters: tuple[Filter, ...] = (),
 ) -> list[dict[str, Any]]:
     """Build, fetch and enrich one search; the hits are sorted but unranked."""
-    return _search_many(ledger, [text], regex=regex, filters=filters)[0]
+    return _search_many(
+        ledger,
+        [text],
+        regex=regex,
+        filters=filters,
+        any_filters=any_filters,
+    )[0]
 
 
 def _search_many(
@@ -719,6 +796,7 @@ def _search_many(
     *,
     regex: bool,
     filters: tuple[Filter, ...],
+    any_filters: tuple[Filter, ...] = (),
 ) -> list[list[dict[str, Any]]]:
     """Search several literal queries in one batch; one hit list per query.
 
@@ -726,7 +804,8 @@ def _search_many(
     ``query_many`` batch, so the enrichment maps (identities, aliases,
     locations) are read once.  With one text this is exactly the pass behind
     :func:`search`; rewrites are only ever literal, so ``regex`` is never
-    combined with more than one text.
+    combined with more than one text.  ``filters`` is the AND group and
+    ``any_filters`` the OR group; both narrow every hit.
     """
     batch = _ReadBatch()
     scopes: list[tuple[str, list[tuple[str, list[str], list[str], int]]]] = []
@@ -736,21 +815,28 @@ def _search_many(
             batch, ledger, text, regex=regex, prefix=prefix
         )
         scopes.append((prefix, scans))
-    _add_filter_statements(batch, ledger, filters)
+    _add_filter_statements(batch, ledger, filters, any_filters)
     batch.add_enrichment()
     # No kind carries the filters (a combination no kind can express), so no
     # statement compiles their patterns: check them here, otherwise an invalid
     # pattern would silently match nothing.
-    if filters and not batch.filter_groups:
-        validate_patterns(ledger.driver, filters, option="--where")
+    if (filters or any_filters) and not batch.filter_groups:
+        validate_patterns(
+            ledger.driver, filters, any_filters=any_filters, option="--where"
+        )
     fetched = _fetch(
         ledger,
         batch,
         regex_query=texts[0] if regex else None,
         filters=filters,
+        where_any=any_filters,
     )
     maps = _IdentityMaps(fetched, batch.positions)
-    allowed = _allowed_ids(fetched, batch.filter_groups) if filters else None
+    allowed = (
+        _allowed_ids(fetched, batch.filter_groups)
+        if filters or any_filters
+        else None
+    )
     return [
         _collect_hits(
             fetched,
@@ -885,16 +971,22 @@ def _collect_hits(
 
 
 def _filter_pass(
-    ledger: Ledger, filters: tuple[Filter, ...]
+    ledger: Ledger,
+    filters: tuple[Filter, ...],
+    any_filters: tuple[Filter, ...] = (),
 ) -> list[dict[str, Any]]:
     """List every object the filters match (the no-QUERY mode)."""
     batch = _ReadBatch()
-    _add_filter_statements(batch, ledger, filters)
+    _add_filter_statements(batch, ledger, filters, any_filters)
     batch.add_enrichment()
     # No kind carries the filters: nothing would compile their patterns.
     if not batch.filter_groups:
-        validate_patterns(ledger.driver, filters, option="--where")
-    fetched = _fetch(ledger, batch, filters=filters)
+        validate_patterns(
+            ledger.driver, filters, any_filters=any_filters, option="--where"
+        )
+    fetched = _fetch(
+        ledger, batch, filters=filters, where_any=any_filters
+    )
     maps = _IdentityMaps(fetched, batch.positions)
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
     for object_type, kind_name, index in batch.filter_groups:
@@ -925,13 +1017,16 @@ def _allowed_ids(
     return allowed
 
 
-def _check_where_fields(ledger: Ledger, filters: tuple[Filter, ...]) -> None:
+def _check_where_fields(
+    ledger: Ledger, filters: tuple[Filter, ...], *, option: str = "--where"
+) -> None:
     """Refuse a filter on a field no entity/stock/box kind can address.
 
     The valid set is the union of the core filter columns of entity, stock and
     box and every field of every entity/stock/box kind; a *kind* that lacks one
     of the filtered fields still contributes nothing (see
-    :func:`_add_filter_statements`).
+    :func:`_add_filter_statements`).  ``option`` names the group in the error
+    (``--where`` or ``--where-any``).
     """
     if not filters:
         return
@@ -940,7 +1035,7 @@ def _check_where_fields(ledger: Ledger, filters: tuple[Filter, ...]) -> None:
         valid |= set(_CORE_FILTERS[object_type])
         for kind in ledger.schema.kinds_for(object_type).values():
             valid |= set(kind.fields)
-    check_fields(filters, valid, option="--where")
+    check_fields(filters, valid, option=option)
 
 
 def _enrich(

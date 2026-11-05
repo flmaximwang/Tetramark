@@ -11,6 +11,5 @@ def assert_single_read_process(invoke_calls: list[str]) -> None:
     """The read ran in exactly one `dolt sql` process, result format json."""
     assert invoke_calls == ["json"], (
         f"expected exactly one read process (json), got {invoke_calls!r}; "
-        "the read path must not launch an extra process to probe column "
-        "names"
+        "the read path must not launch an extra process to probe column names"
     )
