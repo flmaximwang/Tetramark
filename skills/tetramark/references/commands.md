@@ -470,13 +470,14 @@ Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
 ## Aliases, search, history
 
 ```sh
-tm alias add OBJECT_TYPE OBJECT_ID ALIAS [--json]
+tm alias add OBJECT_TYPE REF ALIAS [--json]
 tm alias remove [OBJECT_TYPE] ALIAS [--json]
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
 `OBJECT_TYPE` is `entity`, `stock`, `aliquot` or `box`; aliases are unique per object type.
+`REF` is an id, an alias or a unique id prefix; a box is also accepted by its name.
 `alias remove ALIAS` removes that alias everywhere, `alias remove stock ALIAS` only from stocks.
 An incomplete object id is accepted wherever a command takes an `ID|ALIAS`: when its prefix matches
 exactly one object it resolves, and a prefix that matches several is a usage error (exit 2) naming
