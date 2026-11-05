@@ -22,15 +22,15 @@ workflow gates on it, so a mismatch blocks the tag instead of shipping.
 
 ```console
 $ python3 scripts/release_check.py
-version    0.8.25
-  pyproject    0.8.25   pyproject.toml
-  __init__     0.8.25   src/tetramark/__init__.py
-  uv.lock      0.8.25   uv.lock
-  skill        0.8.25   skills/tetramark/SKILL.md
-  skill-schema 0.8.25   skills/tetramark-schema/SKILL.md
-previous   0.8.24  -> moved
-tag        v0.8.25  absent -- the workflow will create it
-notes      docs/releases/v0.8.25.md  present
+version    0.8.26
+  pyproject    0.8.26   pyproject.toml
+  __init__     0.8.26   src/tetramark/__init__.py
+  uv.lock      0.8.26   uv.lock
+  skill        0.8.26   skills/tetramark/SKILL.md
+  skill-schema 0.8.26   skills/tetramark-schema/SKILL.md
+previous   0.8.25  -> moved
+tag        v0.8.26  absent -- the workflow will create it
+notes      docs/releases/v0.8.26.md  present
 checkout   main @ <sha>  clean
 ready
 ```

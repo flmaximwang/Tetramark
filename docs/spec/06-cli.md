@@ -641,7 +641,7 @@ that holds none.
   with `tm --version`:
 
   ```
-  skill 0.8.15 (/repo/skills/tetramark/SKILL.md); tm 0.8.15; match
+  skill 0.8.26 (/repo/skills/tetramark/SKILL.md); tm 0.8.26; match
   ```
 
   `--json` prints `{"name", "skill_version", "skill_path", "tm_version", "match"}`; on a match
@@ -652,11 +652,11 @@ A mismatch is a warning on stderr and exit 0, never a failure: an old skill is a
 problem, not a broken ledger. The warnings live only in `tm skill version` (no other command warns
 about a stale copy):
 
-- `warning: skill 0.4.1 describes an older CLI than tm 0.8.15; use the copy at $(tm skill path) instead`
+- `warning: skill 0.4.1 describes an older CLI than tm 0.8.26; use the copy at $(tm skill path) instead`
   (`newer` when the skill claims a later CLI; exit 0 in both cases);
-- `warning: <path> carries no version; it predates versioned skills (tetramark < 0.8.14)` -- a
+- `warning: <path> carries no version; it predates versioned skills (tetramark < 0.8.25)` -- a
   frontmatter without `version:`: `skill_version` is `null`, `match` is `false`, exit 0;
-- `warning: skill version 'devel' is not comparable with tm 0.8.15` -- a version that is not dotted
+- `warning: skill version 'devel' is not comparable with tm 0.8.26` -- a version that is not dotted
   numeric, so no ordering is claimed; exit 0.
 
 Only a missing file or a file without YAML frontmatter exits 1. The version is the package version:
