@@ -254,6 +254,6 @@ def test_skill_stays_within_its_line_budget(name: str, mode: str, limit: int) ->
     counted = skill_line_count(name)
     assert counted <= limit, (
         f"{name} {mode} is {counted} lines; the budget is {limit}. "
-        "The tetramark-schema budget may only go down (Tetramark-0pj): move "
-        "detail into references/ instead of raising it."
+        "The tetramark-schema budget may only go down: move detail into "
+        "references/ instead of raising it."
     )
