@@ -656,7 +656,8 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
     assert "1 of 81 slots used" in shown.output
     run("check")
 
-    # Row counts per kind (header included in CSV).
+    # Row counts per kind (header included in CSV), exactly as the migration
+    # guide spells them: --all counts every stock, active or not.
     construct_count = len(
         run("--format", "csv", "entity", "list", "protein_construct")
         .output.splitlines()
@@ -665,11 +666,13 @@ def test_migration_recipe_explicit_ids_and_csv_roundtrip(
         run("--format", "csv", "entity", "list", "plasmid").output.splitlines()
     )
     bacterial_count = len(
-        run("--format", "csv", "stock", "list", "bacterial_glycerol")
+        run("--format", "csv", "stock", "list", "--all", "bacterial_glycerol")
         .output.splitlines()
     )
     prep_count = len(
-        run("--format", "csv", "stock", "list", "plasmid_prep").output.splitlines()
+        run(
+            "--format", "csv", "stock", "list", "--all", "plasmid_prep"
+        ).output.splitlines()
     )
     assert (construct_count, plasmid_count, bacterial_count, prep_count) == (2, 2, 2, 2)
 

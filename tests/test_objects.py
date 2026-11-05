@@ -403,9 +403,18 @@ def test_stock_edit_show_and_ls(ledger_factory) -> None:
     assert edited["supplier"] == "new"
     assert edited["notes"] == "n"
 
-    assert [row["id"] for row in ledger.stocks.ls("lot")] == [stock["id"]]
-    assert ledger.stocks.ls("lot", where={"supplier": "new"})[0]["id"] == stock["id"]
-    assert ledger.stocks.ls("lot", where={"supplier": "old"}) == []
+    # The stock's only tube was never placed, so the stock is depleted: the
+    # default listing is active-only, and all_statuses reads it back.
+    assert [
+        row["id"] for row in ledger.stocks.ls("lot", all_statuses=True)
+    ] == [stock["id"]]
+    assert (
+        ledger.stocks.ls("lot", where={"supplier": "new"}, all_statuses=True)[0]["id"]
+        == stock["id"]
+    )
+    assert (
+        ledger.stocks.ls("lot", where={"supplier": "old"}, all_statuses=True) == []
+    )
     with pytest.raises(UsageError, match="unknown field"):
         ledger.stocks.ls("lot", where={"bogus": "x"})
     with pytest.raises(UsageError, match="nothing to edit"):
