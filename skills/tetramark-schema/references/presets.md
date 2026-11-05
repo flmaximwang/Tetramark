@@ -16,7 +16,7 @@ and its include closure into `<ledger>/presets/`, which is what the ledger opens
 | `base` | 6 | entity `item`; stock `lot`; boxes `grid9x9`, `grid8x12`, `rack`, `shelf`, `freezer`, `drawer`, `incubator` |
 | `nucleic_acids` | 3 | entities `plasmid`, `oligo`; stocks `plasmid_prep`, `oligo_stock` |
 | `bacteria` | 2 | entity `bacterial_strain`; stocks `bacterial_glycerol`, `bacterial_pellet` |
-| `proteins` | 3 | entity `protein_construct`; stock `protein_prep`; mixin `sequence_fields` |
+| `proteins` | 4 | entity `protein_construct`; stock `protein_prep`; mixin `sequence_fields` |
 | `cell_culture` | 3 | entity `cell_line`; stocks `cell_vial`, `cell_pellet`, `cell_biosample` |
 | `immuno` | 2 | entity `antibody`; stock `antibody_lot` |
 | `viral_vectors` | 2 | entity `virus`; stock `virus_prep` |
@@ -60,9 +60,15 @@ organism line kinds in `animal_biosample.entity_kinds`, so it is loaded only wit
 | `BASE02` | fail | every lot has a non-empty supplier |
 | `BASE03` | info | items without any stock |
 
-**Version 5 is the spec-6 model:** it drops the `status_sets:` block (`tube`, `cryo`, `animal`) and
-every stock kind's `statuses:` key. Every aliquot uses the one fixed status set (below). Version 4
-renamed `grid96` → `grid8x12`; v3 added `incubator`; the v1→2 step is the old initial schema.
+**Version 6 is the current base:** it drops the `capacity` of the slotless `shelf`, `freezer` and
+`drawer` (12 / 6 / 1) — how many racks sit on a shelf, how many shelves a freezer has and how many
+boxes a drawer takes is a property of that piece of furniture, not of the kind. The bound was enforced
+on writes, so a base-5 ledger refused the seventh shelf, the thirteenth box on a shelf or the second box
+in a drawer; it moves to 6 with the manual `migration/presets/base/5-to-6/` step (replace the copy,
+`tm schema apply` writes the counter; no DDL and no row moves). Version 5 dropped the `status_sets:`
+block (`tube`, `cryo`, `animal`) and every stock kind's `statuses:` key; every aliquot uses the one
+fixed status set (below). Version 4 renamed `grid96` → `grid8x12`; v3 added `incubator`; the v1→2 step
+is the old initial schema.
 
 ## `molbio` — the zsqlab biology inventory (bundle)
 
@@ -204,11 +210,13 @@ spec 6. `tm schema show KIND` resolves and prints the same fixed block for every
   `status_sets:`/`statuses:` opens as spec 5; a closure that mixes both models does not load. `tm`
   warns on an older ledger: `ledger is spec N, tm is spec N+1: follow
   migration/spec/N-to-N+1/README.md to upgrade it manually`.
-- The bumped parts are `base` 4→5, `proteins` 2→3, `nucleic_acids` 2→3, `bacteria` 1→2,
-  `cell_culture` 2→3, `biosamples` 1→2, `c_elegans` 1→2, `drosophila` 1→2, `immuno` 1→2,
-  `library` 2→3, `mouse` 1→2, `viral_vectors` 1→2, `zebrafish` 1→2; the bundles keep their
+- The parts bumped by the spec-5 → 6 transition are `base` 4→5, `proteins` 2→3, `nucleic_acids` 2→3,
+  `bacteria` 1→2, `cell_culture` 2→3, `biosamples` 1→2, `c_elegans` 1→2, `drosophila` 1→2, `immuno`
+  1→2, `library` 2→3, `mouse` 1→2, `viral_vectors` 1→2, `zebrafish` 1→2; the bundles keep their
   versions (`molbio` 3, `cellbio` 1, `angenet` 1). Each has a README-only
-  `migration/presets/<name>/N-to-N+1/` that replaces the ledger's stored copy.
+  `migration/presets/<name>/N-to-N+1/` that replaces the ledger's stored copy. Later bumps follow the
+  same rule: `migration/presets/base/5-to-6/` is README-only (above) and
+  `migration/presets/proteins/3-to-4/` ships a script.
 
 ## Choosing a preset
 

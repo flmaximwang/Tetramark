@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.30](v0.8.30.md) | `v0.8.30.md` | base 6: slotless `shelf`/`freezer`/`drawer` stop bounding their contents; manual base 5→6 step; `proteins` 4 needs base 6 |
 | [0.8.27](v0.8.27.md) | `v0.8.27.md` | `tm alias add box` accepts the box's name |
 | [0.8.26](v0.8.26.md) | `v0.8.26.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |
 | [0.8.25](v0.8.25.md) | `v0.8.25.md` | shipped skills carry the package version, visible and agreed by the release check; primary skill back within 150 lines |
