@@ -31,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from tetramark.core.events import require_spec7_event_columns
 from tetramark.core.objects import OBJECT_TYPES
 from tetramark.errors import LedgerError, UsageError, try_find_hint
 from tetramark.schema.ddl import table_name
@@ -47,7 +48,12 @@ __all__ = [
     "render_history_text",
 ]
 
-#: Stable CSV header for :func:`history_rows`.
+#: Stable CSV header for :func:`history_rows` (spec 7: 16 columns).
+#:
+#: Events and commits share one row shape.  The event's reason text and the
+#: commit's message both live in the last column, ``message``; ``commit_hash`` is
+#: empty on an event row and ``section`` (``event``/``commit``) says which
+#: reading applies, so the one shared column is never ambiguous.
 HISTORY_COLUMNS: tuple[str, ...] = (
     "section",
     "at",
@@ -63,8 +69,6 @@ HISTORY_COLUMNS: tuple[str, ...] = (
     "new_status",
     "forced",
     "actor",
-    "purpose",
-    "note",
     "commit_hash",
     "message",
 )
@@ -449,10 +453,17 @@ def _add_static_reads(batch: _Batch) -> None:
 
 
 def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
-    """Events and commits for one object, resolved by id, box name or alias."""
+    """Events and commits for one object, resolved by id, box name or alias.
+
+    The event half reads ``aliquot_event.message`` (spec 7), so a spec-6 ledger
+    is refused with the upgrade text before the batch runs (see
+    :func:`tetramark.core.events.require_spec7_event_columns`); the commit half
+    would work, but one history answer must not mix two event shapes.
+    """
     text = str(ref).strip()
     if not text:
         raise UsageError("an object id or alias must not be empty")
+    require_spec7_event_columns(ledger)
 
     batch = _Batch()
     _add_resolution(batch, text)
@@ -738,10 +749,8 @@ def history_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "new_status": event.get("new_status"),
                 "forced": event.get("forced"),
                 "actor": event.get("actor"),
-                "purpose": event.get("purpose"),
-                "note": event.get("note"),
                 "commit_hash": "",
-                "message": "",
+                "message": event.get("message"),
             }
         )
     for commit in result.get("commits") or []:
@@ -763,8 +772,6 @@ def history_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "new_status": "",
                 "forced": "",
                 "actor": commit.get("author"),
-                "purpose": "",
-                "note": "",
                 "commit_hash": commit.get("commit_hash"),
                 "message": commit.get("message"),
             }
