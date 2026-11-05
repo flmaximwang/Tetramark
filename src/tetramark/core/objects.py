@@ -41,7 +41,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tetramark.core.events import purge_events, record_event
+from tetramark.core.events import (
+    purge_events,
+    record_event,
+    require_spec7_event_columns,
+)
 from tetramark.core.filters import (
     build_conditions,
     check_fields,
@@ -913,6 +917,31 @@ def _resolve_box(session: Any, ref: str) -> dict[str, Any]:
     if rows:
         return dict(rows[0])
     return _resolve_core(session, "box", ref)
+
+
+def _resolve_object_ref(session: Any, object_type: str, ref: str) -> dict[str, Any]:
+    """Resolve an ``add_alias`` reference, accepting a box's human name.
+
+    Every other box reference (``tm box show``/``move``/``rename``/``purge``,
+    ``--box`` and ``tm history``) accepts the box name, so ``tm alias add box``
+    follows the same name-first precedence as ``_resolve_box``: exact name,
+    then full id, then exact alias, then unique id prefix.  The fallback goes
+    through ``_resolve_core_with_hint`` so a plain miss keeps the ``try
+    tm find`` suffix and an ambiguous prefix stays a hint-free usage error.
+    Entity/stock/aliquot names are nullable or non-unique (and a stock has no
+    name at all), so those types keep the id/alias/prefix rules unchanged.
+
+    Only ``add_alias`` uses this: its in-session re-check stays
+    ``_resolve_core`` because ``canonical_id`` is a full id and a name-first
+    lookup could pick a different box whose name equals that id string.
+    """
+    if object_type == "box":
+        rows = session.query(
+            f"SELECT * FROM {_quote('box')} WHERE {_quote('name')} = %s", (ref,)
+        )
+        if rows:
+            return dict(rows[0])
+    return _resolve_core_with_hint(session, object_type, ref)
 
 
 def _load_record(
@@ -2332,7 +2361,7 @@ def move_aliquot(
 
     A move is a real-world action that cannot simply be reversed, so
     ``message`` is required (spec §1, §6): it is trimmed, refused when empty,
-    and stored in ``aliquot_event.note`` (``purpose`` stays NULL).
+    and stored in ``aliquot_event.message``.
     """
     message_text = str(message).strip()
     if not message_text:
@@ -2391,7 +2420,7 @@ def move_aliquot(
             old_status=old_status,
             new_status=new_status,
             actor=ledger.actor,
-            note=message_text,
+            message=message_text,
         )
         record = _load_record(session, ledger, "aliquot", alq_id)
     # A dry run buffers the UPDATE; report the destination it would write.
@@ -2428,8 +2457,7 @@ def use_aliquot(
 
     A use is an action in the physical world that cannot simply be
     reversed, so ``message`` is required (spec §1, §6): it is trimmed,
-    refused when empty, and stored in ``aliquot_event.note`` (``purpose``
-    stays NULL).
+    refused when empty, and stored in ``aliquot_event.message``.
     """
     message_text = str(message).strip()
     if not message_text:
@@ -2540,7 +2568,7 @@ def use_aliquot(
             old_status=old_status,
             new_status=new_status,
             actor=ledger.actor,
-            note=message_text,
+            message=message_text,
         )
         return {
             "object": "aliquot",
@@ -2635,7 +2663,7 @@ def set_aliquot_status(
             new_status=target_text,
             forced=force,
             actor=ledger.actor,
-            note=note_text,
+            message=note_text,
         )
         return {
             "object": "aliquot",
@@ -3262,8 +3290,7 @@ def _aliquot_events_sql(id_sql: str) -> str:
         f"e.{_quote('new_status')} AS {_quote('new_status')}, "
         f"e.{_quote('forced')} AS {_quote('forced')}, "
         f"e.{_quote('actor')} AS {_quote('actor')}, "
-        f"e.{_quote('purpose')} AS {_quote('purpose')}, "
-        f"e.{_quote('note')} AS {_quote('note')} "
+        f"e.{_quote('message')} AS {_quote('message')} "
         f"FROM {_quote('aliquot_event')} e "
         f"LEFT JOIN {_quote('box')} fb "
         f"ON fb.{_quote('id')} = e.{_quote('from_box_id')} "
@@ -3280,7 +3307,9 @@ def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
     The keys are the ones the spec names, in that order: the row's own id,
     the event, when it happened, how much was used, where the tube came from
     and went to (the box name next to its id), the status change, whether the
-    change was forced, and who did it and why.  ``forced`` is a bool, so the
+    change was forced, and who did it and why.  The reason is the shared
+    ``message`` column (spec 7): the ``-m/--message`` text of a ``use``/``move``,
+    or the ``--note`` of a forced status change.  ``forced`` is a bool, so the
     JSON record says ``true``/``false`` and not the driver's 0/1.
     """
     return {
@@ -3299,8 +3328,7 @@ def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
         "new_status": row["new_status"],
         "forced": bool(row["forced"]),
         "actor": row["actor"],
-        "purpose": row["purpose"],
-        "note": row["note"],
+        "message": row["message"],
     }
 
 
@@ -3322,9 +3350,14 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     record — ``tm stock show`` owns them.  A ref that names a stock is a
     not-found error that points at ``tm stock show`` (spec §6); any other miss
     points at ``tm find``, which applies the ledger's ``find.rewrites`` rules.
+
+    A spec-6 ledger is refused with the upgrade text before the batch runs: its
+    event rows still have ``note``/``purpose`` and this read names ``message``
+    (see :func:`tetramark.core.events.require_spec7_event_columns`).
     """
     if not ref:
         raise LedgerError(f"unknown aliquot {ref!r}")
+    require_spec7_event_columns(ledger)
     id_sql = _aliquot_id_sql()
     params = (str(ref), str(ref))
     batch: list[tuple[str, Any]] = [
@@ -4011,7 +4044,7 @@ def add_alias(
     text = str(alias).strip()
     if not text:
         raise UsageError("an alias must not be empty")
-    resolved = _resolve_core_with_hint(ledger.driver, checked_type, str(object_id))
+    resolved = _resolve_object_ref(ledger.driver, checked_type, str(object_id))
     canonical_id = str(resolved["id"])
 
     with ledger.write(

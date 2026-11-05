@@ -657,8 +657,8 @@ def test_schema_error_renders_file_and_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_spec_version_is_6() -> None:
-    assert SPEC_VERSION == 6
+def test_spec_version_is_7() -> None:
+    assert SPEC_VERSION == 7
 
 
 def test_core_views_reserve_their_v_box_names() -> None:

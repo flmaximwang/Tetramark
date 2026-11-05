@@ -67,7 +67,7 @@ def events(ledger, aliquot_id: str) -> list[dict[str, object]]:
     return ledger.driver.query(
         "SELECT `event`, `amount`, `unit`, `from_box_id`, `from_slot`, "
         "`to_box_id`, `to_slot`, `old_status`, `new_status`, `forced`, "
-        "`actor`, `purpose`, `note` "
+        "`actor`, `message` "
         "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
         (aliquot_id,),
     )
@@ -472,14 +472,13 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
         "status",
     ]
     assert Decimal(str(history[2]["amount"])) == Decimal("50")
-    assert history[2]["note"] == "prep"
-    assert history[2]["purpose"] is None
+    assert history[2]["message"] == "prep"
     assert history[1]["from_slot"] == "A1"
     assert history[1]["to_slot"] == "A3"
     assert history[4]["old_status"] == "consumed"
     assert history[4]["new_status"] == "missing"
     assert history[4]["forced"] in (1, True)
-    assert history[4]["note"] == "tube found in the back of the shelf"
+    assert history[4]["message"] == "tube found in the back of the shelf"
     assert history[0]["actor"] == "Ledger Factory"
     assert ledger.author == FACTORY_AUTHOR
 
@@ -564,8 +563,7 @@ def test_aliquot_use_whole_equals_an_explicit_use(ledger_factory) -> None:
     assert whole_event["event"] == "use"
     assert Decimal(str(whole_event["amount"])) == Decimal("200")
     assert whole_event["unit"] == "ml"
-    assert whole_event["note"] == "used it all"
-    assert whole_event["purpose"] is None
+    assert whole_event["message"] == "used it all"
     assert whole_event["old_status"] == "stored"
     assert whole_event["new_status"] == "consumed"
     # The emptied tube leaves its box; the event keeps the old position.
@@ -579,8 +577,7 @@ def test_aliquot_use_whole_equals_an_explicit_use(ledger_factory) -> None:
     # The explicit use records exactly the same event.
     assert Decimal(str(explicit_event["amount"])) == Decimal("200")
     assert explicit_event["unit"] == "ml"
-    assert explicit_event["note"] == "used it all"
-    assert explicit_event["purpose"] is None
+    assert explicit_event["message"] == "used it all"
     assert explicit_event["from_slot"] == "A2"
 
 
@@ -606,8 +603,7 @@ def test_aliquot_use_without_a_quantity_uses_it_whole(ledger_factory) -> None:
     event = events(ledger, alq)[-1]
     assert event["event"] == "use"
     assert event["amount"] is None
-    assert event["note"] == "used it all"
-    assert event["purpose"] is None
+    assert event["message"] == "used it all"
     assert event["old_status"] == "pending"
     assert event["new_status"] == "consumed"
 
@@ -681,8 +677,7 @@ def test_aliquot_use_message_is_required_trimmed_and_stored(
     result = ledger.aliquots.use(alq, "1", "ul", message="  for the assay  ")
     assert result["message"] == "for the assay"
     event = events(ledger, alq)[-1]
-    assert event["note"] == "for the assay"
-    assert event["purpose"] is None
+    assert event["message"] == "for the assay"
 
 
 def test_aliquot_move_placement_errors(ledger_factory) -> None:
@@ -880,14 +875,12 @@ def test_aliquot_move_requires_and_records_a_trimmed_message(
 
     event = events(ledger, alq)[-1]
     assert event["event"] == "move"
-    assert event["note"] == "moved to the cold room"
-    assert event["purpose"] is None
+    assert event["message"] == "moved to the cold room"
     assert event["from_slot"] is None and event["to_slot"] == "A1"
 
     history = ledger.history(alq)
     assert history["events"][-1]["event"] == "move"
-    assert history["events"][-1]["note"] == "moved to the cold room"
-    assert history["events"][-1]["purpose"] is None
+    assert history["events"][-1]["message"] == "moved to the cold room"
 
 
 def test_aliquot_move_with_several_in_stock_statuses_needs_status(
@@ -1641,10 +1634,10 @@ def test_aliquot_show_carries_the_tube_event_trail(ledger_factory) -> None:
     assert move["from_box"] == "BOX" and move["from_slot"] == "A3"
     assert move["to_box"] == "OTHER" and move["to_slot"] == "B1"
     assert move["old_status"] == "stored" and move["new_status"] == "stored"
-    assert move["note"] == "moved"
+    assert move["message"] == "moved"
     assert Decimal(str(use["amount"])) == Decimal("50") and use["unit"] == "ul"
     assert use["old_status"] == "stored" and use["new_status"] == "stored"
-    assert use["note"] == "used some"
+    assert use["message"] == "used some"
     assert status["from_box"] == "OTHER" and status["from_slot"] == "B1"
     assert status["old_status"] == "stored" and status["new_status"] == "missing"
     assert status["forced"] is False
@@ -1665,8 +1658,7 @@ def test_aliquot_show_carries_the_tube_event_trail(ledger_factory) -> None:
         "new_status",
         "forced",
         "actor",
-        "purpose",
-        "note",
+        "message",
     }
 
 
@@ -2813,6 +2805,84 @@ def test_a_unique_id_prefix_resolves_but_an_ambiguous_one_is_a_usage_error(
         ledger.entities.show("99999999")
 
 
+def test_alias_add_resolves_a_box_by_its_name(ledger_factory) -> None:
+    """``aliases.add("box", ...)`` accepts a box name, like every box command."""
+    ledger = make_ledger(ledger_factory, name="alias-box-name")
+    box = new_box(ledger, "rack-a", "rack")
+
+    added = ledger.aliases.add("box", "rack-a", "ra")
+
+    assert added["object_type"] == "box"
+    assert added["object_id"] == box["id"]
+    assert ledger.boxes.show("ra")["id"] == box["id"]
+    assert ledger.boxes.show("rack-a")["aliases"] == ["ra"]
+
+
+def test_alias_add_box_name_beats_another_boxes_alias(ledger_factory) -> None:
+    """A box name outranks another box's alias, following ``_resolve_box``."""
+    ledger = make_ledger(ledger_factory, name="alias-box-precedence")
+    named = new_box(ledger, "Shared", "rack")
+    other = new_box(ledger, "OTHER", "rack")
+    ledger.aliases.add("box", other["id"], "Shared")
+
+    added = ledger.aliases.add("box", "Shared", "x")
+
+    assert added["object_id"] == named["id"]
+    assert ledger.boxes.show(named["id"])["aliases"] == ["x"]
+    assert ledger.boxes.show(other["id"])["aliases"] == ["Shared"]
+
+
+def test_alias_add_unknown_box_ref_keeps_the_hint_and_writes_nothing(
+    ledger_factory,
+) -> None:
+    """A box miss names the ref and points at ``tm find``; no alias row lands."""
+    ledger = make_ledger(ledger_factory, name="alias-box-miss")
+    new_box(ledger, "rack-a", "rack")
+    new_item(ledger, "alpha")
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError) as excinfo:
+        ledger.aliases.add("box", "no-such-box", "x")
+    message = str(excinfo.value)
+    assert "unknown box 'no-such-box'" in message
+    assert "; try tm find no-such-box" in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `alias` = %s", ("x",)
+    ) == []
+
+    # Only boxes gain the name lookup: an entity is still resolved by
+    # id/alias/prefix, never by its (nullable, non-unique) name.
+    with pytest.raises(LedgerError, match="unknown entity 'alpha'"):
+        ledger.aliases.add("entity", "alpha", "y")
+
+
+def test_alias_add_box_ambiguous_id_prefix_stays_a_usage_error(
+    ledger_factory,
+) -> None:
+    """An ambiguous box prefix is exit 2 with no hint, exactly as before."""
+    ledger = make_ledger(ledger_factory, name="alias-box-ambiguous")
+    # Box ids are uuid4 and box add takes no id, so seed two rows that share a
+    # prefix by hand; the resolver only reads the box table.
+    for suffix, name in (("1", "prefix-one"), ("2", "prefix-two")):
+        ledger.driver.execute(
+            "INSERT INTO `box` (`id`, `name`, `kind`) VALUES (%s, %s, 'rack')",
+            (f"aaaaaaaa-0000-0000-0000-0000000000{suffix}", name),
+        )
+
+    before = commit_count(ledger)
+    with pytest.raises(UsageError) as excinfo:
+        ledger.aliases.add("box", "aaaaaaaa", "x")
+    message = str(excinfo.value)
+    assert excinfo.value.exit_code == 2
+    assert "ambiguous" in message
+    assert "try tm find" not in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `alias` FROM `alias` WHERE `alias` = %s", ("x",)
+    ) == []
+
+
 # ---------------------------------------------------------------------------
 # Commit discipline, dry-run, no-commit and IDs
 # ---------------------------------------------------------------------------
@@ -3015,7 +3085,7 @@ def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
     assert last["old_status"] == "consumed"
     assert last["new_status"] == "missing"
     assert last["forced"] in (1, True)
-    assert last["note"] == "found the tube"
+    assert last["message"] == "found the tube"
 
     # ``missing`` may go back to ``stored`` by the transition rules, but only
     # after the tube is physically placed again.

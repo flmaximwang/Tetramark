@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tetramark"
-version = "0.8.31"
+version = "0.8.33"
 description = "A general-purpose, version-controlled inventory ledger on Dolt"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tm = "tetramark.cli.app:main"
+tm = "tetramark._entry:main"
 
 [dependency-groups]
 dev = [
@@ -36,13 +36,19 @@ packages = ["src/tetramark"]
 # P8: presets are repository data, not Python modules.  Ship the checkout's
 # presets/ inside the installed package (<site-packages>/tetramark/presets) so a
 # bare `--preset NAME` resolves from a wheel without $TETRAMARK_PRESETS_DIR.
+# The skills are package data for the same reason: an installed `tm` must be
+# able to point an agent at its own copy (`tm skill path`), so the checkout's
+# skills/ ships as <site-packages>/tetramark/skills.  The sdist lists both
+# directories because `uv build` builds the wheel from the sdist.
 [tool.hatch.build.targets.wheel.force-include]
 "presets" = "tetramark/presets"
+"skills" = "tetramark/skills"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/tetramark",
     "presets",
+    "skills",
     "README.md",
     "pyproject.toml",
 ]

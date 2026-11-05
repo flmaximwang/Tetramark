@@ -17,7 +17,13 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
-| [0.8.31](v0.8.31.md) | `v0.8.31.md` | docs only: schema skill body 171 → 149 lines, budget lowered to 150, detail moved into the references |
+| [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
+| [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |
+| [0.8.31](v0.8.31.md) | `v0.8.31.md` | releases attach the wheel and sdist; the wheel ships the skills; pinned install docs |
+| [0.8.30](v0.8.30.md) | `v0.8.30.md` | isolated `tm` entry point, lazy package import, version-drift warning |
+| [0.8.29](v0.8.29.md) | `v0.8.29.md` | ledger discovery ignores Dolt's global config directory and no longer suggests `tm adopt` for it |
+| [0.8.28](v0.8.28.md) | `v0.8.28.md` | `aliquot_event.message` replaces `note`/`purpose` (spec 7): the event column is renamed, `purpose` is dropped, and a 6-to-7 migration ships |
+| [0.8.27](v0.8.27.md) | `v0.8.27.md` | `tm alias add box` accepts the box's name |
 | [0.8.26](v0.8.26.md) | `v0.8.26.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |
 | [0.8.25](v0.8.25.md) | `v0.8.25.md` | shipped skills carry the package version, visible and agreed by the release check; primary skill back within 150 lines |
 | [0.8.24](v0.8.24.md) | `v0.8.24.md` | docs only: `--where FIELD=` empty-field semantics in spec §6.4, the aliquot `--where` paragraph, the filters docstring, the skill reference, `SKILL.md` and the five `--where` help strings; no behaviour change |

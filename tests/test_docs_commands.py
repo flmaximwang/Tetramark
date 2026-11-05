@@ -328,8 +328,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "new_status",
         "forced",
         "actor",
-        "purpose",
-        "note",
+        "message",
     }
     assert first_shown["events"][0]["to_box"] == "BOX-2"
     assert first_shown["events"][0]["to_slot"] == "A1"

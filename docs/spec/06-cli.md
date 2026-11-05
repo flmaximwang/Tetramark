@@ -18,7 +18,7 @@ tm [-l|--ledger PATH] [-b|--branch BRANCH] [--dry-run] [--no-commit]
 | `--no-commit` | Execute the write but leave it uncommitted (advanced). |
 | `--json` | Print reads and write results as JSON. |
 | `--format table\|json\|csv` | Read output format (default `table`). |
-| `--version` | Print the version. |
+| `--version` | Print `tetramark <version>` on stdout. When the installed package metadata disagrees with the code (an editable checkout), also print one warning on stderr naming both versions, the checkout and the pinned reinstall command. |
 
 **Resolution** (P3): an explicit `-l/--ledger PATH` wins and is validated directly; otherwise the CLI
 walks up from the current directory and stops at the nearest directory containing both `.dolt/` and
@@ -27,8 +27,12 @@ walks up from the current directory and stops at the nearest directory containin
 
 - nothing up to the filesystem root → `no ledger found from <cwd> … Pass --ledger PATH, cd into a
   ledger directory, or create one with 'tm init'`;
-- a directory with `.dolt/` but no `ledger.yaml` → `is not a ledger … 'tm adopt' formats an existing
-  bare Dolt database in place` (P9);
+- a directory with a real Dolt database (`.dolt/noms/` or `.dolt/repo_state.json`) but no
+  `ledger.yaml` → `is not a ledger … 'tm adopt' formats an existing bare Dolt database in place` (P9);
+- a `.dolt/` that holds no Dolt database — Dolt's global `~/.dolt` configuration directory — is not a
+  ledger: the upward walk steps past it (the error is `no ledger found from <cwd> …`, never an
+  `tm adopt` hint), and passed explicitly with `-l/--ledger` it is a usage error that names it as
+  Dolt's global configuration directory. `tm adopt` refuses it the same way, before any `dolt` call;
 - **P4 migration guard** — a 0.4 `workspace.yaml` met before any ledger is an error that names the
   old workspace and tells you to `cd` into one of its ledger directories (or pass `--ledger`).
   Nothing is converted: `workspace.yaml` is not a ledger marker, and no setting has to move because
@@ -112,7 +116,7 @@ tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
-tm alias add OBJ_TYPE ID ALIAS ; tm alias remove ...
+tm alias add OBJ_TYPE REF ALIAS ; tm alias remove ...   # REF: id, alias or unique id prefix; a box also by its name
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 
@@ -176,11 +180,9 @@ result must be `stored`.
 `tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
 `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
 option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
-event text, never the ASCII commit message. `use`'s old `--purpose` and `--note` flags are removed
-outright — no aliases; `tm aliquot status --force --note` is unchanged, and `move` never had either
-flag. **Temporary naming mismatch:** the CLI says `--message`, while the value is stored in
-`aliquot_event.note` and new `use`/`move` events leave `purpose` NULL; `tm history --json` keeps the
-`note`/`purpose` event keys. A follow-up change will align the names.
+event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s old
+`--purpose` and `--note` flags are removed outright — no aliases; `tm aliquot status --force --note`
+is unchanged, and `move` never had either flag.
 
 `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
@@ -195,8 +197,8 @@ names the amount used and ends with the message, e.g. `Used all 200 ml from X (c
 use of a tube with no quantity).
 
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
-`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no `purpose` or
-`note` argument, and a `move` message is required and validated like a `use` message.
+`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no event-text
+argument other than `message`, and a `move` message is required and validated like a `use` message.
 
 `tm entity purge`, `tm stock purge`, `tm aliquot purge` and `tm box purge` are explicit **hard
 deletes**, only for an object added by mistake: the rows leave the tables and Dolt history keeps
@@ -261,8 +263,8 @@ tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
 `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly when the status is
 `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the tube has none). Each
 event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`, `from_slot`,
-`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor`, `purpose`
-and `note`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
+`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor` and
+`message`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
 gone. `events` is not a key/value row: text output prints the field block, then the `path:` line
 (when the tube has a position), then `events  N` (two spaces before the count) and one line per
 event, oldest first, rendered by the same `event_line` helper `tm history` uses. `--json` prints
@@ -453,6 +455,11 @@ only entry. For an aliquot the list shows the **stock** kinds: an aliquot has no
 Then come the **fields of the chosen kind in schema order**, each with its description and a `*`
 when it is required (for a box they follow its name and precede its parent). **Computed** fields are
 never asked; **sequence** fields are.
+
+At the kind step of `tm box add-form` each box kind also shows structured facts under its
+description: its geometry, the resolved row/column or slot labels, its slot count and capacity, and
+whether it holds boxes. They come from the effective schema only — the capacity is the same
+`tm box list` formula — so choosing a kind never queries occupancy.
 
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 

@@ -14,11 +14,12 @@ aliquot(id PK, stock_id FK→stock, seq, box_id FK→box, slot, status VARCHAR N
         FK(box_id,slot)→slot)                    -- status: CHECK in the four fixed statuses (§1.1)
 aliquot_event(id AUTO PK, aliquot_id FK, event ENUM(create,use,move,status,edit), amount, unit,
               from_box_id, from_slot, to_box_id, to_slot, old_status, new_status,
-              forced BOOLEAN NOT NULL DEFAULT FALSE, actor, purpose, note, at)
+              forced BOOLEAN NOT NULL DEFAULT FALSE, actor, message, at)
 alias(object_type, object_id, alias, PK(object_type, alias))
 ```
 
-New `use` and `move` events store their required message (§6) in `note`; they leave `purpose` NULL.
+`use` and `move` events store their required message (§6) in `message`; the pre-spec-7 `purpose`
+column is gone (a manual 6 → 7 migration folds a non-empty value into the message first).
 
 `ledger_meta` also carries the version stamps:
 

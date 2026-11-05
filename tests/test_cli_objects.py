@@ -274,6 +274,24 @@ def test_cli_alias_add_accepts_a_unique_incomplete_id(
     )
 
 
+def test_cli_alias_add_accepts_a_box_name(cli_env: None, ledger_factory) -> None:
+    """``tm alias add box <box name> <alias>`` resolves the box's human name."""
+    ledger = ledger_factory([BASE], name="cli-box-name", id_prefix="77")
+    box = json.loads(
+        write(ledger, "box", "add", "rack", "rack-a", "--json").output
+    )
+
+    added = json.loads(
+        write(ledger, "alias", "add", "box", "rack-a", "ra", "--json").output
+    )
+    assert added["object_type"] == "box"
+    assert added["object_id"] == box["id"]
+
+    shown = json.loads(read(ledger, "box", "show", "ra", "--json").output)
+    assert shown["id"] == box["id"]
+    assert shown["aliases"] == ["ra"]
+
+
 def test_cli_show_prints_sorted_aliases_in_json_and_table(
     cli_env: None, ledger_factory
 ) -> None:
@@ -912,8 +930,7 @@ def test_cli_aliquot_move_requires_message_and_records_it(
     history = json.loads(read(ledger, "history", alq, "--json").output)
     event = history["events"][-1]
     assert event["event"] == "move"
-    assert event["note"] == "moved to the bench"
-    assert event["purpose"] is None
+    assert event["message"] == "moved to the bench"
     assert event["to_slot"] == "A1"
 
 
@@ -1022,8 +1039,7 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
     history = json.loads(read(ledger, "history", third, "--json").output)
     event = history["events"][-1]
     assert event["event"] == "use"
-    assert event["note"] == "used it all"
-    assert event["purpose"] is None
+    assert event["message"] == "used it all"
     assert event["old_status"] == "stored"
     assert event["new_status"] == "consumed"
 
@@ -1240,8 +1256,7 @@ def test_cli_aliquot_show_json_carries_the_tube_events(
         "new_status",
         "forced",
         "actor",
-        "purpose",
-        "note",
+        "message",
     }
     assert event["event"] == "create"
     assert event["amount"] == "100.000000"

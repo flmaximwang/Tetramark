@@ -9,17 +9,31 @@ argument.
 
 Dolt-free tests are marked ``fast``; the behaviour tests use the real embedded
 driver and are marked ``embedded``.
+
+The bottom of the file pins the package root itself: ``tetramark/__init__.py``
+resolves the ledger API lazily (PEP 562) and leaves pydantic, typer and yaml
+out of ``sys.modules`` until one of those names is first used.
 """
 
 from __future__ import annotations
 
 import inspect
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 import tetramark
 from tetramark.core.ledger import open as open_ledger
 from tetramark.errors import UsageError
+
+#: The documented package-level API, in its historical order.
+PUBLIC_NAMES = ["Ledger", "__version__", "adopt_ledger", "init_ledger", "open"]
+
+#: The names resolved through PEP 562; ``__version__`` is deliberately eager.
+LAZY_NAMES = ("Ledger", "adopt_ledger", "init_ledger", "open")
 
 # ---------------------------------------------------------------------------
 # Signature: the public contract (P15), no database needed
@@ -132,6 +146,96 @@ def test_open_takes_the_branch_as_the_second_positional_argument(
 
     with pytest.raises(UsageError, match="does not exist"):
         tetramark.open(ledger.path, "no-such-branch", env=dolt_env)
+
+
+# ---------------------------------------------------------------------------
+# The package root stays import-light: PEP 562 lazy exports, no dependencies
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fast
+def test_all_is_unchanged() -> None:
+    assert tetramark.__all__ == PUBLIC_NAMES
+
+
+@pytest.mark.fast
+def test_the_public_names_import_from_the_package_root() -> None:
+    """AC3: the five documented names import without touching the ledger first."""
+    from tetramark import Ledger, __version__, adopt_ledger, init_ledger, open
+
+    assert Ledger is tetramark.Ledger
+    assert init_ledger is tetramark.init_ledger
+    assert adopt_ledger is tetramark.adopt_ledger
+    assert open is tetramark.open
+    assert __version__ == tetramark.__version__
+    assert isinstance(__version__, str)
+    assert __version__
+
+
+@pytest.mark.fast
+def test_the_lazy_names_are_the_ledger_api() -> None:
+    from tetramark.core import ledger as ledger_module
+
+    for name in LAZY_NAMES:
+        assert getattr(tetramark, name) is getattr(ledger_module, name)
+
+
+@pytest.mark.fast
+def test_dir_lists_the_public_api() -> None:
+    assert set(PUBLIC_NAMES) <= set(dir(tetramark))
+
+
+@pytest.mark.fast
+def test_unknown_attributes_still_raise_attribute_error() -> None:
+    with pytest.raises(AttributeError):
+        getattr(tetramark, "not_a_public_name")
+
+
+@pytest.mark.fast
+def test_version_is_eager_in_a_fresh_interpreter(tmp_path: Path) -> None:
+    """``__version__`` is available even when the ledger API is never touched."""
+    code = (
+        "import sys\n"
+        "import tetramark\n"
+        "assert tetramark.__version__\n"
+        "assert 'tetramark.core' not in sys.modules\n"
+        "print(tetramark.__version__)\n"
+    )
+    result = _run_python(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == tetramark.__version__
+
+
+@pytest.mark.fast
+def test_import_tetramark_imports_no_third_party_dependencies(
+    tmp_path: Path,
+) -> None:
+    """AC3: a fresh ``import tetramark`` has not loaded pydantic, typer or yaml."""
+    code = (
+        "import sys\n"
+        "import tetramark\n"
+        "banned = [name for name in ('pydantic', 'typer', 'yaml') "
+        "if name in sys.modules]\n"
+        "if banned:\n"
+        "    raise SystemExit('imported: ' + ', '.join(banned))\n"
+        "print(tetramark.__version__)\n"
+    )
+    result = _run_python(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == tetramark.__version__
+
+
+def _run_python(code: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run *code* in a fresh interpreter without an inherited ``PYTHONPATH``."""
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
 
 @pytest.mark.embedded

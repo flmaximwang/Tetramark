@@ -1,12 +1,12 @@
 ---
 name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
-version: "0.8.31"
+version: "0.8.33"
 spec: "06-cli"
 updated: 2026-11-05
 ---
 
-> Tetramark 0.8.31 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.33 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Tetramark operating manual
 
@@ -34,9 +34,9 @@ one Dolt commit; every read is a normal `tm` command.
    `nucleic_acids`, `bacteria`, `proteins`, `cell_culture`; `cellbio` = `base`, `nucleic_acids`,
    `cell_culture`, `immuno`, `viral_vectors`; `angenet` = `base`, `nucleic_acids`, `biosamples` and
    the four organism parts. One ledger can list any combination and the shared parts load once.
-7. A new ledger is **spec 6** (`base` version 5) and no shipped preset declares statuses. An older
+7. A new ledger is **spec 7** (`base` version 5) and no shipped preset declares statuses. An older
    ledger still opens with its own preset copies and `tm` warns `ledger is spec N, tm is spec N+1:
-   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step.
+   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step, 6 → 7 scripted.
 
 ## Decision table
 

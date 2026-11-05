@@ -78,8 +78,7 @@ CREATE TABLE `aliquot_event` (
   `new_status` VARCHAR(32),
   `forced` BOOLEAN NOT NULL DEFAULT FALSE,
   `actor` VARCHAR(255),
-  `purpose` MEDIUMTEXT,
-  `note` MEDIUMTEXT,
+  `message` MEDIUMTEXT,
   `at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT `pk_aliquot_event` PRIMARY KEY (`id`)
 );
