@@ -507,6 +507,25 @@ prints a `Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <sto
 through the aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts.
 The other forms ask for what their `add` command needs, in the same way.
 
+**The aliquot form** asks, in this order, the **kind** (the stock kinds — an aliquot has
+no kind of its own), the **stock** (a ref, with search), the **aliquot count**, the **quantity**,
+the **unit**, the **box** (`?` lists the boxes) and the **slots**; count, box and slots work as in
+the stock form. The **quantity** is optional, with no default and nothing pre-filled from the
+stock or from the tubes already there: Enter on the empty step skips it. When given, it is the
+amount **each** of the new tubes holds — the same amount in every tube, never divided between
+them — as with `tm aliquot add --quantity Q --unit U` and `tm stock aliquot STOCK AMOUNT UNIT`,
+where `AMOUNT` is also per tube. A count of `3` with `2.5 ml` makes three 2.5 ml tubes, and `0` is
+allowed. It is checked as typed: a decimal number `>= 0` is accepted as written, a non-number is
+refused with `quantity must be a decimal number (got '…')`, and a negative or infinite value with
+`quantity must be a finite, non-negative number (got '…')`. The **unit** is asked only when a
+quantity was given; then it is required, so an empty Enter is refused with `unit is required`, and
+it is free text of 1–32 characters after trimming (a longer value is refused with
+`unit must be at most 32 characters`), with no list to choose from, no normalisation, no conversion
+and no default. Skipping the quantity skips the unit with it and stores no quantity and no unit
+(`NULL`, exactly as before). The result is the same write as
+`tm aliquot add --quantity Q --unit U`: the same tubes, the same amount per tube and the same
+create events.
+
 **The review screen** lists every value, numbered, with long values in short form. Typing a number
 jumps back to that step, `y` writes, `q` cancels.
 

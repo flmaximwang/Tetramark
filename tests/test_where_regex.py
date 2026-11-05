@@ -14,6 +14,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from support.read_asserts import assert_single_read_process
 from tetramark.cli.app import app
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import UsageError
