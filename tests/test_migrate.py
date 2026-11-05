@@ -3763,8 +3763,8 @@ def test_proteins_3_to_4_refuses_a_base_5_closure(
     ledger's proteins copy exactly as it found it.
     """
     ledger = embedded_ledger_factory(
-        [write_proteins_v3_base_5_presets(tmp_path / "proteins-v3-base-5")],
-        name="proteins-v3-base-5",
+        [write_proteins_v3_base_5_presets(tmp_path / "proteins-v3-base-5-presets")],
+        name="proteins-v3-base-5-ledger",
         real_init=True,
     )
     versions = {**PROTEINS_V3_VERSIONS, "base": 5}
