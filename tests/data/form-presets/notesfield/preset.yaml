@@ -1,0 +1,22 @@
+preset: notesfield
+version: 1
+description: >-
+  Test-only fixture for the add-form notes rule (Tetramark-6gy): every
+  extensible object has a kind that declares its own ``notes`` field, so the
+  form asks that field once (in schema order) and never the core notes step.
+kinds:
+  noted_item:
+    object: entity
+    fields:
+      name: {type: string, required: true}
+      notes: {type: text, long: true}
+  noted_lot:
+    object: stock
+    entity_kinds: [noted_item]
+    fields:
+      notes: {type: string}
+  noted_box:
+    object: box
+    geometry: {type: slotless, capacity: 2}
+    fields:
+      notes: {type: text, long: true}

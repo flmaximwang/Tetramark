@@ -821,11 +821,18 @@ class FormState:
                 "aliases": list(answers.get("aliases") or []),
             }
         if object_type == "stock":
+            values = dict(field_values)
+            if "notes" in answers:
+                # Only the core notes step (a kind's own ``notes`` field is
+                # already in ``field_values``).
+                values["notes"] = answers["notes"]
             return {
                 "kind": kind,
                 "entity": answers["entity"],
-                "values": field_values,
+                "values": values,
                 "aliquots": 0,
+                "parent": answers.get("parent"),
+                "source_aliquot": answers.get("source_aliquot"),
             }
         if object_type == "aliquot":
             return {
@@ -837,6 +844,9 @@ class FormState:
                 "unit": answers.get("unit"),
                 "box": answers.get("box"),
                 "slots": list(answers.get("slots") or []),
+                # None keeps the add command's placement default; the core
+                # rule is never re-implemented here.
+                "status": answers.get("status"),
             }
         return {
             "kind": kind,
@@ -844,7 +854,9 @@ class FormState:
             "values": field_values,
             "parent": answers.get("parent"),
             "slot": answers.get("slot"),
-            "notes": answers.get("notes"),
+            # A kind that declares its own ``notes`` field carries the value in
+            # ``values``: the core notes argument must stay NULL.
+            "notes": None if "notes" in kind_object.fields else answers.get("notes"),
         }
 
     def reject(self, message: str) -> None:

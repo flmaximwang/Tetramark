@@ -8,7 +8,9 @@ Dolt-free fast lane.  The plan answers three questions:
   the list of *stock* kinds, because an aliquot inherits its stock's kind);
 * the numbered kind step that always comes first (spec: "Step 1 is always a
   numbered kind list built from the ledger schema");
-* the field steps of one chosen kind, in **schema order** (``steps``).
+* the steps of one chosen kind (``steps``): its fields in **schema order**,
+  then the core questions that write the object's own columns -- the entity,
+  lineage and notes questions of a stock, the creation status of an aliquot.
 
 The step list is deliberately data-only: :mod:`tetramark.form.state` does the
 validation and navigation, :mod:`tetramark.form.tui` renders it.
@@ -233,6 +235,21 @@ def _schema_steps(kind: Kind) -> list[Step]:
     return steps
 
 
+#: The hint every ref step carries: look the target up by id/alias, or search.
+_REF_HELP = "Type an id or alias (its name is shown back), or ?term to search."
+
+
+def _core_notes_step(description: str) -> Step:
+    """The core ``notes`` column as a form step (a kind may shadow it)."""
+    return Step(
+        key="notes",
+        label="notes",
+        type="text",
+        long=True,
+        description=description,
+    )
+
+
 def _entity_steps(kind: Kind) -> list[Step]:
     steps: list[Step] = []
     if "name" not in kind.fields:
@@ -257,15 +274,8 @@ def _entity_steps(kind: Kind) -> list[Step]:
             ),
         )
     )
-    steps.append(
-        Step(
-            key="notes",
-            label="notes",
-            type="text",
-            long=True,
-            description="Free-text notes about the entity.",
-        )
-    )
+    if "notes" not in kind.fields:
+        steps.append(_core_notes_step("Free-text notes about the entity."))
     return steps
 
 
@@ -279,14 +289,43 @@ def _stock_steps(kind: Kind) -> list[Step]:
             allowed_kinds=tuple(kind.entity_kinds or ()),
             required=True,
             description="The entity this stock is a batch of.",
-            help="Type an id or alias (its name is shown back), or ?term to search.",
+            help=_REF_HELP,
         )
     ]
     steps.extend(_schema_steps(kind))
+    steps.extend(
+        [
+            Step(
+                key="parent",
+                label="parent",
+                type="ref",
+                target="stock",
+                description=(
+                    "Parent stock this stock was derived from (optional; "
+                    "lineage)."
+                ),
+                help=_REF_HELP,
+            ),
+            Step(
+                key="source_aliquot",
+                label="source_aliquot",
+                type="ref",
+                target="aliquot",
+                description=(
+                    "Aliquot this stock was made from (optional; lineage)."
+                ),
+                help=_REF_HELP,
+            ),
+        ]
+    )
+    if "notes" not in kind.fields:
+        steps.append(_core_notes_step("Free-text notes about the stock."))
     return steps
 
 
-def _aliquot_steps(kind_name: str) -> list[Step]:
+def _aliquot_steps(schema: EffectiveSchema, kind_name: str) -> list[Step]:
+    status_set = schema.status_set(kind_name)
+    statuses = tuple(status_set.names) if status_set is not None else ()
     return [
         Step(
             key="stock",
@@ -296,7 +335,7 @@ def _aliquot_steps(kind_name: str) -> list[Step]:
             allowed_kinds=(kind_name,),
             required=True,
             description="The stock to add aliquots to.",
-            help="Type an id or alias (its name is shown back), or ?term to search.",
+            help=_REF_HELP,
         ),
         Step(
             key="count",
@@ -342,6 +381,17 @@ def _aliquot_steps(kind_name: str) -> list[Step]:
             ),
             help="Enter accepts the next free slots; ? shows the free slots.",
         ),
+        Step(
+            key="status",
+            label="status",
+            type="enum",
+            values=statuses,
+            description=(
+                "Status of the new aliquots at creation (optional; any status "
+                "of the set)."
+            ),
+            help="Enter keeps the add-command default for this placement.",
+        ),
     ]
 
 
@@ -375,15 +425,10 @@ def _box_steps(kind: Kind) -> list[Step]:
                 description="Slot in the parent box (slotted parents only).",
                 help="? shows the free slots of the parent.",
             ),
-            Step(
-                key="notes",
-                label="notes",
-                type="text",
-                long=True,
-                description="Free-text notes about the box.",
-            ),
         ]
     )
+    if "notes" not in kind.fields:
+        steps.append(_core_notes_step("Free-text notes about the box."))
     return steps
 
 
@@ -392,8 +437,6 @@ def _steps_for(kind: Kind) -> list[Step]:
         return _entity_steps(kind)
     if kind.object.value == "stock":
         return _stock_steps(kind)
-    if kind.object.value == "aliquot":  # pragma: no cover - aliquots have no kinds
-        return _aliquot_steps(kind)
     return _box_steps(kind)
 
 
@@ -412,7 +455,7 @@ class FormPlan:
         """The steps of one chosen kind (the kind step itself excluded)."""
         if self.object_type == "aliquot":
             # An aliquot has no kind row of its own: its kind is its stock's.
-            return tuple(_aliquot_steps(kind_name))
+            return tuple(_aliquot_steps(self.schema, kind_name))
         return tuple(_steps_for(self.schema.kind(kind_name)))
 
 
