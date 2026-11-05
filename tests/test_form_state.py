@@ -15,8 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from tetramark.core.objects import _parse_quantity_unit
-from tetramark.errors import UsageError
+from tetramark.core.objects import (
+    _parse_quantity_unit,
+    default_aliquot_status,
+    validate_creation_placement,
+    validate_creation_status,
+)
+from tetramark.errors import LedgerError, UsageError
 from tetramark.form.editor import (
     SCISSORS,
     edit_value,
@@ -34,7 +39,7 @@ from tetramark.form.state import (
     short_form,
 )
 from tetramark.schema.loader import load_schema
-from tetramark.schema.model import LedgerConfig
+from tetramark.schema.model import EffectiveSchema, LedgerConfig
 
 pytestmark = pytest.mark.fast
 
@@ -45,6 +50,23 @@ FULL = load_schema(
 )
 SINGLE = load_schema(
     LedgerConfig(name="form", presets=[str(PRESETS / "base")]), base_dir=Path.cwd()
+)
+#: A preset whose entity, stock and box kinds each declare their own ``notes``
+#: field: the form must ask that field once and never the core notes step.
+#: It lives outside ``tests/data/presets`` so the preset-list tests keep their
+#: exact directory listing.
+NOTES = load_schema(
+    LedgerConfig(
+        name="form",
+        presets=[str(Path(__file__).parent / "data" / "form-presets" / "notesfield")],
+    ),
+    base_dir=Path.cwd(),
+)
+#: The legacy spec-4/5 fixture: per-kind status sets, including a cryo set with
+#: no ``pending`` (its add-form status list is that set, in its own order).
+LEGACY = load_schema(
+    LedgerConfig(name="form", presets=[str(PRESETS / "legacy")]),
+    base_dir=Path.cwd(),
 )
 #: The repository's own base preset: the box geometries a new ledger starts with.
 REPO_BASE = load_schema(
@@ -74,7 +96,8 @@ class FakeResolver:
                 "i1": ("i1", "Item One"),
                 "p1": ("p1", "Plasmid One"),
             },
-            "stock": {"s1": ("s1", "1226FP01")},
+            "stock": {"s1": ("s1", "1226FP01"), "s2": ("s2", "1226FP02")},
+            "aliquot": {"a1": ("a1", "1226FP01-A1"), "a2": ("a2", "1226FP01-A2")},
             "everything": {"e1": ("e1", "Everything One")},
         }
         self.kinds: dict[str, str] = {
@@ -82,6 +105,9 @@ class FakeResolver:
             "i1": "item",
             "p1": "plasmid",
             "s1": "bacterial",
+            "s2": "bacterial",
+            "a1": "bacterial",
+            "a2": "bacterial",
         }
         self.boxes: dict[str, dict[str, object]] = {
             "GRID1": {"kind": "grid96", "slotted": True, "free": ["A1", "A2", "A3"]},
@@ -91,6 +117,8 @@ class FakeResolver:
         self.search_hits: dict[str, list[tuple[str, str]]] = {
             "bb": [("p1", "Plasmid One")],
             "one": [("e1", "Everything One"), ("i1", "Item One")],
+            "fp": [("s1", "1226FP01"), ("s2", "1226FP02")],
+            "al": [("a1", "1226FP01-A1"), ("a2", "1226FP01-A2")],
         }
 
     def resolve_ref(
@@ -161,9 +189,39 @@ class FakeResolver:
         return list(self.boxes.get(box, {}).get("free", []))
 
 
-def state_for(object_type: str = "entity", resolver: FakeResolver | None = None) -> FormState:
+class RepoBaseResolver(FakeResolver):
+    """The fake refs, renamed for the repository base preset's kinds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kinds.update(
+            {"e1": "item", "i1": "item", "p1": "item", "s1": "lot", "s2": "lot"}
+        )
+
+
+class NotesFieldResolver(FakeResolver):
+    """The fake refs, renamed for the ``notesfield`` fixture's kinds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kinds.update(
+            {
+                "e1": "noted_item",
+                "i1": "noted_item",
+                "p1": "noted_item",
+                "s1": "noted_lot",
+                "s2": "noted_lot",
+            }
+        )
+
+
+def state_for(
+    object_type: str = "entity",
+    resolver: FakeResolver | None = None,
+    schema: EffectiveSchema = FULL,
+) -> FormState:
     return FormState(
-        build_plan(FULL, object_type),
+        build_plan(schema, object_type),
         resolver or FakeResolver(),
         today=lambda: TODAY,
         now=lambda: NOW,
@@ -267,6 +325,9 @@ def test_stock_and_box_and_aliquot_steps() -> None:
         "amount",
         "strain",
         "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
     ]
     assert stock["entity"].required is True
     assert stock["entity"].allowed_kinds == ("item", "plasmid")
@@ -277,7 +338,15 @@ def test_stock_and_box_and_aliquot_steps() -> None:
     assert box == ["name", "parent", "slot", "notes"]
 
     aliquot = [step.key for step in build_plan(FULL, "aliquot").steps("prep")]
-    assert aliquot == ["stock", "count", "quantity", "unit", "box", "slots"]
+    assert aliquot == [
+        "stock",
+        "count",
+        "quantity",
+        "unit",
+        "box",
+        "slots",
+        "status",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +371,7 @@ def test_aliquot_asks_the_quantity_and_the_unit_after_the_count() -> None:
         "unit",
         "box",
         "slots",
+        "status",
     ]
     by_key = {step.key: step for step in steps}
     assert by_key["quantity"].type == "quantity"
@@ -323,6 +393,7 @@ def test_the_unit_is_asked_only_after_a_quantity() -> None:
         "quantity",
         "unit",
         "box",
+        "status",
     ]
 
 
@@ -438,6 +509,7 @@ def test_a_review_jump_that_clears_the_quantity_drops_the_unit() -> None:
     at(state, "quantity").submit("2.5")
     at(state, "unit").submit("ml")
     at(state, "box").submit("")
+    at(state, "status").submit("")
     assert state.mode == "review"
     rows = {row.label: row.value for row in state.review_rows()}
     assert rows["quantity"] == "2.5"
@@ -455,6 +527,7 @@ def test_the_review_shows_the_quantity_and_the_unit() -> None:
     at(state, "quantity").submit("2.5")
     at(state, "unit").submit("ml")
     at(state, "box").submit("")
+    at(state, "status").submit("")
     assert state.mode == "review"
     rows = {row.label: row.value for row in state.review_rows()}
     assert rows["quantity"] == "2.5"
@@ -464,6 +537,7 @@ def test_the_review_shows_the_quantity_and_the_unit() -> None:
     state = aliquot_state()
     at(state, "quantity").submit("")
     at(state, "box").submit("")
+    at(state, "status").submit("")
     assert state.mode == "review"
     rows = {row.label: row.value for row in state.review_rows()}
     assert rows["quantity"] == ""
@@ -488,7 +562,17 @@ def test_stock_form_walks_kind_entity_fields_and_reviews_without_aliquots() -> N
     state = state_for("stock")
     state.submit("1")  # bacterial
     steps = [step.key for step in state.visible_steps()]
-    assert steps == ["kind", "entity", "measured_at", "amount", "strain", "medium"]
+    assert steps == [
+        "kind",
+        "entity",
+        "measured_at",
+        "amount",
+        "strain",
+        "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
+    ]
     assert "aliquots" not in steps and "box" not in steps and "slots" not in steps
 
     at(state, "entity").submit("p1")
@@ -496,11 +580,24 @@ def test_stock_form_walks_kind_entity_fields_and_reviews_without_aliquots() -> N
     at(state, "amount").submit("")
     at(state, "strain").submit("BL21(DE3)")
     at(state, "medium").submit("lb")
+    at(state, "parent").submit("")
+    at(state, "source_aliquot").submit("")
+    at(state, "notes").submit("")
     assert state.mode == "review"
     labels = [row.label for row in state.review_rows()]
-    assert labels == ["kind", "entity", "measured_at", "amount", "strain", "medium"]
+    assert labels == [
+        "kind",
+        "entity",
+        "measured_at",
+        "amount",
+        "strain",
+        "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
+    ]
     assert not {"aliquots", "box", "slots"} & set(labels)
-    assert [row.number for row in state.review_rows()] == [1, 2, 3, 4, 5, 6]
+    assert [row.number for row in state.review_rows()] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +856,8 @@ def test_slots_default_question_mark_and_slotless_box() -> None:
     assert "one slot per aliquot" in state.error
     state.submit("")
     assert state.answers["slots"] == ["A1", "A2"]
+    assert state.current().key == "status"
+    state.submit("")
     assert state.mode == "review"
 
     # A slotless box has no slots step at all.
@@ -767,6 +866,8 @@ def test_slots_default_question_mark_and_slotless_box() -> None:
     at(state, "stock").submit("s1")
     at(state, "count").submit("1")
     at(state, "box").submit("SHELF")
+    assert state.current().key == "status"
+    state.submit("")
     assert state.mode == "review"
     assert "slots" not in state.answers
 
@@ -937,6 +1038,9 @@ def test_core_rejection_focuses_the_failing_field() -> None:
     at(state, "amount").submit("")
     at(state, "strain").submit("BL21(DE3)")
     at(state, "medium").submit("lb")
+    at(state, "parent").submit("")
+    at(state, "source_aliquot").submit("")
+    at(state, "notes").submit("")
     assert state.mode == "review"
     state.review_input("y")
     assert state.mode == "write"
@@ -954,6 +1058,7 @@ def test_core_rejection_focuses_the_failing_field() -> None:
     at(state, "count").submit("1")
     at(state, "box").submit("GRID1")
     state.submit("")
+    at(state, "status").submit("")
     assert state.mode == "review"
     state.review_input("y")
     assert state.mode == "write"
@@ -1004,6 +1109,8 @@ def test_stock_payload_uses_core_arguments() -> None:
         "entity": "p1",
         "values": {"strain": "BL21(DE3)", "medium": "lb"},
         "aliquots": 0,
+        "parent": None,
+        "source_aliquot": None,
     }
 
 
@@ -1017,6 +1124,7 @@ def test_aliquot_and_box_payloads() -> None:
             "unit": "ml",
             "box": "RACK1",
             "slots": ["top"],
+            "status": "missing",
         },
         kind="bacterial",
     )
@@ -1028,10 +1136,12 @@ def test_aliquot_and_box_payloads() -> None:
         "unit": "ml",
         "box": "RACK1",
         "slots": ["top"],
+        "status": "missing",
     }
 
     # Without a quantity there is no unit either: both are None, which the
-    # core stores as NULL, exactly as before.
+    # core stores as NULL, exactly as before.  A skipped status is None too:
+    # the add command's placement default applies.
     aliquot = state_for("aliquot")
     aliquot.fill({"stock": "s1", "count": "1"}, kind="bacterial")
     payload = aliquot.payload()
@@ -1042,6 +1152,7 @@ def test_aliquot_and_box_payloads() -> None:
         "unit": None,
         "box": None,
         "slots": [],
+        "status": None,
     }
 
     box = state_for("box")
@@ -1057,6 +1168,480 @@ def test_aliquot_and_box_payloads() -> None:
         "slot": None,
         "notes": "n",
     }
+
+
+# ---------------------------------------------------------------------------
+# Every writable creation property (Tetramark-6gy)
+# ---------------------------------------------------------------------------
+
+
+def test_t1_stock_form_asks_every_writable_creation_property() -> None:
+    steps = {step.key: step for step in build_plan(FULL, "stock").steps("bacterial")}
+    assert list(steps) == [
+        "entity",
+        "measured_at",
+        "amount",
+        "strain",
+        "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
+    ]
+    parent = steps["parent"]
+    assert (parent.type, parent.target, parent.allowed_kinds) == (
+        "ref",
+        "stock",
+        (),
+    )
+    assert parent.required is False and parent.default is None
+    assert parent.description == (
+        "Parent stock this stock was derived from (optional; lineage)."
+    )
+    assert parent.help == (
+        "Type an id or alias (its name is shown back), or ?term to search."
+    )
+    source = steps["source_aliquot"]
+    assert (source.type, source.target, source.allowed_kinds) == (
+        "ref",
+        "aliquot",
+        (),
+    )
+    assert source.required is False and source.default is None
+    assert source.description == (
+        "Aliquot this stock was made from (optional; lineage)."
+    )
+    assert source.help == parent.help
+    notes = steps["notes"]
+    assert (notes.type, notes.long, notes.required) == ("text", True, False)
+    assert notes.description == "Free-text notes about the stock."
+
+    state = state_for("stock")
+    state.submit("1")
+    assert [step.key for step in state.visible_steps()] == [
+        "kind",
+        "entity",
+        "measured_at",
+        "amount",
+        "strain",
+        "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
+    ]
+
+
+def test_t1_aliquot_form_asks_the_creation_status_last() -> None:
+    steps = build_plan(FULL, "aliquot").steps("prep")
+    assert [step.key for step in steps] == [
+        "stock",
+        "count",
+        "quantity",
+        "unit",
+        "box",
+        "slots",
+        "status",
+    ]
+    status = steps[-1]
+    assert status.type == "enum"
+    assert status.required is False and status.default is None
+
+    state = state_for("aliquot")
+    state.submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("1")
+    at(state, "quantity").submit("")
+    at(state, "box").submit("GRID1")
+    assert [step.key for step in state.visible_steps()] == [
+        "kind",
+        "stock",
+        "count",
+        "quantity",
+        "box",
+        "slots",
+        "status",
+    ]
+
+
+def test_t1_entity_and_box_steps_are_unchanged() -> None:
+    entity = [step.key for step in build_plan(FULL, "entity").steps("everything")]
+    assert entity[-2:] == ["aliases", "notes"]
+    assert entity.count("notes") == 1
+    box = [step.key for step in build_plan(FULL, "box").steps("grid96")]
+    assert box == ["name", "parent", "slot", "notes"]
+
+
+def test_t2_a_kind_owned_notes_field_is_the_only_notes_question() -> None:
+    entity = [step.key for step in build_plan(NOTES, "entity").steps("noted_item")]
+    assert entity == ["name", "notes", "aliases"]
+    stock = [step.key for step in build_plan(NOTES, "stock").steps("noted_lot")]
+    assert stock == ["entity", "notes", "parent", "source_aliquot"]
+    box = [step.key for step in build_plan(NOTES, "box").steps("noted_box")]
+    assert box == ["name", "notes", "parent", "slot"]
+    for keys in (entity, stock, box):
+        assert keys.count("notes") == 1
+
+    # The visible steps agree: the kind field is the only notes question.
+    # (The box's ``slot`` step only appears once a slotted parent is chosen.)
+    for object_type, expected in (
+        ("entity", ["kind", "name", "notes", "aliases"]),
+        ("stock", ["kind", "entity", "notes", "parent", "source_aliquot"]),
+        ("box", ["kind", "name", "notes", "parent"]),
+    ):
+        state = state_for(object_type, resolver=NotesFieldResolver(), schema=NOTES)
+        state.submit("1")
+        assert [step.key for step in state.visible_steps()] == expected
+
+
+def test_t2_the_kind_notes_field_is_stored_in_values_not_in_core_notes() -> None:
+    entity = state_for("entity", resolver=NotesFieldResolver(), schema=NOTES)
+    entity.fill({"name": "Noted entity", "notes": "kind note"}, kind="noted_item")
+    entity_payload = entity.payload()
+    assert entity_payload["values"] == {
+        "name": "Noted entity",
+        "notes": "kind note",
+    }
+    assert entity_payload["name"] is None
+
+    stock = state_for("stock", resolver=NotesFieldResolver(), schema=NOTES)
+    stock.fill({"entity": "s1", "notes": "kind note"}, kind="noted_lot")
+    assert stock.payload() == {
+        "kind": "noted_lot",
+        "entity": "s1",
+        "values": {"notes": "kind note"},
+        "aliquots": 0,
+        "parent": None,
+        "source_aliquot": None,
+    }
+
+    box = state_for("box", resolver=NotesFieldResolver(), schema=NOTES)
+    box.fill({"name": "Box 1", "notes": "kind note"}, kind="noted_box")
+    # ``notes`` is None: the value goes to the kind field, never the core
+    # column (``add_box`` refuses both at once).
+    assert box.payload() == {
+        "kind": "noted_box",
+        "name": "Box 1",
+        "values": {"notes": "kind note"},
+        "parent": None,
+        "slot": None,
+        "notes": None,
+    }
+
+
+def test_t3_parent_and_source_aliquot_refs_resolve_search_and_skip() -> None:
+    state = state_for("stock")
+    state.submit("1")
+    parent = next(step for step in state.visible_steps() if step.key == "parent")
+    source = next(
+        step for step in state.visible_steps() if step.key == "source_aliquot"
+    )
+    assert (parent.type, parent.target, parent.allowed_kinds) == (
+        "ref",
+        "stock",
+        (),
+    )
+    assert (source.type, source.target, source.allowed_kinds) == (
+        "ref",
+        "aliquot",
+        (),
+    )
+    assert parent.required is False and source.required is False
+
+    # A typed id resolves and its name is shown back, like every ref step.
+    at(state, "parent").submit("s1")
+    assert state.answers["parent"] == "s1"
+    assert state.labels["parent"] == "1226FP01"
+    assert state.notice == "1226FP01"
+
+    # ``?term`` searches and the hit is picked by number.
+    at(state, "source_aliquot").submit("?al")
+    assert [choice.value for choice in state.choices] == ["a1", "a2"]
+    assert state.choice_title == "Search results for 'al'"
+    state.submit("2")
+    assert state.answers["source_aliquot"] == "a2"
+    assert state.labels["source_aliquot"] == "1226FP01-A2"
+    assert state.notice == "1226FP01-A2"
+
+    # ``?`` with no term lists the candidates.
+    at(state, "parent").submit("?")
+    assert {choice.value for choice in state.choices} == {"s1", "s2"}
+    state.submit("2")
+    assert state.answers["parent"] == "s2"
+    assert state.labels["parent"] == "1226FP02"
+
+    # A skipped ref is None in the payload, like omitting the add option.
+    skipped = state_for("stock")
+    skipped.fill(
+        {"entity": "p1", "strain": "BL21(DE3)", "medium": "lb"},
+        kind="bacterial",
+    )
+    at(skipped, "parent").submit("")
+    at(skipped, "source_aliquot").submit("")
+    assert "parent" not in skipped.answers
+    assert "source_aliquot" not in skipped.answers
+    assert skipped.payload()["parent"] is None
+    assert skipped.payload()["source_aliquot"] is None
+
+
+def test_t3_status_values_come_from_the_schema_in_set_order() -> None:
+    fixed = build_plan(REPO_BASE, "aliquot").steps("lot")[-1]
+    assert fixed.key == "status"
+    assert fixed.type == "enum"
+    assert fixed.values == ("pending", "stored", "missing", "consumed")
+
+    # The legacy fixture's per-kind sets: the cryo set has no ``pending``.
+    legacy_cryo = build_plan(LEGACY, "aliquot").steps("cell_vial")[-1]
+    assert legacy_cryo.values == ("stored", "missing", "thawed")
+    legacy_tube = build_plan(LEGACY, "aliquot").steps("lot")[-1]
+    assert legacy_tube.values == ("pending", "stored", "missing", "consumed")
+
+    for status in (fixed, legacy_cryo, legacy_tube):
+        assert status.required is False
+        assert status.default is None
+        assert status.description == (
+            "Status of the new aliquots at creation (optional; any status "
+            "of the set)."
+        )
+        assert status.help == (
+            "Enter keeps the add-command default for this placement."
+        )
+        # No stored/pending promise: custom sets need not have either.
+        assert "stored" not in status.help and "pending" not in status.help
+
+
+def test_t3_status_by_number_or_name_refused_and_skipped() -> None:
+    state = state_for("aliquot", resolver=RepoBaseResolver(), schema=REPO_BASE)
+    state.submit("1")  # lot
+    at(state, "stock").submit("s1")
+    at(state, "status")
+    assert state.prompt().completions == (
+        "pending",
+        "stored",
+        "missing",
+        "consumed",
+    )
+    at(state, "status").submit("2")
+    assert state.answers["status"] == "stored"
+    at(state, "status").submit("consumed")
+    assert state.answers["status"] == "consumed"
+    at(state, "status").submit("quarantined")
+    assert state.error == (
+        "status must be one of: pending, stored, missing, consumed "
+        "(pick by value or number; got 'quarantined')"
+    )
+    assert state.answers["status"] == "consumed"
+
+    skipped = state_for("aliquot", resolver=RepoBaseResolver(), schema=REPO_BASE)
+    skipped.fill({"stock": "s1", "count": "1"}, kind="lot")
+    at(skipped, "status").submit("")
+    assert "status" not in skipped.answers
+    assert skipped.payload()["status"] is None
+
+
+def test_t3_a_set_with_no_in_stock_status_falls_back_to_its_first_status(
+    tmp_path: Path,
+) -> None:
+    """The last fallback of the documented default: the set's first status.
+
+    The Dolt parity tests cover the fixed set and a legacy per-kind set without
+    ``pending``; this Dolt-free test pins the remaining branch of the core's
+    placement rule, and the status step that offers exactly that set.
+    """
+    preset = tmp_path / "archive.yaml"
+    preset.write_text(
+        "preset: archive\n"
+        "version: 1\n"
+        "status_sets:\n"
+        "  archive:\n"
+        "    filed: {in_stock: false, to: [gone]}\n"
+        "    gone: {in_stock: false}\n"
+        "mixins:\n"
+        "  named_fields:\n"
+        "    name: {type: string, required: true, unique: true}\n"
+        "kinds:\n"
+        "  item:\n"
+        "    object: entity\n"
+        "    mixins: [named_fields]\n"
+        "  archive_lot:\n"
+        "    object: stock\n"
+        "    entity_kinds: [item]\n"
+        "    statuses: archive\n",
+        encoding="utf-8",
+    )
+    schema = load_schema(
+        LedgerConfig(name="archive", presets=[str(preset)]), base_dir=tmp_path
+    )
+    status = build_plan(schema, "aliquot").steps("archive_lot")[-1]
+    assert status.key == "status"
+    assert status.values == ("filed", "gone")
+
+    # ``default_aliquot_status`` only reads the ledger's schema: no stored,
+    # pending or in-stock status leaves the set's first status, which is not in
+    # stock, so an unplaced tube is valid without a position.
+    ledger = type("SchemaOnlyLedger", (), {"schema": schema})()
+    assert (
+        default_aliquot_status(ledger, "archive_lot", placed=False) == "filed"
+    )
+
+
+def test_t3_a_custom_status_set_keeps_the_core_placement_rules() -> None:
+    """A per-kind set without ``pending``: placed means stored, unplaced is refused.
+
+    The form never re-implements these rules -- it offers the set's own
+    statuses and lets the core decide -- so they are pinned here, where the
+    core's own helpers read the schema and nothing else.
+    """
+    ledger = type("SchemaOnlyLedger", (), {"schema": LEGACY})()
+
+    # The legacy fixture's cryo set (stored, missing, thawed): no ``pending``.
+    assert default_aliquot_status(ledger, "cell_vial", placed=True) == "stored"
+    assert default_aliquot_status(ledger, "cell_vial", placed=False) == "stored"
+    with pytest.raises(LedgerError, match="no box position"):
+        validate_creation_placement(ledger, "cell_vial", "stored", placed=False)
+    # Any status of the set may be chosen at creation; a foreign one is not.
+    assert validate_creation_status(ledger, "cell_vial", "thawed") == "thawed"
+    with pytest.raises(UsageError, match="unknown status"):
+        validate_creation_status(ledger, "cell_vial", "pending")
+
+
+def test_t4_stock_payload_carries_lineage_and_notes() -> None:
+    state = state_for("stock")
+    state.fill(
+        {
+            "entity": "p1",
+            "strain": "BL21(DE3)",
+            "medium": "lb",
+            "parent": "s1",
+            "source_aliquot": "a2",
+            "notes": "Glycerol stock.",
+        },
+        kind="bacterial",
+    )
+    assert state.payload() == {
+        "kind": "bacterial",
+        "entity": "p1",
+        "values": {
+            "strain": "BL21(DE3)",
+            "medium": "lb",
+            "notes": "Glycerol stock.",
+        },
+        "aliquots": 0,
+        "parent": "s1",
+        "source_aliquot": "a2",
+    }
+
+    skipped = state_for("stock")
+    skipped.fill(
+        {"entity": "p1", "strain": "BL21(DE3)", "medium": "lb"},
+        kind="bacterial",
+    )
+    assert skipped.payload() == {
+        "kind": "bacterial",
+        "entity": "p1",
+        "values": {"strain": "BL21(DE3)", "medium": "lb"},
+        "aliquots": 0,
+        "parent": None,
+        "source_aliquot": None,
+    }
+
+
+def test_t4_reject_focuses_the_lineage_notes_and_status_steps() -> None:
+    state = state_for("stock")
+    state.fill(
+        {
+            "entity": "p1",
+            "strain": "BL21(DE3)",
+            "medium": "lb",
+            "parent": "s1",
+            "source_aliquot": "a1",
+            "notes": "free text",
+        },
+        kind="bacterial",
+    )
+    state.reject("parent stock 'S9' does not exist")
+    assert (state.mode, state.current().key) == ("input", "parent")
+    state.reject("source_aliquot 'A9' does not exist")
+    assert (state.mode, state.current().key) == ("input", "source_aliquot")
+    state.reject("notes must be text")
+    assert (state.mode, state.current().key) == ("input", "notes")
+    state.reject("something else entirely")
+    assert state.mode == "review"
+
+    aliquot = state_for("aliquot")
+    aliquot.fill(
+        {"stock": "s1", "count": "1", "status": "missing"}, kind="bacterial"
+    )
+    aliquot.reject("status must be one of: pending, stored (got 'x')")
+    assert (aliquot.mode, aliquot.current().key) == ("input", "status")
+
+
+def test_t4_review_rows_list_the_new_steps() -> None:
+    state = state_for("stock")
+    state.submit("1")
+    for key, text in (
+        ("entity", "p1"),
+        ("measured_at", ""),
+        ("amount", ""),
+        ("strain", "BL21(DE3)"),
+        ("medium", "lb"),
+        ("parent", "s1"),
+        ("source_aliquot", ""),
+        ("notes", "free text"),
+    ):
+        at(state, key).submit(text)
+    assert state.mode == "review"
+    rows = state.review_rows()
+    assert [row.number for row in rows] == list(range(1, 10))
+    assert [row.label for row in rows] == [
+        "kind",
+        "entity",
+        "measured_at",
+        "amount",
+        "strain",
+        "medium",
+        "parent",
+        "source_aliquot",
+        "notes",
+    ]
+    assert [row.value for row in rows] == [
+        "bacterial",
+        "Plasmid One",
+        "",
+        "0",  # the amount's schema default
+        "BL21(DE3)",
+        "lb",
+        "1226FP01",
+        "",
+        "free text",
+    ]
+
+    state = state_for("aliquot")
+    state.submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("2")
+    at(state, "quantity").submit("")
+    at(state, "box").submit("GRID1")
+    at(state, "slots").submit("")
+    at(state, "status").submit("missing")
+    assert state.mode == "review"
+    rows = state.review_rows()
+    assert [row.label for row in rows] == [
+        "kind",
+        "stock",
+        "count",
+        "quantity",
+        "box",
+        "slots",
+        "status",
+    ]
+    assert [row.value for row in rows] == [
+        "bacterial",
+        "1226FP01",
+        "2",
+        "",
+        "GRID1 (grid96)",
+        "A1, A2",
+        "missing",
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -450,10 +450,11 @@ status changes to `status`.
 ### 6.3 The interactive form — `tm <object> add-form`
 
 `tm entity add-form`, `tm stock add-form`, `tm aliquot add-form` and `tm box add-form` open an
-interactive form that asks for what a person does not know by heart: the kind, the fields, the box,
-the slots. The form takes **no positional argument and no flags** — every question comes from the
-ledger's own schema. It is the human counterpart of `tm <object> add`; **agents keep using `add`**,
-which is scriptable, never blocks and writes exactly the same row.
+interactive form that asks for what a person does not know by heart: the kind, the fields, the
+lineage references, the notes, the box, the slots and, for tubes, the creation status. The form
+takes **no positional argument and no flags** — every question comes from the ledger's own schema.
+It is the human counterpart of `tm <object> add`; **agents keep using `add`**, which is scriptable,
+never blocks and writes exactly the same row.
 
 Without a terminal (stdin is not a TTY) the command refuses with a usage error (exit 2) that points
 at `tm <object> add`. Nothing is written, and no lock is taken.
@@ -469,6 +470,13 @@ At the kind step of `tm box add-form` each box kind also shows structured facts 
 description: its geometry, the resolved row/column or slot labels, its slot count and capacity, and
 whether it holds boxes. They come from the effective schema only — the capacity is the same
 `tm box list` formula — so choosing a kind never queries occupancy.
+
+**Every writable creation property.** Apart from the generated ids and timestamps, every property
+`tm <object> add` can write is asked: `--id` stays an add-only option (back-filling and migration)
+and is never a form question. A `notes` field declared by the chosen kind is a normal kind field,
+asked in schema order, and is then the only notes question; when the kind has no `notes` field the
+form asks the core `notes` question at the end (entity, stock and box) and stores it in the core
+column. No step key is asked twice in one plan.
 
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 
@@ -499,21 +507,29 @@ on the step.
 | `Ctrl+E` | edit the current field in `$VISUAL` → `$EDITOR` → `vi`; it works on every field. The field name, its description and its pattern are put below a git-style scissors line and removed from what you edit, while `#` lines are kept |
 | `Ctrl+C` | abort: nothing is written |
 
-**The stock form** asks for the stock itself and nothing else, in this order: the **kind**, the
-**entity** (a ref, with search) and the **kind's fields**. It never creates aliquots: it writes
-exactly what `tm stock add KIND --entity E --aliquots 0` writes, so the new stock is empty, and then
-prints a `Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <stock> --count N
---quantity Q --unit U`). Tubes, with their count, quantity, unit, box and slots, are always added
-through the aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts.
-The other forms ask for what their `add` command needs, in the same way.
+**The stock form** asks for the stock itself, in this order: the **kind**, the **entity** (a ref,
+with search), the **kind's fields**, the optional **parent stock** (a ref, with search: the stock
+this one was derived from; lineage, the same as `tm stock add --parent`), the optional **source
+aliquot** (a ref, with search: the aliquot this stock was made from; the same as
+`--source-aliquot`) and the optional **notes** (free text). Parent and source aliquot are
+independent — give both, one or neither — and the core's own validation is the only cross-check.
+`?term` searches and the resolved name is shown back, exactly like every other ref step. The form
+never creates aliquots: it writes exactly what `tm stock add KIND --entity E --aliquots 0
+[--parent P] [--source-aliquot A] [--notes N]` writes, so the new stock is empty, and then prints a
+`Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <stock> --count N --quantity Q
+--unit U`). Tubes, with their count, quantity, unit, box and slots, are always added through the
+aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts. The other
+forms ask for what their `add` command needs, in the same way.
 
 **The aliquot form** asks, in this order, the **kind** (the stock kinds — an aliquot has
-no kind of its own), the **stock** (a ref, with search), the **aliquot count**, the **quantity**,
-the **unit**, the **box** (`?` lists the boxes) and the **slots**; count, box and slots work as in
-the stock form. The **quantity** is optional, with no default and nothing pre-filled from the
-stock or from the tubes already there: Enter on the empty step skips it. When given, it is the
-amount **each** of the new tubes holds — the same amount in every tube, never divided between
-them — as with `tm aliquot add --quantity Q --unit U` and `tm stock aliquot STOCK AMOUNT UNIT`,
+no kind of its own), the **stock** (a ref, with search), the **aliquot count** (default 1), the
+**quantity**, the **unit**, the **box**, the **slots** and the **creation status**. The **box** is
+optional and `?` lists the boxes; the **slots** ask one slot per new tube, and Enter accepts the
+next free slots in order. Slots are asked only when a box was given (and the box has slots), and a
+slotted box needs one slot per tube. The **quantity** is optional, with no default and nothing
+pre-filled from the stock or from the tubes already there: Enter on the empty step skips it. When
+given, it is the amount **each** of the new tubes holds — the same amount in every tube, never
+divided between them — as with `tm aliquot add --quantity Q --unit U` and `tm stock aliquot STOCK AMOUNT UNIT`,
 where `AMOUNT` is also per tube. A count of `3` with `2.5 ml` makes three 2.5 ml tubes, and `0` is
 allowed. It is checked as typed: a decimal number `>= 0` is accepted as written, a non-number is
 refused with `quantity must be a decimal number (got '…')`, and a negative or infinite value with
@@ -525,6 +541,20 @@ and no default. Skipping the quantity skips the unit with it and stores no quant
 (`NULL`, exactly as before). The result is the same write as
 `tm aliquot add --quantity Q --unit U`: the same tubes, the same amount per tube and the same
 create events.
+
+The **creation status** is optional and comes last. It offers exactly the statuses of the stock
+kind's set, in the set's own order, picked by number or name (Tab completes); an invalid value is
+refused with the enum message. The help line only says that Enter keeps the add command's default
+for this placement — it makes no promise about `stored` or `pending`. That default is the core's
+placement rule, unchanged and not re-implemented by the form: a tube placed in a box takes the
+first of `stored` and `pending` that the set has; an unplaced tube takes the first of `pending` and
+`stored`; a set with neither takes its first **in-stock** status; and a set with no in-stock status
+takes its first status. Because an in-stock status needs a position (spec 5), skipping the status
+on a set without a non-stock default can still be refused by the core when the tube is unplaced;
+the form shows that refusal and returns to the step. A chosen status is stored and recorded as the
+create event's `new_status`, exactly as `tm aliquot add --status` — including a non-default status
+of a custom or legacy per-kind set. The result is the same write as
+`tm aliquot add ... --status S`: the same tubes and the same create events.
 
 **The review screen** lists every value, numbered, with long values in short form. Typing a number
 jumps back to that step, `y` writes, `q` cancels.
