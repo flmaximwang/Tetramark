@@ -1,12 +1,12 @@
 ---
 name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
-version: "0.8.36"
+version: "0.8.39.3"
 spec: "06-cli"
 updated: 2026-11-05
 ---
 
-> Tetramark 0.8.36 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.39.3 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Tetramark operating manual
 
