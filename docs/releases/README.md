@@ -18,6 +18,7 @@ automating away.
 | Version | Notes | What changed |
 |---|---|---|
 | [0.8.35](v0.8.35.md) | `v0.8.35.md` | `--where` operators `!=`, `!~`, `<`, `<=`, `>`, `>=` on the entity/stock/box lists, `tm find` and the Python `where=`; ordered comparisons typed per field |
+| [0.8.34](v0.8.34.md) | `v0.8.34.md` | base 6: slotless `shelf`/`freezer`/`drawer` stop bounding their contents; manual base 5→6 step; the proteins 3→4 step requires base 6 |
 | [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
 | [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |
 | [0.8.31](v0.8.31.md) | `v0.8.31.md` | releases attach the wheel and sdist; the wheel ships the skills; pinned install docs |

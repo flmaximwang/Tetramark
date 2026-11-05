@@ -128,10 +128,14 @@ class EmbeddedDriver(Driver):
     def query(
         self, sql: str, params: Params = None, *, fill_columns: bool = True
     ) -> list[dict[str, Any]]:
-        """Run one read; ``fill_columns=False`` skips the CSV header run.
+        """Run one read in one ``dolt sql`` process.
 
-        The caller must have proved every selected column is ``NOT NULL``:
-        without the CSV run a ``NULL`` column is simply absent from the row.
+        A ``SELECT``/``WITH`` read gets its column names from the same process
+        (:meth:`_query_probed`), so a ``NULL`` column is present as ``None``.
+        Other reads, and any probe Dolt rejects, fall back to a second
+        ``-r csv`` header run.  ``fill_columns=False`` skips the column names:
+        the caller must have proved every selected column is ``NOT NULL``,
+        because a ``NULL`` column is then simply absent from the row.
         """
         rendered = render_sql(sql, params)
         if self._pending:
@@ -142,6 +146,10 @@ class EmbeddedDriver(Driver):
             batch = ";\n".join(["START TRANSACTION", *self._pending, rendered, "ROLLBACK"])
             rows = self._query_json(batch)
         else:
+            if fill_columns and _probeable(rendered):
+                probed = self._query_probed([rendered])
+                if probed is not None:
+                    return probed[0]
             rows = self._query_json(rendered)
         if not fill_columns:
             return rows
@@ -153,13 +161,15 @@ class EmbeddedDriver(Driver):
         *,
         fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
-        """Run a whole read batch in one ``dolt sql`` process (plus one CSV run).
+        """Run a whole read batch in one ``dolt sql`` process.
 
         ``-r json`` emits one line per statement (``{}`` when a statement has no
         rows), so the batch stays aligned.  JSON omits a column whose value is
-        ``NULL``, so one ``-r csv`` run then supplies every statement's column
-        list (CSV prints one header even for zero rows) and the columns are
-        filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
+        ``NULL``; for a batch of ``SELECT``/``WITH`` reads the same process also
+        prints every statement's column list (:meth:`_query_probed`).  Any
+        other batch, or a probe Dolt rejects, uses the historical second
+        ``-r csv`` run (CSV prints one header even for zero rows) and the
+        columns are filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
         be aligned (an unexpected Dolt output shape), the statements fall back to
         individual :meth:`query` calls: the batching only changes speed, never
         the result.
@@ -179,6 +189,10 @@ class EmbeddedDriver(Driver):
                 for sql, params in ordered
             ]
         rendered = [render_sql(sql, params) for sql, params in ordered]
+        if fill_columns and all(_probeable(sql) for sql in rendered):
+            probed = self._query_probed(rendered)
+            if probed is not None:
+                return probed
         # A newline before the separator keeps a query that ends in a
         # ``--`` line comment from swallowing the next statement.
         batch = "\n;\n".join(rendered)
@@ -333,6 +347,51 @@ class EmbeddedDriver(Driver):
         return _commit_hash(result_sets)
 
     # -- plumbing ---------------------------------------------------------
+    def _query_probed(
+        self, statements: Sequence[str]
+    ) -> list[list[dict[str, Any]]] | None:
+        """Rows *and* every column name of ``SELECT`` reads in ONE ``dolt sql`` run.
+
+        ``-r json`` omits a column whose value is ``NULL``, so the column list
+        used to need a second, ``-r csv`` process.  Here the same script also
+        materialises each statement's shape as an empty temporary table
+        (``CREATE TEMPORARY TABLE .. AS SELECT * FROM (<query>) .. LIMIT 0``)
+        and prints ``SHOW COLUMNS`` for it: the output is the N result sets
+        followed by N column lists.  Temporary tables live in the session only
+        and never touch the working set.
+
+        ``None`` means "use the two-process path": a probe Dolt rejects (for
+        example duplicate column names), any error -- the old path then raises
+        the query's own error text -- or output that does not align.
+        """
+        probes: list[str] = []
+        for index, sql in enumerate(statements):
+            table = f"`tm_columns_{index}`"
+            body = sql.rstrip().rstrip(";")
+            probes.append(
+                f"CREATE TEMPORARY TABLE {table} AS SELECT * FROM (\n{body}\n) "
+                f"AS `tm_probe` LIMIT 0"
+            )
+            probes.append(f"SHOW COLUMNS FROM {table}")
+        script = "\n;\n".join([*statements, *probes])
+        try:
+            result_sets = _parse_result_sets(
+                self._invoke(script, "json"), keep_empty=True
+            )
+        except LedgerError:
+            return None
+        count = len(statements)
+        if len(result_sets) != 2 * count:
+            return None
+        for rows, shape in zip(result_sets[:count], result_sets[count:]):
+            names = [str(column.get("Field")) for column in shape]
+            if not names or "None" in names:
+                return None
+            for row in rows:
+                for name in names:
+                    row.setdefault(name, None)
+        return result_sets[:count]
+
     def _query_json(self, sql: str) -> list[dict[str, Any]]:
         result_sets = self._run(sql)
         return result_sets[-1] if result_sets else []
@@ -482,6 +541,15 @@ def _check_output(
     if failed:
         message = "\n".join(part.strip() for part in (stderr, stdout) if part.strip())
         raise LedgerError(message or f"dolt sql failed with exit code {returncode}")
+
+
+#: A read whose shape a derived table can materialise: ``SELECT``/``WITH``.
+_PROBEABLE = re.compile(r"\A\s*(?:\(\s*)*(?:SELECT|WITH)\b", re.IGNORECASE)
+
+
+def _probeable(sql: str) -> bool:
+    """Whether :meth:`EmbeddedDriver._query_probed` can read this statement."""
+    return bool(_PROBEABLE.match(sql))
 
 
 def _parse_result_sets(
