@@ -50,6 +50,9 @@ class Choice:
     value: str
     label: str
     detail: str = ""
+    #: Structured ``(label, value)`` facts shown under the choice's detail
+    #: line; empty for every list except the box kind step.
+    facts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

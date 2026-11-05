@@ -439,7 +439,8 @@ blocks and writes the same thing.
 
 - Step 1 is always the numbered list of kinds (shown even with one kind; Enter accepts it), then the
   kind's fields in schema order, each with its description and `*` when it is required. Computed
-  fields are never asked; sequence fields are.
+  fields are never asked; sequence fields are. At the box form's kind step each kind also shows its
+  geometry, resolved labels, slots, capacity (the `tm box list` formula) and whether it holds boxes.
 - Values are checked as you type: an enum by number or value, a bool as `y`/`n`, a date/datetime in
   ISO form (`today`/`now` accepted), an int/decimal parsed, a `pattern` checked, and a `ref` resolved
   right away with its name shown back — `?term` searches the way `tm find` does and you pick a

@@ -283,7 +283,12 @@ class FormState:
             notice=self.notice,
             choices=(
                 tuple(
-                    Choice(value=choice.name, label=choice.name, detail=choice.description or "")
+                    Choice(
+                        value=choice.name,
+                        label=choice.name,
+                        detail=choice.description or "",
+                        facts=choice.facts,
+                    )
                     for choice in step.choices
                 )
                 if step.type == "kind"
