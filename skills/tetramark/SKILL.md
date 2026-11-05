@@ -1,12 +1,12 @@
 ---
 name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
-version: "0.8.33"
+version: "0.8.37"
 spec: "06-cli"
 updated: 2026-11-05
 ---
 
-> Tetramark 0.8.33 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.37 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Tetramark operating manual
 
@@ -52,8 +52,8 @@ one Dolt commit; every read is a normal `tm` command.
 | See one tube and its events, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
 | Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG` (also restores a not-in-stock tube) |
 | Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
-| Mark lost / consumed / planned, or record a detailed life state | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions); `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event `--note` |
-| Override a transition rule | `tm aliquot status ALQ NEW --force --note "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move … -m MSG`) |
+| Mark lost / consumed / planned, or record a detailed life state | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions); `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event message (`-m`) |
+| Override a transition rule | `tm aliquot status ALQ NEW --force -m "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move … -m MSG`) |
 | Hard-delete an object added by mistake (rare) | `tm entity\|stock\|aliquot\|box purge REF` (refused while referenced; a box must be empty) |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box, or move the box itself | `tm box show NAME` (grid) or `--json`; `tm box move NAME --in PARENT [--slot S]` |
@@ -99,7 +99,7 @@ tm stock add mouse_cohort --entity b6j --box MC-02 --quantity 7 --unit individua
   --set dam=ALQ_F --set sire=ALQ_M                            # genotype stays NULL
 tm stock add mouse_cohort --entity b6j --parent LITTER --box MC-03 --aliquots 3 \
   --quantity 1 --unit mouse --set genotype=G+ --set sex=f     # one per genotype x sex
-tm aliquot status LITTER.1 consumed --note "genotyped and split"   # gone for good
+tm aliquot status LITTER.1 consumed -m "genotyped and split"   # gone for good
 tm stock edit LITTER --set fate=euthanized                   # optional detail, not a status
 tm lineage PUP --up                                           # litter and both parents
 ```
@@ -109,7 +109,7 @@ Other angenet commands: `tm entity add fly_line …`, then `tm stock add fly_cul
 the progeny stock at parent aliquots (`--set dam=ALQ --set sire=ALQ`); thaw a cryo vial with
 `tm aliquot status VIAL consumed` (`thawed` is `consumed`; a vial is `stored` in the freezer).
 Detailed states are optional enum stock properties: `fate` on mouse/fish/fly stocks, `condition` on
-worm cultures (growing, starved, contaminated), or an event `--note`. Full recipes - register a
+worm cultures (growing, starved, contaminated), or an event message (`-m`). Full recipes - register a
 colony, record a cross, split a litter, thaw a cryo vial: `references/recipes.md` §10-13.
 
 ### Audit
@@ -134,7 +134,7 @@ tm check --group core
   and `missing` → `stored`/`consumed`; creation accepts any of the four. No preset or kind declares a
   status set — there is no `status_sets:`, no per-kind `statuses:` and no `tube`/`cryo`/`animal`/`fly`/
   `worm` vocabulary; `thawed` is `consumed`. A later change must follow the transitions; override only
-  deliberately with `--force --note "why"` (the event carries `forced = TRUE`). Detailed life states
+  deliberately with `--force -m "why"` (the event carries `forced = TRUE`). Detailed life states
   are stock properties (`fate`, `condition`) or event messages.
 - **A tube has a position exactly when it is `stored`.** Changing to any other status clears its
   box/slot (the event keeps the old position); `stored` without a position is refused — place it with

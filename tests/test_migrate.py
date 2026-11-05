@@ -5239,7 +5239,7 @@ def test_the_spec7_event_guard_refuses_every_event_write(
 
     for flags in (("aliquot", "use", alq, "1", "ul", "-m", "x"),
                   ("aliquot", "move", alq, "--box", str(box), "-m", "x"),
-                  ("aliquot", "status", alq, "missing", "--note", "x")):
+                  ("aliquot", "status", alq, "missing", "-m", "x")):
         result = CliRunner().invoke(app, [*base_args(ledger), *flags])
         assert result.exit_code == 1, result.output
         assert str(result.exception) == expected

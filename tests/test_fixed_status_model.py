@@ -276,7 +276,7 @@ def test_fixed_creation_status_and_transitions(ledger_factory) -> None:
     with pytest.raises(LedgerError, match="final status"):
         ledger.aliquots.status(alq, "stored")
     forced = ledger.aliquots.status(
-        alq, "missing", force=True, note="undo a wrong consumed"
+        alq, "missing", force=True, message="undo a wrong consumed"
     )
     assert forced["status"] == "missing"
     last = events(ledger, alq)[-1]

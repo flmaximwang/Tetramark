@@ -119,7 +119,7 @@ registered without a quantity can only be used whole (`tm aliquot use ALQ -m "us
 partial amount is refused. If a tube is missing rather than used:
 
 ```sh
-tm aliquot status 1226KO02.3 missing --note "not in the box on 2026-10-23"
+tm aliquot status 1226KO02.3 missing -m "not in the box on 2026-10-23"
 ```
 
 Never encode consumption by editing the quantity with raw SQL: `use` writes the event and flips the
@@ -383,7 +383,7 @@ tm stock add mouse_cohort --entity b6j --parent 7726KU03 \
   --box MC-04 --aliquots 4 --quantity 1 --unit mouse \
   --set genotype=Apobec-/- --set sex=m --set birth_on=2026-07-01
 
-tm aliquot status 7726KU03.1 consumed --note "genotyped and split into G+ and G- stocks"
+tm aliquot status 7726KU03.1 consumed -m "genotyped and split into G+ and G- stocks"
 tm stock edit 7726KU03 --set fate=euthanized    # optional detail: what happened to the animals
 tm lineage 7726KU04 --up      # pup stock -> litter -> dam and sire aliquots -> breeders
 tm lineage 7726KU04 --down    # the split stocks below this one
@@ -400,7 +400,7 @@ the tube **`consumed`** — `thawed` is `consumed`. Record the thaw on the aliqu
 stock fields.
 
 ```sh
-tm aliquot status 7726KW01.1 consumed --note "thawed 2026-11-04; chunked onto NGM plates"
+tm aliquot status 7726KW01.1 consumed -m "thawed 2026-11-04; chunked onto NGM plates"
 tm aliquot status 7726KW01.1 stored   # refused: consumed is final
 ```
 
