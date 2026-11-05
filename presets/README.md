@@ -16,7 +16,7 @@ stay one global namespace.
 
 | part | version | kinds | molbio | cellbio | angenet |
 |---|---|:-:|:-:|:-:|:-:|
-| `base` | 5 | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator | ✓ | ✓ | ✓ |
+| `base` | 6 | item, lot; boxes grid9x9, grid8x12, rack, shelf, freezer, drawer, incubator | ✓ | ✓ | ✓ |
 | `nucleic_acids` | 3 | plasmid, plasmid_prep, oligo, oligo_stock | ✓ | ✓ | ✓ |
 | `bacteria` | 2 | bacterial_strain, bacterial_glycerol, bacterial_pellet | ✓ | | |
 | `proteins` | 4 | protein_construct, protein_prep | ✓ | ✓ | ✓ |
@@ -41,7 +41,7 @@ The bundles:
 
 A bundle's own version counts only its `include:` list, so a bundle that keeps the same parts keeps
 its version; every part it includes carries its own counter (the table above). A `molbio` ledger at
-version 3 therefore records `base: 5`, `proteins: 4`, `nucleic_acids: 3`, `bacteria: 2`,
+version 3 therefore records `base: 6`, `proteins: 4`, `nucleic_acids: 3`, `bacteria: 2`,
 `cell_culture: 3` and `molbio: 3` in `ledger_meta.preset_versions`.
 
 Each part's `description:` says what it covers and which bundles include it. New parts start at
@@ -49,13 +49,25 @@ Each part's `description:` says what it covers and which bundles include it. New
 version in place. Every part that adds kinds adapted from [BioManager](https://github.com/gaspolymerase/biomanager)
 (MIT) ends its description with "Adapted from BioManager (MIT)." and its new kinds do the same.
 
-`base` is at **version 5**: v5 drops the `status_sets:` block (`tube`, `cryo`, `animal`) and the
-per-kind `statuses:` key, because spec 6 gives every aliquot the one fixed status set
-(`pending`, `stored`, `missing`, `consumed`) — see `docs/spec/01-concepts.md` §1.1. v4 renamed the
+`base` is at **version 6**: v6 removes the `capacity` of the slotless `shelf`,
+`freezer` and `drawer` kinds (12 / 6 / 1). How many racks sit on a shelf, how
+many shelves a freezer has and how many boxes a drawer takes is a property of
+that piece of furniture, not of the kind — and because the bound was enforced on
+writes, a base-5 ledger refused a seventh shelf, a thirteenth box on a shelf or
+a second box in a drawer. v5 drops the `status_sets:` block (`tube`, `cryo`,
+`animal`) and the per-kind `statuses:` key, because spec 6 gives every aliquot
+the one fixed status set (`pending`, `stored`, `missing`, `consumed`) — see
+`docs/spec/01-concepts.md` §1.1. v4 renamed the
 `grid96` box kind to `grid8x12` (same A–H × 1–12 geometry), because spec 5 drops the per-kind
 `v_box_<kind>` views and names one generated view after each box instead, so the kind name no
 longer has to be a view name (`v_box_grid96` was one).
-A base-4 ledger moves to 5 with `migration/presets/base/4-to-5/`. A base-3 ledger moves to 4 with
+A base-5 ledger moves to 6 with `migration/presets/base/5-to-6/` (manual: replace
+the copy with the frozen `base-6.yaml`, then `tm schema apply` writes the counter; no DDL and
+no row moves). The ledger must be at the current spec (7) when it does: `tm schema apply`
+writes the tool's own `spec_version`, so a spec-6 ledger runs `migration/spec/6-to-7/` first.
+A base-4 ledger moves to 5 with `migration/presets/base/4-to-5/`, which installs the frozen
+`base-5.yaml` next to its README — not the checkout's base 6 — so the ordered 4 → 5 → 6
+upgrade stays reproducible. A base-3 ledger moves to 4 with
 `migration/presets/base/3-to-4/`; that step runs **after** `migration/spec/4-to-5/` and after the
 older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) — it renames the base
 v3 copies those steps install. A spec-4/base-2 ledger (e.g. molbio-2) follows: `spec/4-to-5`, then
@@ -76,7 +88,8 @@ base 4, and the nucleic step requires proteins already at 2. They run **after**
 longer loads the nucleotide `sequence_fields` mixin — it carries the amino-acid pattern itself —
 and its computed length column is `length_aa` (renamed from `length_bp`). `plasmid` keeps the
 nucleotide `sequence_fields`. The step `migration/presets/proteins/3-to-4/` applies the rename and
-runs **after** `migration/spec/5-to-6/` (the preset belongs to the spec-6 closure).
+runs **after** `migration/spec/5-to-6/`, `migration/spec/6-to-7/` and
+`migration/presets/base/5-to-6/` (the preset belongs to the spec-6-or-newer / base-6 closure).
 
 ## The include graph
 
@@ -247,7 +260,9 @@ zsqlab table or the entity.
    version `N+1` it installs (placed with `vendor_preset_files`, so the step keeps working after a
    later bump). `migration/presets/cell_culture/1-to-2/` is the worked example. Any **other** step
    that records this part's counter must freeze the same old copy — `migration/presets/molbio/2-to-3/`
-   ships `cell_culture-1.yaml` for exactly that reason.
+   ships `cell_culture-1.yaml` for exactly that reason. A **manual** step (README-only) freezes the
+   same content: `migration/presets/base/4-to-5/` ships the frozen `base-5.yaml` it installs and
+   `migration/presets/base/5-to-6/` ships the frozen `base-6.yaml`.
 8. Record the decision in the part's `description:`/comments if the include direction or the home
    of a shared mixin was arguable.
 

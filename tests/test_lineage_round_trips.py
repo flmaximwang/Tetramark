@@ -244,8 +244,8 @@ def test_lineage_batches_graph_owners_and_visited_counts(
         clear(invoke_log)
         result = lineage(ledger, ref)
         assert result.nodes, ref
-        # One JSON batch + its CSV pass for each of up to three batches.
-        assert len(invoke_log) <= 6 and len(invoke_log) % 2 == 0, (
+        # One JSON run (rows + column probes) for each of up to three batches.
+        assert invoke_log == ["json"] * len(invoke_log) and len(invoke_log) <= 3, (
             f"lineage {ref!r} issued {len(invoke_log)} dolt processes: {invoke_log}"
         )
 

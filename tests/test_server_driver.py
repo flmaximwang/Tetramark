@@ -21,10 +21,12 @@ the full suite:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -631,3 +633,113 @@ def test_a_locked_start_borrows_the_winning_server(
         assert acquired not in server_module._OWNED
     finally:
         server_module._release(acquired)
+
+
+# -- orphan reaping (Tetramark-aut) ----------------------------------------
+
+
+def _orphan_server(repo: Path, env: dict[str, str], *, sidecar_pid: int | None) -> int:
+    """Start a ``dolt sql-server`` whose parent exits at once (an orphan).
+
+    The shell backgrounds the server and exits, so the server is reparented to
+    pid 1 exactly like the child of a killed test worker.  ``sidecar_pid``
+    writes Tetramark's sidecar naming that (dead) owner, as a real driver does.
+    """
+    dolt = shutil.which("dolt")
+    assert dolt is not None
+    port = server_module._free_port()  # noqa: SLF001 - same port picker
+    started = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'"{dolt}" sql-server --host 127.0.0.1 --port {port} '
+            "--loglevel error >/dev/null 2>&1 & echo $!",
+        ],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pid = int(started.stdout.strip())
+    if sidecar_pid is not None:
+        server_module._sidecar_path(repo).write_text(  # noqa: SLF001
+            json.dumps(
+                {"path": str(repo.resolve()), "pid": sidecar_pid, "port": port}
+            ),
+            encoding="utf-8",
+        )
+    deadline = time.monotonic() + 10
+    while server_module._orphan_candidates().get(pid) != port:  # noqa: SLF001
+        if time.monotonic() > deadline:
+            pytest.fail(f"server {pid} was not reparented to pid 1")
+        time.sleep(0.05)
+    return pid
+
+
+def _dead_pid() -> int:
+    """The pid of a process that has already exited."""
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
+def _gone(pid: int, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while server_module._pid_alive(pid):  # noqa: SLF001
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def test_reaper_stops_an_orphan_whose_recorded_owner_exited(
+    tmp_path: Path, make_ledger: Any, dolt_env: dict[str, str]
+) -> None:
+    repo = make_ledger(tmp_path / "orphan")
+    pid = _orphan_server(repo, dolt_env, sidecar_pid=_dead_pid())
+    try:
+        assert pid in server_module.reap_orphaned_servers()
+        assert _gone(pid)
+    finally:
+        if server_module._pid_alive(pid):  # noqa: SLF001
+            os.kill(pid, 9)
+
+
+def test_reaper_stops_an_orphan_inside_the_scratch_root_without_a_sidecar(
+    tmp_path: Path, make_ledger: Any, dolt_env: dict[str, str]
+) -> None:
+    repo = make_ledger(tmp_path / "scratch" / "orphan")
+    pid = _orphan_server(repo, dolt_env, sidecar_pid=None)
+    try:
+        # No sidecar and outside the root: not provably ours, left alone.
+        assert pid not in server_module.reap_orphaned_servers(
+            scratch_root=tmp_path / "elsewhere"
+        )
+        assert server_module._pid_alive(pid)  # noqa: SLF001
+        assert pid in server_module.reap_orphaned_servers(
+            scratch_root=tmp_path / "scratch"
+        )
+        assert _gone(pid)
+    finally:
+        if server_module._pid_alive(pid):  # noqa: SLF001
+            os.kill(pid, 9)
+
+
+def test_reaper_never_touches_a_server_whose_owner_is_alive(
+    tmp_path: Path, dolt_repo: Path, server_env: dict[str, str]
+) -> None:
+    driver = ServerDriver(dolt_repo, env=server_env)
+    try:
+        driver.query("SELECT 1")
+        process = driver._server.process  # noqa: SLF001 - this test owns it
+        assert process is not None
+        # Its parent is this process, so even a scratch root covering the
+        # ledger does not make it a candidate.
+        assert process.pid not in server_module.reap_orphaned_servers(
+            scratch_root=tmp_path
+        )
+        assert process.poll() is None
+        assert driver.query("SELECT 1 AS one") == [{"one": 1}]
+    finally:
+        driver.close()

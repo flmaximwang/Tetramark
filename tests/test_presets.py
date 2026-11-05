@@ -72,14 +72,15 @@ LOADABLE_PARTS = tuple(part for part in PARTS if part != "biosamples")
 
 #: Current preset versions.  Tetramark-epn.4 dropped the status vocabulary from
 #: every part that declared one, so those parts are one version further on:
-#: base 5 (the grid96 -> grid8x12 rename of v4 plus the spec-6 status change),
+#: base 6 (the slotless shelf/freezer/drawer capacity removal of v6, the
+#: grid96 -> grid8x12 rename of v4 plus the spec-6 status change),
 #: library 3, nucleic_acids 3, proteins 3, cell_culture 3, bacteria 2, immuno 2,
 #: viral_vectors 2, biosamples 2, drosophila 2, c_elegans 2, zebrafish 2 and
 #: mouse 2.  The bundles keep their versions (molbio 3, a bundle of parts,
 #: ticket 27; cellbio 1, ticket 28; angenet 1) because their ``include:`` lists
 #: did not change.
 EXPECTED_VERSIONS = {
-    "base": 5,
+    "base": 6,
     "molbio": 3,
     "library": 3,
     "cellbio": 1,
@@ -188,7 +189,7 @@ PART_KINDS = {
 
 #: ``preset_versions`` a ``--preset molbio`` ledger records (loader order).
 MOLBIO_VERSIONS = {
-    "base": 5,
+    "base": 6,
     "proteins": 4,
     "nucleic_acids": 3,
     "bacteria": 2,
@@ -198,7 +199,7 @@ MOLBIO_VERSIONS = {
 
 #: ``preset_versions`` a ``--preset cellbio`` ledger records (loader order).
 CELLBIO_VERSIONS = {
-    "base": 5,
+    "base": 6,
     "proteins": 4,
     "nucleic_acids": 3,
     "cell_culture": 3,
@@ -327,7 +328,7 @@ def test_preset_loads_with_expected_kinds_and_rules(name: str) -> None:
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
     # A bundle owns no kinds or rules of its own; its parts do.
     if name != "base":
-        assert schema.preset_versions["base"] == 5
+        assert schema.preset_versions["base"] == 6
     if name in ("molbio", "cellbio", "angenet"):
         document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
         for key in ("kinds", "mixins", "rules", "status_sets"):
@@ -372,7 +373,7 @@ def test_part_loads_with_its_kinds_version_and_owner_rules(name: str) -> None:
 
     assert set(schema.kinds) == PART_KINDS[name]
     assert schema.preset_versions[name] == EXPECTED_VERSIONS[name]
-    assert schema.preset_versions["base"] == 5
+    assert schema.preset_versions["base"] == 6
     assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
     # Each part's description says what it covers and which bundles include it.
     document = yaml.safe_load(repo_preset(name).read_text(encoding="utf-8"))
@@ -1170,7 +1171,7 @@ kinds:
     reopened = open_ledger(ledger_path, env=dolt_env)
     try:
         assert reopened.fingerprint == fingerprint
-        assert reopened.schema.preset_versions == {"base": 5, "custom": 1}
+        assert reopened.schema.preset_versions == {"base": 6, "custom": 1}
     finally:
         reopened.close()
 

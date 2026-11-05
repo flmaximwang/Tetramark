@@ -1,5 +1,5 @@
 preset: base
-version: 5
+version: 6
 description: >-
   Domain-neutral inventory: a generic item, a purchase lot, and the box
   geometries used by the sample-oriented presets (a freezer, an incubator,
