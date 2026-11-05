@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tetramark.core.objects import _parse_quantity_unit
+from tetramark.core.objects import _parse_quantity_unit, default_aliquot_status
 from tetramark.errors import UsageError
 from tetramark.form.editor import (
     SCISSORS,
@@ -1430,6 +1430,52 @@ def test_t3_status_by_number_or_name_refused_and_skipped() -> None:
     at(skipped, "status").submit("")
     assert "status" not in skipped.answers
     assert skipped.payload()["status"] is None
+
+
+def test_t3_a_set_with_no_in_stock_status_falls_back_to_its_first_status(
+    tmp_path: Path,
+) -> None:
+    """The last fallback of the documented default: the set's first status.
+
+    The Dolt parity tests cover the fixed set and a legacy per-kind set without
+    ``pending``; this Dolt-free test pins the remaining branch of the core's
+    placement rule, and the status step that offers exactly that set.
+    """
+    preset = tmp_path / "archive.yaml"
+    preset.write_text(
+        "preset: archive\n"
+        "version: 1\n"
+        "status_sets:\n"
+        "  archive:\n"
+        "    filed: {in_stock: false, to: [gone]}\n"
+        "    gone: {in_stock: false}\n"
+        "mixins:\n"
+        "  named_fields:\n"
+        "    name: {type: string, required: true, unique: true}\n"
+        "kinds:\n"
+        "  item:\n"
+        "    object: entity\n"
+        "    mixins: [named_fields]\n"
+        "  archive_lot:\n"
+        "    object: stock\n"
+        "    entity_kinds: [item]\n"
+        "    statuses: archive\n",
+        encoding="utf-8",
+    )
+    schema = load_schema(
+        LedgerConfig(name="archive", presets=[str(preset)]), base_dir=tmp_path
+    )
+    status = build_plan(schema, "aliquot").steps("archive_lot")[-1]
+    assert status.key == "status"
+    assert status.values == ("filed", "gone")
+
+    # ``default_aliquot_status`` only reads the ledger's schema: no stored,
+    # pending or in-stock status leaves the set's first status, which is not in
+    # stock, so an unplaced tube is valid without a position.
+    ledger = type("SchemaOnlyLedger", (), {"schema": schema})()
+    assert (
+        default_aliquot_status(ledger, "archive_lot", placed=False) == "filed"
+    )
 
 
 def test_t4_stock_payload_carries_lineage_and_notes() -> None:

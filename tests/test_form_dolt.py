@@ -382,36 +382,6 @@ def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:
     )
     assert slots_prompt.value == "A1, A2"
 
-    # The creation status: an explicit status is written as it was given, and
-    # a skipped status keeps the add command's placement default (an unplaced
-    # tube is ``pending``).
-    explicit, _ = run_form(
-        form_ledger,
-        "aliquot",
-        "lot",  # kind (the stock's kind)
-        form_stock["id"],  # stock
-        "1",  # count
-        "",  # quantity: none
-        "",  # box: none
-        "missing",  # status: explicitly not the placement default
-        "y",  # review: write
-    )
-    explicit_add = add_ledger.aliquots.add(
-        add_stock["id"], count=1, status="missing"
-    )
-    default_tube, _ = run_form(
-        form_ledger,
-        "aliquot",
-        "lot",  # kind (the stock's kind)
-        form_stock["id"],  # stock
-        "1",  # count
-        "",  # quantity: none
-        "",  # box: none
-        "",  # status: skip (the placement default)
-        "y",  # review: write
-    )
-    default_add = add_ledger.aliquots.add(add_stock["id"], count=1)
-
     assert aliquot_view(form_ledger, form_stock["id"]) == aliquot_view(
         add_ledger, add_stock["id"]
     )
@@ -432,39 +402,14 @@ def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:
             "slot": "A2",
             "box": "FORM-96",
         },
-        {
-            "seq": 3,
-            "status": "missing",
-            "quantity": None,
-            "unit": None,
-            "slot": None,
-            "box": None,
-        },
-        {
-            "seq": 4,
-            "status": "pending",
-            "quantity": None,
-            "unit": None,
-            "slot": None,
-            "box": None,
-        },
     ]
     # The form's result ids are the same aliquot ids ``add`` allocates.
-    assert created["ids"] == stored_ids(form_ledger, form_stock["id"])[:2]
+    assert created["ids"] == stored_ids(form_ledger, form_stock["id"])
     assert created["ids"] == [
         aliquot_id(form_stock["id"], 1),
         aliquot_id(form_stock["id"], 2),
     ]
-    assert added["ids"] == stored_ids(add_ledger, add_stock["id"])[:2]
-    # The chosen status is recorded by the create event, like ``add --status``.
-    assert create_events(form_ledger, explicit["ids"][0]) == create_events(
-        add_ledger, explicit_add["ids"][0]
-    )
-    assert create_events(form_ledger, explicit["ids"][0])[0]["new_status"] == "missing"
-    # A skipped status keeps the core's placement default.
-    assert create_events(form_ledger, default_tube["ids"][0]) == create_events(
-        add_ledger, default_add["ids"][0]
-    )
+    assert added["ids"] == stored_ids(add_ledger, add_stock["id"])
 
 
 def create_events(ledger, aliquot: str) -> list[dict]:
@@ -607,25 +552,91 @@ def stock_lineage_row(ledger, stock_id: str) -> dict:
     )
 
 
+def test_t5_aliquot_form_status_matches_add(ledger_factory) -> None:
+    """An explicit status and a skipped status both match ``aliquot add``.
+
+    The twin-ledger test above covers the placed placement default; this test
+    adds the explicit status and the unplaced default on one ledger, comparing
+    every row and create event with the ordinary ``add``.
+    """
+    ledger = ledger_factory([BASE], name="aliquot-status")
+    item = ledger.entities.add("item", values={"name": "TM item"})
+    form_stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
+    )
+    add_stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
+    )
+
+    # An explicit status: the tubes carry it and the create event names it.
+    created, _ = run_form(
+        ledger,
+        "aliquot",
+        "lot",  # kind
+        form_stock["id"],  # stock
+        "1",  # count
+        "",  # quantity: none
+        "",  # box: none
+        "missing",  # status: explicitly not the placement default
+        "y",  # review: write
+    )
+    added = ledger.aliquots.add(add_stock["id"], count=1, status="missing")
+    assert [row["status"] for row in aliquot_view(ledger, form_stock["id"])] == [
+        "missing"
+    ]
+    assert create_events(ledger, created["ids"][0]) == create_events(
+        ledger, added["ids"][0]
+    )
+    assert create_events(ledger, created["ids"][0]) == [
+        {
+            "amount": None,
+            "unit": None,
+            "to_box": None,
+            "to_slot": None,
+            "new_status": "missing",
+        }
+    ]
+
+    # A skipped status keeps the add command's placement default: an unplaced
+    # tube is ``pending``, exactly like omitting the option.
+    default_tube, _ = run_form(
+        ledger,
+        "aliquot",
+        "lot",  # kind
+        form_stock["id"],  # stock
+        "1",  # count
+        "",  # quantity: none
+        "",  # box: none
+        "",  # status: skip (the placement default)
+        "y",  # review: write
+    )
+    default_add = ledger.aliquots.add(add_stock["id"], count=1)
+    assert create_events(ledger, default_tube["ids"][0]) == create_events(
+        ledger, default_add["ids"][0]
+    )
+    assert [row["status"] for row in aliquot_view(ledger, form_stock["id"])] == [
+        "missing",
+        "pending",
+    ]
+    assert aliquot_view(ledger, form_stock["id"]) == aliquot_view(
+        ledger, add_stock["id"]
+    )
+
+
 #: A test-only legacy closure for the creation-status step: one stock kind
-#: whose set has no ``pending`` (a cryo set) and one whose set has no in-stock
-#: status at all (an archive set).  Both are per-kind sets, so the form's
-#: status list is that set, in its own order.
+#: whose per-kind set has no ``pending`` (a cryo set).  The form's status list
+#: is that set, in its own order.
 CUSTOM_SET_PRESET = """\
 preset: formstatus
 version: 1
 description: >-
   Test-only legacy closure for the add-form creation-status step (Tetramark-6gy):
-  one stock kind whose status set has no ``pending`` and one whose set has no
-  in-stock status at all.
+  one stock kind whose per-kind status set has no ``pending``.
 status_sets:
   cryo:
     stored: {in_stock: true, to: [thawed, missing]}
     missing: {in_stock: false, to: [stored, thawed]}
     thawed: {in_stock: false}
-  archive:
-    filed: {in_stock: false}
-    gone: {in_stock: false}
 mixins:
   named_fields:
     name: {type: string, required: true, unique: true}
@@ -637,10 +648,6 @@ kinds:
     object: stock
     entity_kinds: [item]
     statuses: cryo
-  archive_lot:
-    object: stock
-    entity_kinds: [item]
-    statuses: archive
   shelf:
     object: box
     geometry: {type: slotless, capacity: 4}
@@ -650,14 +657,18 @@ kinds:
 def test_t5_aliquot_form_custom_status_set_matches_add(
     ledger_factory, tmp_path
 ) -> None:
-    """A per-kind set without ``pending`` -- and one without any in-stock status.
+    """A per-kind set without ``pending``.
 
     The form never re-implements the core's placement default: it offers the
     set's own statuses and, when the step is skipped, the core decides.  The
-    cryo set has no ``pending``, so an unplaced tube would default to an
+    cryo set has no ``pending``, so a placed tube defaults to its in-stock
+    status (``stored``) and an unplaced tube would default to that same
     in-stock status -- which needs a position, so the core refuses it and the
-    form shows the very same refusal.  The archive set has no in-stock status
-    at all, so an unplaced tube falls back to the set's first status.
+    form shows the very same refusal.  An explicitly chosen non-default status
+    is stored and recorded on the create event.  (The last fallback -- a set
+    with no in-stock status taking its first status -- is covered by the
+    Dolt-free status-set test in tests/test_form_state.py, because the Dolt
+    fixtures describe the fixed/legacy vocabulary rather than every custom set.)
     """
     preset = tmp_path / "formstatus.yaml"
     preset.write_text(CUSTOM_SET_PRESET, encoding="utf-8")
@@ -714,10 +725,6 @@ def test_t5_aliquot_form_custom_status_set_matches_add(
     ]
     assert refused == [str(core_error.value)]
 
-    thawed_add = ledger.aliquots.add(add_vial["id"], count=1, status="thawed")
-    assert create_events(ledger, thawed["ids"][0]) == create_events(
-        ledger, thawed_add["ids"][0]
-    )
     assert create_events(ledger, thawed["ids"][0]) == [
         {
             "amount": None,
@@ -725,33 +732,6 @@ def test_t5_aliquot_form_custom_status_set_matches_add(
             "to_box": None,
             "to_slot": None,
             "new_status": "thawed",
-        }
-    ]
-
-    # The archive set: no in-stock status at all, so an unplaced tube falls
-    # back to the set's first status -- the core's rule, not the form's.
-    form_lot = ledger.stocks.add("archive_lot", entity=line["id"], aliquots=0)
-    filed, _ = run_form(
-        ledger,
-        "aliquot",
-        "archive_lot",  # kind
-        form_lot["id"],  # stock
-        "1",  # count
-        "",  # quantity: none
-        "",  # box: none
-        "",  # status: skip (the set's first status)
-        "y",  # review: write
-    )
-    assert [row["status"] for row in aliquot_view(ledger, form_lot["id"])] == [
-        "filed"
-    ]
-    assert create_events(ledger, filed["ids"][0]) == [
-        {
-            "amount": None,
-            "unit": None,
-            "to_box": None,
-            "to_slot": None,
-            "new_status": "filed",
         }
     ]
 
