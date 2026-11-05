@@ -347,11 +347,13 @@ tm aliquot purge ALQ [--json]
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
   printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
   and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
-  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
-  ids), the `old_status`/`new_status`, `forced` and `actor`/`message`. The text output ends
-  with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
-  `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
-  single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
+  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot`, the
+  `from_box_resolved`/`to_box_resolved` flags (`null`/`true`/`false`), the `old_status`/`new_status`,
+  `forced` and `actor`; the stored `message` is the last text token as `message="..."`. A name with
+  no live box row prints as `[unresolved box <full id>]`, never a cause. The text output ends with
+  `events  N` and one line per event rendered by the same `event_line` helper `history` uses; `--json`
+  prints the whole record with the full ids, events included, `--format csv` keeps the flat single
+  row and drops `events` (unchanged; event rows are `tm history ALQ --format csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
@@ -518,7 +520,10 @@ prefix → alias prefix → name substring → alias substring → fields, and s
 > field (prefix and substring matches merged; ties by object type, kind and id); an invalid pattern is
 a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
 hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
-object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
+object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the
+object. Its event lines are the same `event_line` text as `aliquot show` (plus the tube id token),
+and its `--json` events carry the same `from_box_resolved`/`to_box_resolved` keys; the 16-column CSV
+is unchanged.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, replacement}`; Python
 `re.fullmatch` + `match.expand`, validated at open with the rule named). They rewrite a **literal**

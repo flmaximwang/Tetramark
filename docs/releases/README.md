@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.39.1](v0.8.39.1.md) | `v0.8.39.1.md` | aliquot events show their stored messages and resolved box names; unresolved refs are labelled, JSON gains two additive resolution flags |
 | [0.8.39](v0.8.39.md) | `v0.8.39.md` | `tm stock add-form` creates the stock without aliquots and points at the aliquot workflow; `tm stock add` and the Python API unchanged |
 | [0.8.37](v0.8.37.md) | `v0.8.37.md` | breaking: `tm aliquot status` takes `-m/--message`, and its former note option is removed (no alias); no schema or migration change |
 | [0.8.35](v0.8.35.md) | `v0.8.35.md` | `--where` operators `!=`, `!~`, `<`, `<=`, `>`, `>=` on the entity/stock/box lists, `tm find` and the Python `where=`; ordered comparisons typed per field |

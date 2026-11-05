@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from tetramark.cli.app import app, main
 from tetramark.core.ledger import open as open_ledger
 from tetramark.errors import LedgerError, UsageError
+from tetramark.ops.history import HISTORY_COLUMNS
 
 from conftest import PRESETS
 
@@ -1381,9 +1382,11 @@ def test_cli_aliquot_show_json_carries_the_tube_events(
         "unit",
         "from_box_id",
         "from_box",
+        "from_box_resolved",
         "from_slot",
         "to_box_id",
         "to_box",
+        "to_box_resolved",
         "to_slot",
         "old_status",
         "new_status",
@@ -1395,7 +1398,9 @@ def test_cli_aliquot_show_json_carries_the_tube_events(
     assert event["amount"] == "100.000000"
     assert event["unit"] == "ul"
     assert event["from_box"] is None
+    assert event["from_box_resolved"] is None
     assert event["to_box"] == "Box"
+    assert event["to_box_resolved"] is True
     assert event["to_slot"] == "A3"
     assert event["old_status"] is None
     assert event["new_status"] == "stored"
@@ -1460,6 +1465,172 @@ def test_cli_aliquot_show_text_prints_one_line_per_event(
     assert " move " in event_lines[1]
     assert "from=Box:A3" in event_lines[1]
     assert "to=BOX2:B1" in event_lines[1]
+
+
+def _show_event_lines(output: str) -> list[str]:
+    """The event lines after ``events  N`` in ``tm aliquot show`` text."""
+    lines = output.splitlines()
+    start = next(
+        index for index, line in enumerate(lines) if line.startswith("events  ")
+    )
+    return [line[2:] for line in lines[start + 1 :]]
+
+
+def _history_event_lines(output: str) -> list[str]:
+    """The event lines between ``Events (N):`` and ``Commits (N):``."""
+    lines = output.splitlines()
+    start = next(index for index, line in enumerate(lines) if line.startswith("Events ("))
+    end = next(
+        index
+        for index, line in enumerate(lines[start + 1 :], start + 1)
+        if line.startswith("Commits (")
+    )
+    return [line[2:] for line in lines[start + 1 : end]]
+
+
+def _message_value(line: str) -> object:
+    """The stored message a line carries in its last ``message=`` token."""
+    assert line.count("message=") == 1, line
+    return json.loads(line.split("message=", 1)[1])
+
+
+def test_cli_event_messages_are_readable_in_show_history_and_json(
+    cli_env: None, ledger_factory
+) -> None:
+    """G1/G4/G5: message tokens, resolution flags and machine contracts."""
+    ledger = ledger_factory(
+        [BASE], name="cli-aliquot-event-messages", id_prefix="77"
+    )
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    write(ledger, "box", "add", "grid96", "BOX2")
+    move_message = '第一轮 "引物"\n第二行'
+    use_message = "上样 Capto 柱\n第二轮"
+    write(
+        ledger,
+        "aliquot",
+        "move",
+        alq,
+        "--box",
+        "BOX2",
+        "--slot",
+        "B1",
+        "-m",
+        move_message,
+    )
+    write(ledger, "aliquot", "use", alq, "25", "ul", "-m", use_message)
+
+    shown_text = read(ledger, "aliquot", "show", alq).output
+    history_text = read(ledger, "history", alq).output
+    show_lines = _show_event_lines(shown_text)
+    history_lines = _history_event_lines(history_text)
+
+    assert len(show_lines) == len(history_lines) == 3
+    for line in show_lines + history_lines:
+        assert len(line.splitlines()) == 1
+    # The move and use messages read the same in both renderings; the show
+    # line simply omits the history-only aliquot id token.
+    assert [_message_value(line) for line in show_lines if "message=" in line] == [
+        move_message,
+        use_message,
+    ]
+    assert [
+        _message_value(line) for line in history_lines if "message=" in line
+    ] == [move_message, use_message]
+    assert f" move {alq} " not in show_lines[1] and " move " in show_lines[1]
+    assert f" move {alq} " in f" {history_lines[1]} "
+
+    shown = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    history = json.loads(read(ledger, "history", alq, "--json").output)
+    create_show = shown["events"][0]
+    create_history = history["events"][0]
+    for create in (create_show, create_history):
+        assert create["from_box_id"] is None
+        assert create["from_box_resolved"] is None
+        assert create["to_box"] == "Box"
+        assert create["to_box_resolved"] is True
+        assert "from_box_resolved" in create and "to_box_resolved" in create
+    move_show = shown["events"][1]
+    assert move_show["from_box"] == "Box"
+    assert move_show["from_box_resolved"] is True
+    assert move_show["to_box"] == "BOX2"
+    assert move_show["to_box_resolved"] is True
+    assert move_show["message"] == move_message
+
+    # The 16-column CSV contract and the show CSV event omission are unchanged.
+    csv_result = invoke(ledger, "--format", "csv", "history", alq)
+    assert csv_result.exit_code == 0, csv_result.output
+    assert csv_result.output.splitlines()[0] == ",".join(HISTORY_COLUMNS)
+    show_csv = invoke(ledger, "--format", "csv", "aliquot", "show", alq)
+    assert show_csv.exit_code == 0, show_csv.output
+    assert "events" not in show_csv.output.splitlines()[0].split(",")
+
+
+def test_cli_aliquot_show_uses_the_live_box_name_after_rename(
+    cli_env: None, ledger_factory
+) -> None:
+    """G2: a renamed box reads by its current name; resolution stays true."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-renamed-box", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    write(ledger, "box", "rename", "Box", "Renamed")
+
+    shown = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    create_show = shown["events"][0]
+    assert create_show["to_box_id"] == made["box"]["id"]
+    assert create_show["to_box"] == "Renamed"
+    assert create_show["to_box_resolved"] is True
+    show_line = _show_event_lines(read(ledger, "aliquot", "show", alq).output)[0]
+    assert "to=Renamed:A3" in show_line
+
+    history = json.loads(read(ledger, "history", alq, "--json").output)
+    create_history = history["events"][0]
+    assert create_history["to_box"] == "Renamed"
+    assert create_history["to_box_resolved"] is True
+    history_line = _history_event_lines(read(ledger, "history", alq).output)[0]
+    assert "to=Renamed:A3" in history_line
+
+
+def test_cli_aliquot_show_marks_a_purged_box_reference_unresolved(
+    cli_env: None, ledger_factory
+) -> None:
+    """G3: a reference with no live box prints its full id, with no cause."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-purged-box", id_prefix="77")
+    made = make_placed_tube(ledger)
+    alq = made["aliquot"]
+    purged_id = made["box"]["id"]
+    write(ledger, "box", "add", "grid96", "BOX2")
+    write(ledger, "aliquot", "move", alq, "--box", "BOX2", "--slot", "B1", "-m", "m")
+    write(ledger, "box", "purge", "Box")
+
+    shown = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
+    create_show, move_show = shown["events"]
+    assert create_show["to_box_id"] == purged_id
+    assert create_show["to_box"] == purged_id
+    assert create_show["to_box_resolved"] is False
+    assert move_show["from_box_id"] == purged_id
+    assert move_show["from_box"] == purged_id
+    assert move_show["from_box_resolved"] is False
+    assert move_show["to_box"] == "BOX2"
+    assert move_show["to_box_resolved"] is True
+
+    shown_text = read(ledger, "aliquot", "show", alq).output
+    show_lines = _show_event_lines(shown_text)
+    assert f"to=[unresolved box {purged_id}]:A3" in show_lines[0]
+    assert f"from=[unresolved box {purged_id}]:A3" in show_lines[1]
+    assert "deleted" not in shown_text
+
+    history = json.loads(read(ledger, "history", alq, "--json").output)
+    create_history, move_history = history["events"]
+    assert create_history["to_box"] == purged_id
+    assert create_history["to_box_resolved"] is False
+    assert move_history["from_box"] == purged_id
+    assert move_history["from_box_resolved"] is False
+    history_text = read(ledger, "history", alq).output
+    history_lines = _history_event_lines(history_text)
+    assert f"to=[unresolved box {purged_id}]:A3" in history_lines[0]
+    assert f"from=[unresolved box {purged_id}]:A3" in history_lines[1]
+    assert "deleted" not in history_text
 
 
 def test_cli_aliquot_list_json_items_carry_no_events(

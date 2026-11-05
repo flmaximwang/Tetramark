@@ -320,9 +320,11 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "unit",
         "from_box_id",
         "from_box",
+        "from_box_resolved",
         "from_slot",
         "to_box_id",
         "to_box",
+        "to_box_resolved",
         "to_slot",
         "old_status",
         "new_status",
@@ -331,6 +333,8 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "message",
     }
     assert first_shown["events"][0]["to_box"] == "BOX-2"
+    assert first_shown["events"][0]["to_box_resolved"] is True
+    assert first_shown["events"][0]["from_box_resolved"] is None
     assert first_shown["events"][0]["to_slot"] == "A1"
     assert first_shown["events"][0]["forced"] is False
     assert listed[0]["path"] == "FR-1/BOX-2:A1"
