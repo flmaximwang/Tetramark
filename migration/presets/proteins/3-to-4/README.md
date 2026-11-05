@@ -34,8 +34,11 @@ constructs and validates them against the amino-acid alphabet instead.
   closure.  A spec-5 ledger runs the manual
   [`spec/5-to-6`](../../../spec/5-to-6/README.md) upgrade first.
 - `ledger_meta.preset_versions.proteins = 3` (a second run refuses).
-- The ledger's copies are the spec-6 ones (`base` 5): this step places only
+- The ledger's copies are the spec-6 ones (`base` 6): this step places only
   `proteins.yaml`; every other copy is already the one the target schema reads.
+  A base-5 ledger runs [`presets/base/5-to-6`](../../base/5-to-6/README.md)
+  first — the frozen `proteins-4.yaml` here includes the repo's base, so a
+  base-5 copy would pull the capacity change into this step's plan.
 - A clean working set and a backup of the ledger directory (the restore point
   is the tag, but the preset copies are files, not Dolt content).
 

@@ -88,10 +88,10 @@ tables and the greps for hand-written rules); those historical steps ship the pr
 install next to their `migrate.py`, so they keep working after a later version is released. After the
 last scripted step below spec 6 (for example `migration/spec/4-to-5` and its base step), finish with
 `migration/spec/5-to-6/README.md` and its README-only `migration/presets/*/N-to-N+1/` copies to reach
-spec 6 / base 5.
+spec 6 / base 5, then run `migration/presets/base/5-to-6/` for base 6.
 
-`tm init` always creates a spec-6 ledger with the current presets: `molbio` 3 (`base` 5,
-`nucleic_acids` 3, `bacteria` 2, `proteins` 3, `cell_culture` 3), `cellbio` 1 and `angenet` 1.
+`tm init` always creates a spec-6 ledger with the current presets: `molbio` 3 (`base` 6,
+`nucleic_acids` 3, `bacteria` 2, `proteins` 4, `cell_culture` 3), `cellbio` 1 and `angenet` 1.
 
 If you need columns the preset does not have, add a local kind/field first
 (`skills/tetramark-schema/SKILL.md`), apply it, and only then import.

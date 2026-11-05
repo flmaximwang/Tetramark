@@ -33,14 +33,18 @@ geometries are the same as in base 4.
 
 ## Manual procedure
 
-1. Replace the ledger's stored copy of this preset with this checkout's copy
-   (files, not Dolt content). Run it from the root of the Tetramark checkout
-   that has the new presets:
+1. Replace the ledger's stored copy of this preset with the frozen v5 file
+   (files, not Dolt content). Run it from the root of the Tetramark checkout:
 
    ```sh
    LEDGER=/path/to/ledger
-   cp presets/base.yaml "$LEDGER/presets/base.yaml"
+   cp migration/presets/base/4-to-5/base-5.yaml "$LEDGER/presets/base.yaml"
    ```
+
+   The copy is frozen next to this README on purpose: this step installs
+   **base 5**, and the shipped `presets/base.yaml` moves on — it is at version 6
+   now ([`5-to-6`](../5-to-6/README.md) drops the slotless box capacities).
+   Copying the checkout's file here would install v6 behind a v5 counter.
 
 2. Replace **every** other preset copy the ledger holds in the same go — a
    closure that mixes the old and the new model does not load. The spec step's
@@ -64,8 +68,9 @@ uv run tm -l "$LEDGER" schema plan
 uv run tm -l "$LEDGER" check
 ```
 
-Expected: the grep finds nothing, `preset_versions` names `base: 5`, the
-plan reports no pending steps and `tm check` prints no `FAIL`.
+Expected: the grep finds nothing, `preset_versions` names `base: 5` (the
+[`5-to-6`](../5-to-6/README.md) step moves it to 6 afterwards), the plan
+reports no pending steps and `tm check` prints no `FAIL`.
 
 ## Rollback
 

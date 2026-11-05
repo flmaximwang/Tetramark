@@ -3560,7 +3560,7 @@ PROTEINS_3 = (
 #: ``preset_versions`` of the spec-6 closure with proteins still at 3.
 PROTEINS_V3_VERSIONS = {
     "bacteria": 2,
-    "base": 5,
+    "base": 6,
     "cell_culture": 3,
     "molbio": 3,
     "nucleic_acids": 3,

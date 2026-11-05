@@ -59,10 +59,14 @@ on the mouse cohort and the fish group/clutch, `fate` (discarded, lost) on the f
 
 Preset catalogue:
 
-- `base` (**version 5**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
-  `shelf`/`freezer`/`drawer` (slotless, with a capacity) and `incubator` (slotless, unbounded);
+- `base` (**version 6**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
+  `shelf`/`freezer`/`drawer` (slotless, unbounded) and `incubator` (slotless, unbounded);
   entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
   received_on, expires_on).
+  Version 6 drops the slotless `capacity` of `shelf`/`freezer`/`drawer` (12/6/1): how many racks
+  sit on a shelf, how many shelves a freezer has and how many boxes a drawer takes is a property of
+  that piece of furniture, not of the kind. The bound was enforced on writes, so a base-5 ledger
+  refused the (N+1)th tube or child box; the hand-run step is `migration/presets/base/5-to-6/`.
   Version 5 drops the `status_sets:` block and the per-kind `statuses:` keys: every aliquot now
   uses the fixed status set of §1.1, so `base` declares no status vocabulary. Version 4 renamed the
   `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the hand-run step is

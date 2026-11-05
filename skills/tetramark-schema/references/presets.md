@@ -13,7 +13,7 @@ and its include closure into `<ledger>/presets/`, which is what the ledger opens
 
 | part | version | kinds |
 |---|---|---|
-| `base` | 5 | entity `item`; stock `lot`; boxes `grid9x9`, `grid8x12`, `rack`, `shelf`, `freezer`, `drawer`, `incubator` |
+| `base` | 6 | entity `item`; stock `lot`; boxes `grid9x9`, `grid8x12`, `rack`, `shelf`, `freezer`, `drawer`, `incubator` |
 | `nucleic_acids` | 3 | entities `plasmid`, `oligo`; stocks `plasmid_prep`, `oligo_stock` |
 | `bacteria` | 2 | entity `bacterial_strain`; stocks `bacterial_glycerol`, `bacterial_pellet` |
 | `proteins` | 3 | entity `protein_construct`; stock `protein_prep`; mixin `sequence_fields` |
