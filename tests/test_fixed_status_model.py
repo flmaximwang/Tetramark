@@ -76,7 +76,7 @@ def new_item(ledger, name: str = "alpha"):
 def events(ledger, aliquot_id: str) -> list[dict[str, Any]]:
     return ledger.driver.query(
         "SELECT `event`, `amount`, `unit`, `old_status`, `new_status`, `forced`, "
-        "`note`, `purpose` "
+        "`message` "
         "FROM `aliquot_event` WHERE `aliquot_id` = %s ORDER BY `id`",
         (aliquot_id,),
     )
@@ -366,8 +366,7 @@ def test_fixed_use_consumes_a_tube_from_every_status(ledger_factory) -> None:
         assert event["event"] == "use"
         assert event["old_status"] == status
         assert event["new_status"] == "consumed"
-        assert event["note"] == "used it all"
-        assert event["purpose"] is None
+        assert event["message"] == "used it all"
         # The emptied tube leaves its box in the same write.
         assert ledger.driver.query(
             "SELECT `box_id`, `slot` FROM `aliquot` WHERE `id` = %s", (tube,)
@@ -394,8 +393,7 @@ def test_fixed_use_of_a_tube_without_a_quantity(ledger_factory) -> None:
     event = events(ledger, alq)[-1]
     assert event["event"] == "use"
     assert event["amount"] is None
-    assert event["note"] == "used it all"
-    assert event["purpose"] is None
+    assert event["message"] == "used it all"
     assert event["new_status"] == "consumed"
 
 
@@ -438,7 +436,7 @@ def test_fixed_check_fails_a_real_transition_and_ignores_history(
     )
     ledger.driver.execute(
         "INSERT INTO `aliquot_event` "
-        "(`aliquot_id`, `event`, `old_status`, `new_status`, `note`) VALUES "
+        "(`aliquot_id`, `event`, `old_status`, `new_status`, `message`) VALUES "
         "(%s, 'status', 'alive', 'crossed', NULL), "
         "(%s, 'status', 'alive', 'stored', 'migrated: alive')",
         (alq, alq),
@@ -493,11 +491,14 @@ def test_spec5_legacy_ledger_opens_with_the_hint_and_stays_green(
         assert any(hint in text for text in reopened.warnings)
         assert any("fingerprint does not match" in text for text in messages)
 
-        # Old presets keep their per-kind model; normal commands still work.
+        # Old presets keep their per-kind model; normal reads and entity
+        # writes still work.  Creating an aliquot is an event write, so from
+        # spec 7 it is guarded until the ledger is upgraded (see the guard
+        # tests in tests/test_migrate.py); this stock has no tubes.
         assert reopened.schema.status_model is StatusModel.legacy
         item = reopened.entities.add("item", name="legacy-item")
         reopened.stocks.add(
-            "lot", entity=item["id"], values={"supplier": "acme"}
+            "lot", entity=item["id"], aliquots=0, values={"supplier": "acme"}
         )
         assert reopened.meta["spec_version"] == "5"
 
@@ -544,7 +545,7 @@ def test_manual_spec5_to_spec6_upgrade_then_plan_is_clean(
     # events from the old vocabulary, and one `migrated: <old>` event.
     ledger.driver.execute(
         "INSERT INTO `aliquot_event` "
-        "(`aliquot_id`, `event`, `old_status`, `new_status`, `note`) VALUES "
+        "(`aliquot_id`, `event`, `old_status`, `new_status`, `message`) VALUES "
         "(%s, 'status', 'alive', 'crossed', NULL), "
         "(%s, 'status', 'alive', 'stored', 'migrated: alive')",
         (alq, alq),

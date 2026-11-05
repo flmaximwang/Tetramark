@@ -180,11 +180,9 @@ result must be `stored`.
 `tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
 `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
 option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
-event text, never the ASCII commit message. `use`'s old `--purpose` and `--note` flags are removed
-outright — no aliases; `tm aliquot status --force --note` is unchanged, and `move` never had either
-flag. **Temporary naming mismatch:** the CLI says `--message`, while the value is stored in
-`aliquot_event.note` and new `use`/`move` events leave `purpose` NULL; `tm history --json` keeps the
-`note`/`purpose` event keys. A follow-up change will align the names.
+event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s old
+`--purpose` and `--note` flags are removed outright — no aliases; `tm aliquot status --force --note`
+is unchanged, and `move` never had either flag.
 
 `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
@@ -199,8 +197,8 @@ names the amount used and ends with the message, e.g. `Used all 200 ml from X (c
 use of a tube with no quantity).
 
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
-`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no `purpose` or
-`note` argument, and a `move` message is required and validated like a `use` message.
+`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no event-text
+argument other than `message`, and a `move` message is required and validated like a `use` message.
 
 `tm entity purge`, `tm stock purge`, `tm aliquot purge` and `tm box purge` are explicit **hard
 deletes**, only for an object added by mistake: the rows leave the tables and Dolt history keeps
@@ -265,8 +263,8 @@ tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
 `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly when the status is
 `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the tube has none). Each
 event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`, `from_slot`,
-`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor`, `purpose`
-and `note`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
+`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor` and
+`message`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
 gone. `events` is not a key/value row: text output prints the field block, then the `path:` line
 (when the tube has a position), then `events  N` (two spaces before the count) and one line per
 event, oldest first, rendered by the same `event_line` helper `tm history` uses. `--json` prints

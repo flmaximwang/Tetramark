@@ -34,9 +34,9 @@ one Dolt commit; every read is a normal `tm` command.
    `nucleic_acids`, `bacteria`, `proteins`, `cell_culture`; `cellbio` = `base`, `nucleic_acids`,
    `cell_culture`, `immuno`, `viral_vectors`; `angenet` = `base`, `nucleic_acids`, `biosamples` and
    the four organism parts. One ledger can list any combination and the shared parts load once.
-7. A new ledger is **spec 6** (`base` version 5) and no shipped preset declares statuses. An older
+7. A new ledger is **spec 7** (`base` version 5) and no shipped preset declares statuses. An older
    ledger still opens with its own preset copies and `tm` warns `ledger is spec N, tm is spec N+1:
-   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step.
+   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step, 6 → 7 scripted.
 
 ## Decision table
 

@@ -930,8 +930,7 @@ def test_cli_aliquot_move_requires_message_and_records_it(
     history = json.loads(read(ledger, "history", alq, "--json").output)
     event = history["events"][-1]
     assert event["event"] == "move"
-    assert event["note"] == "moved to the bench"
-    assert event["purpose"] is None
+    assert event["message"] == "moved to the bench"
     assert event["to_slot"] == "A1"
 
 
@@ -1040,8 +1039,7 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
     history = json.loads(read(ledger, "history", third, "--json").output)
     event = history["events"][-1]
     assert event["event"] == "use"
-    assert event["note"] == "used it all"
-    assert event["purpose"] is None
+    assert event["message"] == "used it all"
     assert event["old_status"] == "stored"
     assert event["new_status"] == "consumed"
 
@@ -1258,8 +1256,7 @@ def test_cli_aliquot_show_json_carries_the_tube_events(
         "new_status",
         "forced",
         "actor",
-        "purpose",
-        "note",
+        "message",
     }
     assert event["event"] == "create"
     assert event["amount"] == "100.000000"

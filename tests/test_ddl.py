@@ -372,8 +372,7 @@ def test_core_tables_views_and_kind_objects_exist(
         "old_status",
         "new_status",
         "actor",
-        "purpose",
-        "note",
+        "message",
         "at",
     } <= columns
 
