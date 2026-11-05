@@ -411,16 +411,20 @@ def status_aliquot_command(
     status: str = typer.Argument(
         ..., help="New status (from the stock kind's status set)."
     ),
-    note: str | None = typer.Option(
+    message: str | None = typer.Option(
         None,
-        "--note",
-        help="Free-text note; required with --force, recorded on the event.",
+        "-m",
+        "--message",
+        help=(
+            "Why the status changed; required with --force. Trimmed and "
+            "stored in aliquot_event.message."
+        ),
     ),
     force: bool = typer.Option(
         False,
         "--force",
         help=(
-            "Override a transition rule; requires --note and records "
+            "Override a transition rule; requires -m/--message and records "
             "aliquot_event.forced = TRUE (tm check accepts the event)."
         ),
     ),
@@ -429,7 +433,7 @@ def status_aliquot_command(
     """Change an aliquot's status, following its stock kind's transition rules."""
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.status(ref, status, note=note, force=force)
+        result = ledger.aliquots.status(ref, status, message=message, force=force)
         message = (
             f"Status of {result['id']}: {result['old_status']} -> {result['status']}"
         )
