@@ -46,6 +46,7 @@ from tetramark.core.filters import (
     build_conditions,
     check_fields,
     coerce_value,
+    empty_condition,
     filter_fields,
     parse_filters,
     regex_usage_error,
@@ -1604,6 +1605,9 @@ def _list_records(
             expressions=expressions,
             coerce=lambda field, raw: coerce_value(
                 kind, field, raw, ledger=ledger, session=ledger.driver
+            ),
+            empty=lambda field, expression: empty_condition(
+                kind, field, expression
             ),
         )
         if column_sql is not None:
