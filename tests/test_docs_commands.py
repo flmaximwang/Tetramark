@@ -738,3 +738,21 @@ def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
     assert schema_front["description"].startswith("Use when")
     assert (root / "skills" / "tetramark-schema" / "references" / "presets.md").is_file()
     assert (root / "skills" / "tetramark-schema" / "references" / "evolution.md").is_file()
+
+
+def test_box_add_synopsis_and_help_document_set() -> None:
+    """AC14: both synopses and ``tm box add --help`` carry ``--set``."""
+    root = Path(__file__).resolve().parents[1]
+    spec = (root / "docs" / "spec" / "06-cli.md").read_text(encoding="utf-8")
+    commands = (
+        root / "skills" / "tetramark" / "references" / "commands.md"
+    ).read_text(encoding="utf-8")
+    assert "tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]" in spec
+    assert (
+        "tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] "
+        "[--set f=v ...] [--json]" in commands
+    )
+
+    result = runner.invoke(app, ["box", "add", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--set" in result.output

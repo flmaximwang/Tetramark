@@ -487,6 +487,33 @@ def test_import_boxes_creates_views_and_enforces_names(
     ) == [{"n": 0}]
 
 
+def test_import_box_kind_required_without_default_is_refused(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """AC13 probe (Tetramark-026): the CSV path already refuses a missing
+    required box-kind field.
+
+    ``tm box add`` gained ``--set``; the importer has always validated a box
+    row against its kind with the same ``_require_fields`` rule, so a
+    ``reqbox`` row without ``label`` is refused before anything is written.
+    Importing box kind fields as such is untouched here (out of scope).
+    """
+    ledger = ledger_factory([BOXFIELDS], name="csv-box-required")
+    before = commit_count(ledger)
+    path = write_csv(
+        tmp_path / "boxes.csv",
+        "id,kind,name,count\n"
+        "B-1,reqbox,NO-LABEL,2\n",
+    )
+    with pytest.raises(CsvImportError) as excinfo:
+        import_csv(ledger, "box", path)
+    message = str(excinfo.value)
+    assert "missing required field(s) for kind 'reqbox': label" in message
+    assert "row 1" in message
+    assert commit_count(ledger) == before
+    assert ledger.driver.query("SELECT * FROM `box`") == []
+
+
 def test_aliquot_rows_accept_id_or_stock_seq(
     ledger_factory, tmp_path: Path
 ) -> None:

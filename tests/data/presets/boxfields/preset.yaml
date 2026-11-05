@@ -1,9 +1,11 @@
 preset: boxfields
 version: 1
 description: >-
-  Minimal preset for `tm box edit` tests: one slotless box kind carrying an
-  optional string with a pattern, an optional int, and a required field with a
-  default (so a box can be added without naming it).
+  Minimal preset for `tm box edit` and `tm box add` tests: one slotless box kind
+  carrying an optional string with a pattern, an optional int, and a required
+  field with a default (so a box can be added without naming it), plus one
+  slotless box kind with a required field that has no default, an optional int
+  and a computed field (so `box add` must take the kind's fields).
 kinds:
   fieldbox:
     object: box
@@ -12,3 +14,10 @@ kinds:
       code: {type: string, length: 32, pattern: "^[a-z]+$"}
       count: {type: int}
       label: {type: string, required: true, default: unnamed}
+  reqbox:
+    object: box
+    geometry: {type: slotless, capacity: 2}
+    fields:
+      label: {type: string, required: true}
+      count: {type: int}
+      label_len: {type: computed, expr: "CHAR_LENGTH(label)", sql_type: int}
