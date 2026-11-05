@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.39](v0.8.39.md) | `v0.8.39.md` | `tm stock add-form` creates the stock without aliquots and points at the aliquot workflow; `tm stock add` and the Python API unchanged |
 | [0.8.38](v0.8.38.md) | `v0.8.38.md` | `tm aliquot add-form` asks for an optional per-tube quantity and its unit |
 | [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
 | [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |

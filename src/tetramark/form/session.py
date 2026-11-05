@@ -43,9 +43,7 @@ def write_payload(
             payload["kind"],
             entity=payload["entity"],
             values=payload["values"],
-            aliquots=payload["aliquots"],
-            box=payload.get("box"),
-            slots=payload.get("slots") or (),
+            aliquots=0,
         )
     if object_type == "aliquot":
         return ledger.aliquots.add(

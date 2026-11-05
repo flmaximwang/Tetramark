@@ -490,10 +490,13 @@ on the step.
 | `Ctrl+E` | edit the current field in `$VISUAL` → `$EDITOR` → `vi`; it works on every field. The field name, its description and its pattern are put below a git-style scissors line and removed from what you edit, while `#` lines are kept |
 | `Ctrl+C` | abort: nothing is written |
 
-**The stock form** is the worked example of the steps a form needs beyond the fields, in this order:
-the **entity** (a ref, with search), the **kind's fields**, the **aliquot count**, the **box** (`?`
-lists the boxes) and the **slots** (the next free slots are filled in by default; `?` shows the free
-slots). The other forms ask for what their `add` command needs, in the same way.
+**The stock form** asks for the stock itself and nothing else, in this order: the **kind**, the
+**entity** (a ref, with search) and the **kind's fields**. It never creates aliquots: it writes
+exactly what `tm stock add KIND --entity E --aliquots 0` writes, so the new stock is empty, and then
+prints a `Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <stock> --count N
+--quantity Q --unit U`). Tubes, with their count, quantity, unit, box and slots, are always added
+through the aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts.
+The other forms ask for what their `add` command needs, in the same way.
 
 **The aliquot form** asks, in this order, the **kind** (the stock kinds — an aliquot has
 no kind of its own), the **stock** (a ref, with search), the **aliquot count**, the **quantity**,
