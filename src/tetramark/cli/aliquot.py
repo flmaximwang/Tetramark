@@ -272,7 +272,8 @@ def list_aliquots_command(
         [],
         "--where",
         "-w",
-        help="Filter as field=value; repeat to AND. Filter status with --status.",
+        help="Filter as field=value; repeat to AND; FIELD= matches empty. "
+        "Filter status with --status.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:

@@ -86,7 +86,8 @@ def list_entities_command(
         "--where",
         "-w",
         help="Filter as field=value (exact) or field~pattern (regex); repeat to "
-        "AND filters. A regex is case-sensitive; (?i) ignores case.",
+        "AND filters; FIELD= matches empty. A regex is case-sensitive; (?i) "
+        "ignores case.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:

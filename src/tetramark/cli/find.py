@@ -30,8 +30,8 @@ def find_command(
         "--where",
         "-w",
         help="Filter as field=value (exact) or field~pattern (regex); repeat to "
-        "AND filters. Aliquots are excluded; with no QUERY all matching objects "
-        "are listed.",
+        "AND filters; FIELD= matches empty. Aliquots are excluded; with no QUERY "
+        "all matching objects are listed.",
     ),
     with_rewrite: bool = typer.Option(
         False,
