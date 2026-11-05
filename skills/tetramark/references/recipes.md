@@ -156,6 +156,8 @@ tm entity list --where 'name~(?i)^pzet'       # filter one object type by one co
 tm stock list --where 'strain~BL21' --where 'medium=LB'   # filters AND
 tm stock list --where 'od600>=2'              # ordered comparison: OD 2 or more
 tm entity list --where 'name!~GFP'            # negation: every name without GFP
+# AND a (B or C): every --where and only one OR group of --where-any
+tm stock list --where 'kind=plasmid_prep' --where-any 'resistance=kan' --where-any 'resistance=amp'
 ```
 
 Use `tm find` when you have a handle (id, alias, name or a piece of kind text); `-E` is the same
@@ -164,18 +166,20 @@ search with a case-insensitive ICU regex. Use `--where` when you know the column
 (anchor with `^`/`$`, use `(?i)` to ignore case), `!~` is its negation, and an ordered comparison
 such as `'od600>=2'` compares numbers, dates and text in order. `field!=` (no value) asks for
 "this field is filled in"; `field!=x` does not — it also matches the rows where the field is empty.
-The same filters work on `tm entity|stock|box list`; `tm find --where` spans every object type and
-excludes aliquots. The aliquot list's own `--where` is exact-only and does not take the new
-operators.
+`--where-any` is the one OR group: a row must match one of its alternatives AND every `--where`, and
+a field may repeat there (`--where-any 'resistance=kan' --where-any 'resistance=amp'`). The same
+filters work on `tm entity|stock|box list`; `tm find --where` and `tm find --where-any` span every
+object type and exclude aliquots. The aliquot list's own `--where` is exact-only and does not take
+the new operators.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (Python `re`): a literal query with no
 hits falls back to the first rule that hits (a stderr line names the rule), and `--with-rewrite` adds
-every rule's hits below the original ones. `-E`, `--where` and single-object commands never rewrite;
-a plain not-found there ends with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep
-their own error).
+every rule's hits below the original ones. `-E`, `--where`/`--where-any` and single-object commands
+never rewrite; a plain not-found there ends with `try tm find <ref>` (wrong-type, ambiguous and
+empty refs keep their own error).
 
 Results show `object`, `kind`, `id`, a summary, the location (path plus slot) and why it matched
-(`id`, `alias`, `name`, `field`, or `filter` for a `--where`-only listing). Then:
+(`id`, `alias`, `name`, `field`, or `filter` for a filter-only listing). Then:
 
 ```sh
 tm history 1226FP01

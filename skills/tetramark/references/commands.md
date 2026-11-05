@@ -137,16 +137,16 @@ starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized
 `--set condition=starved`, or record a one-off in the event's `-m/--message`. `thawed` is `consumed`: a cryo
 vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
-## Filters (`--where`, `tm find`)
+## Filters (`--where`, `--where-any`, `tm find`)
 
 `tm entity list`, `tm stock list`, `tm box list` and `tm find` share one filter syntax; the Python
-`where=` argument is the same code.
+`where=` / `where_any=` arguments are the same code.
 
 ```sh
-tm entity list [KIND] [--where FILTER ...] [--json]
-tm stock list [KIND] [--where FILTER ...] [--json]
-tm box list [--where FILTER ...] [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
+tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm stock list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm box list [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 ```
 
 - `FILTER` is one of `field=value` (exact), `field~pattern` (regex), `field!=value`,
@@ -192,22 +192,35 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 - Rules: one `=` per field (a second is a usage error), no `=` mixed with another operator on one
   field, any number of the other operators per field (ANDed), no empty pattern (`name~`) or
   comparison value (`count<`), an invalid pattern is a usage error that names the filter, and an
-  unknown field is a usage error listing the valid fields.
+  unknown field is a usage error listing the valid fields. Those two per-field repetition rules are
+  `--where`'s alone (see `--where-any` below).
+- `--where-any` is the one **OR group** of an invocation: a row must satisfy every `--where` filter
+  AND at least one `--where-any` filter. It takes the same syntax, operators, coercion, type rules
+  and empty-value rules, but repeating a field is allowed (and is the canonical use), and there is no
+  cross-check with the `--where` set. For a kind, an alternative whose field the kind does not
+  declare is dropped; a kind with no surviving alternative contributes no rows. Errors name the
+  option (`invalid regular expression in the --where-any filter 'name~['`, `unknown field(s) 'nope'
+  in --where-any`). Without `--where-any` nothing changes. For example,
+  `tm stock list --where 'kind=plasmid_prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`
+  reads `kind=plasmid_prep AND (resistance=kan OR resistance=amp)`.
 - Valid fields: the object's core filter columns (`id`, `kind`, `name` for entity/box, `created_at`,
   `notes`, plus `entity_id`/`parent_stock_id`/`source_aliquot_id` for stock and
   `parent_box_id`/`parent_slot` for box) and the fields of the kinds in scope. A listing only reads
-  kinds that have every filtered field. A computed kind column works with `~` and `!~` (its text
+  kinds that have every `--where` field. A computed kind column works with `~` and `!~` (its text
   form) but not `=` or `!=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not
   filterable. `tm find` accepts the union over entity/stock/box kinds, applies the filters to every
-  hit, and excludes aliquots whenever a filter is given.
-- With no `QUERY`, `tm find --where ...` lists every match (`match` = `filter`) sorted by object type,
-  kind and id; passing neither a QUERY nor `--where` is a usage error. No match exits 1 for `find`
-  (`no match for '<Q>'`, or `no objects match the --where filters`); a listing with no rows prints
-  `(none)` (empty in JSON) and exits 0. A bad filter or regex exits 2.
-- Python: `where=` takes a mapping (equality only; an operator is never parsed from a key or a value,
-  and a `None`/`""` value means empty, e.g. `{"name": "pUC19"}` or `{"notes": None}`) or a list of
-  strings with every operator (`where=["od600>=2", "notes!="]`). Listings and `find` read in one
-  batch.
+  hit, and excludes aliquots whenever either group is given.
+- With no `QUERY`, `tm find --where-any ...` (like `--where ...`) lists every match (`match` =
+  `filter`) sorted by object type, kind and id; passing neither a QUERY nor a filter is a usage error
+  (`the search query must not be empty; pass a QUERY or at least one --where or --where-any filter`).
+  No match exits 1 for `find` (`no match for '<Q>'`, `no objects match the --where filters` for
+  `--where` only, or `no objects match the --where/--where-any filters` once `--where-any` is
+  given); a listing with no rows prints `(none)` (empty in JSON) and exits 0. A bad filter or regex
+  exits 2.
+- Python: `where=`/`where_any=` take a mapping (equality only; an operator is never parsed from a key
+  or a value, and a `None`/`""` value means empty, e.g. `{"name": "pUC19"}` or `{"notes": None}`) or
+  a list of strings with every operator (`where=["od600>=2", "notes!="]`). Listings and `find` read
+  in one batch.
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
 of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
@@ -227,12 +240,13 @@ tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
 tm entity rename ID|ALIAS NEW_NAME [--json]
 tm entity purge ID|ALIAS [--json]
-tm entity list [KIND] [--where FILTER ...] [--json]
+tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 ```
 
 `--set` and `--alias` are repeatable. `--name` also fills a kind's `name` field when it has one.
 `--id` is for back-filling and migration; it must match the entity ID strategy (UUID by default).
-`--where` takes the shared filters (see **Filters** above) and can be repeated (AND).
+`--where` takes the shared filters (see **Filters** above) and can be repeated (AND);
+`--where-any` is the one OR group (a row matches one alternative, ANDed with every `--where`).
 `rename` sets the name (and the kind's `name` field) and keeps the old name as an alias in the same
 commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
 already another entity's alias.
@@ -259,7 +273,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm stock list [KIND] [--where FILTER ...] [--json]
+tm stock list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 tm stock purge ID|ALIAS [--json]
 tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...] [--json]
@@ -280,7 +294,7 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
   owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),
   `active` (at least one in stock) or `depleted` (every aliquot has left stock). `--where` takes the
-  shared filters (see **Filters** above).
+  shared filters and `--where-any` OR group (see **Filters** above).
 - `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**
@@ -413,7 +427,7 @@ optional message and has no `note` argument (`note=` raises `TypeError`).
 ```sh
 tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--set f=v ...] [--json]
 tm box show NAME|ID|ALIAS [--json]
-tm box list [--kind KIND] [--where FILTER ...] [--json]
+tm box list [--kind KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 tm box purge NAME|ID|ALIAS [--json]
@@ -504,7 +518,7 @@ Without a terminal the command refuses (exit 2) and points at `tm <object> add`.
 ```sh
 tm alias add OBJECT_TYPE REF ALIAS [--json]
 tm alias remove [OBJECT_TYPE] ALIAS [--json]
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 tm history ID|ALIAS|BOX [--json]
 ```
 
@@ -519,18 +533,15 @@ prefix or substring text (case-insensitive, literal), ranks exact id → exact a
 prefix → alias prefix → name substring → alias substring → fields, and shows summary and location.
 `-E`/`--regex` makes QUERY a case-insensitive ICU regex over the same places, ranked id > alias > name
 > field (prefix and substring matches merged; ties by object type, kind and id); an invalid pattern is
-a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
-hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
-object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the
-object. Its event lines are the same `event_line` text as `aliquot show` (plus the tube id token),
-and its `--json` events carry the same `from_box_resolved`/`to_box_resolved` keys; the 16-column CSV
-is unchanged.
+a usage error with no literal fallback. `--where` and `--where-any` apply the shared filters (see
+**Filters** above) to every hit and exclude aliquots; with no QUERY all matching objects are listed
+(`match` = `filter`) sorted by object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, replacement}`; Python
 `re.fullmatch` + `match.expand`, validated at open with the rule named). They rewrite a **literal**
 QUERY only: a query with no hits falls back to the first rule that hits — a stderr line names the rule
 and the rewritten query — and `--with-rewrite` adds every rule's hits below the original ones (`match`
-reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where` patterns and single-object
+reads `<tier> via <rule>`; JSON adds `rewrite`). `-E`, `--where`/`--where-any` patterns and single-object
 `show`/`history`/`lineage`/`--entity`/alias resolution never rewrite; a plain not-found there ends
 with `try tm find <ref>` (wrong-type, ambiguous and empty refs keep their own error).
 

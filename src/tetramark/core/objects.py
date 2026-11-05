@@ -47,6 +47,7 @@ from tetramark.core.events import (
     require_spec7_event_columns,
 )
 from tetramark.core.filters import (
+    build_any_condition,
     build_conditions,
     check_fields,
     coerce_value,
@@ -1586,6 +1587,7 @@ def _list_records(
     kind_name: str | None,
     where: Iterable[str] | Mapping[str, Any] | None,
     *,
+    where_any: Iterable[str] | Mapping[str, Any] | None = (),
     extra: Sequence[tuple[str, Any]] = (),
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
     """Every row of every matching kind, fetched in one read batch.
@@ -1600,9 +1602,14 @@ def _list_records(
     plus each query's ``ORDER BY``.
 
     The filters themselves are parsed and turned into SQL conditions by
-    :mod:`tetramark.core.filters`, the one backend ``--where`` shares with
-    ``tm find``: ``field=value`` is exact (with the schema's coercion for a
-    kind field), ``field~pattern`` matches the column's text form.
+    :mod:`tetramark.core.filters`, the one backend ``--where`` and
+    ``--where-any`` share with ``tm find``: ``field=value`` is exact (with the
+    schema's coercion for a kind field), ``field~pattern`` matches the column's
+    text form.  ``where`` is the AND group; ``where_any`` the one OR group,
+    whose alternatives a kind that does not declare their field drops.
+
+    A kind contributes no rows when it lacks a ``--where`` field, and also when
+    ``--where-any`` was given and no alternative mentions a field it declares.
     """
     if kind_name is not None:
         _kind_for(ledger, object_type, kind_name)
@@ -1611,10 +1618,14 @@ def _list_records(
         kinds = sorted(ledger.schema.kinds_for(object_type))
 
     filters = parse_filters(where, option="--where")
+    any_filters = parse_filters(
+        where_any, option="--where-any", allow_repeats=True
+    )
     valid: set[str] = set(_CORE_FILTERS[object_type])
     for name in kinds:
         valid |= set(ledger.schema.kinds[name].fields)
     check_fields(filters, valid, option="--where")
+    check_fields(any_filters, valid, option="--where-any")
 
     records: list[dict[str, Any]] = []
     batch: list[tuple[str, Any]] = []
@@ -1643,6 +1654,26 @@ def _list_records(
             kind=kind,
             option="--where",
         )
+        any_condition, any_params = build_any_condition(
+            any_filters,
+            expressions=expressions,
+            coerce=lambda field, raw: coerce_value(
+                kind, field, raw, ledger=ledger, session=ledger.driver
+            ),
+            empty=lambda field, expression: empty_condition(
+                kind, field, expression
+            ),
+            kind=kind,
+            option="--where-any",
+        )
+        # An OR group with no surviving alternative is false for this kind:
+        # contributing rows would ignore the filter.
+        if any_condition is None:
+            if any_filters:
+                continue
+        else:
+            conditions.append(any_condition)
+            params.extend(any_params)
         if column_sql is not None:
             select_items = [
                 f"{expression} AS {_quote(column)}"
@@ -1667,7 +1698,9 @@ def _list_records(
     # query compiles their patterns: validate them here, otherwise an invalid
     # pattern would silently return an empty listing.
     if extra_start == 0:
-        validate_patterns(ledger.driver, filters, option="--where")
+        validate_patterns(
+            ledger.driver, filters, any_filters=any_filters, option="--where"
+        )
     # One process for every kind (plus the batch-only ``extra`` reads); an
     # empty batch must not start one at all.
     try:
@@ -1676,7 +1709,13 @@ def _list_records(
         # The database compiles a pattern, so only a failed query knows that
         # one is invalid; the filter backend turns that into a usage error
         # that names the filter the user has to fix.
-        usage = regex_usage_error(ledger.driver, filters, error, option="--where")
+        usage = regex_usage_error(
+            ledger.driver,
+            filters,
+            error,
+            any_filters=any_filters,
+            option="--where",
+        )
         if usage is None:
             raise
         raise usage from error
@@ -1935,6 +1974,7 @@ def list_entities(
     kind_name: str | None = None,
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
+    where_any: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
     # The stock counts ride in the same batch as the per-kind listings, so the
     # per-entity aggregate costs no extra round trip.
@@ -1943,6 +1983,7 @@ def list_entities(
         "entity",
         kind_name,
         where,
+        where_any=where_any,
         extra=[(_ENTITY_STOCK_COUNTS_SQL, None)],
     )
     counts = {str(row["entity_id"]): row for row in extra[0]}
@@ -2246,8 +2287,9 @@ def list_stocks(
     kind_name: str | None = None,
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
+    where_any: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
-    records, _ = _list_records(ledger, "stock", kind_name, where)
+    records, _ = _list_records(ledger, "stock", kind_name, where, where_any=where_any)
     for record in records:
         # v_stock_<kind>'s SUM is a DOUBLE on the server driver, but a count is
         # an int on every backend (lineage int-casts its counts the same way).
@@ -4028,6 +4070,7 @@ def list_boxes(
     kind_name: str | None = None,
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
+    where_any: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
     # The path and occupancy rows ride in the same batch as the per-kind
     # listings, so neither costs an extra round trip.
@@ -4036,6 +4079,7 @@ def list_boxes(
         "box",
         kind_name,
         where,
+        where_any=where_any,
         extra=[(_BOX_PATH_ROWS_SQL, None), (_BOX_OCCUPIED_SQL, None)],
     )
     paths = _box_paths(extra[0])
@@ -4656,8 +4700,11 @@ class EntityOps:
         kind: str | None = None,
         *,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        where_any: Iterable[str] | Mapping[str, Any] | None = (),
     ) -> list[dict[str, Any]]:
-        return list_entities(self.ledger, kind, where=where)
+        return list_entities(
+            self.ledger, kind, where=where, where_any=where_any
+        )
 
 
 class StockOps:
@@ -4726,8 +4773,11 @@ class StockOps:
         kind: str | None = None,
         *,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        where_any: Iterable[str] | Mapping[str, Any] | None = (),
     ) -> list[dict[str, Any]]:
-        return list_stocks(self.ledger, kind, where=where)
+        return list_stocks(
+            self.ledger, kind, where=where, where_any=where_any
+        )
 
 
 class AliquotOps:
@@ -4875,8 +4925,11 @@ class BoxOps:
         kind: str | None = None,
         *,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        where_any: Iterable[str] | Mapping[str, Any] | None = (),
     ) -> list[dict[str, Any]]:
-        return list_boxes(self.ledger, kind, where=where)
+        return list_boxes(
+            self.ledger, kind, where=where, where_any=where_any
+        )
 
 
 class AliasOps:

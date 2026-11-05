@@ -35,6 +35,15 @@ def find_command(
         "matches a value. Aliquots are excluded; with no QUERY all matching "
         "objects are listed.",
     ),
+    where_any: list[str] = typer.Option(
+        [],
+        "--where-any",
+        help="One OR group: a hit must match one of these filters, ANDed "
+        "with every --where. Same syntax and operators as --where; a field "
+        "may repeat here, e.g. 'resistance=kan' or 'resistance=amp'. "
+        "Aliquots are excluded; with no QUERY all matching objects are "
+        "listed.",
+    ),
     with_rewrite: bool = typer.Option(
         False,
         "--with-rewrite",
@@ -43,12 +52,16 @@ def find_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Find objects by id, alias, name, kind text or --where filters."""
+    """Find objects by id, alias, name, kind text or filter groups."""
     text = "" if query is None else str(query).strip()
     ledger = resolve_ledger(ctx)
     try:
         results = ledger.find(
-            query, regex=regex, where=where, with_rewrite=with_rewrite
+            query,
+            regex=regex,
+            where=where,
+            where_any=where_any,
+            with_rewrite=with_rewrite,
         )
         # A miss names the rewrites that were tried; ``-E`` and a filter-only
         # listing never rewrite, and a failed rewrite is still worth reporting.
@@ -66,6 +79,10 @@ def find_command(
                 )
                 message = f"{message} (also tried: {listed})"
             raise LedgerError(message)
+        if where_any:
+            raise LedgerError(
+                "no objects match the --where/--where-any filters"
+            )
         raise LedgerError("no objects match the --where filters")
     if not with_rewrite and not regex:
         # The default fallback only runs when the query itself had no hits, so

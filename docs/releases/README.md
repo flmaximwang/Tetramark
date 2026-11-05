@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.39.3](v0.8.39.3.md) | `v0.8.39.3.md` | `--where-any`: one OR group across the `--where` filters, on the entity/stock/box lists, `tm find` and the Python `where_any=` |
 | [0.8.39.2](v0.8.39.2.md) | `v0.8.39.2.md` | `tm aliquot add-form` asks for an optional per-tube quantity and its unit |
 | [0.8.39.1](v0.8.39.1.md) | `v0.8.39.1.md` | aliquot events show their stored messages and resolved box names; unresolved refs are labelled, JSON gains two additive resolution flags |
 | [0.8.39](v0.8.39.md) | `v0.8.39.md` | `tm stock add-form` creates the stock without aliquots and points at the aliquot workflow; `tm stock add` and the Python API unchanged |

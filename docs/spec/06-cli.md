@@ -86,13 +86,13 @@ tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
-tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] ; tm entity edit ID --set f=v
+tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] ; tm entity edit ID --set f=v
 tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
 tm entity purge ID|ALIAS                    # hard delete, explicit only; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...]
+tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...] [--where-any FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
@@ -108,14 +108,14 @@ tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the ol
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
-tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
+tm box list [--where FILTER ...] [--where-any FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rename-only; one commit; structural fields refused
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
-tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
+tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
 tm alias add OBJ_TYPE REF ALIAS ; tm alias remove ...   # REF: id, alias or unique id prefix; a box also by its name
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
@@ -537,17 +537,17 @@ rejects the entry, the error is shown and the form goes back to the field that f
 
 ### 6.4 `--where` filters and `tm find`
 
-`tm entity list`, `tm stock list`, `tm box list`, `tm find` and their Python `where=` argument take
-one filter syntax with eight operators: `field=value` (exact), `field~pattern` (regular expression),
-`field!=value`, `field!~pattern`, and the ordered comparisons `field<value`, `field<=value`,
-`field>value` and `field>=value`. The operator is the one that follows the field name, so a value may
-contain `=`, `~`, `!`, `<` and `>`; the field name before it must be an identifier (a letter or `_`,
-then letters, digits or `_`), and it is case-sensitive. Whitespace before the field name and between
-the name and the operator is skipped; the value is everything after the operator, verbatim. A filter
-with no operator, or with a field name that is not an identifier, is a usage error (exit 2).
-`tm aliquot list` keeps its own exact-only `--where FIELD=VALUE` (above), which does not take these
-operators in this release: this section is about the shared syntax used by the three lists and by
-`tm find`.
+`tm entity list`, `tm stock list`, `tm box list`, `tm find` and their Python `where=` / `where_any=`
+arguments take one filter syntax with eight operators: `field=value` (exact), `field~pattern`
+(regular expression), `field!=value`, `field!~pattern`, and the ordered comparisons `field<value`,
+`field<=value`, `field>value` and `field>=value`. The operator is the one that follows the field
+name, so a value may contain `=`, `~`, `!`, `<` and `>`; the field name before it must be an
+identifier (a letter or `_`, then letters, digits or `_`), and it is case-sensitive. Whitespace
+before the field name and between the name and the operator is skipped; the value is everything
+after the operator, verbatim. A filter with no operator, or with a field name that is not an
+identifier, is a usage error (exit 2). `tm aliquot list` keeps its own exact-only `--where
+FIELD=VALUE` (above), which does not take these operators in this release: this section is about the
+shared syntax used by the three lists and by `tm find`.
 
 `field=value` compares the column exactly. On a kind field the value is coerced by the field's schema
 the way `--set` coerces it: an `enum` must be one of its values, a `ref` may be an id or an alias and
@@ -620,7 +620,7 @@ different question from `field!=x`:
 The asymmetry is the point: `field!=x` is not "the field is set" (it includes the rows where the
 field is `NULL`), while `field!=` with no value is exactly that.
 
-The rules are the same everywhere:
+The rules are the same everywhere (the two repetition rules are `--where`'s alone, see below):
 
 * a field may be filtered with `=` once; a second `=` on the same field is a usage error
   (`field 'name' appears twice in --where`);
@@ -646,15 +646,32 @@ ignoring the filter (`tm stock list --where 'induction=iptg'` reads the stock ki
 stock and box and the fields of every entity/stock/box kind — and a filtered field that only some
 kinds have simply excludes the other kinds from the result.
 
-Every filter is ANDed; `--where` (also `-w`) is repeatable. The listings and `tm find` build all
-statements of the read first and fetch them in one `query_many` batch, so `--where` does not cost a
-process per kind. A few paths still cost extra queries: naming an invalid pattern (the error path
-probes the patterns to name the bad one), a field combination no kind can express (nothing compiles
-the patterns, so each pattern filter (`~` or `!~`) is probed once up front), and an `=` or `!=`
-filter on a kind `ref` (the alias may be resolved). A listing that matches nothing prints `(none)`
-(an empty list in JSON) and exits 0.
+`--where-any FILTER` (no short flag; the same four commands and Python `where_any=`) is the one **OR
+group** of an invocation: a row must satisfy every `--where` filter **and** at least one
+`--where-any` filter, as in
+`tm stock list --where 'kind=plasmid_prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`
+(which reads as `kind=plasmid_prep AND (resistance=kan OR resistance=amp)`).
+Without `--where-any` nothing changes. The group takes the same syntax, operators, coercion, type
+rules and empty-value rules as `--where`, and the rules above apply to it with one exception: the
+per-field repetition rules do not, because repeating a field is how an alternative is written (the
+`=` at most once rule and the `=`/other-operator rule are `--where`'s alone, and there is no
+cross-check between the two groups). Per kind, an alternative whose field the kind does not declare
+is dropped (it is false for that kind); a kind left with no surviving alternative contributes no
+rows. Errors name the option the filter came from (`invalid regular expression in the --where-any
+filter 'name~['`, `unknown field(s) 'nope' in --where-any; valid fields: …`). The surviving
+alternatives become one `(cond OR cond …)` condition appended to the kind's AND conditions, with
+their parameters in order, in the same single `query_many` batch.
 
-`tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]` searches the whole ledger. Without `-E`, `QUERY`
+Every `--where` filter is ANDed and `--where-any` is the one OR group; `--where` (also `-w`) and
+`--where-any` are repeatable. The listings and `tm find` build all statements of the read first and
+fetch them in one `query_many` batch, so neither group costs a process per kind. A few paths still
+cost extra queries: naming an invalid pattern (the error path probes the patterns to name the bad
+one), a field combination no kind can express (nothing compiles the patterns, so each pattern filter
+(`~` or `!~`) is probed once up front), and an `=` or `!=` filter on a kind `ref` (the alias may be
+resolved). A listing that matches nothing prints `(none)` (an empty list in JSON) and exits 0.
+
+`tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite]`
+searches the whole ledger. Without `-E`, `QUERY`
 is a literal search: ids are matched exactly and case-sensitively, while aliases, names and
 `string`/`text` kind fields are matched case-insensitively by exact, prefix and substring text, with
 `%` and `_` as ordinary characters. The tiers are exact id, exact alias, exact name, name prefix,
@@ -667,29 +684,32 @@ An invalid `-E` pattern is a usage error (`invalid regex '[': the pattern is not
 expression`) with no literal fallback — a pattern that does not compile never matches as if it were
 text.
 
-`--where` applies to every hit after the search (AND), so even an id or alias hit must satisfy it.
-Aliquots are excluded whenever any `--where` is given (they have no kind row to filter);
-`tm find 1226L401.1 --where 'id~^12'` therefore reports no match. `--where` takes the same eight
-operators here, so a core timestamp narrows every object type
-(`tm find --where 'created_at>=2026-01-01'`). `QUERY` is optional with `--where`:
-`tm find --where 'resistance=kan'` lists every matching object with `match` = `filter`, sorted by
-object type (entity, stock, box), kind and id. Passing neither a `QUERY` nor a `--where` is a usage
-error (`the search query must not be empty; pass a QUERY or at least one --where filter`). A search
-that finds nothing exits 1: `no match for '<QUERY>'`, or `no objects match the --where filters` when
-only filters were given; `--where` syntax/field errors and an invalid `-E` pattern exit 2.
+Both filter groups apply to every hit after the search — every `--where` filter (AND) and at least
+one `--where-any` filter (OR) — so even an id or alias hit must satisfy them. Aliquots are excluded
+whenever either group is given (they have no kind row to filter); `tm find 1226L401.1 --where
+'id~^12'` therefore reports no match. `--where` takes the same eight operators here, so a core
+timestamp narrows every object type (`tm find --where 'created_at>=2026-01-01'`). `QUERY` is optional
+with a filter: `tm find --where 'resistance=kan'` and `tm find --where-any 'resistance=kan'
+--where-any 'resistance=amp'` list every matching object with `match` = `filter`, sorted by object
+type (entity, stock, box), kind and id. Passing neither a `QUERY` nor a filter is a usage error
+(`the search query must not be empty; pass a QUERY or at least one --where or --where-any filter`). A
+search that finds nothing exits 1: `no match for '<QUERY>'`, or — when only filters were given —
+`no objects match the --where filters` for a `--where`-only invocation and `no objects match the
+--where/--where-any filters` once `--where-any` is given; filter syntax/field errors and an invalid
+`-E` pattern exit 2.
 
 **`find.rewrites` rules.** A ledger may declare rewrite rules for literal `tm find` queries in
 `ledger.yaml` (`find.rewrites`, §1.2): each rule has a unique `name`, a Python `re` `pattern` matched
 against the whole trimmed `QUERY` with `re.fullmatch`, and a `replacement` expanded with
 `match.expand` (`\1`/`\g<name>` back-references). That is the Python dialect — deliberately not the
-database (ICU) dialect of `-E` and the `--where` patterns (`~` and `!~`) — and the rules are
-validated when the ledger opens, with the rule named in the error (a bad pattern, a replacement that
-names a group the pattern lacks, a missing or duplicate `name`, or an empty `rewrites:` list; exit
-1). The rules rewrite `QUERY` only:
-`--where` filters are never rewritten (they still narrow every hit, rewrite hits included), `-E` is
-never rewritten, and single-object resolution (`show`, `history`, `lineage`, `--entity`, alias
-resolution) stays exact: a plain not-found there ends with `try tm find <REF>` (the command that
-does apply the rules), while wrong-type, ambiguous and empty refs keep their own error unchanged.
+database (ICU) dialect of `-E` and the `--where` patterns (`~` and `!~`, in either group) — and the
+rules are validated when the ledger opens, with the rule named in the error (a bad pattern, a
+replacement that names a group the pattern lacks, a missing or duplicate `name`, or an empty
+`rewrites:` list; exit 1). The rules rewrite `QUERY` only: `--where` and `--where-any` filters are
+never rewritten (they still narrow every hit, rewrite hits included), `-E` is never rewritten, and
+single-object resolution (`show`, `history`, `lineage`, `--entity`, alias resolution) stays exact: a
+plain not-found there ends with `try tm find <REF>` (the command that does apply the rules), while
+wrong-type, ambiguous and empty refs keep their own error unchanged.
 A rule that does not match, or whose expansion is the query itself or empty, is skipped silently;
 rules never chain.
 
@@ -706,13 +726,14 @@ the fallback costs one batch for the miss plus one batched rewrite search. When 
 exit-1 message stays `no match for '<QUERY>'` and appends `(also tried: '<REWRITTEN>' via <NAME>,
 ...)` when rules produced rewrites.
 
-The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(), with_rewrite=False)`,
-`ledger.entities.ls(kind=None, *, where=())`, `ledger.stocks.ls(...)` and `ledger.boxes.ls(...)`. A
-`where` **mapping** is equality only (`where={"name": "pUC19"}`): its key is the field and its value
-is the value, so an operator is never parsed from either (`{"name": "pUC19~x"}` compares the text
-`pUC19~x`), and a `None` or `""` value still means "the field is empty". A list of strings accepts
-every operator (`where=["name~(?i)^puc", "od600>=2", "notes!="]`). Parsing, coercion and errors are
-the same code as the CLI.
+The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(), where_any=(),
+with_rewrite=False)`, `ledger.entities.ls(kind=None, *, where=(), where_any=())`,
+`ledger.stocks.ls(...)` and `ledger.boxes.ls(...)`. A `where`/`where_any` **mapping** is equality
+only (`where={"name": "pUC19"}`): its key is the field and its value is the value, so an operator is
+never parsed from either (`{"name": "pUC19~x"}` compares the text `pUC19~x`), and a `None` or `""`
+value still means "the field is empty". A list of strings accepts every operator
+(`where=["name~(?i)^puc", "od600>=2", "notes!="]`, `where_any=["resistance=kan", "resistance=amp"]`).
+Parsing, coercion and errors are the same code as the CLI.
 
 ### 6.5 `tm skill` — which copy describes this CLI
 
