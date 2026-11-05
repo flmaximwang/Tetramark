@@ -32,7 +32,15 @@ from tetramark.form.source import Reply, ScriptedSource
 
 from conftest import PRESETS, REPO_PRESETS
 
-pytestmark = pytest.mark.embedded
+#: The form tests drive a real Dolt ledger through many small statements.  On
+#: a loaded shared machine the slowest of them compete when xdist spreads the
+#: module across workers and can hit the unchanged 60 s per-test timeout.
+#: Grouping keeps them sequential on one worker under ``--dist loadgroup``;
+#: no budget, assertion or selected test changes.
+pytestmark = [
+    pytest.mark.embedded,
+    pytest.mark.xdist_group("form_dolt"),
+]
 
 BASE = REPO_PRESETS / "base.yaml"
 BOXFIELDS = PRESETS / "boxfields"
