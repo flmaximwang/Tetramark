@@ -222,7 +222,7 @@ def test_stock_form_stores_what_add_stores(ledger_factory) -> None:
     for ledger in (form_ledger, add_ledger):
         ledger.boxes.add("grid8x12", "FORM-96")
 
-    created, _ = run_form(
+    created, source = run_form(
         form_ledger,
         "stock",
         "lot",  # kind
@@ -231,11 +231,19 @@ def test_stock_form_stores_what_add_stores(ledger_factory) -> None:
         "AC-42",  # catalog_no
         "2026-01-05",  # received_on
         "2027-01-05",  # expires_on
-        "2",  # aliquots
-        "FORM-96",  # box
-        "A1, A2",  # slots
         "y",  # review: write
     )
+    asked = [prompt.step.key if prompt.step else "review" for prompt in source.prompts]
+    assert asked == [
+        "kind",
+        "entity",
+        "supplier",
+        "catalog_no",
+        "received_on",
+        "expires_on",
+        "review",
+    ]
+
     added = add_ledger.stocks.add(
         "lot",
         entity=add_item["id"],
@@ -245,9 +253,7 @@ def test_stock_form_stores_what_add_stores(ledger_factory) -> None:
             "received_on": "2026-01-05",
             "expires_on": "2027-01-05",
         },
-        aliquots=2,
-        box="FORM-96",
-        slots=["A1", "A2"],
+        aliquots=0,
     )
 
     view = stock_view(form_ledger, created["id"])
@@ -255,26 +261,54 @@ def test_stock_form_stores_what_add_stores(ledger_factory) -> None:
     assert view["entity"] == "TM item"
     assert (view["supplier"], view["catalog_no"]) == ("Acme", "AC-42")
     assert (view["received_on"], view["expires_on"]) == ("2026-01-05", "2027-01-05")
-    assert view["aliquots"] == [
-        {
-            "seq": 1,
-            "status": "stored",
-            "quantity": None,
-            "unit": None,
-            "box": "FORM-96",
-            "slot": "A1",
-        },
-        {
-            "seq": 2,
-            "status": "stored",
-            "quantity": None,
-            "unit": None,
-            "box": "FORM-96",
-            "slot": "A2",
-        },
-    ]
-    assert created["aliquots"] == stored_ids(form_ledger, created["id"])
-    assert added["aliquots"] == stored_ids(add_ledger, added["id"])
+    # The form creates the stock itself: no tube, no placement, no implicit
+    # aliquot, exactly like ``tm stock add ... --aliquots 0``.
+    assert view["aliquots"] == []
+    assert created["aliquots"] == []
+    assert added["aliquots"] == []
+    assert stored_ids(form_ledger, created["id"]) == []
+    status = form_ledger.driver.query(
+        "SELECT `status` FROM `v_stock_status` WHERE `stock_id` = %s",
+        (created["id"],),
+    )[0]["status"]
+    assert status == "empty"
+
+    # The separate aliquot workflow still adds tubes to the stock the form made.
+    aliquots = form_ledger.aliquots.add(
+        created["id"], count=2, box="FORM-96", slots=["A1", "A2"]
+    )
+    assert len(aliquots["ids"]) == 2
+    assert [row["seq"] for row in aliquot_view(form_ledger, created["id"])] == [1, 2]
+    after = form_ledger.driver.query(
+        "SELECT `aliquots_total` FROM `v_stock_status` WHERE `stock_id` = %s",
+        (created["id"],),
+    )[0]
+    assert after["aliquots_total"] == 2
+
+
+def test_stock_add_without_aliquots_still_creates_one(
+    cli_env: None, ledger_factory
+) -> None:
+    """Regression: the plain stock CLI keeps its own ``--aliquots`` default."""
+    ledger = ledger_factory([BASE], name="stock-add-default")
+    item = ledger.entities.add("item", values={"name": "TM item"})
+    result = runner.invoke(
+        app,
+        [
+            "--ledger",
+            str(ledger.path),
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            item["id"],
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    created = json.loads(result.output)
+    assert len(created["aliquots"]) == 1
+    assert [row["seq"] for row in aliquot_view(ledger, created["id"])] == [1]
 
 
 def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:

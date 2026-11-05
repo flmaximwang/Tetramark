@@ -98,7 +98,8 @@ def add_stock_form_command(
     ctx: typer.Context,
     as_json: bool = typer.Option(False, "--json", help="Print the created stock as JSON."),
 ) -> None:
-    """Interactively create a stock (for people; agents use 'add')."""
+    """Interactively create a stock without aliquots (for people; agents use 'add').
+    Add aliquots afterwards with 'tm aliquot add-form'."""
     run_add_form_command(ctx, "stock", as_json=as_json)
 
 

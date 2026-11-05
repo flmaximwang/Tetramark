@@ -201,7 +201,7 @@ class FormState:
         object_type = self.plan.object_type
         result: list[Step] = []
         for step in steps:
-            if step.key == "box" and object_type in ("stock", "aliquot"):
+            if step.key == "box" and object_type == "aliquot":
                 if self._count() <= 0:
                     continue
             elif step.key == "slots":
@@ -224,10 +224,9 @@ class FormState:
         return visible[min(self.index, len(visible) - 1)]
 
     def _count(self) -> int:
-        key = "aliquots" if self.plan.object_type == "stock" else "count"
-        raw = self.answers.get(key)
+        raw = self.answers.get("count")
         if raw is None:
-            return 1  # the default of both count steps
+            return 1  # the default of the aliquot count step
         try:
             return int(str(raw))
         except (TypeError, ValueError):
@@ -792,9 +791,7 @@ class FormState:
                 "kind": kind,
                 "entity": answers["entity"],
                 "values": field_values,
-                "aliquots": self._count(),
-                "box": answers.get("box"),
-                "slots": list(answers.get("slots") or []),
+                "aliquots": 0,
             }
         if object_type == "aliquot":
             return {
