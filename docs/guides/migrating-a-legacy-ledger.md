@@ -293,13 +293,15 @@ tm stock add plasmid_prep --id 0826FP21 --entity 5fe23f35-21fe-4274-bae8-168a322
 
 Run all of these; keep the output with the migration record.
 
-1. **Row counts per kind** match the old table counts:
+1. **Row counts per kind** match the old table counts. `tm stock list` prints active stocks only, so
+   `--all` is required here: the old counts include the depleted and empty stocks the migration
+   recorded:
 
 ```sh
 tm --format csv entity list protein_construct | wc -l  # header + 27
 tm --format csv entity list plasmid | wc -l            # header + 15
-tm --format csv stock list bacterial_glycerol | wc -l  # header + 27
-tm --format csv stock list plasmid_prep | wc -l        # header + 15
+tm --format csv stock list --all bacterial_glycerol | wc -l  # header + 27
+tm --format csv stock list --all plasmid_prep | wc -l        # header + 15
 ```
 
 2. **Every old UID resolves** to the same entity/stock:
