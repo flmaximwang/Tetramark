@@ -19,9 +19,13 @@ Two 0.4 layouts get their own error instead of a confusing "no ledger":
   workspace** (P4): the error names it and tells the user to ``cd`` into the
   ledger directory -- ``ledger.yaml`` already carries the author, so no setting
   has to move;
-* a directory holding ``.dolt/`` without ``ledger.yaml`` is **not a ledger**
-  (the bare legacy databases of a lab workspace look like this), and the error
-  says so.
+* a directory holding a real ``.dolt/`` database (``noms/`` or
+  ``repo_state.json``) without ``ledger.yaml`` is **not a ledger** (the bare
+  legacy databases of a lab workspace look like this), and the error says so;
+* a ``.dolt/`` that holds no database at all looks like Dolt's global
+  configuration directory (``~/.dolt``), not a ledger.  The upward walk steps
+  past it; only an explicit ``-l/--ledger`` names it, and then the error says
+  what it is.
 
 Identity is ``ledger.yaml``'s ``name:`` (P2).  The path is not identity, and the
 directory basename is only the Dolt database name handed to
@@ -47,6 +51,7 @@ __all__ = [
     "LEDGER_FILE",
     "WORKSPACE_FILE",
     "LedgerRef",
+    "is_dolt_database",
     "is_ledger_dir",
     "ledger_dir",
     "ledger_name",
@@ -81,6 +86,18 @@ def is_ledger_dir(path: str | Path) -> bool:
     """True when ``path`` holds both ``.dolt/`` and ``ledger.yaml``."""
     candidate = Path(path)
     return (candidate / DOLT_DIR).is_dir() and (candidate / LEDGER_FILE).is_file()
+
+
+def is_dolt_database(path: str | Path) -> bool:
+    """True when ``path`` holds a real Dolt database, not just Dolt config.
+
+    A database has ``.dolt/noms/`` (the storage) or ``.dolt/repo_state.json``
+    (the repository metadata); Dolt's global ``~/.dolt`` config directory has
+    neither.  Pure filesystem checks: the ``dolt`` binary is never run and
+    nothing is written.
+    """
+    dolt = Path(path) / DOLT_DIR
+    return (dolt / "noms").is_dir() or (dolt / "repo_state.json").is_file()
 
 
 def ledger_name(path: str | Path) -> str:
@@ -181,8 +198,10 @@ def _explicit_ledger_dir(path: str | Path) -> Path:
         return target
     if (target / WORKSPACE_FILE).is_file():
         raise UsageError(_workspace_message(target))
-    if (target / DOLT_DIR).is_dir():
+    if is_dolt_database(target):
         raise UsageError(_bare_database_message(target))
+    if (target / DOLT_DIR).is_dir():
+        raise UsageError(_dolt_config_message(target))
     raise UsageError(_not_a_ledger_message(target))
 
 
@@ -199,8 +218,10 @@ def _discover_ledger_dir(origin: Path) -> Path:
         # same directory (a 0.4 workspace could hold unformatted databases).
         if (candidate / WORKSPACE_FILE).is_file():
             raise UsageError(_workspace_message(candidate))
-        if (candidate / DOLT_DIR).is_dir():
+        if is_dolt_database(candidate):
             raise UsageError(_bare_database_message(candidate))
+        # A config-only ``.dolt/`` (Dolt's global ``~/.dolt``) is not a
+        # database: keep walking instead of blaming it for the missing ledger.
     raise UsageError(
         f"no ledger found from {start}: neither it nor any parent directory "
         f"contains both {DOLT_DIR}/ and {LEDGER_FILE}. Pass --ledger PATH, cd "
@@ -245,6 +266,21 @@ def _bare_database_message(database: Path) -> str:
         f"{database} is not a ledger: it has a Dolt database ({DOLT_DIR}/) but "
         f"no {LEDGER_FILE}. A 0.5.0 ledger needs both; 'tm adopt' formats an "
         "existing bare Dolt database in place"
+    )
+
+
+def _dolt_config_message(target: Path) -> str:
+    """A ``.dolt/`` holding no database is Dolt config, not a ledger.
+
+    The distinction matters at ``$HOME``: Dolt's global configuration lives in
+    ``~/.dolt``, and running a command from there must say "no ledger found"
+    rather than blame the config directory or suggest ``tm adopt`` on it.
+    """
+    return (
+        f"{target} is not a ledger: its {DOLT_DIR}/ holds no Dolt database "
+        "(no noms/ or repo_state.json); it looks like Dolt's global "
+        "configuration directory. Pass a ledger directory, cd into one, or "
+        "create one with 'tm init'"
     )
 
 

@@ -84,6 +84,8 @@ from tetramark.driver import driver_for
 from tetramark.driver.resolution import (
     DOLT_DIR,
     LEDGER_FILE,
+    _dolt_config_message,
+    is_dolt_database,
     is_ledger_dir,
     ledger_name,
     refuse_nested,
@@ -663,9 +665,10 @@ def _prepare_adopt(
 ) -> InitPlan:
     """Validation of the adopt target that needs no database connection.
 
-    The existing database is judged by its ``.dolt`` directory and its
-    ``ledger.yaml``; the schema and working-set preconditions need SQL and are
-    checked by :func:`_check_adoptable`.
+    The existing database is judged by its ``.dolt`` directory (a real Dolt
+    database has ``noms/`` or ``repo_state.json``) and its ``ledger.yaml``; the
+    schema and working-set preconditions need SQL and are checked by
+    :func:`_check_adoptable`.
     """
     target = Path(path).expanduser().resolve()
     # Validate the requested identity first: a path-like name ("..") must never
@@ -700,6 +703,11 @@ def _prepare_adopt(
             "adopt. Pass --force-config to overwrite a ledger.yaml left on an "
             "otherwise empty database"
         )
+    if not is_dolt_database(target):
+        # A ``.dolt/`` without a database is Dolt's global configuration
+        # directory (``~/.dolt``): adopting it would run ``dolt`` against the
+        # user's config, so refuse before any dolt call.
+        raise LedgerError(_dolt_config_message(target))
 
     return _ledger_plan(
         target,
