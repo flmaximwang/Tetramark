@@ -267,13 +267,11 @@ def test_stock_and_box_and_aliquot_steps() -> None:
         "amount",
         "strain",
         "medium",
-        "aliquots",
-        "box",
-        "slots",
     ]
     assert stock["entity"].required is True
     assert stock["entity"].allowed_kinds == ("item", "plasmid")
-    assert stock["aliquots"].default == "1"
+    # The stock form creates the stock only; aliquots have their own form.
+    assert "aliquots" not in stock and "box" not in stock and "slots" not in stock
 
     box = [step.key for step in build_plan(FULL, "box").steps("grid96")]
     assert box == ["name", "parent", "slot", "notes"]
@@ -486,6 +484,25 @@ def test_a_core_rejection_about_the_quantity_or_the_unit_focuses_that_step() -> 
     assert state.current().key == "unit"
 
 
+def test_stock_form_walks_kind_entity_fields_and_reviews_without_aliquots() -> None:
+    state = state_for("stock")
+    state.submit("1")  # bacterial
+    steps = [step.key for step in state.visible_steps()]
+    assert steps == ["kind", "entity", "measured_at", "amount", "strain", "medium"]
+    assert "aliquots" not in steps and "box" not in steps and "slots" not in steps
+
+    at(state, "entity").submit("p1")
+    at(state, "measured_at").submit("")
+    at(state, "amount").submit("")
+    at(state, "strain").submit("BL21(DE3)")
+    at(state, "medium").submit("lb")
+    assert state.mode == "review"
+    labels = [row.label for row in state.review_rows()]
+    assert labels == ["kind", "entity", "measured_at", "amount", "strain", "medium"]
+    assert not {"aliquots", "box", "slots"} & set(labels)
+    assert [row.number for row in state.review_rows()] == [1, 2, 3, 4, 5, 6]
+
+
 # ---------------------------------------------------------------------------
 # Kind selection and navigation
 # ---------------------------------------------------------------------------
@@ -683,9 +700,10 @@ def test_resolved_ref_name_is_shown_back() -> None:
     at(state, "entity").submit("p1")
     assert state.notice == "Plasmid One"
 
-    state = state_for("stock")
+    state = state_for("aliquot")
     state.submit("1")
-    at(state, "aliquots").submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("1")
     at(state, "box").submit("GRID1")
     assert state.notice == "GRID1 (grid96)"
 
@@ -711,9 +729,10 @@ def test_ref_question_mark_lists_candidates() -> None:
 
 
 def test_box_list_search_and_direct_name() -> None:
-    state = state_for("stock")
+    state = state_for("aliquot")
     state.submit("1")
-    at(state, "aliquots").submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("1")
     at(state, "box").submit("?")
     assert [choice.value for choice in state.choices] == ["GRID1", "RACK1", "SHELF"]
     state.submit("2")
@@ -727,14 +746,10 @@ def test_box_list_search_and_direct_name() -> None:
 
 
 def test_slots_default_question_mark_and_slotless_box() -> None:
-    state = state_for("stock")
+    state = state_for("aliquot")
     state.submit("1")
-    at(state, "entity").submit("p1")
-    at(state, "measured_at").submit("")
-    at(state, "amount").submit("")
-    at(state, "strain").submit("BL21(DE3)")
-    at(state, "medium").submit("lb")
-    at(state, "aliquots").submit("2")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("2")
     at(state, "box").submit("GRID1")
     assert state.current().key == "slots"
     assert state.prompt().value == "A1, A2"
@@ -747,30 +762,22 @@ def test_slots_default_question_mark_and_slotless_box() -> None:
     assert state.mode == "review"
 
     # A slotless box has no slots step at all.
-    state = state_for("stock")
+    state = state_for("aliquot")
     state.submit("1")
-    at(state, "entity").submit("p1")
-    at(state, "measured_at").submit("")
-    at(state, "amount").submit("")
-    at(state, "strain").submit("BL21(DE3)")
-    at(state, "medium").submit("lb")
-    at(state, "aliquots").submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("1")
     at(state, "box").submit("SHELF")
     assert state.mode == "review"
     assert "slots" not in state.answers
 
 
-def test_zero_aliquots_hides_box_and_slots() -> None:
-    state = state_for("stock")
+def test_aliquot_count_minimum_is_one() -> None:
+    state = state_for("aliquot")
     state.submit("1")
-    at(state, "entity").submit("p1")
-    at(state, "measured_at").submit("")
-    at(state, "amount").submit("")
-    at(state, "strain").submit("BL21(DE3)")
-    at(state, "medium").submit("lb")
-    at(state, "aliquots").submit("0")
-    assert state.mode == "review"
-    assert "box" not in state.answers and "slots" not in state.answers
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("0")
+    assert "must be at least 1" in state.error
+    assert "count" not in state.answers
 
 
 # ---------------------------------------------------------------------------
@@ -930,9 +937,6 @@ def test_core_rejection_focuses_the_failing_field() -> None:
     at(state, "amount").submit("")
     at(state, "strain").submit("BL21(DE3)")
     at(state, "medium").submit("lb")
-    at(state, "aliquots").submit("1")
-    at(state, "box").submit("GRID1")
-    state.submit("")
     assert state.mode == "review"
     state.review_input("y")
     assert state.mode == "write"
@@ -941,6 +945,18 @@ def test_core_rejection_focuses_the_failing_field() -> None:
     assert state.mode == "input"
     assert state.current().key == "strain"
     assert "required" in state.error
+
+    # The box/slots steps still exist on the aliquot form: the same rejection
+    # mapping must keep working there after the stock form stopped asking them.
+    state = state_for("aliquot")
+    state.submit("1")
+    at(state, "stock").submit("s1")
+    at(state, "count").submit("1")
+    at(state, "box").submit("GRID1")
+    state.submit("")
+    assert state.mode == "review"
+    state.review_input("y")
+    assert state.mode == "write"
 
     state.reject("box 'X' has slots: every stored aliquot needs --slot")
     assert state.mode == "input"
@@ -980,19 +996,15 @@ def test_stock_payload_uses_core_arguments() -> None:
             "entity": "p1",
             "strain": "BL21(DE3)",
             "medium": "lb",
-            "aliquots": "2",
-            "box": "GRID1",
-            "slots": ["A1", "A2"],
         },
         kind="bacterial",
     )
-    payload = state.payload()
-    assert payload["kind"] == "bacterial"
-    assert payload["entity"] == "p1"
-    assert payload["aliquots"] == 2
-    assert payload["box"] == "GRID1"
-    assert payload["slots"] == ["A1", "A2"]
-    assert payload["values"]["strain"] == "BL21(DE3)"
+    assert state.payload() == {
+        "kind": "bacterial",
+        "entity": "p1",
+        "values": {"strain": "BL21(DE3)", "medium": "lb"},
+        "aliquots": 0,
+    }
 
 
 def test_aliquot_and_box_payloads() -> None:

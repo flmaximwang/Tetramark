@@ -15,6 +15,7 @@ import pytest
 
 from support.read_asserts import assert_single_read_process
 from tetramark.driver.embedded import EmbeddedDriver
+from support.read_asserts import assert_single_read_process
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so

@@ -771,7 +771,7 @@ def test_animal_transitions_follow_the_fixed_set(ledger_factory) -> None:
         aliquot,
         "stored",
         "--force",
-        "--note",
+        "-m",
         "the consumption was recorded on the wrong mouse",
     )
     assert forced.exit_code == 1

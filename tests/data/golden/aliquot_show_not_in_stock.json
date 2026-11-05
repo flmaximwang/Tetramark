@@ -12,6 +12,7 @@
       "forced": false,
       "from_box": null,
       "from_box_id": null,
+      "from_box_resolved": null,
       "from_slot": null,
       "id": "<event-id>",
       "message": null,
@@ -19,6 +20,7 @@
       "old_status": null,
       "to_box": null,
       "to_box_id": null,
+      "to_box_resolved": null,
       "to_slot": null,
       "unit": "ul"
     }

@@ -103,7 +103,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --n
                 [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
-tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
+tm aliquot status ALQ NEW [--force] [-m MSG]   # NEW: pending|stored|missing|consumed (§1.1); MSG required with --force
 tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]   # PARENT: a named or slotless box, never a grid
@@ -133,6 +133,9 @@ tm backup [DIR] [--name NAME]     # DIR required unless a backup is already conf
 tm backup --list                  # same as: tm backup list
 ```
 
+`tm history ID` renders its event section with the §6.6 event lines and its `--json` events carry
+the same keys as `tm aliquot show` (the history lines add the tube id token).
+
 **Subcommand names are full words.** `ls` and `rm` are not abbreviations of any command: a listing
 subcommand is `list` and a removal subcommand is `remove`, and neither has a short spelling. A new
 subcommand is named with its full word from the start.
@@ -154,8 +157,10 @@ configured backup is a usage error; nothing is created implicitly. A directory l
 
 Creating aliquots accepts any of the four fixed statuses `pending`, `stored`, `missing`, `consumed`
 (`--status`, or the import `status` column); changing one follows the fixed transitions (§1.1).
-`--force` requires `--note`, records `aliquot_event.forced = TRUE` and is the only way to make an
-unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
+`--force` requires `-m/--message`, records `aliquot_event.forced = TRUE` and is the only way to make
+an unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
+Without `--force`, `-m/--message` is optional; a given value is trimmed, refused when empty or
+whitespace-only, and stored in `aliquot_event.message`.
 
 `tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]` is
 positional sugar for `tm aliquot add STOCK --quantity AMOUNT --unit UNIT` with the same options:
@@ -180,9 +185,10 @@ result must be `stored`.
 `tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
 `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
 option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
-event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s old
-`--purpose` and `--note` flags are removed outright — no aliases; `tm aliquot status --force --note`
-is unchanged, and `move` never had either flag.
+event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s
+former purpose and note options are removed outright — no aliases; `tm aliquot status` takes the same
+`-m/--message` (optional, required with `--force`); its former note option is removed outright since
+0.8.37 — no alias. `move` never had either flag.
 
 `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
@@ -199,6 +205,8 @@ use of a tube with no quantity).
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no event-text
 argument other than `message`, and a `move` message is required and validated like a `use` message.
+`ledger.aliquots.status(ref, status, *, message=None, force=False)` takes the same optional message;
+`note=` is removed (it raises `TypeError`).
 
 `tm entity purge`, `tm stock purge`, `tm aliquot purge` and `tm box purge` are explicit **hard
 deletes**, only for an object added by mistake: the rows leave the tables and Dolt history keeps
@@ -262,10 +270,11 @@ The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`,
 tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
 `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly when the status is
 `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the tube has none). Each
-event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`, `from_slot`,
-`to_box_id`, `to_box`, `to_slot`, `old_status`, `new_status`, `forced` (a bool), `actor` and
-`message`; `from_box`/`to_box` are the box names, falling back to the box id when the box row is
-gone. `events` is not a key/value row: text output prints the field block, then the `path:` line
+event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`,
+`from_box_resolved`, `from_slot`, `to_box_id`, `to_box`, `to_box_resolved`, `to_slot`,
+`old_status`, `new_status`, `forced` (a bool), `actor` and `message`; `from_box`/`to_box` are the
+live box name, else the stored id, and `from_box_resolved`/`to_box_resolved` say which (`true` for
+a live box row, `false` otherwise, `null` when the side has no box id). Event lines follow §6.6. `events` is not a key/value row: text output prints the field block, then the `path:` line
 (when the tube has a position), then `events  N` (two spaces before the count) and one line per
 event, oldest first, rendered by the same `event_line` helper `tm history` uses. `--json` prints
 the whole record, events included; `--format csv` stays the flat single-row record and drops
@@ -490,10 +499,13 @@ on the step.
 | `Ctrl+E` | edit the current field in `$VISUAL` → `$EDITOR` → `vi`; it works on every field. The field name, its description and its pattern are put below a git-style scissors line and removed from what you edit, while `#` lines are kept |
 | `Ctrl+C` | abort: nothing is written |
 
-**The stock form** is the worked example of the steps a form needs beyond the fields, in this order:
-the **entity** (a ref, with search), the **kind's fields**, the **aliquot count**, the **box** (`?`
-lists the boxes) and the **slots** (the next free slots are filled in by default; `?` shows the free
-slots). The other forms ask for what their `add` command needs, in the same way.
+**The stock form** asks for the stock itself and nothing else, in this order: the **kind**, the
+**entity** (a ref, with search) and the **kind's fields**. It never creates aliquots: it writes
+exactly what `tm stock add KIND --entity E --aliquots 0` writes, so the new stock is empty, and then
+prints a `Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <stock> --count N
+--quantity Q --unit U`). Tubes, with their count, quantity, unit, box and slots, are always added
+through the aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts.
+The other forms ask for what their `add` command needs, in the same way.
 
 **The aliquot form** asks, in this order, the **kind** (the stock kinds — an aliquot has
 no kind of its own), the **stock** (a ref, with search), the **aliquot count**, the **quantity**,
@@ -738,4 +750,95 @@ about a stale copy):
 
 Only a missing file or a file without YAML frontmatter exits 1. The version is the package version:
 there is no separate skill revision and no `rev:` field (§10).
+
+### 6.6 Event lines — `tm history` and `tm aliquot show`
+
+`tm history` prints its `aliquot_event` rows in an `Events (N):` section and `tm aliquot show`
+prints the tube's own rows under `events  N`. Both call the same `event_line` renderer, so one row
+reads identically in the two commands: `tm history` adds the `aliquot_id` token because one history
+answer can mix tubes, while `tm aliquot show` already names the tube and omits it. The `--json`
+event objects of both commands carry the same keys, and the text grammar below is the single
+contract.
+
+**Grammar.** Tokens, in this fixed order, joined by one space; an absent token is omitted:
+
+```
+<at> <event> [<aliquot_id>] [amount=<amount> [<unit>]] [from=<place>] [to=<place>]
+[(forced)] [status=<old>-><new> | status=<new> | status=<old>] [by=<actor>]
+[message="<stored text>"]
+```
+
+(The grammar is wrapped for reading; the rendered event is exactly one physical line.)
+
+1. `at` — the event time, as stored.
+2. `event` — the event kind, e.g. `create`, `move`, `use`, `status`.
+3. `aliquot_id` — only when the event object carries it: `tm history` yes, `tm aliquot show` no.
+4. `amount=<amount>` plus ` <unit>` when the unit is not NULL; absent when `amount` is NULL.
+5. `from=<place>` — the source place, when there is one.
+6. `to=<place>` — the destination place, when there is one.
+7. `(forced)` — only when the row's `forced` flag is true.
+8. `status=...` — `status=<old>-><new>` when both statuses exist and differ, `status=<new>` when only
+   the new status exists, `status=<old>` when only the old status exists.
+9. `by=<actor>` — the stored actor, raw and unquoted (actor rendering is unchanged).
+10. `message="<stored text>"` — always last; see below.
+
+Tokens 1-9 render exactly as in 0.8.29, except the unresolved-place rule below.
+
+**`message`.** The token is present exactly when the stored `message` is not NULL and is not the
+empty string. Its value is the complete stored text (no trimming) encoded as a JSON string with
+`json.dumps(message, ensure_ascii=False)`: it is always double-quoted and escapes `"`, `\`, `\n`,
+`\r`, `\t`, `\b`, `\f` and every control character below U+0020 as JSON escapes. In addition
+U+0085, U+2028 and U+2029 are written as `\u0085`, `\u2028` and `\u2029`, so the whole event line is
+exactly one physical line (`str.splitlines()` of the line has length 1). Non-ASCII text such as CJK
+is left literal. `json.loads` applied to the text after `message=` returns the stored message
+exactly.
+
+**Place.** A place is the box part followed by an optional `:<slot>`; it is the slot alone when
+there is no box id, and it is omitted when both box id and slot are NULL. The box part depends on
+the event's `*_box_resolved` key:
+
+- `true` — the **current live name** of the box row with the stored id (`*_box`);
+- `false` — `[unresolved box <FULL stored box id>]`, keeping the complete id so two different refs
+  cannot be conflated;
+- absent (a legacy dict caller) — the pre-0.8.32 behaviour: `*_box`, else `*_box_id`.
+
+An unresolved place never says "deleted" and never names a cause: the reason a reference is
+unresolved (purged, legacy, imported, missing) is not known and is not inferred or printed. The full
+form is e.g. `from=[unresolved box 930b7cc2-6f06-4dee-aac5-161f329bfe6e]:A2`.
+
+**Renamed boxes.** A resolved box reference shows the current live name of the box row with the
+stored id. An old name remains an alias that `tm find` still resolves; there is no
+name-at-event-time reconstruction, no `dolt_history`/`dolt_diff` name read, no migration and no
+historical event rewrite — `spec_version` is unchanged.
+
+**Bounded lookup.** Both commands resolve these names inside the read batch they already issue.
+`tm aliquot show` keeps its single batch and computes the two resolved flags from the box joins it
+already has. `tm history` replaces the unbounded all-box name read with box joins scoped to the
+matching event rows, in the same batch; its kind-diff follow-up batch is unchanged. Neither command
+performs per-event SQL, adds a Dolt process, or adds a round trip, and a history answer does not read
+every box in the ledger.
+
+**JSON and API (additive).** Every event in `tm aliquot show --json`, `tm history --json`,
+`ledger.aliquots.show` and `ledger.history` gains `from_box_resolved` and `to_box_resolved`: `null`
+when the side's `*_box_id` is NULL, `true` when a live box row has that id, `false` otherwise.
+`from_box`/`to_box` are unchanged: the live box name, else the raw stored id, `null` when the id is
+NULL. In show records the resolved keys sit right after `from_box` and `to_box` respectively. No
+other key is added, removed or renamed; show events still have no `aliquot_id`, and `message` stays
+raw (unescaped) in JSON. The history event objects carry the same keys.
+
+**CSV.** `tm history --format csv` keeps exactly the 16 `HISTORY_COLUMNS` in the same order; the
+`message` column is the raw stored text, quoted only by the CSV writer, and there are no resolved
+columns. `tm aliquot show --format csv` still drops `events` entirely.
+
+**Examples.**
+
+```
+2026-10-26 11:11:44 create amount=50.000000 ml to=Rack-3:B4 status=stored by=alice
+2026-11-04 09:20:44 move 1026KR08.1 from=Rack-3:B4 to=Freezer-B:A2 status=stored by=alice message="re-rack tubes"
+2026-11-05 00:08:28 use amount=50.000000 ml from=[unresolved box 930b7cc2-6f06-4dee-aac5-161f329bfe6e]:A2 (forced) status=stored->consumed by=alice message="上样 Capto 柱\n第二轮"
+```
+
+The `move` line is the `tm history` form, which carries the tube id; `tm aliquot show` prints the
+same event without the `aliquot_id` token. The last line keeps a newline plus CJK text inside one
+physical line by escaping the newline as `\n`.
 

@@ -99,9 +99,9 @@ class Step:
     target: str | None = None
     allowed_kinds: tuple[str, ...] = ()
     choices: tuple[KindChoice, ...] = ()
-    #: Minimum accepted value of a ``count`` step (0 for stock aliquots, 1 for
-    #: aliquots added to an existing stock).
-    minimum: int = 0
+    #: Minimum accepted value of a ``count`` step (1 for the aliquots added to
+    #: an existing stock; the stock form asks for no count).
+    minimum: int = 1
     #: Short hint shown under the question (``?`` syntax and the like).
     help: str | None = None
 
@@ -283,38 +283,6 @@ def _stock_steps(kind: Kind) -> list[Step]:
         )
     ]
     steps.extend(_schema_steps(kind))
-    steps.append(
-        Step(
-            key="aliquots",
-            label="aliquots",
-            type="count",
-            default="1",
-            minimum=0,
-            description="How many aliquots to create (0 for none).",
-        )
-    )
-    steps.append(
-        Step(
-            key="box",
-            label="box",
-            type="box",
-            description="Box to place the aliquots in (optional).",
-            help="Type a box name, or ? to list the boxes.",
-        )
-    )
-    steps.append(
-        Step(
-            key="slots",
-            label="slots",
-            type="slots",
-            multi=True,
-            description=(
-                "Slot per aliquot, in order (one per line or comma-separated; "
-                "an empty line ends the list)."
-            ),
-            help="Enter accepts the next free slots; ? shows the free slots.",
-        )
-    )
     return steps
 
 

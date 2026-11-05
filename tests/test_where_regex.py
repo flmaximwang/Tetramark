@@ -20,6 +20,7 @@ from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import UsageError
 
 from conftest import PRESETS
+from support.read_asserts import assert_single_read_process
 
 BASE = PRESETS / "base"
 FULL = PRESETS / "full"

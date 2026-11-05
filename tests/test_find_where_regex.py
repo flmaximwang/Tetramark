@@ -29,6 +29,7 @@ from tetramark.ops import find as find_module
 from tetramark.ops.find import find, search
 
 from conftest import PRESETS
+from support.read_asserts import assert_single_read_process
 
 FULL = [str(PRESETS / "full")]
 

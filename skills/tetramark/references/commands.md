@@ -126,7 +126,7 @@ four-entry `statuses:` block for every stock kind.
 Creation (`--status` on `tm stock add`/`tm aliquot add`, the CSV `status` column) accepts any of the
 four; only `stored` counts as in stock, so `tm aliquot list` shows `stored` tubes by default and only
 a `stored` tube may carry a box position. A later change (`tm aliquot status ALQ NEW`) must follow the
-table. `--force` requires `--note TEXT`, overrides the transition check and records
+table. `--force` requires `-m/--message TEXT`, overrides the transition check and records
 `aliquot_event.forced = TRUE`; putting a wrongly `consumed` tube back means placing it again — a
 `move` of a not-in-stock tube restores `stored`.
 
@@ -134,7 +134,7 @@ Detailed life states are **stock properties or event messages**, not statuses: o
 on `mouse_cohort` and `fish_group`/`fish_clutch` (euthanized, found_dead, transferred, cancelled) and
 on `fly_culture` (discarded, lost), and optional enum `condition` on `worm_culture` (growing,
 starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized` or
-`--set condition=starved`, or record a one-off in the event's `--note`. `thawed` is `consumed`: a cryo
+`--set condition=starved`, or record a one-off in the event's `-m/--message`. `thawed` is `consumed`: a cryo
 vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
 ## Filters (`--where`, `tm find`)
@@ -318,7 +318,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
-tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
+tm aliquot status ALQ STATUS [-m/--message TEXT] [--force] [--json]
 tm aliquot label ALQ LABEL [--replace] [--json]
 tm aliquot purge ALQ [--json]
 ```
@@ -347,11 +347,13 @@ tm aliquot purge ALQ [--json]
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
   printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
   and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
-  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
-  ids), the `old_status`/`new_status`, `forced` and `actor`/`message`. The text output ends
-  with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
-  `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
-  single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
+  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot`, the
+  `from_box_resolved`/`to_box_resolved` flags (`null`/`true`/`false`), the `old_status`/`new_status`,
+  `forced` and `actor`; the stored `message` is the last text token as `message="..."`. A name with
+  no live box row prints as `[unresolved box <full id>]`, never a cause. The text output ends with
+  `events  N` and one line per event rendered by the same `event_line` helper `history` uses; `--json`
+  prints the whole record with the full ids, events included, `--format csv` keeps the flat single
+  row and drops `events` (unchanged; event rows are `tm history ALQ --format csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
@@ -368,10 +370,12 @@ tm aliquot purge ALQ [--json]
   (`used_amount` is `null` for a whole use of a tube with no quantity).
 - `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
   is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
-  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s old `--purpose`/`--note`
-  flags are removed outright (no aliases); `tm aliquot status --force --note` is unchanged.
+  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s former purpose and note
+  options are removed outright (no aliases); `tm aliquot status` takes the same `-m/--message`
+  (optional, required with `--force`), and its former note option is removed outright since 0.8.37
+  — no alias.
 - `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
-  `--force --note TEXT` overrides an illegal transition deliberately (the event records
+  `--force -m TEXT` overrides an illegal transition deliberately (the event records
   `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
   change.
 - An aliquot's **position follows its status**: a `stored` aliquot needs a box (and a slot in a
@@ -401,7 +405,8 @@ The Python API mirrors the CLI through `ledger.aliquots`:
 `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no event-text
 argument other than `message`, and a missing, blank or whitespace-only `message` is refused exactly
-like on the CLI.
+like on the CLI. `ledger.aliquots.status(ref, status, *, message=None, force=False)` takes the same
+optional message and has no `note` argument (`note=` raises `TypeError`).
 
 ## Boxes
 
@@ -516,7 +521,10 @@ prefix → alias prefix → name substring → alias substring → fields, and s
 > field (prefix and substring matches merged; ties by object type, kind and id); an invalid pattern is
 a usage error with no literal fallback. `--where` applies the shared filters (see **Filters** above) to every
 hit and excludes aliquots; with no QUERY it lists every matching object (`match` = `filter`) sorted by
-object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the object.
+object type, kind and id. `history` merges aliquot events and the Dolt commits that touched the
+object. Its event lines are the same `event_line` text as `aliquot show` (plus the tube id token),
+and its `--json` events carry the same `from_box_resolved`/`to_box_resolved` keys; the 16-column CSV
+is unchanged.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (`{name, pattern, replacement}`; Python
 `re.fullmatch` + `match.expand`, validated at open with the rule named). They rewrite a **literal**
