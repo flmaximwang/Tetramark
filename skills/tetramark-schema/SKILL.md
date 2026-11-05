@@ -1,12 +1,12 @@
 ---
 name: tetramark-schema
 description: Use when writing or changing a Tetramark schema — authoring presets, mixins, kinds, fields, box geometry or validation rules, adding a local kind, running schema plan/apply, or doing a destructive migration (rename/drop/type change/tightening). Triggers include 建库, 预设, 字段, 盒型, 规则, 改结构, 迁移.
-version: "0.8.32"
+version: "0.8.33"
 spec: "02-schema-language"
 updated: 2026-11-05
 ---
 
-> Tetramark 0.8.32 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.33 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Authoring Tetramark schemas
 
@@ -140,34 +140,12 @@ Each rule is one read-only `SELECT` plus an `expect`:
 5. `tm schema plan` again — must print `schema is up to date`.
 6. `tm check` — all non-info tests PASS.
 
-A preset `version:` bump ships `migration/presets/<name>/N-to-N+1/` in the same change; a
-`SPEC_VERSION` bump ships `migration/spec/N-to-N+1/`, scripted or README-only. Spec 6's fixed status
-set is the README-only example: `migration/spec/5-to-6/README.md` remaps the old vocabulary and the
-operator runs `tm schema apply` to write `spec_version`, `preset_versions`, the `CHECK` and the tests.
-
-The live fingerprint in `ledger_meta` warns when YAML and DB diverge; that is a prompt to run plan,
-not an error.
-
 ## Additive vs destructive
 
-**Additive** (applied without flags): new kind, new nullable/defaulted field, new enum value, new
-view/rule/test, new aliquot-fields table, relaxing NOT NULL.
-
-**Destructive** (needs `--allow-destructive`): drop a kind/field, type change, new NOT NULL
-without a default, new UNIQUE, removing an enum value. Renames are declared as
-`renamed_from: old_name` on the kind or field so the plan uses `ALTER … RENAME` (additive, data
-preserved) instead of drop+add. Generated columns and dependent FKs are dropped and rebuilt
-automatically.
-
-Safe sequence for tightening an existing table: back up (`tm backup /path/to/archive/NAME` or a
-configured backup), add the field nullable, backfill through `tm export`/`import` or the app, then
-make it `required` and apply with `--allow-destructive`. Always run `tm check` after apply.
-
-## Worked examples
-
-- `references/presets.md` — the `library` and `molbio` presets annotated field by field.
-- `references/evolution.md` — plan/apply transcripts, rename and destructive checklists.
-- Live examples: `tm presets show molbio`, `tm schema show plasmid`.
+Additive changes apply without flags; destructive ones need `--allow-destructive`, tagged in
+the plan. Renames use `renamed_from: old_name` — additive, data preserved. See
+`references/evolution.md` for the full lists, tightening sequence and rebuild rule; examples in
+`references/presets.md`, `tm presets show molbio`, `tm schema show plasmid`.
 
 ## Guardrails
 
