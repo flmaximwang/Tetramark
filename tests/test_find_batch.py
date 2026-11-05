@@ -86,12 +86,12 @@ def test_find_runs_one_batched_driver_round_trip(
     assert [row["rank"] for row in results[:3]] == [1, 2, 3]
     assert results[0]["aliases"] == ["ALP"]
 
-    # The whole search is one batched read: one query_many call and exactly two
-    # dolt processes (JSON rows + CSV headers), regardless of the kind count.
+    # The whole search is one batched read: one query_many call and exactly one
+    # dolt process (JSON rows + column probes), regardless of the kind count.
     assert len(query_many_calls) == 1, (
         f"find issued {len(query_many_calls)} query_many calls"
     )
-    assert invoke_calls == ["json", "csv"], (
+    assert invoke_calls == ["json"], (
         f"find issued {len(invoke_calls)} dolt processes: {invoke_calls}"
     )
     # Sanity check that a real batch was built (4 id lookups + 1 alias lookup +
@@ -104,7 +104,7 @@ def test_find_runs_one_batched_driver_round_trip(
     invoke_calls.clear()
     assert ledger.find("nothing-like-this") == []
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"], (
+    assert invoke_calls == ["json"], (
         f"empty find issued {len(invoke_calls)} dolt processes: {invoke_calls}"
     )
 
