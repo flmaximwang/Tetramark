@@ -43,8 +43,8 @@ here is versioned by Dolt. The CLI is `tm`.
 - [`docs/guides/upgrading-0.4-to-0.5.md`](docs/guides/upgrading-0.4-to-0.5.md) — the 0.4.2 → 0.5.0 upgrade note.
 - [`docs/guides/upgrading-0.5.0-to-0.5.1.md`](docs/guides/upgrading-0.5.0-to-0.5.1.md) — the 0.5.0 → 0.5.1 upgrade note (full-word subcommands).
 - [`docs/guides/upgrading-0.5.1-to-0.6.0.md`](docs/guides/upgrading-0.5.1-to-0.6.0.md) — the 0.5.1 → 0.6.0 upgrade note (the interactive form).
-- `skills/tetramark/SKILL.md` — day-to-day operating manual for agents and humans.
-- `skills/tetramark-schema/SKILL.md` — writing presets, kinds, fields, geometry and rules.
+- `skills/tetramark/SKILL.md` — day-to-day operating manual for agents and humans; its frontmatter states the Tetramark version it describes, and `tm skill version` checks that against `tm --version`.
+- `skills/tetramark-schema/SKILL.md` — writing presets, kinds, fields, geometry and rules; it states the Tetramark version it describes (`tm skill version tetramark-schema`; `--file` checks a copy elsewhere).
 
 ## Install
 

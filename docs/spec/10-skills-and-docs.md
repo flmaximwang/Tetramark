@@ -32,7 +32,7 @@ skill revision and no `rev:` field. Both `skills/tetramark/SKILL.md` and
 the text mirrors and the date it was stamped:
 
 ```yaml
-version: "0.8.25"      # == [project] version; re-stamped by every release bump
+version: "0.8.26"      # == [project] version; re-stamped by every release bump
 spec: "06-cli"         # tetramark-schema says "02-schema-language"
 updated: 2026-11-05    # ISO date of the release commit; a date, never compared with today
 ```
@@ -41,7 +41,7 @@ The version is quoted because YAML would read an unquoted `0.9` as a float. The 
 the same claim in visible form, so an agent that pasted a stale copy knows it before its first
 command fails:
 
-    > Tetramark 0.8.25 skill — if `tm --version` differs, use the copy at `tm skill path`.
+    > Tetramark 0.8.26 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 `scripts/release_check.py` reads the field from the frontmatter only (a skill body may contain
 `version:` examples) with the regex `^version:\s*"?([^"\s]+)"?\s*$`, and refuses to tag when either

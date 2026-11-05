@@ -45,6 +45,8 @@ tm adopt PATH --preset molbio [--name N] [--id-prefix 12] \
 tm status [--json]
 tm presets list
 tm presets show NAME|PATH
+tm skill path [NAME] [--json]
+tm skill version [NAME] [--file PATH] [--json]
 ```
 
 - `init PATH` creates the ledger **directory** at PATH (relative to the cwd or absolute): `.dolt/`,
@@ -68,6 +70,16 @@ tm presets show NAME|PATH
   It never lists sibling ledgers; `--format csv` is a usage error. See spec §6.1.
 - `presets list` lists the source a bare name resolves from; `presets show NAME|PATH` prints one
   include-resolved preset as YAML.
+- `skill path [NAME]` prints where the copy of the skill (`tetramark` or `tetramark-schema`, default
+  `tetramark`) lives: `$TETRAMARK_SKILLS_DIR` first, then the checkout's `skills/`, then installed
+  package data. `--json` prints `name`, `path` and `source` (`env`/`checkout`/`package`). It never
+  opens a ledger, so it works outside a ledger directory.
+- `skill version [NAME]` compares the copy's frontmatter `version:` with `tm --version` and prints
+  `skill <v> (<SKILL.md>); tm <v>; match|mismatch`; `--json` prints `name`, `skill_version`,
+  `skill_path`, `tm_version` and `match`. `--file PATH` checks another copy instead (a `SKILL.md` or
+  its directory): a stale 0.4-era copy warns `describes an older CLI` on stderr and still exits 0,
+  and a copy without a version warns that it predates versioned skills. Only a missing file or a file
+  without YAML frontmatter exits 1. See spec §6.5 and §10.
 - A new ledger is **spec 6**: the shipped presets declare no status vocabulary, and `tm init` starts
   its tubes `stored` (or whatever the creation `--status` says). An older ledger still opens with its
   own stored preset copies — spec 5's per-kind status sets keep working — and `tm` warns

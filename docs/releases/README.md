@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.26](v0.8.26.md) | `v0.8.26.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |
 | [0.8.25](v0.8.25.md) | `v0.8.25.md` | shipped skills carry the package version, visible and agreed by the release check; primary skill back within 150 lines |
 | [0.8.24](v0.8.24.md) | `v0.8.24.md` | docs only: `--where FIELD=` empty-field semantics in spec §6.4, the aliquot `--where` paragraph, the filters docstring, the skill reference, `SKILL.md` and the five `--where` help strings; no behaviour change |
 | [0.8.23](v0.8.23.md) | `v0.8.23.md` | `tm aliquot list --where FIELD=` matches empty fields (NULL/''; NULL only for seq/quantity/created_at); `{"f": None}` facade mapping fix |
@@ -34,8 +35,9 @@ automating away.
 | [0.6.0](v0.6.0.md) | `v0.6.0.md` | interactive `add-form` |
 | [0.5.1](v0.5.1.md) | `v0.5.1.md` | full-word subcommands (`ls` → `list`, `rm` → `remove`) |
 
-**Unshipped drafts:** [`v0.8.14.md`](v0.8.14.md) — superseded by [0.8.25](v0.8.25.md); 0.8.14 was
-never released or tagged.
+**Unshipped drafts:** [`v0.8.15.md`](v0.8.15.md) — superseded by [0.8.26](v0.8.26.md), never
+released or tagged; [`v0.8.14.md`](v0.8.14.md) — superseded by [0.8.25](v0.8.25.md), never released
+or tagged.
 
 ## Template
 

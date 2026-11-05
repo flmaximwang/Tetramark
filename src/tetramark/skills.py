@@ -33,12 +33,18 @@ from pathlib import Path
 __all__ = [
     "SKILL_FILENAME",
     "SKILLS_DIR_ENV",
+    "SOURCE_CHECKOUT",
+    "SOURCE_ENV",
+    "SOURCE_PACKAGE",
     "VERSION_RE",
     "SkillNotFoundError",
     "compare",
+    "read_skill_frontmatter",
     "read_skill_version",
     "resolve_skill",
+    "resolve_skill_source",
     "skill_dirs",
+    "skill_roots",
 ]
 
 #: The file that makes a directory a skill.
@@ -46,6 +52,12 @@ SKILL_FILENAME = "SKILL.md"
 
 #: Environment variable holding an extra skills root, tried first.
 SKILLS_DIR_ENV = "TETRAMARK_SKILLS_DIR"
+
+#: Source labels of a resolved copy, in resolution order: the explicit
+#: ``$TETRAMARK_SKILLS_DIR`` root, the repository checkout, installed data.
+SOURCE_ENV = "env"
+SOURCE_CHECKOUT = "checkout"
+SOURCE_PACKAGE = "package"
 
 #: The frontmatter ``version:`` line.  Identical to the pattern in
 #: ``scripts/release_check.py`` (which must stay stdlib-only and cannot import
@@ -62,24 +74,27 @@ class SkillNotFoundError(LookupError):
     """No directory called ``<name>`` with a ``SKILL.md`` exists in any root."""
 
 
-def skill_dirs() -> list[Path]:
+def skill_roots() -> list[tuple[Path, str]]:
     """The skills roots present on this machine, in resolution order.
 
-    Existing directories only, deduplicated, resolved (symlinks followed).  An
-    installed wheel that does not ship ``tetramark/skills`` simply contributes
-    no entry.
+    Each root is paired with its source label (:data:`SOURCE_ENV`,
+    :data:`SOURCE_CHECKOUT` or :data:`SOURCE_PACKAGE`).  Existing directories
+    only, deduplicated, resolved (symlinks followed); when two sources resolve
+    to the same directory the first one wins, so an env override pointing at
+    the checkout keeps the ``env`` label.  An installed wheel that does not
+    ship ``tetramark/skills`` simply contributes no entry.
     """
-    candidates: list[Path] = []
+    candidates: list[tuple[str, Path]] = []
     override = os.environ.get(SKILLS_DIR_ENV, "").strip()
     if override:
-        candidates.append(Path(override).expanduser())
+        candidates.append((SOURCE_ENV, Path(override).expanduser()))
     here = Path(__file__).resolve()
-    candidates.append(here.parents[2] / "skills")  # repository checkout
-    candidates.append(here.parent / "skills")  # installed package data
+    candidates.append((SOURCE_CHECKOUT, here.parents[2] / "skills"))
+    candidates.append((SOURCE_PACKAGE, here.parent / "skills"))
 
-    roots: list[Path] = []
+    roots: list[tuple[Path, str]] = []
     seen: set[Path] = set()
-    for candidate in candidates:
+    for source, candidate in candidates:
         try:
             resolved = candidate.resolve()
         except OSError:  # pragma: no cover - unreadable path
@@ -87,25 +102,55 @@ def skill_dirs() -> list[Path]:
         if resolved in seen or not resolved.is_dir():
             continue
         seen.add(resolved)
-        roots.append(resolved)
+        roots.append((resolved, source))
     return roots
 
 
-def resolve_skill(name: str) -> Path:
-    """The directory of the first ``<name>/SKILL.md`` copy, or raise.
+def skill_dirs() -> list[Path]:
+    """The skills roots present on this machine, in resolution order."""
+    return [root for root, _source in skill_roots()]
+
+
+def resolve_skill_source(name: str) -> tuple[Path, str]:
+    """The directory of the first ``<name>/SKILL.md`` copy and its source.
 
     Raises :class:`SkillNotFoundError` naming every root that was searched.
     """
-    roots = skill_dirs()
-    for root in roots:
+    roots = skill_roots()
+    for root, source in roots:
         candidate = root / name
         if (candidate / SKILL_FILENAME).is_file():
-            return candidate
-    looked = ", ".join(str(root) for root in roots) or "(no skills directory found)"
+            return candidate, source
+    looked = ", ".join(str(root) for root, _source in roots) or (
+        "(no skills directory found)"
+    )
     raise SkillNotFoundError(
         f"skill {name!r} not found; looked in {looked} "
         f"(set ${SKILLS_DIR_ENV} to point at another skills root)"
     )
+
+
+def resolve_skill(name: str) -> Path:
+    """The directory of the first ``<name>/SKILL.md`` copy, or raise."""
+    return resolve_skill_source(name)[0]
+
+
+def read_skill_frontmatter(path: Path) -> str | None:
+    """The YAML frontmatter of a skill file, or ``None`` when it has none.
+
+    ``path`` may be the ``SKILL.md`` itself or the skill directory that holds
+    it.  An unreadable file reads as "no frontmatter" rather than raising, so
+    the caller can tell a missing/broken file from a versionless skill.
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / SKILL_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter = _FRONTMATTER_RE.match(text)
+    return frontmatter.group(1) if frontmatter else None
 
 
 def read_skill_version(path: Path) -> str | None:
@@ -117,17 +162,10 @@ def read_skill_version(path: Path) -> str | None:
     does), and that is not the skill's version.  An unreadable file reads as
     "no version" rather than raising, so a stale copy is reported, not crashed.
     """
-    path = Path(path)
-    if path.is_dir():
-        path = path / SKILL_FILENAME
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    frontmatter = _FRONTMATTER_RE.match(text)
+    frontmatter = read_skill_frontmatter(path)
     if frontmatter is None:
         return None
-    match = VERSION_RE.search(frontmatter.group(1))
+    match = VERSION_RE.search(frontmatter)
     return match.group(1) if match else None
 
 
@@ -165,7 +203,7 @@ def _version_key(text: str) -> tuple[int, ...] | None:
     """``"0.8.25"`` -> ``(0, 8, 25)``; ``None`` for anything else.
 
     Trailing zero components are dropped so ``0.9`` and ``0.9.0`` compare
-    equal.  Pre-release suffixes (``0.8.25rc1``) are not modelled: the CLI
+    equal.  Pre-release suffixes (``0.8.26rc1``) are not modelled: the CLI
     prints plain dotted versions, and an unrecognised string must not be
     silently ordered.
     """
