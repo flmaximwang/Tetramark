@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from tetramark.core.ledger import open as open_ledger
+from tetramark.core.objects import _CORE_EDITABLE, _CORE_ON_ADD
 from tetramark.errors import LedgerError, UsageError
 from tetramark.ops.lineage import lineage
 
@@ -22,6 +23,7 @@ from conftest import FACTORY_AUTHOR, PRESETS, REPO_PRESETS
 
 FULL = PRESETS / "full"
 BASE = PRESETS / "base"
+BOXFIELDS = PRESETS / "boxfields"
 MOUSE = REPO_PRESETS / "mouse.yaml"
 
 
@@ -50,6 +52,11 @@ def make_full_ledger(ledger_factory, name: str = "full"):
 
 def new_item(ledger, name: str = "alpha", **kwargs):
     return ledger.entities.add("item", name=name, **kwargs)
+
+
+def make_boxfields_ledger(ledger_factory, name: str = "boxfields"):
+    """A ledger whose only kind is the ``boxfields`` slotless box kind."""
+    return ledger_factory([BOXFIELDS], name=name, id_prefix="77")
 
 
 def new_box(ledger, name: str = "BOX", kind: str = "grid96", **kwargs):
@@ -171,7 +178,7 @@ def test_entity_add_show_edit_ls_is_one_commit_each(ledger_factory) -> None:
     assert [row["id"] for row in matching] == [created["id"]]
     assert ledger.entities.ls("item", where={"category": "missing"}) == []
 
-    ledger.entities.edit(created["id"], values={"name": "beta"})
+    ledger.entities.rename(created["id"], "beta")
     shown = ledger.entities.show(created["id"])
     assert shown["name"] == "beta"
     assert ledger.entities.ls("item", where={"name": "beta"})[0]["id"] == created["id"]
@@ -2369,6 +2376,357 @@ def test_box_move_updates_parent_and_path(ledger_factory) -> None:
         ledger.boxes.move("SHELF", parent="GRID", slot="A1")
     with pytest.raises(LedgerError, match="unknown box"):
         ledger.boxes.move("NOPE", parent="TUBES", slot="top")
+
+
+# ---------------------------------------------------------------------------
+# Edit: allowlist split, rename-only names, clear-empty (Tetramark-p1j)
+# ---------------------------------------------------------------------------
+
+
+def _stock_name_preset(tmp_path):
+    """A preset whose stock kind declares a field literally named ``name``.
+
+    The rename-only guard covers entity and box names; a stock has no core
+    name, so a stock kind may keep such a field and edit it like any other.
+    """
+    path = tmp_path / "stock_name.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "preset": "stock_name",
+                "version": 1,
+                "mixins": {
+                    "named_fields": {
+                        "name": {"type": "string", "required": True, "unique": True}
+                    }
+                },
+                "kinds": {
+                    "item": {"object": "entity", "mixins": ["named_fields"]},
+                    "named_lot": {
+                        "object": "stock",
+                        "entity_kinds": ["item"],
+                        "mixins": ["named_fields"],
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_core_allowlists_split_add_from_edit() -> None:
+    """AC7: add/import may fill ``name``; edit is notes-only for every object."""
+    assert _CORE_ON_ADD == {
+        "entity": frozenset({"name", "notes"}),
+        "stock": frozenset({"notes"}),
+        "box": frozenset({"name", "notes"}),
+    }
+    assert _CORE_EDITABLE == {
+        "entity": frozenset({"notes"}),
+        "stock": frozenset({"notes"}),
+        "box": frozenset({"notes"}),
+    }
+    for allowlist in _CORE_EDITABLE.values():
+        assert "name" not in allowlist
+
+
+def test_box_edit_sets_and_clears_notes_and_kind_fields(ledger_factory) -> None:
+    """AC1/AC2: ``box edit`` loads the record; values are coerced like add."""
+    ledger = make_boxfields_ledger(ledger_factory, name="box-edit")
+    box = ledger.boxes.add("fieldbox", "BOX-1")
+    assert box["slots"] == 0
+
+    before = commit_count(ledger)
+    edited = ledger.boxes.edit(
+        "BOX-1", values={"notes": "first", "code": "abc", "count": "7"}
+    )
+    assert commit_count(ledger) == before + 1
+    assert dirty(ledger) == []
+    assert edited["object"] == "box"
+    assert set(edited) == {
+        "id",
+        "kind",
+        "name",
+        "parent_box_id",
+        "parent_slot",
+        "created_at",
+        "notes",
+        "code",
+        "count",
+        "label",
+        "object",
+    }
+    assert edited["id"] == box["id"]
+    assert edited["kind"] == "fieldbox"
+    assert edited["name"] == "BOX-1"
+    assert edited["notes"] == "first"
+    assert edited["code"] == "abc"
+    assert edited["count"] == 7
+    # The required field with a default is filled by the database at add time.
+    assert edited["label"] == "unnamed"
+    message = ledger.driver.query("SELECT message FROM dolt_log LIMIT 1")[0]["message"]
+    assert message.startswith("edit(box): ")
+    assert message == f"edit(box): fieldbox {box['id']}"
+
+    before = commit_count(ledger)
+    cleared = ledger.boxes.edit(
+        "BOX-1", values={"notes": "", "code": "", "count": ""}
+    )
+    assert commit_count(ledger) == before + 1
+    assert cleared["notes"] is None
+    assert cleared["code"] is None
+    assert cleared["count"] is None
+    assert ledger.driver.query(
+        "SELECT `notes` FROM `box` WHERE `id` = %s", (box["id"],)
+    ) == [{"notes": None}]
+    assert ledger.driver.query(
+        "SELECT `code`, `count`, `label` FROM `box_fieldbox` WHERE `id` = %s",
+        (box["id"],),
+    ) == [{"code": None, "count": None, "label": "unnamed"}]
+
+
+def test_box_edit_coerces_like_add_and_failures_write_nothing(ledger_factory) -> None:
+    """AC2: invalid values are usage errors and leave the row untouched."""
+    ledger = make_boxfields_ledger(ledger_factory, name="box-coerce")
+    box = ledger.boxes.add("fieldbox", "BOX-1")
+    before = commit_count(ledger)
+
+    cases = [
+        ({"code": "ABC"}, "pattern"),
+        ({"code": "a" * 33}, "32"),
+        ({"count": "x"}, "integer"),
+        # Whitespace-only is not empty: it still goes through coercion.
+        ({"code": "   "}, "pattern"),
+        ({"label": ""}, "field 'label' is required and cannot be cleared"),
+    ]
+    for values, message in cases:
+        with pytest.raises(UsageError, match=message):
+            ledger.boxes.edit("BOX-1", values=values)
+
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+    assert ledger.driver.query(
+        "SELECT `code`, `count`, `label` FROM `box_fieldbox` WHERE `id` = %s",
+        (box["id"],),
+    ) == [{"code": None, "count": None, "label": "unnamed"}]
+
+    coerced = ledger.boxes.edit("BOX-1", values={"code": "abc", "count": " 7 "})
+    assert coerced["code"] == "abc"
+    assert coerced["count"] == 7
+    assert isinstance(coerced["count"], int)
+
+
+def test_edit_refusals_fire_before_resolution(ledger_factory) -> None:
+    """AC3: names and structural fields are refused on the raw ``--set`` keys."""
+    ledger = make_ledger(ledger_factory, name="edit-guards")
+    item = new_item(ledger)
+    stock = ledger.stocks.add("lot", entity=item["id"])
+    new_box(ledger, "BOX", "grid96")
+    before = commit_count(ledger)
+
+    # ``item`` declares its own ``name`` field; the guard still fires.
+    with pytest.raises(UsageError) as name_error:
+        ledger.entities.edit(item["id"], values={"name": "beta"})
+    assert str(name_error.value) == (
+        f"name is rename-only; use tm entity rename {item['id']} NEW_NAME"
+    )
+    # ...and on an unresolvable ref, naming the raw ref as typed.
+    with pytest.raises(UsageError) as missing_name:
+        ledger.boxes.edit("NOT-A-BOX", values={"name": "X"})
+    assert str(missing_name.value) == (
+        "name is rename-only; use tm box rename NOT-A-BOX NEW_NAME"
+    )
+    with pytest.raises(UsageError) as parent:
+        ledger.boxes.edit("BOX", values={"parent_box_id": "SHELF"})
+    assert str(parent.value) == (
+        "parent_box_id is structural; move a box with tm box move BOX "
+        "--in PARENT [--slot S]"
+    )
+    with pytest.raises(UsageError) as slot:
+        ledger.boxes.edit("BOX", values={"parent_slot": "top"})
+    assert str(slot.value) == (
+        "parent_slot is structural; move a box with tm box move BOX "
+        "--in PARENT [--slot S]"
+    )
+    for edit, ref in (
+        (ledger.entities.edit, item["id"]),
+        (ledger.stocks.edit, stock["id"]),
+        (ledger.boxes.edit, "BOX"),
+    ):
+        for field in ("id", "kind", "created_at"):
+            with pytest.raises(UsageError) as structural:
+                edit(ref, values={field: "x"})
+            assert str(structural.value) == (
+                f"{field} is structural and cannot be edited"
+            )
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_box_edit_unknown_field_lists_kind_fields_and_notes_only(
+    ledger_factory,
+) -> None:
+    """AC4: the valid list is kind fields plus ``notes`` -- never core ``name``."""
+    ledger = make_boxfields_ledger(ledger_factory, name="box-unknown")
+    ledger.boxes.add("fieldbox", "BOX-1")
+    before = commit_count(ledger)
+    with pytest.raises(UsageError) as unknown:
+        ledger.boxes.edit("BOX-1", values={"nope": "1"})
+    assert str(unknown.value) == (
+        "unknown field(s) 'nope' for box kind 'fieldbox'; "
+        "valid fields: code, count, label, notes"
+    )
+
+    plain = make_ledger(ledger_factory, name="box-unknown-plain")
+    new_box(plain, "BOX", "grid96")
+    with pytest.raises(UsageError) as unknown_plain:
+        plain.boxes.edit("BOX", values={"nope": "1"})
+    assert str(unknown_plain.value) == (
+        "unknown field(s) 'nope' for box kind 'grid96'; valid fields: notes"
+    )
+    assert commit_count(ledger) == before
+
+
+def test_edit_empty_value_clears_optional_fields_of_any_type(ledger_factory) -> None:
+    """AC5: an exactly empty value clears to NULL; required/computed are refused."""
+    ledger = make_full_ledger(ledger_factory, name="clear-empty")
+    parent = ledger.entities.add("everything", name="parent", values={"code": "AAA"})
+    entity = ledger.entities.add(
+        "everything",
+        name="alpha",
+        values={
+            "code": "BBB",
+            "blurb": "some text",
+            "count": "3",
+            "born": "2024-01-31",
+            "seen_at": "2024-01-01 12:34:56",
+            "color": "green",
+            "parent": parent["id"],
+            "notes": "keep?",
+        },
+    )
+    before = commit_count(ledger)
+    cleared = ledger.entities.edit(
+        entity["id"],
+        values={
+            "code": "",
+            "blurb": "",
+            "count": "",
+            "born": "",
+            "seen_at": "",
+            "color": "",
+            "parent": "",
+            "notes": "",
+        },
+    )
+    assert commit_count(ledger) == before + 1
+    assert dirty(ledger) == []
+    shown = ledger.entities.show(entity["id"])
+    for field in (
+        "code",
+        "blurb",
+        "count",
+        "born",
+        "seen_at",
+        "color",
+        "parent",
+        "notes",
+    ):
+        assert cleared[field] is None, field
+        assert shown[field] is None, field
+
+    # A computed field keeps its own error; a required field is refused.
+    item = new_item(ledger)
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="computed and cannot be set"):
+        ledger.entities.edit(entity["id"], values={"display": ""})
+    bacterial = ledger.stocks.add(
+        "bacterial", entity=item["id"], values={"strain": "DH5a"}
+    )
+    with pytest.raises(UsageError) as required:
+        ledger.stocks.edit(bacterial["id"], values={"strain": ""})
+    assert str(required.value) == "field 'strain' is required and cannot be cleared"
+    assert commit_count(ledger) == before + 1  # only the bacterial add committed
+    assert dirty(ledger) == []
+
+    # Whitespace-only is not empty: it is coerced as before, not cleared.
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="integer"):
+        ledger.entities.edit(entity["id"], values={"count": "   "})
+    kept = ledger.entities.edit(entity["id"], values={"blurb": "   "})
+    assert kept["blurb"] == "   "
+    assert commit_count(ledger) == before + 1
+
+
+def test_stock_edit_clears_values_and_a_kind_name_field_is_not_guarded(
+    tmp_path, ledger_factory
+) -> None:
+    """AC6: stock edit keeps working, clears values, and may edit a ``name`` field."""
+    ledger = make_ledger(ledger_factory, name="stock-edit")
+    item = new_item(ledger)
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        values={"supplier": "acme", "received_on": "2024-01-02", "notes": "first"},
+    )
+    before = commit_count(ledger)
+    edited = ledger.stocks.edit(
+        stock["id"], values={"supplier": "", "received_on": "", "notes": ""}
+    )
+    assert commit_count(ledger) == before + 1
+    assert edited["supplier"] is None
+    assert edited["received_on"] is None
+    assert edited["notes"] is None
+
+    named = ledger_factory(
+        [_stock_name_preset(tmp_path)], name="stock-name", real_init=True
+    )
+    named_item = named.entities.add("item", name="alpha")
+    named_stock = named.stocks.add(
+        "named_lot", entity=named_item["id"], values={"name": "first"}
+    )
+    before = commit_count(named)
+    renamed_field = named.stocks.edit(named_stock["id"], values={"name": "second"})
+    assert commit_count(named) == before + 1
+    assert renamed_field["name"] == "second"
+
+
+def test_edit_dry_run_reports_new_values_and_writes_nothing(ledger_factory) -> None:
+    """AC9: a dry-run edit buffers the UPDATE and still reports the new record."""
+    ledger = make_boxfields_ledger(ledger_factory, name="edit-dry")
+    box = ledger.boxes.add("fieldbox", "BOX-1")
+    before = commit_count(ledger)
+
+    ledger.dry_run = True
+    try:
+        planned = ledger.boxes.edit(
+            "BOX-1", values={"notes": "planned", "code": "abc", "count": "7"}
+        )
+        assert planned["notes"] == "planned"
+        assert planned["code"] == "abc"
+        assert planned["count"] == 7
+        assert commit_count(ledger) == before
+        assert dirty(ledger) == []
+        assert ledger.last_write is not None
+        assert "UPDATE `box`" in ledger.last_write.sql
+    finally:
+        ledger.dry_run = False
+
+    assert ledger.driver.query(
+        "SELECT `notes` FROM `box` WHERE `id` = %s", (box["id"],)
+    ) == [{"notes": None}]
+    assert ledger.driver.query(
+        "SELECT `code`, `count` FROM `box_fieldbox` WHERE `id` = %s", (box["id"],)
+    ) == [{"code": None, "count": None}]
+
+    applied = ledger.boxes.edit(
+        "BOX-1", values={"notes": "planned", "code": "abc", "count": "7"}
+    )
+    assert commit_count(ledger) == before + 1
+    assert applied["notes"] == "planned"
+    assert applied["code"] == "abc"
 
 
 # ---------------------------------------------------------------------------

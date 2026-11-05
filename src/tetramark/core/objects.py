@@ -50,6 +50,7 @@ from tetramark.core.filters import (
     build_conditions,
     check_fields,
     coerce_value,
+    empty_condition,
     filter_fields,
     parse_filters,
     regex_usage_error,
@@ -95,6 +96,7 @@ __all__ = [
     "add_stock",
     "box_kind_columns",
     "box_kind_from",
+    "edit_box",
     "edit_entity",
     "edit_stock",
     "list_aliquots",
@@ -122,14 +124,29 @@ __all__ = [
 #: Core object types aliases can point at.
 OBJECT_TYPES: tuple[str, ...] = ("entity", "stock", "aliquot", "box")
 
-#: Core columns a ``--set`` may address on each object (everything else is a
-#: kind field).  ``id``/``kind`` are deliberately absent: they are identity, not
-#: editable data.
-_CORE_EDITABLE: dict[str, frozenset[str]] = {
+#: Core columns a create may fill on each object (add, import).  ``id``/
+#: ``kind`` are deliberately absent: they are identity, not data.
+_CORE_ON_ADD: dict[str, frozenset[str]] = {
     "entity": frozenset({"name", "notes"}),
     "stock": frozenset({"notes"}),
     "box": frozenset({"name", "notes"}),
 }
+
+#: Core columns an ``edit`` may address on each object (everything else is a
+#: kind field).  ``name`` is deliberately absent: a name changes only through
+#: ``tm <object> rename``, which keeps the old name as an alias (and rebuilds
+#: a box's view) -- an ``UPDATE`` of the column cannot do that.
+_CORE_EDITABLE: dict[str, frozenset[str]] = {
+    "entity": frozenset({"notes"}),
+    "stock": frozenset({"notes"}),
+    "box": frozenset({"notes"}),
+}
+
+#: Fields every ``edit`` refuses: identity and creation data, not data.
+_STRUCTURAL_FIELDS: tuple[str, ...] = ("id", "kind", "created_at")
+
+#: Box fields that are placement, not data: ``tm box move`` owns them.
+_BOX_STRUCTURAL_FIELDS: tuple[str, ...] = ("parent_box_id", "parent_slot")
 
 #: Core columns available to ``--where`` in addition to the kind fields.
 _CORE_FILTERS: dict[str, frozenset[str]] = {
@@ -598,9 +615,23 @@ def _split_values(
     kind_name: str,
     object_type: str,
     raw: dict[str, str],
+    *,
+    core_allowed: frozenset[str],
+    clear_empty: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Split ``--set`` keys into core columns and kind-table fields."""
-    valid = set(kind.fields) | set(_CORE_EDITABLE[object_type])
+    """Split ``--set`` keys into core columns and kind-table fields.
+
+    ``core_allowed`` is the object's core-column allowlist, passed explicitly
+    by every caller: a create passes :data:`_CORE_ON_ADD` (which includes
+    ``name``) and an ``edit`` passes :data:`_CORE_EDITABLE` (``notes`` only).
+
+    ``clear_empty`` is the edit rule: a value that is exactly ``""`` clears the
+    column to NULL instead of being coerced.  A required field cannot be
+    cleared and a computed field keeps its own error; whitespace-only is not
+    empty and is coerced as before.  A create never clears: an empty text stays
+    a value (or a coercion error), as before.
+    """
+    valid = set(kind.fields) | set(core_allowed)
     unknown = sorted(set(raw) - valid)
     if unknown:
         choices = ", ".join(sorted(valid)) or "(none)"
@@ -612,13 +643,48 @@ def _split_values(
     core: dict[str, Any] = {}
     fields: dict[str, Any] = {}
     for name, value in raw.items():
-        if name in kind.fields:
-            fields[name] = _coerce_field(
-                kind.fields[name], value, ledger=ledger, session=session, label=name
-            )
-        else:
-            core[name] = value
+        schema_field = kind.fields.get(name)
+        if schema_field is None:
+            core[name] = None if clear_empty and value == "" else value
+            continue
+        if (
+            clear_empty
+            and value == ""
+            and schema_field.type is not FieldType.computed
+        ):
+            if schema_field.required:
+                raise UsageError(f"field {name!r} is required and cannot be cleared")
+            fields[name] = None
+            continue
+        fields[name] = _coerce_field(
+            schema_field, value, ledger=ledger, session=session, label=name
+        )
     return core, fields
+
+
+def _edit_guard(object_type: str, ref: str, raw: Mapping[str, str]) -> None:
+    """Refuse names and structural fields before anything is coerced.
+
+    ``name`` is rename-only: ``rename`` keeps the old name as an alias (and
+    rebuilds a box's view), which a silent ``UPDATE`` of the column cannot do.
+    The guard looks at the raw ``--set`` keys, so it fires even when the kind
+    declares its own ``name`` field.  Structural fields are identity,
+    placement or creation data: only ``tm box move`` and ``rename`` move them.
+    """
+    if object_type in ("entity", "box") and "name" in raw:
+        raise UsageError(
+            f"name is rename-only; use tm {object_type} rename {ref} NEW_NAME"
+        )
+    if object_type == "box":
+        for field in _BOX_STRUCTURAL_FIELDS:
+            if field in raw:
+                raise UsageError(
+                    f"{field} is structural; move a box with tm box move {ref} "
+                    "--in PARENT [--slot S]"
+                )
+    for field in _STRUCTURAL_FIELDS:
+        if field in raw:
+            raise UsageError(f"{field} is structural and cannot be edited")
 
 
 def _require_fields(kind: Kind, kind_name: str, fields: Mapping[str, Any]) -> None:
@@ -632,6 +698,23 @@ def _require_fields(kind: Kind, kind_name: str, fields: Mapping[str, Any]) -> No
             f"missing required field(s) for kind {kind_name!r}: "
             + ", ".join(sorted(missing))
         )
+
+
+def _kind_result_fields(kind: Kind, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The kind-table values a create reports: given fields plus schema defaults.
+
+    A field whose schema declares a default is absent from ``fields`` at insert
+    time (the database fills it), so a create reports that default explicitly:
+    ``tm box add fieldbox F1 --json`` says ``{"label": "unnamed"}``.  A
+    computed field is derived, never set, so it is not reported.
+    """
+    values = dict(fields)
+    for name, schema_field in kind.fields.items():
+        if name in values or schema_field.type is FieldType.computed:
+            continue
+        if schema_field.has_default:
+            values[name] = schema_field.default
+    return values
 
 
 def _mirror_name(kind: Kind, core: dict[str, Any], fields: dict[str, Any]) -> None:
@@ -1552,6 +1635,9 @@ def _list_records(
             coerce=lambda field, raw: coerce_value(
                 kind, field, raw, ledger=ledger, session=ledger.driver
             ),
+            empty=lambda field, expression: empty_condition(
+                kind, field, expression
+            ),
         )
         if column_sql is not None:
             select_items = [
@@ -1629,7 +1715,13 @@ def add_entity(
                 )
             raw["name"] = name
         core, fields = _split_values(
-            session, ledger, kind, kind_name, "entity", raw
+            session,
+            ledger,
+            kind,
+            kind_name,
+            "entity",
+            raw,
+            core_allowed=_CORE_ON_ADD["entity"],
         )
         _mirror_name(kind, core, fields)
         _require_fields(kind, kind_name, fields)
@@ -1650,41 +1742,75 @@ def add_entity(
     }
 
 
+def _edit_object(
+    ledger: Ledger,
+    object_type: str,
+    ref: str,
+    *,
+    values: Iterable[str] | Mapping[str, Any] | None = (),
+) -> dict[str, Any]:
+    """Update ``notes`` or kind fields of one entity, stock or box.
+
+    One write session, so one Dolt commit per edit; a ``--dry-run`` buffers the
+    ``UPDATE`` and still reports the new values (the record is loaded and the
+    new values are overlaid on it).  Names are rename-only, so ``_mirror_name``
+    is not called here: the create paths and ``rename_*`` are the only writers
+    of a name.
+    """
+    raw = _parse_pairs(values)
+    if not raw:
+        raise UsageError("nothing to edit: pass at least one --set field=value")
+    _edit_guard(object_type, ref, raw)
+    if object_type == "box":
+        # A box resolves by its human name first, then id or alias.
+        existing = _resolve_box(ledger.driver, ref)
+    else:
+        existing = _resolve_core(ledger.driver, object_type, ref)
+    object_id = str(existing["id"])
+    kind_name = str(existing["kind"])
+    kind = ledger.schema.kind(kind_name)
+
+    with ledger.write(
+        f"{kind_name} {object_id}", verb="edit", object=object_type
+    ) as session:
+        core, fields = _split_values(
+            session,
+            ledger,
+            kind,
+            kind_name,
+            object_type,
+            raw,
+            core_allowed=_CORE_EDITABLE[object_type],
+            clear_empty=True,
+        )
+        if core:
+            _update(session, object_type, {"id": object_id}, core)
+        if fields:
+            _update(
+                session,
+                table_name(object_type, kind_name),
+                {"id": object_id},
+                fields,
+            )
+        record = _load_record(session, ledger, object_type, object_id)
+    # A dry run buffers the UPDATE without executing it; report the new values.
+    record.update(core)
+    record.update(fields)
+    return record
+
+
 def edit_entity(
     ledger: Ledger,
     ref: str,
     *,
     values: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> dict[str, Any]:
-    """Update core (``name``/``notes``) or kind fields of one entity."""
-    raw = _parse_pairs(values)
-    if not raw:
-        raise UsageError("nothing to edit: pass at least one --set field=value")
-    existing = _resolve_core(ledger.driver, "entity", ref)
-    kind_name = str(existing["kind"])
-    kind = ledger.schema.kind(kind_name)
+    """Update ``notes`` or kind fields of one entity.
 
-    with ledger.write(
-        f"{kind_name} {existing['id']}", verb="edit", object="entity"
-    ) as session:
-        core, fields = _split_values(
-            session, ledger, kind, kind_name, "entity", raw
-        )
-        _mirror_name(kind, core, fields)
-        if core:
-            _update(session, "entity", {"id": existing["id"]}, core)
-        if fields:
-            _update(
-                session,
-                table_name("entity", kind_name),
-                {"id": existing["id"]},
-                fields,
-            )
-        record = _load_record(session, ledger, "entity", str(existing["id"]))
-    # A dry run buffers the UPDATE without executing it; report the new values.
-    record.update(core)
-    record.update(fields)
-    return record
+    A name is rename-only: use :func:`rename_entity`, which keeps the old
+    name as an alias.
+    """
+    return _edit_object(ledger, "entity", ref, values=values)
 
 
 def _rename_summary(object_id: str, old_name: Any, new_name: str) -> str:
@@ -1733,10 +1859,10 @@ def _clean_new_name(new_name: str) -> str:
 def rename_entity(ledger: Ledger, ref: str, new_name: str) -> dict[str, Any]:
     """Give an entity a new name and keep the old name as an alias.
 
-    ``entity.name`` and a kind's own ``name`` field change together (as
-    ``edit --set name=...`` does); the previous name becomes an alias of the
-    entity in the same commit, so ``find``/``show`` and every ``--entity REF``
-    still resolve it.
+    ``entity.name`` and a kind's own ``name`` field change together (a
+    rename is the only way a name changes); the previous name becomes an alias
+    of the entity in the same commit, so ``find``/``show`` and every
+    ``--entity REF`` still resolve it.
     """
     name = _clean_new_name(new_name)
     existing = _resolve_core(ledger.driver, "entity", ref)
@@ -1751,7 +1877,13 @@ def rename_entity(ledger: Ledger, ref: str, new_name: str) -> dict[str, Any]:
         _rename_summary(entity_id, old_name, name), verb="rename", object="entity"
     ) as session:
         core, fields = _split_values(
-            session, ledger, kind, kind_name, "entity", {"name": name}
+            session,
+            ledger,
+            kind,
+            kind_name,
+            "entity",
+            {"name": name},
+            core_allowed=_CORE_ON_ADD["entity"],
         )
         _mirror_name(kind, core, fields)
         if core:
@@ -1938,7 +2070,13 @@ def add_stock(
         )
         raw = _parse_pairs(values)
         core, fields = _split_values(
-            session, ledger, kind, kind_name, "stock", raw
+            session,
+            ledger,
+            kind,
+            kind_name,
+            "stock",
+            raw,
+            core_allowed=_CORE_ON_ADD["stock"],
         )
         _require_fields(kind, kind_name, fields)
 
@@ -2013,32 +2151,12 @@ def edit_stock(
     *,
     values: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> dict[str, Any]:
-    raw = _parse_pairs(values)
-    if not raw:
-        raise UsageError("nothing to edit: pass at least one --set field=value")
-    existing = _resolve_core(ledger.driver, "stock", ref)
-    kind_name = str(existing["kind"])
-    kind = ledger.schema.kind(kind_name)
+    """Update ``notes`` or kind fields of one stock.
 
-    with ledger.write(
-        f"{kind_name} {existing['id']}", verb="edit", object="stock"
-    ) as session:
-        core, fields = _split_values(
-            session, ledger, kind, kind_name, "stock", raw
-        )
-        if core:
-            _update(session, "stock", {"id": existing["id"]}, core)
-        if fields:
-            _update(
-                session,
-                table_name("stock", kind_name),
-                {"id": existing["id"]},
-                fields,
-            )
-        record = _load_record(session, ledger, "stock", str(existing["id"]))
-    record.update(core)
-    record.update(fields)
-    return record
+    A stock has no name of its own, so the rename-only guard does not apply
+    to it: a stock kind may even declare a field called ``name``.
+    """
+    return _edit_object(ledger, "stock", ref, values=values)
 
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
@@ -3469,6 +3587,12 @@ def list_aliquots(
     if any(not status for status in normalised):
         raise UsageError("a --status value must not be empty")
 
+    if isinstance(where, Mapping):
+        # A missing value means "empty" here too.  ``_parse_pairs`` would
+        # otherwise spell ``None`` as the literal text "None" and match it.
+        where = {
+            field: "" if value is None else value for field, value in where.items()
+        }
     filters = _parse_pairs(where, option="--where")
     if "status" in filters:
         raise UsageError(
@@ -3542,8 +3666,20 @@ def list_aliquots(
         status_slots = ", ".join(["%s"] * len(normalised))
         conditions.append(f"a.{_quote('status')} IN ({status_slots})")
         params.extend(normalised)
+    # An empty value means "this field is empty" and carries no parameter.
+    # ``seq``/``quantity``/``created_at`` are non-text columns, where the empty
+    # string is not a stored value, so only NULL matches; the text columns can
+    # hold both NULL and ``''``.
+    null_only = frozenset({"seq", "quantity", "created_at"})
     for field, value in filters.items():
-        conditions.append(f"a.{_quote(field)} = %s")
+        column = f"a.{_quote(field)}"
+        if value == "":
+            if field in null_only:
+                conditions.append(f"{column} IS NULL")
+            else:
+                conditions.append(f"({column} IS NULL OR {column} = '')")
+            continue
+        conditions.append(f"{column} = %s")
         params.append(value)
     if scope is not None:
         scope_sql, scope_params = _in_stock_scope_sql(ledger)
@@ -3646,11 +3782,18 @@ def add_box(
     kind_name: str,
     name: str,
     *,
+    values: Iterable[str] | Mapping[str, Any] | None = (),
     parent: str | None = None,
     slot: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    """Create a box, its ``slot`` rows and its generated view in one commit."""
+    """Create a box, its ``slot`` rows, its kind row and its view in one commit.
+
+    ``values`` fills the box kind's fields exactly as ``tm box edit`` coerces
+    them.  The name stays the NAME argument (``--set name=`` is refused), a
+    placement changes only through :func:`move_box`, and ``notes`` may come
+    from ``--notes`` or ``--set notes=`` but not both.
+    """
     kind = _kind_for(ledger, "box", kind_name)
     box_name = str(name).strip()
     if not box_name:
@@ -3661,6 +3804,35 @@ def add_box(
     geometry = _box_geometry(kind)
 
     with ledger.write(f"{kind_name} {box_id}", verb="add", object="box") as session:
+        raw = _parse_pairs(values)
+        if "name" in raw:
+            raise UsageError("give the box name as the NAME argument")
+        for field in _BOX_STRUCTURAL_FIELDS:
+            if field in raw:
+                raise UsageError(
+                    f"{field} is structural; place a new box with "
+                    "--in PARENT [--slot S]"
+                )
+        for field in _STRUCTURAL_FIELDS:
+            if field in raw:
+                raise UsageError(f"{field} is structural and cannot be set")
+        if "notes" in raw and notes is not None:
+            raise UsageError(
+                "the box notes were given twice (--notes and --set notes=...)"
+            )
+        core, fields = _split_values(
+            session,
+            ledger,
+            kind,
+            kind_name,
+            "box",
+            raw,
+            core_allowed=_CORE_ON_ADD["box"],
+        )
+        _require_fields(kind, kind_name, fields)
+        if notes is not None:
+            core["notes"] = notes
+
         _check_box_name(session, box_name)
         duplicate = session.query(
             f"SELECT {_quote('id')} FROM {_quote('box')} WHERE {_quote('name')} = %s",
@@ -3681,10 +3853,9 @@ def add_box(
             "parent_box_id": parent_row["id"] if parent_row is not None else None,
             "parent_slot": parent_slot,
         }
-        if notes is not None:
-            payload["notes"] = notes
+        payload.update(core)
         _insert(session, "box", payload)
-        _insert(session, table_name("box", kind_name), {"id": box_id})
+        _insert(session, table_name("box", kind_name), {"id": box_id, **fields})
         rows = slot_rows(box_id, geometry)
         for row in rows:
             _insert(session, "slot", row)
@@ -3703,7 +3874,24 @@ def add_box(
         "parent_box_id": parent_row["id"] if parent_row is not None else None,
         "parent_slot": parent_slot,
         "slots": len(rows),
+        "fields": _kind_result_fields(kind, fields),
     }
+
+
+def edit_box(
+    ledger: Ledger,
+    ref: str,
+    *,
+    values: Iterable[str] | Mapping[str, Any] | None = (),
+) -> dict[str, Any]:
+    """Update ``notes`` or a kind field of one box.
+
+    A box is addressed by its human name, its id or an alias.  Editable are
+    ``notes`` and every field the box's kind declares, coerced exactly as at
+    add time; a name is rename-only (:func:`rename_box`), and the placement
+    fields belong to :func:`move_box`.
+    """
+    return _edit_object(ledger, "box", ref, values=values)
 
 
 def move_box(
@@ -4624,13 +4812,25 @@ class BoxOps:
         kind: str,
         name: str,
         *,
+        values: Iterable[str] | Mapping[str, Any] | None = (),
         parent: str | None = None,
         slot: str | None = None,
         notes: str | None = None,
     ) -> dict[str, Any]:
         return add_box(
-            self.ledger, kind, name, parent=parent, slot=slot, notes=notes
+            self.ledger,
+            kind,
+            name,
+            values=values,
+            parent=parent,
+            slot=slot,
+            notes=notes,
         )
+
+    def edit(
+        self, ref: str, *, values: Iterable[str] | Mapping[str, Any] | None = ()
+    ) -> dict[str, Any]:
+        return edit_box(self.ledger, ref, values=values)
 
     def move(self, ref: str, *, parent: str, slot: str | None = None) -> dict[str, Any]:
         return move_box(self.ledger, ref, parent=parent, slot=slot)

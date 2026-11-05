@@ -45,6 +45,8 @@ tm adopt PATH --preset molbio [--name N] [--id-prefix 12] \
 tm status [--json]
 tm presets list
 tm presets show NAME|PATH
+tm skill path [NAME] [--json]
+tm skill version [NAME] [--file PATH] [--json]
 ```
 
 - `init PATH` creates the ledger **directory** at PATH (relative to the cwd or absolute): `.dolt/`,
@@ -68,6 +70,16 @@ tm presets show NAME|PATH
   It never lists sibling ledgers; `--format csv` is a usage error. See spec §6.1.
 - `presets list` lists the source a bare name resolves from; `presets show NAME|PATH` prints one
   include-resolved preset as YAML.
+- `skill path [NAME]` prints where the copy of the skill (`tetramark` or `tetramark-schema`, default
+  `tetramark`) lives: `$TETRAMARK_SKILLS_DIR` first, then the checkout's `skills/`, then installed
+  package data. `--json` prints `name`, `path` and `source` (`env`/`checkout`/`package`). It never
+  opens a ledger, so it works outside a ledger directory.
+- `skill version [NAME]` compares the copy's frontmatter `version:` with `tm --version` and prints
+  `skill <v> (<SKILL.md>); tm <v>; match|mismatch`; `--json` prints `name`, `skill_version`,
+  `skill_path`, `tm_version` and `match`. `--file PATH` checks another copy instead (a `SKILL.md` or
+  its directory): a stale 0.4-era copy warns `describes an older CLI` on stderr and still exits 0,
+  and a copy without a version warns that it predates versioned skills. Only a missing file or a file
+  without YAML frontmatter exits 1. See spec §6.5 and §10.
 - A new ledger is **spec 6**: the shipped presets declare no status vocabulary, and `tm init` starts
   its tubes `stored` (or whatever the creation `--status` says). An older ledger still opens with its
   own stored preset copies — spec 5's per-kind status sets keep working — and `tm` warns
@@ -142,11 +154,18 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 - `=` applies the field's schema coercion on a kind field (`enum` checked, `ref` resolves an id or
   alias, numbers/dates parsed); a core column is compared as written, so `entity_id` takes the stored
   id, not an alias.
+- `field=` (an empty value) finds the rows where the field is empty: `NULL` or `''` on a text-like
+  column (kind `string`/`text`/`enum`/`sequence`/`ref`, and every core column except `created_at`),
+  `NULL` only on a non-text one (kind `int`/`decimal`/`bool`/`date`/`datetime`, core `created_at`;
+  a stored `0` never matches).
+  It skips the schema coercion and alias resolution above, so an empty `ref`/`enum`/`int` is not
+  resolved or parsed; `none`/`null` stay literal and whitespace-only values are not special. There is
+  no "not empty" operator: use `field~.`.
 - `~` matches the column's **text form** with a regex: a *search* (unanchored; anchor with `^`/`$`),
   **case-sensitive** (`(?i)` ignores case), compiled by Dolt in its ICU dialect (`\d`, `\p{L}`,
   lookarounds; not Python `re`). An `int`/`date`/`datetime`/`created_at` column matches its printed
   value (`length_bp~^15`, `created_at~^2026-11-04`); a `ref` matches the stored id, never an alias;
-  `NULL` never matches.
+  `NULL` never matches a `~` pattern (not even `field~^$`); use `field=` to find empty values.
 - Rules: one `=` per field (a second is a usage error), no `=`+`~` on one field, any number of `~` per
   field (ANDed), no empty pattern (`name~`), an invalid pattern is a usage error that names the filter,
   and an unknown field is a usage error listing the valid fields.
@@ -161,8 +180,9 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
   kind and id; passing neither a QUERY nor `--where` is a usage error. No match exits 1 for `find`
   (`no match for '<Q>'`, or `no objects match the --where filters`); a listing with no rows prints
   `(none)` (empty in JSON) and exits 0. A bad filter or regex exits 2.
-- Python: `where=` takes a mapping (equality only, e.g. `{"name": "pUC19"}`) or a list of strings with
-  both operators. Listings and `find` read in one batch.
+- Python: `where=` takes a mapping (equality only; a `None`/`""` value means empty, e.g.
+  `{"name": "pUC19"}` or `{"notes": None}`) or a list of strings with both operators. Listings and
+  `find` read in one batch.
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
 of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
@@ -288,8 +308,11 @@ tm aliquot purge ALQ [--json]
   legal, `--not-in-stock` with it intersects. `STOCK` limits
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
   plus every box nested inside it. `--where` matches aliquot core columns exactly and ANDs with the
-  rest; it is the aliquot's own exact-only `FIELD=VALUE` filter, not the shared `field~pattern` syntax
-  of **Filters** above. Filter status with `--status`, never `--where status=…`. The table and CSV print
+  rest; `FIELD=` (an empty value) means the column is empty — `NULL` or `''` for
+  `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`, `NULL` only for
+  `seq`/`quantity`/`created_at`. It is the aliquot's own exact-only `FIELD=VALUE` filter, not the
+  shared `field~pattern` syntax of **Filters** above. Filter status with `--status`, never
+  `--where status=…`. The table and CSV print
   `id stock_kind status quantity unit label path` (path is empty when not in stock); `--json` prints
   the same record `show` prints without `events` (a list never reads a tube's event trail), one per
   tube, ordered by stock id and numeric seq.
@@ -356,7 +379,7 @@ like on the CLI.
 ## Boxes
 
 ```sh
-tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--json]
+tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--set f=v ...] [--json]
 tm box show NAME|ID|ALIAS [--json]
 tm box list [--kind KIND] [--where FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
@@ -377,7 +400,8 @@ slotless parents take one child box each (up to `capacity`). Nesting must stay a
 box holds tubes only**, so `--in` a grid box is refused. Every box name must be **view-safe**: the
 generated view `v_box_<name>` must not collide with a core view, the name is at most 58 characters,
 and it must not differ only in case from an existing box name (`tm box add`, box import and the CSV
-path refuse it).
+path refuse it). `--set` fills the box kind's fields — repeatable, long-only (`-s` is `--slot`) — a
+required field without a default must be given, and `name`/the structural fields are refused.
 
 `box rename` applies the same name rules (a case-only change of the box's own name is allowed),
 refuses a name that is another box's name or alias, keeps the old name as an alias, and replaces

@@ -1,8 +1,11 @@
-"""The version lives in three files; a release is only as correct as the weakest.
+"""The version lives in five files; a release is only as correct as the weakest.
 
-`pyproject.toml`, `src/tetramark/__init__.py` and `uv.lock` must carry the same
-version. Bumping two of the three ships a wheel that calls itself 0.5.1 while
-`tm --version` says 0.5.0, and the release workflow then refuses to tag.
+`pyproject.toml`, `src/tetramark/__init__.py`, `uv.lock` and the frontmatter of
+both shipped skills (`skills/tetramark/SKILL.md`,
+`skills/tetramark-schema/SKILL.md`) must carry the same version. Bumping some of
+them ships a wheel that calls itself 0.5.1 while `tm --version` says 0.5.0, or a
+skill that still describes the previous release, and the release workflow then
+refuses to tag.
 
 These tests run the same script the workflow runs
 (``scripts/release_check.py``) instead of re-implementing the comparison, so a
@@ -43,7 +46,7 @@ def current() -> dict[str, Any]:
 
 
 @pytest.mark.fast
-def test_the_three_version_sources_agree(current: dict[str, Any]) -> None:
+def test_the_version_sources_agree(current: dict[str, Any]) -> None:
     assert current["problems"] == []
     assert current["ready"] is True
 
@@ -52,7 +55,13 @@ def test_the_three_version_sources_agree(current: dict[str, Any]) -> None:
 def test_the_tag_name_follows_the_version(current: dict[str, Any]) -> None:
     assert current["version"]
     assert current["tag"] == f"v{current['version']}"
-    assert set(current["sources"]) == {"pyproject", "init", "lock"}
+    assert set(current["sources"]) == {
+        "pyproject",
+        "init",
+        "lock",
+        "skill",
+        "skill_schema",
+    }
 
 
 @pytest.mark.fast

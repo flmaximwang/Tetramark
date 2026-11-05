@@ -15,9 +15,11 @@ src/tetramark/
                           # writelock.py (per-ledger flock, P11)
   ops/                    # find.py, render.py (grid), io_csv.py, remote.py, portability.py, ...
   cli/                    # app.py (Typer root) + one module per command group
+  skills.py               # locate shipped skill copies, read/compare their version stamps
 scripts/
   test-lanes.sh           # fast lane + full lane with --durations and the wall-time budget
-  release_check.py        # do pyproject.toml, __init__.__version__ and uv.lock agree? --json for CI
+  release_check.py        # do pyproject.toml, __init__.__version__, uv.lock and both SKILL.md
+                          # frontmatters agree? --json for CI
 .github/workflows/
   release.yml             # a version bump landing on main -> annotated tag + GitHub release
 skills/tetramark/SKILL.md (+ references/)

@@ -86,7 +86,8 @@ def list_entities_command(
         "--where",
         "-w",
         help="Filter as field=value (exact) or field~pattern (regex); repeat to "
-        "AND filters. A regex is case-sensitive; (?i) ignores case.",
+        "AND filters; FIELD= matches empty. A regex is case-sensitive; (?i) "
+        "ignores case.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
@@ -120,7 +121,7 @@ def edit_entity_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed object as JSON."),
 ) -> None:
-    """Update fields of an existing entity."""
+    """Update notes or kind fields; names change only through rename."""
     ledger = resolve_ledger(ctx)
     try:
         result = ledger.entities.edit(ref, values=set_values)
