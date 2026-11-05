@@ -51,6 +51,8 @@ def write_payload(
             count=payload["count"],
             box=payload.get("box"),
             slots=payload.get("slots") or (),
+            quantity=payload.get("quantity"),
+            unit=payload.get("unit"),
         )
     if object_type == "box":
         return ledger.boxes.add(

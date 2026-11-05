@@ -361,11 +361,13 @@ tm aliquot purge ALQ [--json]
   `entity_id`, the `box_id`/`slot`, the `path` down the box nesting (`Freezer-1/Shelf-2/Box:A3`,
   printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
   and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
-  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
-  ids), the `old_status`/`new_status`, `forced` and `actor`/`message`. The text output ends
-  with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
-  `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
-  single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
+  `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot`, the
+  `from_box_resolved`/`to_box_resolved` flags (`null`/`true`/`false`), the `old_status`/`new_status`,
+  `forced` and `actor`; the stored `message` is the last text token as `message="..."`. A name with
+  no live box row prints as `[unresolved box <full id>]`, never a cause. The text output ends with
+  `events  N` and one line per event rendered by the same `event_line` helper `history` uses; `--json`
+  prints the whole record with the full ids, events included, `--format csv` keeps the flat single
+  row and drops `events` (unchanged; event rows are `tm history ALQ --format csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
@@ -499,9 +501,10 @@ blocks and writes the same thing.
   (the field name, its description and its pattern go below a git-style scissors line and are removed
   from what you edit, while `#` lines are kept), `Ctrl+C` aborts and writes nothing. A footer lists
   the keys.
-- The stock form asks: entity (ref, with search) → the kind's fields, and creates the stock with
-  **no aliquots** (same as `tm stock add ... --aliquots 0`); it then prints a `Next:` line — add
-  tubes with `tm aliquot add-form` or `tm aliquot add <stock>`.
+- The stock form asks: entity (ref, with search) → the kind's fields → aliquot count → box (`?`
+  lists the boxes) → slots (the next free slots are filled in by default; `?` shows the free slots).
+- The aliquot form asks for an optional per-tube quantity and its unit (the unit only when a
+  quantity was given), and writes the same as `tm aliquot add --quantity Q --unit U`.
 - The review screen numbers every value (long values in short form): a number jumps back to that
   step, `y` writes, `q` cancels. The write lock is taken only on `y`; the write is the same
   `ledger.<objects>.add(...)` as `add`, prints the same message, and `--dry-run`/`--no-commit`/

@@ -3317,8 +3317,11 @@ def _aliquot_events_sql(id_sql: str) -> str:
 
     ``id_sql`` resolves the ref to the tube id, so the statement answers for
     the same tube the other reads of the batch answer for.  The two
-    ``LEFT JOIN``s bring the box names of a move along; a box that is gone
-    falls back to its id, exactly like ``tm history`` renders it.
+    ``LEFT JOIN``s bring the box names of a move along; ``from_box``/``to_box``
+    keep the live name when it exists and otherwise fall back to the stored
+    id.  The ``*_box_resolved`` columns say which it is: NULL when the side has
+    no stored box id, 1 when the joined box row exists, 0 otherwise.  The join
+    is part of the same single show batch, so resolution adds no query.
     """
     return (
         "SELECT "
@@ -3330,10 +3333,16 @@ def _aliquot_events_sql(id_sql: str) -> str:
         f"e.{_quote('from_box_id')} AS {_quote('from_box_id')}, "
         f"COALESCE(fb.{_quote('name')}, e.{_quote('from_box_id')}) "
         f"AS {_quote('from_box')}, "
+        f"CASE WHEN e.{_quote('from_box_id')} IS NULL THEN NULL "
+        f"WHEN fb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
+        f"AS {_quote('from_box_resolved')}, "
         f"e.{_quote('from_slot')} AS {_quote('from_slot')}, "
         f"e.{_quote('to_box_id')} AS {_quote('to_box_id')}, "
         f"COALESCE(tb.{_quote('name')}, e.{_quote('to_box_id')}) "
         f"AS {_quote('to_box')}, "
+        f"CASE WHEN e.{_quote('to_box_id')} IS NULL THEN NULL "
+        f"WHEN tb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
+        f"AS {_quote('to_box_resolved')}, "
         f"e.{_quote('to_slot')} AS {_quote('to_slot')}, "
         f"e.{_quote('old_status')} AS {_quote('old_status')}, "
         f"e.{_quote('new_status')} AS {_quote('new_status')}, "
@@ -3350,16 +3359,22 @@ def _aliquot_events_sql(id_sql: str) -> str:
     )
 
 
+def _resolved_flag(value: Any) -> bool | None:
+    """A SQL ``NULL``/``0``/``1`` resolution flag as Python ``None``/bool."""
+    return None if value is None else bool(value)
+
+
 def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
     """One ``aliquot_event`` row as the shape the show record carries.
 
     The keys are the ones the spec names, in that order: the row's own id,
     the event, when it happened, how much was used, where the tube came from
-    and went to (the box name next to its id), the status change, whether the
-    change was forced, and who did it and why.  The reason is the shared
-    ``message`` column (spec 7): the ``-m/--message`` text of a ``use``/``move``,
-    or the ``-m/--message`` of a status change.  ``forced`` is a bool, so the
-    JSON record says ``true``/``false`` and not the driver's 0/1.
+    and went to (the box name next to its id and a resolution flag), the status
+    change, whether the change was forced, and who did it and why.  The reason
+    is the shared ``message`` column (spec 7): the ``-m/--message`` text of a
+    ``use``/``move``, or the ``--note`` of a forced status change.  ``forced`` is
+    a bool, so the JSON record says ``true``/``false`` and not the driver's 0/1;
+    the resolution flags are ``null``/``true``/``false`` for the same reason.
     """
     return {
         "id": int(row["id"]),
@@ -3369,9 +3384,11 @@ def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
         "unit": row["unit"],
         "from_box_id": row["from_box_id"],
         "from_box": row["from_box"],
+        "from_box_resolved": _resolved_flag(row["from_box_resolved"]),
         "from_slot": row["from_slot"],
         "to_box_id": row["to_box_id"],
         "to_box": row["to_box"],
+        "to_box_resolved": _resolved_flag(row["to_box_resolved"]),
         "to_slot": row["to_slot"],
         "old_status": row["old_status"],
         "new_status": row["new_status"],
