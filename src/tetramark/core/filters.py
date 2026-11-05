@@ -657,28 +657,30 @@ def _ordered_value(
     A kind field is coerced by its schema (the same coercion an ``=`` filter
     uses), so an int compares numerically and a date compares chronologically.
     A core column takes the text as it is; ``created_at`` is a datetime, so
-    its value must be an ISO date or datetime.
+    its value must be an ISO date or datetime and is compared as a datetime
+    (a date means its midnight), never as an arbitrary string.
     """
     if order == DATETIME_ORDER and (kind is None or item.field not in kind.fields):
-        _check_iso_value(item, option=option)
+        return _iso_datetime(item, option=option)
     if coerce is None:
         return item.value
     return coerce(item.field, item.value)
 
 
-def _check_iso_value(item: Filter, *, option: str) -> None:
-    """Refuse a value that is not an ISO date or datetime."""
+def _iso_datetime(item: Filter, *, option: str) -> datetime:
+    """The datetime an ordered comparison on a core datetime column compares with."""
     text = item.value.strip()
-    for parse in (date.fromisoformat, datetime.fromisoformat):
-        try:
-            parse(text)
-        except ValueError:
-            continue
-        return
-    raise UsageError(
-        f"invalid {option} {item.text!r}: the value {item.value!r} is not an ISO "
-        "date or datetime"
-    )
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.combine(date.fromisoformat(text), datetime.min.time())
+    except ValueError:
+        raise UsageError(
+            f"invalid {option} {item.text!r}: the value {item.value!r} is not an "
+            "ISO date or datetime"
+        ) from None
 
 
 def _is_regex_error(error: BaseException) -> bool:

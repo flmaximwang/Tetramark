@@ -9,6 +9,8 @@ behaviour of the operators against real rows by
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from typer.testing import CliRunner
 
@@ -461,7 +463,18 @@ def test_an_ordered_comparison_on_created_at_needs_an_iso_value() -> None:
     )
 
     assert conditions == ["`created_at` > %s"]
-    assert params == ["2024-01-01"]
+    # A date means its midnight: the column is a DATETIME, so the value is
+    # compared as a datetime, never as an arbitrary string.
+    assert params == [datetime(2024, 1, 1)]
+
+    conditions, params = build_conditions(
+        parse_filters(["created_at<=2024-01-31T12:30:00"]),
+        expressions={"created_at": "`created_at`"},
+        kind=kind,
+    )
+
+    assert conditions == ["`created_at` <= %s"]
+    assert params == [datetime(2024, 1, 31, 12, 30)]
 
     with pytest.raises(UsageError, match="is not an ISO date or datetime"):
         build_conditions(
