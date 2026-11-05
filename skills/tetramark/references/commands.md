@@ -455,11 +455,22 @@ blocks and writes the same thing.
   (the field name, its description and its pattern go below a git-style scissors line and are removed
   from what you edit, while `#` lines are kept), `Ctrl+C` aborts and writes nothing. A footer lists
   the keys.
-- The stock form asks: entity (ref, with search) → the kind's fields, and creates the stock with
-  **no aliquots** (same as `tm stock add ... --aliquots 0`); it then prints a `Next:` line — add
-  tubes with `tm aliquot add-form` or `tm aliquot add <stock>`.
-- The aliquot form asks for an optional per-tube quantity and its unit (the unit only when a
-  quantity was given), and writes the same as `tm aliquot add --quantity Q --unit U`.
+- The stock form asks: kind → entity (ref, with search) → the kind's fields → optional **parent
+  stock** and **source aliquot** (refs with search; lineage, same as `tm stock add --parent` /
+  `--source-aliquot`) → optional **notes**, and creates the stock with **no aliquots** (same as
+  `tm stock add ... --aliquots 0`); it then prints a `Next:` line — add tubes with
+  `tm aliquot add-form` or `tm aliquot add <stock>`.
+- The aliquot form asks kind → stock → count → optional per-tube quantity and its unit (the unit
+  only when a quantity was given) → box → slots → optional **creation status**. The status step
+  offers exactly the stock kind's set in its own order (number or name; Tab completes) and Enter
+  keeps the add command's placement default: placed in a box, the first of `stored`/`pending` the
+  set has; unplaced, the first of `pending`/`stored`; else the set's first in-stock status; else its
+  first status. It promises nothing about `stored`/`pending` for sets that lack them. It writes the
+  same as `tm aliquot add ... --quantity Q --unit U [--status S]`.
+- A kind that declares its own `notes` field is asked that field in schema order, and it is the
+  only notes question; otherwise the core notes step comes last (entity, stock, box). Every
+  writable creation property of `add` is asked except generated ids/timestamps — `--id` stays an
+  add-only option.
 - The review screen numbers every value (long values in short form): a number jumps back to that
   step, `y` writes, `q` cancels. The write lock is taken only on `y`; the write is the same
   `ledger.<objects>.add(...)` as `add`, prints the same message, and `--dry-run`/`--no-commit`/
