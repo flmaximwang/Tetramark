@@ -184,6 +184,11 @@ def show_stock_command(
 def list_stocks_command(
     ctx: typer.Context,
     kind: str | None = typer.Argument(None, help="Only this stock kind."),
+    all_flag: bool = typer.Option(
+        False,
+        "--all",
+        help="Every stock, including empty and depleted ones.",
+    ),
     where: list[str] = typer.Option(
         [],
         "--where",
@@ -194,10 +199,12 @@ def list_stocks_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """List stocks (optionally one kind and/or filtered)."""
+    """List stocks: only active stocks (at least one aliquot in stock) by
+    default; --all adds empty and depleted stocks.
+    """
     ledger = resolve_ledger(ctx)
     try:
-        rows = ledger.stocks.ls(kind, where=where)
+        rows = ledger.stocks.ls(kind, where=where, all_statuses=all_flag)
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),

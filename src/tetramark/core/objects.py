@@ -1585,6 +1585,7 @@ def _list_records(
     where: Iterable[str] | Mapping[str, Any] | None,
     *,
     extra: Sequence[tuple[str, Any]] = (),
+    extra_conditions: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
     """Every row of every matching kind, fetched in one read batch.
 
@@ -1596,6 +1597,13 @@ def _list_records(
     list`` uses that for the path rows); their results come back in order.
     Empty kinds still contribute nothing, and the records keep the kind order
     plus each query's ``ORDER BY``.
+
+    ``extra_conditions`` are literal SQL predicates ANDed into every
+    view-backed kind's statement: a listing scope that has no ``--where``
+    spelling (``tm stock list``'s derived-status default) narrows the same
+    batched read instead of paying a round trip or a Python-side filter.  The
+    box kinds build their own column list and take no part in that scope, so
+    only a view-backed object type may pass them.
 
     The filters themselves are parsed and turned into SQL conditions by
     :mod:`tetramark.core.filters`, the one backend ``--where`` shares with
@@ -1652,6 +1660,11 @@ def _list_records(
         else:
             sql = f"SELECT * FROM {_quote(f'v_{object_type}_{name}')}"
             order = _quote("id")
+            # A view column that has no filter spelling can still scope the
+            # listing; AND it into this statement so the batched read never
+            # fetches rows the caller would drop afterwards.
+            if extra_conditions:
+                conditions = [*conditions, *extra_conditions]
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += f" ORDER BY {order}"
@@ -2242,8 +2255,30 @@ def list_stocks(
     kind_name: str | None = None,
     *,
     where: Iterable[str] | Mapping[str, Any] | None = (),
+    all_statuses: bool = False,
 ) -> list[dict[str, Any]]:
-    records, _ = _list_records(ledger, "stock", kind_name, where)
+    """List stocks; by default only the ones with an aliquot in stock.
+
+    A list answers the question a session starts with - which stocks can an
+    experiment use - so stocks that are ``empty`` (no aliquots) or ``depleted``
+    (every aliquot left stock) are hidden unless asked for.  ``all_statuses``
+    shows every status; ``status`` stays out of ``--where`` because it is
+    derived from the aliquots (``tm aliquot list`` owns the status
+    vocabulary).  ``where`` filters the stock core and kind columns exactly as
+    the other lists do.
+
+    The scope is a predicate on the ``v_stock_<kind>`` view's derived
+    ``status`` column, so it narrows the same single batched driver round trip
+    the list has always used: no second read and no Python-side filter.  Rows
+    are ordered by ``id`` within each kind, and a record has the same shape as
+    :func:`show_stock` (``aliquots_in_stock`` is an int).
+    """
+    # ``empty``/``depleted`` are the audit rows a session asks for explicitly;
+    # the default mirrors ``tm aliquot list``'s in-stock scope.
+    scope = () if all_statuses else (f"{_quote('status')} = 'active'",)
+    records, _ = _list_records(
+        ledger, "stock", kind_name, where, extra_conditions=scope
+    )
     for record in records:
         # v_stock_<kind>'s SUM is a DOUBLE on the server driver, but a count is
         # an int on every backend (lineage int-casts its counts the same way).
@@ -4702,8 +4737,11 @@ class StockOps:
         kind: str | None = None,
         *,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        all_statuses: bool = False,
     ) -> list[dict[str, Any]]:
-        return list_stocks(self.ledger, kind, where=where)
+        return list_stocks(
+            self.ledger, kind, where=where, all_statuses=all_statuses
+        )
 
 
 class AliquotOps:
