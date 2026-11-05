@@ -1,9 +1,9 @@
-"""Shared ``--where`` filters: ``=``, ``~``, ``!=``, ``!~``, ``<``, ``<=``, ``>``, ``>=``.
+"""Shared ``--where`` and ``--where-any`` filters: the same eight operators.
 
 One filter backend serves the entity/stock/box listings (spec §6): the
-``--where`` option of ``tm entity list``, ``tm stock list`` and ``tm box list``
-and the ``where=`` argument of their Python API facades.  A filter is written
-as
+``--where`` and ``--where-any`` options of ``tm entity list``, ``tm stock
+list`` and ``tm box list`` and the ``where=`` / ``where_any=`` arguments of
+their Python API facades.  A filter is written as
 
 * ``field=value`` -- the column equals the value: a kind field is coerced by
   its schema (an enum is checked, a ref is resolved to the id it stores), a
@@ -23,10 +23,23 @@ with ``^``/``$``) and case-sensitive (``(?i)`` makes it case-insensitive).
 The database compiles the pattern (Dolt's ICU dialect), so the same pattern
 means the same thing in the query and in the error message.
 
+The ``--where`` filters are ANDed; ``--where-any`` is the one OR group of an
+invocation: a row matches when it satisfies every ``--where`` filter AND at
+least one ``--where-any`` filter.  Without ``--where-any`` nothing changes.
+The groups share the syntax, the operators, the coercion, the type rules and
+the empty-value rules of this module, but not its repetition rules: repeating a
+field inside ``--where-any`` is the canonical use
+(``--where-any 'resistance=kan' --where-any 'resistance=amp'``), so the ``=``
+rules below apply to the AND group only, and there is no cross-check between
+the two groups.  For one kind, an alternative whose field the kind does not
+declare is dropped (it is false for that kind); a kind left without a single
+surviving alternative contributes no rows.
+
 Rules:
 
 * a field is filtered by ``=`` at most once; a second ``=`` on the same field
-  is an error, and so is mixing ``=`` with any other operator on one field;
+  is an error, and so is mixing ``=`` with any other operator on one field
+  (inside ``--where-any`` both are allowed);
 * any number of the other operators may address one field; they are ANDed;
 * an empty pattern (``name~``) and an empty comparison value (``count<``) are
   errors;
@@ -59,7 +72,7 @@ of them is a usage error.
 A mapping (``where={"name": "pUC19"}``) means equality only, and a mapping
 value ``None`` or ``""`` means "is empty"; a list of strings
 (``where=["name~^pUC"]``, ``where=["name="]`` or ``where=["count>=10"]``)
-accepts every operator.
+accepts every operator.  ``where_any=`` takes the same forms.
 """
 
 from __future__ import annotations
@@ -87,6 +100,7 @@ __all__ = [
     "GREATER",
     "GREATER_EQUAL",
     "Filter",
+    "build_any_condition",
     "build_conditions",
     "check_fields",
     "coerce_value",
@@ -196,18 +210,25 @@ def parse_filters(
     values: Iterable[str] | Mapping[str, Any] | None,
     *,
     option: str = "--where",
+    allow_repeats: bool = False,
 ) -> tuple[Filter, ...]:
-    """Parse the ``--where`` filters of one listing.
+    """Parse one filter group of a listing (``--where`` or ``--where-any``).
 
     A mapping is equality only (``{"name": "pUC19"}``); a list of strings
     accepts every operator (``["name~^pUC"]``, ``["count>=10"]``).  The
     operator is the one that follows the field name, so a value may contain
     any operator character.
 
+    ``allow_repeats`` drops the per-field repetition rules and is what the
+    ``--where-any`` group uses: repeating a field there is the canonical way to
+    write an alternative (``resistance=kan`` OR ``resistance=amp``).  Every
+    other rule -- a field name that is an identifier, a non-empty pattern and a
+    non-empty comparison value -- still applies.
+
     Raises :class:`UsageError` for a malformed filter, a field name that is
-    not an identifier, a repeated ``=`` on one field, a field filtered with
-    ``=`` and another operator, an empty pattern and an empty comparison
-    value.
+    not an identifier, a repeated ``=`` on one field (unless ``allow_repeats``
+    is true), a field filtered with ``=`` and another operator (likewise), an
+    empty pattern and an empty comparison value.
     """
     filters: list[Filter] = []
     equals: set[str] = set()
@@ -219,26 +240,27 @@ def parse_filters(
             raise UsageError(
                 f"invalid {option} {text!r}: {field!r} is not a valid field name"
             )
-        previous = others.get(field)
-        if field in equals:
-            if operator == EQUALS:
-                raise UsageError(f"field {field!r} appears twice in {option}")
-            raise UsageError(
-                f"field {field!r} cannot be filtered with both {EQUALS!r} and "
-                f"{operator!r} in {option}"
-            )
-        if operator == EQUALS:
-            if previous is not None:
+        if not allow_repeats:
+            previous = others.get(field)
+            if field in equals:
+                if operator == EQUALS:
+                    raise UsageError(f"field {field!r} appears twice in {option}")
                 raise UsageError(
                     f"field {field!r} cannot be filtered with both {EQUALS!r} and "
-                    f"{previous!r} in {option}"
+                    f"{operator!r} in {option}"
                 )
-            equals.add(field)
-        else:
-            # Every operator but ``=`` may be repeated on one field; they are
-            # ANDed.  The first one is kept, so the error message names the
-            # operator the field was already filtered with.
-            others.setdefault(field, operator)
+            if operator == EQUALS:
+                if previous is not None:
+                    raise UsageError(
+                        f"field {field!r} cannot be filtered with both {EQUALS!r} and "
+                        f"{previous!r} in {option}"
+                    )
+                equals.add(field)
+            else:
+                # Every operator but ``=`` may be repeated on one field; they
+                # are ANDed.  The first one is kept, so the error message names
+                # the operator the field was already filtered with.
+                others.setdefault(field, operator)
         if operator in _PATTERN_OPERATORS and not value:
             raise UsageError(
                 f"the pattern of the {option} filter {field + operator!r} must not "
@@ -356,6 +378,47 @@ def build_conditions(
     return conditions, params
 
 
+def build_any_condition(
+    filters: Iterable[Filter],
+    *,
+    expressions: Mapping[str, str],
+    coerce: Callable[[str, str], Any] | None = None,
+    empty: Callable[[str, str], str] | None = None,
+    kind: Kind | None = None,
+    option: str = "--where-any",
+) -> tuple[str | None, list[Any]]:
+    """The one OR condition of a kind's ``--where-any`` group, or ``None``.
+
+    Every alternative whose field the kind does not declare is dropped (it is
+    false for the kind); the surviving ones are built exactly like ``--where``
+    filters (same coercion, empty-value and ordered-comparison rules) and
+    joined with ``OR`` inside one pair of parentheses, so the caller appends a
+    single condition to the kind's AND conditions.  Parameters keep the order
+    the alternatives were given in.
+
+    Returns ``(None, [])`` when nothing survives: the kind contributes no rows
+    (an OR of no alternatives is false).
+    """
+    alternatives: list[str] = []
+    params: list[Any] = []
+    for item in filters:
+        if item.field not in expressions:
+            continue
+        conditions, conditions_params = build_conditions(
+            [item],
+            expressions=expressions,
+            coerce=coerce,
+            empty=empty,
+            kind=kind,
+            option=option,
+        )
+        alternatives.extend(conditions)
+        params.extend(conditions_params)
+    if not alternatives:
+        return None, []
+    return "(" + " OR ".join(alternatives) + ")", params
+
+
 def comparison_type(
     kind: Kind | None,
     field: str,
@@ -452,22 +515,28 @@ def regex_usage_error(
     filters: Iterable[Filter],
     error: BaseException,
     *,
+    any_filters: Iterable[Filter] = (),
     option: str = "--where",
 ) -> UsageError | None:
-    """The usage error for an invalid pattern, or ``None``.
+    """The usage error for an invalid pattern in either filter group.
 
-    The database compiles the pattern, so an invalid one is only known when
-    the query runs.  When the failure is a pattern error, the patterns are
-    re-checked one by one (the error path may cost a few queries) to name the
-    filter the user has to fix; a failure that is not about a pattern is none
-    of this module's business and is reported as it is.
+    ``filters`` is the AND group and ``any_filters`` the OR group; both are
+    probed (the AND group first), and the error names the option the offending
+    filter came from.  The database compiles the pattern, so an invalid one is
+    only known when the query runs.  When the failure is a pattern error, the
+    patterns are re-checked one by one (the error path may cost a few queries)
+    to name the filter the user has to fix; a failure that is not about a
+    pattern is none of this module's business and is reported as it is.
     """
     if not _is_regex_error(error):
         return None
     item = _offending_pattern(driver, filters)
-    if item is None:
-        return None
-    return UsageError(_invalid_pattern_message(item, option=option))
+    if item is not None:
+        return UsageError(_invalid_pattern_message(item, option=option))
+    item = _offending_pattern(driver, any_filters)
+    if item is not None:
+        return UsageError(_invalid_pattern_message(item, option="--where-any"))
+    return None
 
 
 def pattern_is_invalid(driver: Any, pattern: str) -> bool:
@@ -485,18 +554,27 @@ def pattern_is_invalid(driver: Any, pattern: str) -> bool:
 
 
 def validate_patterns(
-    driver: Any, filters: Iterable[Filter], *, option: str = "--where"
+    driver: Any,
+    filters: Iterable[Filter],
+    *,
+    any_filters: Iterable[Filter] = (),
+    option: str = "--where",
 ) -> None:
-    """Compile every pattern, raising the usage error for an invalid one.
+    """Compile every pattern of both filter groups, raising for an invalid one.
 
-    The database compiles a pattern, so this asks it.  A caller needs it only
-    when no query carries the filters (a filter combination no kind can
-    express): nothing else would compile the patterns there, and an invalid
-    one must still be reported instead of silently returning no rows.
+    ``filters`` is the AND group and ``any_filters`` the OR group; the error
+    names the option the offending filter came from.  The database compiles a
+    pattern, so this asks it.  A caller needs it only when no query carries the
+    filters (a filter combination no kind can express): nothing else would
+    compile the patterns there, and an invalid one must still be reported
+    instead of silently returning no rows.
     """
     item = _offending_pattern(driver, filters)
     if item is not None:
         raise UsageError(_invalid_pattern_message(item, option=option))
+    item = _offending_pattern(driver, any_filters)
+    if item is not None:
+        raise UsageError(_invalid_pattern_message(item, option="--where-any"))
 
 
 def _split_filters(

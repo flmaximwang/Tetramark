@@ -162,6 +162,7 @@ tm box show WFL-12-01
 tm find pZET035                      # id → alias → name/text, case-insensitive
 tm find -E '^pZET'                   # -E: case-insensitive ICU regex over the same places
 tm entity list --where 'name~(?i)^pzet'   # --where: field=value exact, field~pattern regex
+tm find --where-any 'resistance=kan' --where-any 'resistance=amp'   # one OR group
 tm check
 ```
 
@@ -177,7 +178,10 @@ the `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes a
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
 (exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and
 `--where` filters the entity/stock/box lists or `tm find` by `field=value` (exact) or
-`field~pattern` (ICU regex); see [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
+`field~pattern` (ICU regex). `--where-any` adds the one OR group: a row matches one of its
+alternatives AND every `--where`, and a field may repeat there
+(`tm stock list --where 'kind=prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`); see
+[`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
 Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.

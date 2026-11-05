@@ -330,6 +330,132 @@ def test_neither_a_query_nor_a_filter_is_a_usage_error(where_ledger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# --where-any (Tetramark-d0x.2)
+# ---------------------------------------------------------------------------
+
+
+def test_where_any_narrows_every_query_hit(where_ledger) -> None:
+    """The one OR group is ANDed with the search, exactly like --where."""
+    ledger = where_ledger
+    plasmid = ledger.entities.add("plasmid", name="pUC19")
+    item = ledger.entities.add("item", name="pUC19-item")
+    ledger.entities.add("plasmid", name="pUC57")
+
+    hits = ledger.find("pUC19", where_any=["kind=plasmid", "kind=item"])
+
+    assert [row["id"] for row in hits] == [plasmid["id"], item["id"]]
+    # One alternative is enough to keep a hit; the other kinds are unaffected.
+    assert [row["id"] for row in ledger.find("pUC19", where_any=["kind=item"])] == [
+        item["id"]
+    ]
+    # The AND group composes with the OR group.
+    assert [
+        row["id"]
+        for row in ledger.find(
+            "pUC19",
+            where=["name!~item"],
+            where_any=["kind=plasmid", "kind=item"],
+        )
+    ] == [plasmid["id"]]
+    # A regex query is filtered the same way.
+    assert [
+        row["id"]
+        for row in ledger.find(
+            r"^pUC19$", regex=True, where_any=["kind=plasmid"]
+        )
+    ] == [plasmid["id"]]
+
+
+def test_where_any_alone_lists_every_matching_object(where_ledger) -> None:
+    ledger = where_ledger
+    first = ledger.entities.add("item", name="pUC19")
+    second = ledger.entities.add("plasmid", name="pUC57")
+    ledger.entities.add("item", name="alpha")
+    box = ledger.boxes.add("shelf", "pUC-box")
+
+    hits = ledger.find(where_any=["name~^pUC"])
+
+    assert [row["match"] for row in hits] == ["filter"] * 3
+    assert [row["score"] for row in hits] == [0, 0, 0]
+    assert [row["rank"] for row in hits] == [1, 2, 3]
+    assert [row["object"] for row in hits] == ["entity", "entity", "box"]
+    assert [row["id"] for row in hits] == [first["id"], second["id"], box["id"]]
+    # The usual enrichment still applies.
+    assert hits[0]["summary"].startswith("item pUC19")
+    assert hits[2]["name"] == "pUC-box"
+
+
+def test_where_any_excludes_aliquots(where_ledger) -> None:
+    ledger = where_ledger
+    item = ledger.entities.add("item", name="host")
+    stock = ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
+    aliquot = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", aliquot, "pUC-tube")
+
+    # Without a filter the aliquot resolves by id and by alias ...
+    assert ledger.find(aliquot)[0]["object"] == "aliquot"
+    assert ledger.find("pUC-tube")[0]["object"] == "aliquot"
+    # ... but either filter group only ever considers entity/stock/box objects.
+    assert ledger.find(aliquot, where_any=["kind~."]) == []
+    assert ledger.find("pUC-tube", where_any=["kind~."]) == []
+
+
+def test_where_any_errors_name_the_option(where_ledger) -> None:
+    ledger = where_ledger
+    ledger.entities.add("item", name="alpha")
+
+    with pytest.raises(UsageError) as error:
+        ledger.find(where_any=["bogus~x"])
+    message = str(error.value)
+    assert "unknown field(s) 'bogus' in --where-any" in message
+    assert "valid fields" in message
+
+    with pytest.raises(UsageError) as error:
+        ledger.find("alpha", where_any=["name~["])
+    message = str(error.value)
+    assert "invalid regular expression in the --where-any filter" in message
+    assert "name~[" in message
+
+    # Repeating a field is the one rule the OR group drops.
+    with pytest.raises(UsageError, match="appears twice"):
+        ledger.find(where=["name=alpha", "name=beta"])
+
+
+def test_the_no_input_error_mentions_both_filter_groups(where_ledger) -> None:
+    ledger = where_ledger
+
+    with pytest.raises(UsageError) as error:
+        ledger.find()
+    message = str(error.value)
+    assert "--where or --where-any filter" in message
+    with pytest.raises(UsageError, match="--where-any"):
+        find(ledger, "")
+
+
+def test_the_python_facade_takes_a_list_and_a_mapping(
+    cli_env: None, where_ledger
+) -> None:
+    ledger = where_ledger
+    alpha = ledger.entities.add("item", name="alpha", values={"category": "lab"})
+    ledger.entities.add("item", name="beta", values={"category": "cold"})
+
+    listed = ledger.find(where_any=["category=lab"])
+    mapped = ledger.find(where_any={"category": "lab"})
+    cli = json.loads(
+        run_cli(ledger, "find", "--where-any", "category=lab", "--json").output
+    )
+    assert [row["id"] for row in listed] == [alpha["id"]]
+    assert [row["id"] for row in mapped] == [alpha["id"]]
+    assert [row["id"] for row in cli] == [alpha["id"]]
+    assert [row["match"] for row in listed] == ["filter"]
+
+    # ``search`` accepts the group directly too.
+    assert [
+        row["id"] for row in search(ledger, "alpha", where_any=["kind=item"])
+    ] == [alpha["id"]]
+
+
+# ---------------------------------------------------------------------------
 # The search() seam (Tetramark-53r.1)
 # ---------------------------------------------------------------------------
 
@@ -363,7 +489,7 @@ def test_search_runs_one_pass_and_find_delegates_to_it(
     ledger.entities.add("item", name="alpha")
     scans: list[tuple[str, bool]] = []
 
-    def fake_pass(ledger_arg, text, *, regex, filters):
+    def fake_pass(ledger_arg, text, *, regex, filters, any_filters=()):
         scans.append((text, regex))
         return []
 
@@ -507,6 +633,68 @@ def test_cli_bare_find_is_a_usage_error(cli_env: None, where_ledger) -> None:
 
     assert isinstance(result.exception, UsageError)
     assert "--where" in str(result.exception)
+    assert "--where-any" in str(result.exception)
+
+
+def test_cli_where_any_with_and_without_a_query(cli_env: None, where_ledger) -> None:
+    ledger = where_ledger
+    plasmid = ledger.entities.add("plasmid", name="pUC19")
+    item = ledger.entities.add("item", name="pUC19-item")
+
+    filtered = run_cli(
+        ledger, "find", "pUC19", "--where-any", "kind=plasmid", "--json"
+    )
+    assert filtered.exit_code == 0, filtered.output
+    payload = json.loads(filtered.output)
+    assert [row["id"] for row in payload] == [plasmid["id"]]
+    assert payload[0]["match"] == "name"
+
+    listed = run_cli(
+        ledger,
+        "find",
+        "--where-any",
+        "kind=item",
+        "--where-any",
+        "kind=plasmid",
+        "--json",
+    )
+    assert listed.exit_code == 0, listed.output
+    payload = json.loads(listed.output)
+    # Filter-only mode: sorted by object type, kind and id, match == filter.
+    assert [row["id"] for row in payload] == [item["id"], plasmid["id"]]
+    assert [row["match"] for row in payload] == ["filter", "filter"]
+
+
+def test_cli_where_any_messages_and_aliquots(cli_env: None, where_ledger) -> None:
+    ledger = where_ledger
+    item = ledger.entities.add("item", name="host")
+    stock = ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
+    aliquot = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", aliquot, "pUC-tube")
+
+    # The alias hits an aliquot, and the OR group excludes aliquots: no match.
+    miss = run_cli(ledger, "find", "pUC-tube", "--where-any", "kind~.")
+    assert isinstance(miss.exception, LedgerError)
+    assert "no match for 'pUC-tube'" in str(miss.exception)
+
+    # A filter-only miss with --where-any names both groups.
+    empty = run_cli(ledger, "find", "--where-any", "name~nothing-like-this")
+    assert isinstance(empty.exception, LedgerError)
+    assert "no objects match the --where/--where-any filters" in str(
+        empty.exception
+    )
+
+    # With only --where the message stays exactly what it always was.
+    only_where = run_cli(ledger, "find", "--where", "name~nothing-like-this")
+    assert isinstance(only_where.exception, LedgerError)
+    assert "no objects match the --where filters" in str(only_where.exception)
+    assert "--where-any" not in str(only_where.exception)
+
+    # An unknown --where-any field is a usage error naming the option.
+    unknown = run_cli(ledger, "find", "--where-any", "bogus=1")
+    assert isinstance(unknown.exception, UsageError)
+    assert unknown.exception.exit_code == 2
+    assert "'bogus' in --where-any" in str(unknown.exception)
 
 
 # ---------------------------------------------------------------------------
@@ -563,3 +751,21 @@ def test_regex_and_where_keep_one_read_batch(
     assert invoke_calls == ["json", "csv"]
     # The batch really carries the search, the filter queries and the maps.
     assert len(query_many_calls[0]) >= 10
+
+    # The OR group rides in the same one batch, with or without a query.
+    query_many_calls.clear()
+    invoke_calls.clear()
+    assert [row["id"] for row in ledger.find(where_any=["kind=item"])] == [
+        item["id"]
+    ]
+    assert len(query_many_calls) == 1
+    assert invoke_calls == ["json", "csv"]
+
+    query_many_calls.clear()
+    invoke_calls.clear()
+    assert [
+        row["id"]
+        for row in ledger.find("pUC", where_any=["kind=item", "kind=plasmid"])
+    ] == [item["id"]]
+    assert len(query_many_calls) == 1
+    assert invoke_calls == ["json", "csv"]

@@ -1568,16 +1568,19 @@ class Ledger:
         *,
         regex: bool = False,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        where_any: Iterable[str] | Mapping[str, Any] | None = (),
         with_rewrite: bool = False,
     ) -> list[dict[str, Any]]:
-        """Search ids, aliases, names, kind text and ``--where`` filters.
+        """Search ids, aliases, names, kind text and filter groups.
 
         ``regex`` treats the query as a case-insensitive database regex;
         ``where`` takes the shared ``field=value`` / ``field~pattern`` filters
-        and applies them to every hit (aliquots are excluded when given).
-        ``with_rewrite`` runs the ledger's ``find.rewrites`` rules next to the
-        literal query (the default is a zero-hit fallback only); rewrite hits
-        carry ``match == "<tier> via <rule>"`` and a ``rewrite`` object.
+        and applies them to every hit (AND); ``where_any`` is the one OR group
+        (a hit must satisfy one of its alternatives).  Aliquots are excluded
+        when either group is given.  ``with_rewrite`` runs the ledger's
+        ``find.rewrites`` rules next to the literal query (the default is a
+        zero-hit fallback only); rewrite hits carry ``match == "<tier> via
+        <rule>"`` and a ``rewrite`` object.
         """
         from tetramark.ops.find import find
 
@@ -1586,6 +1589,7 @@ class Ledger:
             query,
             regex=regex,
             where=where,
+            where_any=where_any,
             with_rewrite=with_rewrite,
         )
 
