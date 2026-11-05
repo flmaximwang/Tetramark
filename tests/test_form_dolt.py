@@ -572,119 +572,49 @@ def stock_lineage_row(ledger, stock_id: str) -> dict:
     )
 
 
-#: A test-only legacy closure for the creation-status step: one stock kind
-#: whose per-kind set has no ``pending`` (a cryo set).  The form's status list
-#: is that set, in its own order.
-CUSTOM_SET_PRESET = """\
-preset: formstatus
-version: 1
-description: >-
-  Test-only legacy closure for the add-form creation-status step (Tetramark-6gy):
-  one stock kind whose per-kind status set has no ``pending``.
-status_sets:
-  cryo:
-    stored: {in_stock: true, to: [thawed, missing]}
-    missing: {in_stock: false, to: [stored, thawed]}
-    thawed: {in_stock: false}
-mixins:
-  named_fields:
-    name: {type: string, required: true, unique: true}
-kinds:
-  item:
-    object: entity
-    mixins: [named_fields]
-  vial:
-    object: stock
-    entity_kinds: [item]
-    statuses: cryo
-  shelf:
-    object: box
-    geometry: {type: slotless, capacity: 4}
-"""
+def test_t5_aliquot_form_explicit_status_equals_add(ledger_factory) -> None:
+    """An explicitly chosen status is stored exactly like ``aliquot add --status``.
 
-
-def test_t5_aliquot_form_custom_status_set_matches_add(
-    ledger_factory, tmp_path
-) -> None:
-    """A per-kind set without ``pending``.
-
-    The form never re-implements the core's placement default: it offers the
-    set's own statuses and, when the step is skipped, the core decides.  The
-    cryo set has no ``pending``, so a placed tube defaults to its in-stock
-    status (``stored``) and an unplaced tube would default to that same
-    in-stock status -- which needs a position, so the core refuses it and the
-    form shows the very same refusal.  An explicitly chosen non-default status
-    is stored and recorded on the create event.  (The last fallback -- a set
-    with no in-stock status taking its first status -- is covered by the
-    Dolt-free status-set test in tests/test_form_state.py, because the Dolt
-    fixtures describe the fixed/legacy vocabulary rather than every custom set.)
+    The twin-ledger test above covers the *skipped* status (the placement
+    default); this one covers the status the user names, including the create
+    event that records it.  A custom per-kind set is covered Dolt-free in
+    tests/test_form_state.py, where the core's own placement rules are pinned.
     """
-    preset = tmp_path / "formstatus.yaml"
-    preset.write_text(CUSTOM_SET_PRESET, encoding="utf-8")
-    ledger = ledger_factory([preset], name="form-status-sets", id_prefix="77")
-    line = ledger.entities.add("item", values={"name": "HEK293T"})
-    ledger.boxes.add("shelf", "CRYO")
-
-    # The cryo set: placed, a skipped status takes the set's in-stock status.
-    form_vial = ledger.stocks.add("vial", entity=line["id"], aliquots=0)
-    add_vial = ledger.stocks.add("vial", entity=line["id"], aliquots=0)
-    placed, _ = run_form(
-        ledger,
-        "aliquot",
-        "vial",  # kind
-        form_vial["id"],  # stock
-        "1",  # count
-        "",  # quantity: none
-        "CRYO",  # box: placed
-        "",  # status: skip (the placed default)
-        "y",  # review: write
+    ledger = ledger_factory([BASE], name="aliquot-status")
+    item = ledger.entities.add("item", values={"name": "TM item"})
+    form_stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
     )
-    placed_add = ledger.aliquots.add(add_vial["id"], count=1, box="CRYO")
-    assert [row["status"] for row in aliquot_view(ledger, form_vial["id"])] == [
-        "stored"
-    ]
-    assert create_events(ledger, placed["ids"][0]) == create_events(
-        ledger, placed_add["ids"][0]
+    add_stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
     )
 
-    # Unplaced, a skipped status would default to an in-stock status, which
-    # needs a position: the core refuses it.  The refusing ``add`` runs on the
-    # same stock, so the message (which names the aliquot id) is identical.
-    with pytest.raises(LedgerError) as core_error:
-        ledger.aliquots.add(form_vial["id"], count=1)
-    assert "would have status 'stored'" in str(core_error.value)
-
-    thawed, source = run_form(
+    created, _ = run_form(
         ledger,
         "aliquot",
-        "vial",  # kind
-        form_vial["id"],  # stock
+        "lot",  # kind
+        form_stock["id"],  # stock
         "1",  # count
         "",  # quantity: none
         "",  # box: none
-        "",  # status: skip -> refused, back to the step
-        "y",  # review: the write is refused
-        "thawed",  # explicitly chosen status of the cryo set
+        "missing",  # status: explicitly not the placement default
         "y",  # review: write
     )
-    refused = [
-        prompt.error
-        for prompt in source.prompts
-        if prompt.step and prompt.step.key == "status" and prompt.error
-    ]
-    assert refused == [str(core_error.value)]
+    added = ledger.aliquots.add(add_stock["id"], count=1, status="missing")
 
-    thawed_add = ledger.aliquots.add(add_vial["id"], count=1, status="thawed")
-    assert create_events(ledger, thawed["ids"][0]) == create_events(
-        ledger, thawed_add["ids"][0]
+    assert [row["status"] for row in aliquot_view(ledger, form_stock["id"])] == [
+        "missing"
+    ]
+    assert create_events(ledger, created["ids"][0]) == create_events(
+        ledger, added["ids"][0]
     )
-    assert create_events(ledger, thawed["ids"][0]) == [
+    assert create_events(ledger, created["ids"][0]) == [
         {
             "amount": None,
             "unit": None,
             "to_box": None,
             "to_slot": None,
-            "new_status": "thawed",
+            "new_status": "missing",
         }
     ]
 

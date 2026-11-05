@@ -15,8 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from tetramark.core.objects import _parse_quantity_unit, default_aliquot_status
-from tetramark.errors import UsageError
+from tetramark.core.objects import (
+    _parse_quantity_unit,
+    default_aliquot_status,
+    validate_creation_placement,
+    validate_creation_status,
+)
+from tetramark.errors import LedgerError, UsageError
 from tetramark.form.editor import (
     SCISSORS,
     edit_value,
@@ -1476,6 +1481,26 @@ def test_t3_a_set_with_no_in_stock_status_falls_back_to_its_first_status(
     assert (
         default_aliquot_status(ledger, "archive_lot", placed=False) == "filed"
     )
+
+
+def test_t3_a_custom_status_set_keeps_the_core_placement_rules() -> None:
+    """A per-kind set without ``pending``: placed means stored, unplaced is refused.
+
+    The form never re-implements these rules -- it offers the set's own
+    statuses and lets the core decide -- so they are pinned here, where the
+    core's own helpers read the schema and nothing else.
+    """
+    ledger = type("SchemaOnlyLedger", (), {"schema": LEGACY})()
+
+    # The legacy fixture's cryo set (stored, missing, thawed): no ``pending``.
+    assert default_aliquot_status(ledger, "cell_vial", placed=True) == "stored"
+    assert default_aliquot_status(ledger, "cell_vial", placed=False) == "stored"
+    with pytest.raises(LedgerError, match="no box position"):
+        validate_creation_placement(ledger, "cell_vial", "stored", placed=False)
+    # Any status of the set may be chosen at creation; a foreign one is not.
+    assert validate_creation_status(ledger, "cell_vial", "thawed") == "thawed"
+    with pytest.raises(UsageError, match="unknown status"):
+        validate_creation_status(ledger, "cell_vial", "pending")
 
 
 def test_t4_stock_payload_carries_lineage_and_notes() -> None:
