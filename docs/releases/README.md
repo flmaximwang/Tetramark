@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.36](v0.8.36.md) | `v0.8.36.md` | `--where-any`: one OR group across the `--where` filters, on the entity/stock/box lists, `tm find` and the Python `where_any=` |
 | [0.8.35](v0.8.35.md) | `v0.8.35.md` | `--where` operators `!=`, `!~`, `<`, `<=`, `>`, `>=` on the entity/stock/box lists, `tm find` and the Python `where=`; ordered comparisons typed per field |
 | [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
 | [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |
