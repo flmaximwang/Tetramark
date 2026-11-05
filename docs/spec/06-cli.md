@@ -66,17 +66,19 @@ overrides the wait. Reads never lock; `tm status` probes the lock without taking
 writes nothing and does not lock.
 
 The root help groups the commands into five panels — Setup, Inventory, Lookup, Data and Versioning —
-in workflow order. `Setup` is `presets`, `init`, `adopt`, `schema`, `config`, `status`; there is no
-`workspace` and no `server` command group in 0.5.0. The listing below follows the same order.
+in workflow order. `Setup` is `presets`, `init`, `adopt`, `schema`, `config`, `status`, `skill`; there
+is no `workspace` and no `server` command group in 0.5.0. The listing below follows the same order.
 
 ```
-# Setup: presets, init, adopt, schema, config, status
+# Setup: presets, init, adopt, schema, config, status, skill
 tm presets [list|show NAME]
 tm init PATH --preset base [--preset molbio] [--name N] [--id-prefix 12] [--author ...]
 tm adopt PATH --preset molbio [--name N] [--id-prefix 12] [--author ...] [--force-config]  # §3.1
 tm schema show [KIND] | plan | apply [--allow-destructive]
 tm config get [author] ; tm config set author "Name <email>"   # the only setting
 tm status [--json]                        # one ledger at a glance (6.1)
+tm skill path [NAME] [--json]             # where the skill copy lives (6.5)
+tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (6.5)
 
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
@@ -100,10 +102,11 @@ tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything l
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
 tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
-tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
+tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
 tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
+tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rename-only; one commit; structural fields refused
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
@@ -224,6 +227,21 @@ box's own name). **Grid boxes hold tubes only**, so
 named or slotless box — for example a freezer, `tm box move WFL-12-02 --in FR-1` — and a box never
 nests in a grid box.
 
+`tm box add KIND NAME --set field=value …` fills the box kind's fields at creation, coerced exactly
+as `tm box edit` coerces them: `--set` is repeatable and long-only (`-s` is `--slot`), a required
+field without a default must be given, and `name` and the structural fields are refused.
+
+`tm entity edit`, `tm stock edit` and `tm box edit` change the editable fields of one object and
+nothing else: `notes` plus the fields the object's kind declares, coerced and validated exactly as
+at add time. A **name changes only through `tm <object> rename`** — `--set name=…` is refused with
+an error that names the rename command, because a rename keeps the old name as an alias (and
+rebuilds a box's view) and a plain column update cannot. Structural fields are refused as well:
+`id`, `kind` and `created_at` are identity and creation data, and a box's `parent_box_id` and
+`parent_slot` change through `tm box move REF --in PARENT [--slot S]`. `--set field=` (the value
+exactly empty) clears an optional column to NULL, a required field cannot be cleared, and a
+whitespace-only value is not empty: it is coerced like any other value, never cleared. One edit is
+one Dolt commit, `--json` returns the loaded record and `--dry-run` writes nothing.
+
 `tm export` reads a box from `box` joined with `box_<kind>` — the per-kind `v_box_<kind>` views are
 gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and
 grid rules above, in the same commit as the rows.
@@ -263,8 +281,10 @@ choice, so it turns the implicit in-stock scope off; combined with `--not-in-sto
 never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
 and includes the box plus every box nested inside it; `--where FIELD=VALUE` (repeatable, AND) matches
 aliquot core columns exactly, except `status` (`--where status=…` is a usage error pointing at
-`--status`). This is the aliquot's own exact-only `--where`; the shared `field=value` / `field~pattern`
-syntax of §6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
+`--status`). An empty value (`FIELD=`) means the column is empty: `NULL` or `''` for `id`, `stock_id`,
+`box_id`, `slot`, `unit`, `label` and `notes`, and `NULL` only for `seq`, `quantity` and `created_at`.
+This is the aliquot's own exact-only `--where`; the shared `field=value` / `field~pattern` syntax of
+§6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
 rows `id stock_kind status quantity unit label path`
 (`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
 prints without `events`, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only
@@ -431,7 +451,8 @@ at `tm <object> add`. Nothing is written, and no lock is taken.
 the ledger's effective schema. It is shown even when there is only one kind, and Enter accepts the
 only entry. For an aliquot the list shows the **stock** kinds: an aliquot has no kind of its own.
 Then come the **fields of the chosen kind in schema order**, each with its description and a `*`
-when it is required. **Computed** fields are never asked; **sequence** fields are.
+when it is required (for a box they follow its name and precede its parent). **Computed** fields are
+never asked; **sequence** fields are.
 
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 
@@ -494,6 +515,17 @@ is normalised. On a core column the text is compared as written: `id`, `kind`, `
 `parent_slot`) take the stored value itself, so a core `ref` such as `entity_id` takes the id, never
 an alias.
 
+`field=` (an empty value) selects the rows whose field is empty: `NULL` or `''` on a text-like
+column, and `NULL` only on a non-text column (a stored `0` never counts as empty). Text-like means
+the kind field types `string`, `text`, `enum`, `sequence` and `ref`, and every core column except
+`created_at`; non-text means the kind types `int`, `decimal`, `bool`, `date` and `datetime`, and the
+core `created_at`. The empty value
+skips the schema coercion and the alias resolution above (an empty `ref`, `enum` or `int` is not
+resolved, checked or parsed), and it does not mean the literal text `none`/`null`, which still
+compares exactly like any other value. Only the truly empty string is special: a whitespace-only
+value is not (`name=  ` compares the two spaces exactly). There is no "not empty" operator; ask for
+it with `field~.`.
+
 `field~pattern` matches the column's **text form** with a regular expression. It is a *search*, not a
 full match: unanchored, so anchor it with `^`/`$` when needed (`name~^pZET` starts with, `name~ZET`
 contains). It is case-sensitive; write `(?i)` in the pattern for case-insensitive (`name~(?i)^pzet`).
@@ -502,8 +534,9 @@ lookarounds behave as there, not exactly as in Python `re`; the ledger's `find.r
 (described below) are Python `re` patterns and do not share this dialect. The text form of an `int`, a
 `decimal`, a `date`/`datetime` or `created_at` is its printed value (`length_bp~^15`,
 `created_at~^2026-11-04`); a `ref` column, core or kind, is matched against the id it stores, never
-its aliases; `NULL` never matches, not even `field~^$`. A computed kind column can be addressed by
-`~` (its text form), while `=` applies the `--set` coercion and so refuses it.
+its aliases; `NULL` never matches a `~` pattern, not even `field~^$` (use `field=` to find empty
+values). A computed kind column can be addressed by `~` (its text form), while `=` is refused by the
+computed-field usage error, empty value included.
 
 The rules are the same everywhere:
 
@@ -591,3 +624,41 @@ The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(
 `where` **mapping** is equality only (`where={"name": "pUC19"}`); a list of strings accepts both
 operators (`where=["name~(?i)^puc", "resistance=amp"]`). Parsing, coercion and errors are the same
 code as the CLI.
+
+### 6.5 `tm skill` — which copy describes this CLI
+
+A shipped skill states the Tetramark version it was written against in its frontmatter (§10), so a
+stale copy is detectable instead of failing on its first removed command. These two commands read
+that stamp and are **ledger-free**: they never resolve or open a ledger, so they work in a directory
+that holds none.
+
+- `tm skill path [NAME]` prints the bare directory of the copy `NAME` resolves to (`tetramark` by
+  default). Resolution is `$TETRAMARK_SKILLS_DIR` first, then the checkout's `skills/`, then
+  installed package data (once the wheel ships the skills; Tetramark-bfq). `--json` prints
+  `{"name", "path", "source"}`, where `source` is `env`, `checkout` or `package`. A name that no
+  root holds exits 1 with a message naming all three roots.
+- `tm skill version [NAME] [--json]` prints one line comparing the copy's frontmatter `version:`
+  with `tm --version`:
+
+  ```
+  skill 0.8.26 (/repo/skills/tetramark/SKILL.md); tm 0.8.26; match
+  ```
+
+  `--json` prints `{"name", "skill_version", "skill_path", "tm_version", "match"}`; on a match
+  stderr is empty. `--file PATH` checks another copy instead -- a `SKILL.md` or the skill directory
+  that holds it -- which is how a stale 0.4-era export is inspected.
+
+A mismatch is a warning on stderr and exit 0, never a failure: an old skill is a documentation
+problem, not a broken ledger. The warnings live only in `tm skill version` (no other command warns
+about a stale copy):
+
+- `warning: skill 0.4.1 describes an older CLI than tm 0.8.26; use the copy at $(tm skill path) instead`
+  (`newer` when the skill claims a later CLI; exit 0 in both cases);
+- `warning: <path> carries no version; it predates versioned skills (tetramark < 0.8.25)` -- a
+  frontmatter without `version:`: `skill_version` is `null`, `match` is `false`, exit 0;
+- `warning: skill version 'devel' is not comparable with tm 0.8.26` -- a version that is not dotted
+  numeric, so no ordering is claimed; exit 0.
+
+Only a missing file or a file without YAML frontmatter exits 1. The version is the package version:
+there is no separate skill revision and no `rev:` field (§10).
+

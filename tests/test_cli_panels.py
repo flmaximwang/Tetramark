@@ -37,7 +37,7 @@ pytestmark = pytest.mark.fast
 #: The root help, as the epic defines it: panel name -> its commands, in the
 #: order they are shown.
 EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
-    "Setup": ("presets", "init", "adopt", "schema", "config", "status"),
+    "Setup": ("presets", "init", "adopt", "schema", "config", "status", "skill"),
     "Inventory": ("entity", "stock", "aliquot", "box"),
     "Lookup": ("find", "alias", "history", "lineage"),
     "Data": ("import", "export", "check"),
@@ -49,10 +49,11 @@ EXPECTED_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "presets": ("list", "show"),
     "schema": ("show", "plan", "apply"),
     "config": ("get", "set"),
+    "skill": ("path", "version"),
     "entity": ("add", "add-form", "show", "list", "edit", "rename", "purge"),
     "stock": ("add", "add-form", "aliquot", "show", "list", "edit", "renumber", "purge"),
     "aliquot": ("add", "add-form", "show", "list", "move", "use", "status", "label", "purge"),
-    "box": ("add", "add-form", "show", "list", "move", "rename", "purge"),
+    "box": ("add", "add-form", "show", "list", "edit", "move", "rename", "purge"),
     "alias": ("add", "remove"),
     "branch": ("list", "create", "delete"),
     "remote": ("add", "list", "push", "pull", "remove"),
@@ -174,7 +175,7 @@ def test_the_commands_inside_each_panel_are_in_the_expected_order(
 
 
 def test_the_root_has_exactly_the_expected_groups(root: TyperGroup) -> None:
-    """The root has exactly the ten command groups of the 0.5.0 tree."""
+    """The root has exactly the expected command groups."""
     groups = [
         name
         for name in _root_names(root)

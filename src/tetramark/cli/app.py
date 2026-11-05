@@ -39,6 +39,7 @@ from tetramark.cli.options import (
 )
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
+from tetramark.cli.skill import skill_app
 from tetramark.cli.status import status_command
 from tetramark.cli.stock import stock_app
 from tetramark.errors import EXIT_OK, LedgerError
@@ -71,6 +72,7 @@ ROOT_COMMAND_ORDER: tuple[str, ...] = (
     "schema",
     "config",
     "status",
+    "skill",
     # Inventory
     "entity",
     "stock",
@@ -221,6 +223,7 @@ app.command("adopt", rich_help_panel=PANEL_SETUP)(adopt_command)
 app.add_typer(schema_app, name="schema", rich_help_panel=PANEL_SETUP)
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_SETUP)
 app.command("status", rich_help_panel=PANEL_SETUP)(status_command)
+app.add_typer(skill_app, name="skill", rich_help_panel=PANEL_SETUP)
 
 # -- Inventory ---------------------------------------------------------------
 app.add_typer(entity_app, name="entity", rich_help_panel=PANEL_INVENTORY)

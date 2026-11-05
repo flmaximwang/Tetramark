@@ -25,6 +25,7 @@ import pytest
 from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
+from tetramark.driver.server import discard_server
 from tetramark.errors import LedgerError
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
@@ -62,6 +63,14 @@ def read_ledger(
     )
     built = build_rows(ledger)
     ledger.close()
+    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
+    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
+    # the server reports integers as strings (``'1'``), so the fixture stops it
+    # before the embedded reopen.
+    discard_server(root / "ledger")
+    assert not (root / "ledger" / ".dolt" / "sql-server.info").exists(), (
+        "a cached sql-server would route the fixture's embedded reads through it"
+    )
     ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
     try:
         yield ledger, built
@@ -148,6 +157,7 @@ def per_query_path(monkeypatch: pytest.MonkeyPatch) -> None:
         with ThreadPoolExecutor(max_workers=4) as pool:
             return list(pool.map(run, statements))
 
+    monkeypatch.setattr(EmbeddedDriver, "query_many", per_query)
 
 
 def clear(log: list[str]) -> list[str]:
@@ -381,6 +391,29 @@ def test_empty_list_does_not_start_a_process(
 # ---------------------------------------------------------------------------
 
 
+def test_per_query_path_replaces_query_many(
+    read_ledger: tuple[Ledger, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    invoke_log: list[str],
+) -> None:
+    """The comparison is only an oracle while the per-query path is installed."""
+    ledger, _ = read_ledger
+    original = EmbeddedDriver.query_many
+
+    per_query_path(monkeypatch)
+
+    assert EmbeddedDriver.query_many is not original, (
+        "per_query_path did not patch query_many: both phases would run the batch"
+    )
+    clear(invoke_log)
+    rows = ledger.stocks.ls()
+    assert rows, "the fixture has stocks"
+    json_calls = [fmt for fmt in invoke_log if fmt == "json"]
+    assert len(json_calls) > 1, (
+        f"per_query_path still made {len(json_calls)} JSON dolt sql call(s)"
+    )
+
+
 def test_list_and_show_rows_match_per_query_results(
     read_ledger: tuple[Ledger, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -417,8 +450,8 @@ def test_unknown_refs_keep_their_errors(
 ) -> None:
     ledger, _ = read_ledger
 
-    for batched in (False, True):
-        if batched:
+    for per_query in (False, True):
+        if per_query:
             per_query_path(monkeypatch)
         with pytest.raises(LedgerError, match="unknown box 'NOPE'"):
             ledger.boxes.show("NOPE")
@@ -426,3 +459,24 @@ def test_unknown_refs_keep_their_errors(
             ledger.entities.show("NOPE")
         with pytest.raises(LedgerError, match="unknown stock 'NOPE'"):
             ledger.stocks.show("NOPE")
+
+
+def test_embedded_fixture_reads_typed_integers(
+    read_ledger: tuple[Ledger, dict[str, Any]],
+) -> None:
+    """The embedded fixture reads integers, never the server's JSON strings.
+
+    A ``dolt sql-server`` left alive by the fixture's server-built ledger makes
+    Dolt route the embedded ``dolt sql -r json`` reads through that server,
+    which reports integer columns as strings (``'1'``).  With the server gone
+    the same reads come back as Python ints.
+    """
+    ledger, _ = read_ledger
+
+    seqs = [row["seq"] for row in ledger.driver.query("SELECT seq FROM aliquot")]
+    assert seqs, "the fixture has aliquots"
+    assert all(type(seq) is int for seq in seqs), seqs
+
+    totals = [row["aliquots_total"] for row in ledger.stocks.ls()]
+    assert totals, "the fixture has stocks"
+    assert all(type(total) is int for total in totals), totals

@@ -31,13 +31,16 @@ def add_box_command(
         None, "--slot", "-s", help="Slot in the parent box (slotted parents only)."
     ),
     notes: str | None = typer.Option(None, "--notes", help="Free-text notes."),
+    values: list[str] = typer.Option(
+        [], "--set", help="Field value as field=value; repeat for more fields."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the created box as JSON."),
 ) -> None:
     """Create a box and materialise its slots from the kind geometry."""
     ledger = resolve_ledger(ctx)
     try:
         result = ledger.boxes.add(
-            kind, name, parent=parent, slot=slot, notes=notes
+            kind, name, values=values, parent=parent, slot=slot, notes=notes
         )
         emit_write(
             ledger,
@@ -92,7 +95,8 @@ def list_boxes_command(
         "--where",
         "-w",
         help="Filter as field=value (exact) or field~pattern (regex); repeat to "
-        "AND filters. A regex is case-sensitive; (?i) ignores case.",
+        "AND filters; FIELD= matches empty. A regex is case-sensitive; (?i) "
+        "ignores case.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
@@ -105,6 +109,34 @@ def list_boxes_command(
             fmt=output_format(ctx, as_json),
             columns=["id", "name", "kind", "path", "occupied", "capacity"],
             short_uuid_columns=("id",),
+        )
+    finally:
+        ledger.close()
+
+
+@box_app.command("edit")
+@write_command
+def edit_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    set_values: list[str] = typer.Option(
+        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed box as JSON."),
+) -> None:
+    """Update notes or kind fields of an existing box.
+
+    A name changes only through `tm box rename`; a box moves only through
+    `tm box move`.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.boxes.edit(ref, values=set_values)
+        emit_write(
+            ledger,
+            result,
+            f"Edited box {result['name']} ({result['kind']})",
+            as_json=json_output(ctx, as_json),
         )
     finally:
         ledger.close()

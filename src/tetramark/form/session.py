@@ -58,6 +58,7 @@ def write_payload(
         return ledger.boxes.add(
             payload["kind"],
             payload["name"],
+            values=payload["values"],
             parent=payload.get("parent"),
             slot=payload.get("slot"),
             notes=payload.get("notes"),

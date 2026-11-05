@@ -55,9 +55,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      # One report, one source of truth: the three version strings, the tag
-      # state and whether this push actually moved the version. The human
-      # version of the same report is what an agent runs before merging.
+      # One report, one source of truth: every version string (pyproject,
+      # __init__, uv.lock and both SKILL.md frontmatters), the tag state and
+      # whether this push actually moved the version. The human version of the
+      # same report is what an agent runs before merging.
       - name: Check the version sources
         id: check
         env:
@@ -103,8 +104,9 @@ jobs:
           for problem in report["problems"]:
               print(f"::error::{problem}")
           PY
-          echo "Fix the bump before merging: pyproject.toml, src/tetramark/__init__.py" \
-               "and uv.lock must carry the same version." >&2
+          echo "Fix the bump before merging: pyproject.toml, src/tetramark/__init__.py," \
+               "uv.lock, skills/tetramark/SKILL.md and skills/tetramark-schema/SKILL.md" \
+               "must carry the same version." >&2
           exit 1
 
       - name: Tag the commit and publish the release

@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Check that Tetramark's three version sources agree, and report release state.
+"""Check that Tetramark's version sources agree, and report release state.
 
-The version is carried in three places, and a release is only as correct as the
+The version is carried in five places, and a release is only as correct as the
 weakest of them::
 
-    pyproject.toml             [project] version   -- the canonical value
-    src/tetramark/__init__.py  __version__         -- what `tm --version` prints
-    uv.lock                    tetramark package   -- what `uv run` resolves
+    pyproject.toml                    [project] version   -- the canonical value
+    src/tetramark/__init__.py         __version__         -- what `tm --version` prints
+    uv.lock                           tetramark package   -- what `uv run` resolves
+    skills/tetramark/SKILL.md         frontmatter version -- the shipped manual
+    skills/tetramark-schema/SKILL.md  frontmatter version -- the schema manual
 
-Bumping two of the three is the classic release mistake: the wheel then calls
-itself 0.5.1 while `tm --version` says 0.5.0.  The release workflow runs this
-script before it tags anything, and `tests/test_release_version.py` runs it in
-the fast lane, so a drift is caught before the merge.
+Bumping some of them is the classic release mistake: the wheel then calls itself
+0.5.1 while `tm --version` says 0.5.0, or the shipped skill still describes the
+previous release.  The release workflow runs this script before it tags
+anything, and `tests/test_release_version.py` runs it in the fast lane, so a
+drift is caught before the merge.
+
+The skill versions are read with a regex rather than a YAML parser: this script
+must stay stdlib-only, because the release workflow invokes it with a bare
+``python3`` outside the project's virtualenv.
 
     python3 scripts/release_check.py                  # human report
     python3 scripts/release_check.py --json           # the same report, for CI
@@ -39,6 +46,17 @@ from typing import Any
 NOTES_DIR = Path("docs") / "releases"
 INIT_FILE = Path("src") / "tetramark" / "__init__.py"
 VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
+SKILL_FILES = {
+    "skill": Path("skills") / "tetramark" / "SKILL.md",
+    "skill_schema": Path("skills") / "tetramark-schema" / "SKILL.md",
+}
+#: The skill frontmatter ``version:`` line; the same pattern lives in
+#: ``src/tetramark/skills.py`` (which this stdlib-only script cannot import).
+#: A quoted value is the convention: unquoted, YAML reads a version like
+#: ``0.9`` as a float.
+SKILL_VERSION_RE = re.compile(r'^version:\s*"?([^"\s]+)"?\s*$', re.MULTILINE)
+#: ``---`` delimited YAML frontmatter at the very start of a skill file.
+FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 
 def run(*argv: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -87,6 +105,23 @@ def lock_version(root: Path) -> str | None:
     return None
 
 
+def skill_version(root: Path, relative: Path) -> str | None:
+    """The frontmatter ``version:`` of a shipped skill, or None when absent.
+
+    Only the frontmatter is searched: the schema skill's body contains a fenced
+    ``version: 1`` preset example, which is not the skill's version.
+    """
+    try:
+        text = (root / relative).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter = FRONTMATTER_RE.match(text)
+    if frontmatter is None:
+        return None
+    match = SKILL_VERSION_RE.search(frontmatter.group(1))
+    return match.group(1) if match else None
+
+
 def tag_exists(root: Path, tag: str) -> bool:
     return run("git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}", cwd=root).returncode == 0
 
@@ -128,16 +163,18 @@ def collect(root: Path, since: str | None = None, offline: bool = False) -> dict
     canonical = pyproject_version(root)
     initial = init_version(root)
     locked = lock_version(root)
+    skills = {key: skill_version(root, path) for key, path in SKILL_FILES.items()}
     if canonical is None:
         problems.append("pyproject.toml has no [project] version")
-    for label, value, path in (
-        ("__init__.py", initial, INIT_FILE),
-        ("uv.lock", locked, Path("uv.lock")),
+    for value, path in (
+        (initial, INIT_FILE),
+        (locked, Path("uv.lock")),
+        *((skills[key], path) for key, path in SKILL_FILES.items()),
     ):
         if value is None:
-            problems.append(f"{path} does not carry a version")
+            problems.append(f"{path.as_posix()} does not carry a version")
         elif canonical is not None and value != canonical:
-            problems.append(f"{path} says {value}, pyproject.toml says {canonical}")
+            problems.append(f"{path.as_posix()} says {value}, pyproject.toml says {canonical}")
 
     version = canonical or initial or ""
     tag = f"v{version}" if version else ""
@@ -180,7 +217,7 @@ def collect(root: Path, since: str | None = None, offline: bool = False) -> dict
         "version_before": version_before,
         "version_changed": version_changed,
         "tag": tag,
-        "sources": {"pyproject": canonical, "init": initial, "lock": locked},
+        "sources": {"pyproject": canonical, "init": initial, "lock": locked, **skills},
         "notes_path": notes_path.as_posix(),
         "notes_present": notes_present,
         "tag_exists": present,
@@ -204,11 +241,13 @@ def render(report: dict[str, Any]) -> str:
         ("pyproject", "pyproject", "pyproject.toml"),
         ("__init__", "init", INIT_FILE.as_posix()),
         ("uv.lock", "lock", "uv.lock"),
+        ("skill", "skill", SKILL_FILES["skill"].as_posix()),
+        ("skill-schema", "skill_schema", SKILL_FILES["skill_schema"].as_posix()),
     ):
         value = sources[key]
         agree = value is not None and value == canonical
         lines.append(
-            f"  {label:<10} {str(value):<8} {path}" + ("" if agree else "   <-- mismatch")
+            f"  {label:<12} {str(value):<8} {path}" + ("" if agree else "   <-- mismatch")
         )
     if report["version_before"] is not None:
         moved = "moved" if report["version_changed"] else "unchanged"
