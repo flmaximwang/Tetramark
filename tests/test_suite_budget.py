@@ -94,8 +94,9 @@ def pytest_sessionfinish(session):
 '''
 
 
-# One xdist worker plus a 5 s session finish; generous for an inner session
-# under load.
+# No xdist: the plugin order is the same on a plain session (verified: the
+# pre-fix conftest exits 0 either way), and an inner worker was the slowest
+# test of a busy outer suite (54 s).  5 s of session finish.
 @pytest.mark.timeout(120)
 def test_the_fast_lane_budget_counts_the_whole_session_finish(tmp_path: Path) -> None:
     """``-m fast`` over its budget fails even when the time is spent finishing."""
@@ -117,7 +118,7 @@ def test_the_fast_lane_budget_counts_the_whole_session_finish(tmp_path: Path) ->
             "-m",
             "fast",
             "-n",
-            "1",
+            "0",
             "-p",
             "slow_finish",
             "-p",

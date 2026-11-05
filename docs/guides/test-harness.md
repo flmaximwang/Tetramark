@@ -13,7 +13,11 @@ defaults to the embedded driver.
   ten-worker load. Tetramark-0i8.x removed every avoidable process (init 3, schema plan 2,
   list 2, show 2 batches, a write session 2, open 1, …), which brought the suite from 1643 s to ~13 min. That
   is the floor of this backend: the suite still executes thousands of processes and this machine
-  tops out at 17–23 `dolt sql` starts/s.
+  tops out at 17–23 `dolt sql` starts/s. Since Tetramark-aut a `SELECT`/`WITH` read (or batch) is
+  **one** process, not two: the same script prints each statement's columns through an empty
+  temporary table (`SHOW COLUMNS`), replacing the `-r csv` header run that restored `NULL` columns.
+  The add-form also caches box rows/free slots per session and lists completions with their kind
+  in one query (choosing a kind used to cost one process per listed object).
 * **Server driver (default in the test harness).** The same statements run over the MySQL protocol
   against one `dolt sql-server` per ledger: **~0.3 s once** for the server, then **~0.3 ms per
   statement**. That is what makes the *whole* suite — including the embedded budget tests — fit in

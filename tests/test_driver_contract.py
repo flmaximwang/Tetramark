@@ -208,7 +208,7 @@ def test_query_many_propagates_errors(driver: Driver) -> None:
         )
 
 
-def test_embedded_query_many_runs_json_and_csv_once(
+def test_embedded_query_many_runs_one_json_process(
     dolt_repo: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     driver = EmbeddedDriver(dolt_repo, env=dolt_env)
@@ -231,7 +231,7 @@ def test_embedded_query_many_runs_json_and_csv_once(
     )
     assert results == [[{"a": 1, "b": None}], [], [{"d": 3}]]
     # One JSON batch for the rows, one CSV batch for the column headers.
-    assert calls == ["json", "csv"]
+    assert calls == ["json"]
 
 
 # -- backend specifics ----------------------------------------------------

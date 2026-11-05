@@ -247,13 +247,13 @@ def import_error(ledger: Ledger, path: Path) -> str:
 def test_export_all_reads_every_file_in_one_batch(
     source: Ledger, tmp_path: Path, invoke_log: list[str]
 ) -> None:
-    """An ``export all`` is one JSON read batch plus one CSV header batch."""
+    """An ``export all`` is one read batch: rows and column probes, one process."""
     ledger = source
     invoke_log.clear()
 
     exported = export_csv(ledger, "all", out_dir=tmp_path / "export")
 
-    assert invoke_log == ["json", "csv"], (
+    assert invoke_log == ["json"], (
         f"export issued {len(invoke_log)} dolt processes: {invoke_log}"
     )
     # Every file the preset can write is still written, in the same shape.
