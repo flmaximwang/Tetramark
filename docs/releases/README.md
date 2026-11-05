@@ -17,7 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
-| [0.8.30](v0.8.30.md) | `v0.8.30.md` | docs only: schema skill body 171 → 149 lines, budget lowered to 150, detail moved into the references |
+| [0.8.31](v0.8.31.md) | `v0.8.31.md` | docs only: schema skill body 171 → 149 lines, budget lowered to 150, detail moved into the references |
 | [0.8.26](v0.8.26.md) | `v0.8.26.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |
 | [0.8.25](v0.8.25.md) | `v0.8.25.md` | shipped skills carry the package version, visible and agreed by the release check; primary skill back within 150 lines |
 | [0.8.24](v0.8.24.md) | `v0.8.24.md` | docs only: `--where FIELD=` empty-field semantics in spec §6.4, the aliquot `--where` paragraph, the filters docstring, the skill reference, `SKILL.md` and the five `--where` help strings; no behaviour change |
