@@ -14,11 +14,13 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from support.read_asserts import assert_single_read_process
 from tetramark.cli.app import app
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import UsageError
 
 from conftest import PRESETS
+from support.read_asserts import assert_single_read_process
 
 BASE = PRESETS / "base"
 FULL = PRESETS / "full"
@@ -378,4 +380,4 @@ def test_a_pattern_keeps_one_read_batch(
 
     assert names(rows) == ["pUC19"]
     # One JSON batch for the rows, one CSV pass for the column names.
-    assert calls == ["json"]
+    assert_single_read_process(calls)

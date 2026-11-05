@@ -449,10 +449,10 @@ def test_aliquot_add_move_use_status_events(ledger_factory) -> None:
     assert Decimal(emptied["quantity"]) == 0
     assert emptied["status"] == "consumed"
 
-    # ``consumed`` is final in the tube set: the change needs --force + note.
+    # ``consumed`` is final in the tube set: the change needs --force + message.
     before = commit_count(ledger)
     changed = ledger.aliquots.status(
-        alq, "missing", force=True, note="tube found in the back of the shelf"
+        alq, "missing", force=True, message="tube found in the back of the shelf"
     )
     assert commit_count(ledger) == before + 1
     assert changed == {
@@ -1618,7 +1618,7 @@ def test_aliquot_show_carries_the_tube_event_trail(ledger_factory) -> None:
     alq = stock["aliquots"][0]
     ledger.aliquots.move(alq, box="OTHER", slot="B1", message="moved")
     ledger.aliquots.use(alq, "50", "ul", message="used some")
-    ledger.aliquots.status(alq, "missing", note="nowhere")
+    ledger.aliquots.status(alq, "missing", message="nowhere")
 
     shown = ledger.aliquots.show(alq)
 
@@ -1650,9 +1650,11 @@ def test_aliquot_show_carries_the_tube_event_trail(ledger_factory) -> None:
         "unit",
         "from_box_id",
         "from_box",
+        "from_box_resolved",
         "from_slot",
         "to_box_id",
         "to_box",
+        "to_box_resolved",
         "to_slot",
         "old_status",
         "new_status",
@@ -1845,7 +1847,7 @@ def test_aliquot_list_defaults_to_the_tubes_an_experiment_can_use(
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
     first, second, third = stock["aliquots"]
     ledger.aliquots.move(first, box="BOX", slot="A1", message="moved")
-    ledger.aliquots.status(second, "missing", note="not in the box")
+    ledger.aliquots.status(second, "missing", message="not in the box")
 
     listed = ledger.aliquots.ls()
     assert [row["id"] for row in listed] == [first]
@@ -1873,8 +1875,8 @@ def test_aliquot_list_status_filter_widens_the_default_scope(ledger_factory) -> 
     stock = ledger.stocks.add("lot", entity=item["id"], aliquots=3)
     first, second, third = stock["aliquots"]
     ledger.aliquots.move(first, box="BOX", slot="A1", message="moved")
-    ledger.aliquots.status(second, "missing", note="gone")
-    ledger.aliquots.status(third, "consumed", note="used up")
+    ledger.aliquots.status(second, "missing", message="gone")
+    ledger.aliquots.status(third, "consumed", message="used up")
 
     assert [row["id"] for row in ledger.aliquots.ls(status=("missing",))] == [second]
     assert [
@@ -3072,13 +3074,13 @@ def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
     # Forcing the change does not bypass the position invariant: ``stored`` is
     # in stock, so the tube needs a position, and ``consumed`` cleared it.
     with pytest.raises(LedgerError, match="tm aliquot move"):
-        ledger.aliquots.status(alq, "stored", force=True, note="found the tube")
+        ledger.aliquots.status(alq, "stored", force=True, message="found the tube")
     assert ledger.driver.query(
         "SELECT `status` FROM `aliquot` WHERE `id` = %s", (alq,)
     ) == [{"status": "consumed"}]
 
     # --force overrides a transition rule into a status that is not in stock.
-    forced = ledger.aliquots.status(alq, "missing", force=True, note="found the tube")
+    forced = ledger.aliquots.status(alq, "missing", force=True, message="found the tube")
     assert forced["forced"] is True
     last = events(ledger, alq)[-1]
     assert last["event"] == "status"
@@ -3096,8 +3098,8 @@ def test_tube_status_transitions_follow_the_to_rules(ledger_factory) -> None:
     assert moved["old_status"] == "missing"
 
 
-def test_force_requires_a_note(ledger_factory) -> None:
-    ledger = make_ledger(ledger_factory, name="force-note")
+def test_force_requires_a_message(ledger_factory) -> None:
+    ledger = make_ledger(ledger_factory, name="force-message")
     item = new_item(ledger)
     new_box(ledger, "BOX", "grid96")
     stock = ledger.stocks.add(
@@ -3105,10 +3107,42 @@ def test_force_requires_a_note(ledger_factory) -> None:
     )
     alq = stock["aliquots"][0]
     ledger.aliquots.status(alq, "consumed")
-    with pytest.raises(UsageError, match="--force requires --note"):
+    with pytest.raises(UsageError, match="--force requires -m/--message"):
         ledger.aliquots.status(alq, "stored", force=True)
-    with pytest.raises(UsageError, match="--force requires --note"):
-        ledger.aliquots.status(alq, "stored", force=True, note="   ")
+    with pytest.raises(UsageError, match="--force requires -m/--message"):
+        ledger.aliquots.status(alq, "stored", force=True, message="   ")
+
+
+def test_status_message_is_optional_trimmed_and_note_is_gone(ledger_factory) -> None:
+    """The status message is optional, trimmed, refused blank, and ``note=`` is gone."""
+    ledger = make_ledger(ledger_factory, name="status-message")
+    item = new_item(ledger)
+    new_box(ledger, "BOX", "grid96")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=2, box="BOX", slots=["A1", "A2"]
+    )
+    first, second = stock["aliquots"]
+
+    # Omitting the message is legal and stores NULL.
+    ledger.aliquots.status(first, "missing")
+    event = events(ledger, first)[-1]
+    assert event["event"] == "status"
+    assert event["message"] is None
+
+    # A given message is trimmed before it is stored.
+    ledger.aliquots.status(first, "consumed", message="  used up  ")
+    event = events(ledger, first)[-1]
+    assert event["message"] == "used up"
+
+    # A whitespace-only unforced message is a usage error and writes nothing.
+    before = commit_count(ledger)
+    with pytest.raises(UsageError, match="a status message must not be empty"):
+        ledger.aliquots.status(second, "missing", message="   ")
+    assert commit_count(ledger) == before
+
+    # The old keyword is gone: no shim and no **kwargs.
+    with pytest.raises(TypeError):
+        ledger.aliquots.status(second, "missing", note="old")  # type: ignore[call-arg]
 
 
 def test_creation_accepts_any_status_in_the_set(ledger_factory) -> None:

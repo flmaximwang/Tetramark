@@ -28,6 +28,7 @@ unchanged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -289,12 +290,36 @@ def _event_where(object_type: str, source: str) -> str:
 
 
 def _add_events(batch: _Batch, text: str) -> None:
+    """The matching event rows, with their boxes joined in the same statement.
+
+    The joins are scoped to the events this object's history reads, so a
+    history answer never reads every box in the ledger.  The two
+    ``*_box_resolved`` columns are computed here in SQL: NULL when the event
+    side has no stored box id, 1 when a live box row has it, else 0.  The
+    renderer and the JSON layer turn them into true/false/null.
+    """
     for object_type in ("entity", "stock", "aliquot", "box"):
         for source in _SOURCES[object_type]:
             where = _event_where(object_type, source)
             sql = (
-                f"SELECT * FROM {_quote('aliquot_event')} WHERE {where} "
-                f"ORDER BY {_quote('at')}, {_quote('id')}"
+                f"SELECT e.*, "
+                f"COALESCE(fb.{_quote('name')}, e.{_quote('from_box_id')}) "
+                f"AS {_quote('from_box')}, "
+                f"CASE WHEN e.{_quote('from_box_id')} IS NULL THEN NULL "
+                f"WHEN fb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
+                f"AS {_quote('from_box_resolved')}, "
+                f"COALESCE(tb.{_quote('name')}, e.{_quote('to_box_id')}) "
+                f"AS {_quote('to_box')}, "
+                f"CASE WHEN e.{_quote('to_box_id')} IS NULL THEN NULL "
+                f"WHEN tb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
+                f"AS {_quote('to_box_resolved')} "
+                f"FROM {_quote('aliquot_event')} e "
+                f"LEFT JOIN {_quote('box')} fb "
+                f"ON fb.{_quote('id')} = e.{_quote('from_box_id')} "
+                f"LEFT JOIN {_quote('box')} tb "
+                f"ON tb.{_quote('id')} = e.{_quote('to_box_id')} "
+                f"WHERE {where} "
+                f"ORDER BY e.{_quote('at')}, e.{_quote('id')}"
             )
             batch.add(f"events:{object_type}:{source}", sql, _params(text, sql))
 
@@ -436,8 +461,11 @@ def _add_extra_diffs(batch: _Batch, text: str) -> None:
 
 
 def _add_static_reads(batch: _Batch) -> None:
-    """The ref-independent reads: box names, the commit log and every alias."""
-    batch.add("box_names", f"SELECT {_quote('id')}, {_quote('name')} FROM {_quote('box')}")
+    """The ref-independent reads: the commit log and every alias.
+
+    Box names are not here: each event statement joins the box rows of its own
+    from/to refs, so a history answer reads only the boxes its events name.
+    """
     batch.add("dolt_log", f"SELECT * FROM {_quote('dolt_log')}")
     batch.add(
         "aliases",
@@ -487,15 +515,10 @@ def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
             kind_rows.extend(rows)
 
     events = [dict(row) for row in batch.rows(results, f"events:{object_type}:{source}")]
-    box_names = {
-        str(row["id"]): str(row["name"]) for row in batch.rows(results, "box_names")
-    }
     for event in events:
         for side in ("from", "to"):
-            box_id = event.get(f"{side}_box_id")
-            event[f"{side}_box"] = (
-                None if box_id is None else box_names.get(str(box_id), str(box_id))
-            )
+            resolved = f"{side}_box_resolved"
+            event[resolved] = _resolved_flag(event.get(resolved))
     commits = _commits(
         batch, results, object_type, kind_name, object_id, source, kind_rows
     )
@@ -670,13 +693,16 @@ def event_line(event: dict[str, Any]) -> str:
 
     The line is the whole event in reading order: when it happened, what
     happened, the tube it happened to, how much was used, where the tube came
-    from and went to, the status change and who did it.  Parts that the row
-    does not carry are left out, so a create event is short and a move names
-    both boxes.
+    from and went to, the status change, who did it and, last, the stored
+    message as one JSON-quoted token.  Parts that the row does not carry are
+    left out, so a create event is short and a move names both boxes.
 
-    The renderer is shared: ``tm history`` prints it under its event section
-    and ``tm aliquot show`` prints the tube's own events with it, so the two
-    renderings of the same row can never drift apart.
+    Box references use the settled resolution contract (§6.6): a live box name
+    when ``*_box_resolved`` is true, ``[unresolved box <full stored id>]`` when
+    false, and the pre-0.8.32 ``box or box_id`` behaviour when the key is
+    absent.  The renderer is shared: ``tm history`` prints it under its event
+    section and ``tm aliquot show`` prints the tube's own events with it, so
+    the two renderings of the same row can never drift apart.
     """
     parts = [
         str(event.get("at") or ""),
@@ -687,12 +713,8 @@ def event_line(event: dict[str, Any]) -> str:
     if amount is not None:
         unit = event.get("unit")
         parts.append(f"amount={amount}{'' if unit is None else ' ' + str(unit)}")
-    source = _place(
-        event.get("from_box") or event.get("from_box_id"), event.get("from_slot")
-    )
-    target = _place(
-        event.get("to_box") or event.get("to_box_id"), event.get("to_slot")
-    )
+    source = _place(event, "from")
+    target = _place(event, "to")
     if source:
         parts.append(f"from={source}")
     if target:
@@ -709,13 +731,49 @@ def event_line(event: dict[str, Any]) -> str:
         parts.append(f"status={old_status}")
     if event.get("actor"):
         parts.append(f"by={event['actor']}")
+    message = _message_token(event.get("message"))
+    if message:
+        parts.append(message)
     return " ".join(part for part in parts if part)
 
 
-def _place(box_id: Any, slot: Any) -> str:
-    if box_id is None and slot is None:
+def _resolved_flag(value: Any) -> bool | None:
+    """A SQL ``NULL``/``0``/``1`` resolution flag as Python ``None``/bool."""
+    return None if value is None else bool(value)
+
+
+def _message_token(message: Any) -> str:
+    """The last event token: the stored message as one JSON-quoted line."""
+    if message is None or message == "":
         return ""
-    text = "" if box_id is None else str(box_id)
+    encoded = json.dumps(str(message), ensure_ascii=False)
+    # json.dumps leaves these three line separators raw; escaping them is what
+    # keeps an event line exactly one physical line for str.splitlines().
+    for character, escape in (
+        ("\u0085", "\\u0085"),
+        ("\u2028", "\\u2028"),
+        ("\u2029", "\\u2029"),
+    ):
+        encoded = encoded.replace(character, escape)
+    return f"message={encoded}"
+
+
+def _place(event: dict[str, Any], side: str) -> str:
+    """The ``from``/``to`` place: the box part then an optional ``:slot``.
+
+    ``*_box_resolved`` is the settled contract: true renders the live box name,
+    false renders ``[unresolved box <full stored id>]`` with no cause, and an
+    absent key keeps the pre-0.8.32 ``box or box_id`` behaviour for callers
+    that build the dict themselves.
+    """
+    box_id = event.get(f"{side}_box_id")
+    box = event.get(f"{side}_box")
+    slot = event.get(f"{side}_slot")
+    resolved_key = f"{side}_box_resolved"
+    if resolved_key in event and event[resolved_key] is False and box_id is not None:
+        text = f"[unresolved box {box_id}]"
+    else:
+        text = "" if not (box or box_id) else str(box or box_id)
     if slot is not None:
         text = f"{text}:{slot}" if text else str(slot)
     return text

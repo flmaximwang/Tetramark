@@ -194,12 +194,19 @@ def list_stocks_command(
         "'>='; repeat to AND filters; 'FIELD=' matches empty, 'FIELD!=' "
         "matches a value. A regex is case-sensitive; '(?i)' ignores case.",
     ),
+    where_any: list[str] = typer.Option(
+        [],
+        "--where-any",
+        help="One OR group: a row must match one of these filters, ANDed "
+        "with every --where. Same syntax and operators as --where; a field "
+        "may repeat here, e.g. 'resistance=kan' or 'resistance=amp'.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
     """List stocks (optionally one kind and/or filtered)."""
     ledger = resolve_ledger(ctx)
     try:
-        rows = ledger.stocks.ls(kind, where=where)
+        rows = ledger.stocks.ls(kind, where=where, where_any=where_any)
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),

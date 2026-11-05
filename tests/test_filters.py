@@ -25,6 +25,7 @@ from tetramark.core.filters import (
     GREATER,
     GREATER_EQUAL,
     Filter,
+    build_any_condition,
     build_conditions,
     check_fields,
     empty_condition,
@@ -491,3 +492,164 @@ def test_the_where_help_names_every_operator() -> None:
     for operator in ("field=value", "field~pattern", "field!=value", "field!~pattern"):
         assert operator in result.output
     assert "field<value" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The one OR group (Tetramark-d0x.2)
+# ---------------------------------------------------------------------------
+
+
+def test_the_or_group_is_parsed_with_its_own_option_name() -> None:
+    """``--where-any`` takes every operator and the same list/mapping forms."""
+    filters = parse_filters(
+        ["resistance=kan", "count>=10", "name!~^pUC"],
+        option="--where-any",
+        allow_repeats=True,
+    )
+
+    assert filters == (
+        Filter("resistance", EQUALS, "kan"),
+        Filter("count", GREATER_EQUAL, "10"),
+        Filter("name", NOT_REGEXP, "^pUC"),
+    )
+    assert parse_filters(
+        {"resistance": "kan"}, option="--where-any", allow_repeats=True
+    ) == (Filter("resistance", EQUALS, "kan"),)
+    assert parse_filters(
+        {"name": None}, option="--where-any", allow_repeats=True
+    ) == (Filter("name", EQUALS, ""),)
+
+
+def test_the_or_group_has_no_per_field_repetition_rules() -> None:
+    """Repeating a field is the canonical ``--where-any`` use."""
+    repeated = parse_filters(
+        ["resistance=kan", "resistance=amp", "name~^pUC", "name=a"],
+        option="--where-any",
+        allow_repeats=True,
+    )
+
+    assert repeated == (
+        Filter("resistance", EQUALS, "kan"),
+        Filter("resistance", EQUALS, "amp"),
+        Filter("name", REGEXP, "^pUC"),
+        Filter("name", EQUALS, "a"),
+    )
+    # The AND group keeps both rules; ``allow_repeats`` is opt-in.
+    with pytest.raises(UsageError, match="appears twice"):
+        parse_filters(["resistance=kan", "resistance=amp"])
+    with pytest.raises(UsageError, match="both"):
+        parse_filters(["name=a", "name~^pUC"])
+
+
+def test_the_empty_errors_of_the_or_group_name_the_option() -> None:
+    """Only the repetition rules are dropped, not the empty-value ones."""
+    with pytest.raises(UsageError, match="--where-any"):
+        parse_filters(["name~"], option="--where-any", allow_repeats=True)
+    with pytest.raises(UsageError, match="--where-any"):
+        parse_filters(["name!~"], option="--where-any", allow_repeats=True)
+    with pytest.raises(UsageError, match="--where-any"):
+        parse_filters(["count<"], option="--where-any", allow_repeats=True)
+    with pytest.raises(UsageError, match="the field name is empty"):
+        parse_filters({"": "x"}, option="--where-any", allow_repeats=True)
+
+
+def test_the_or_group_is_one_parenthesised_condition() -> None:
+    """The alternatives are ORed, in order, with their parameters in order."""
+    condition, params = build_any_condition(
+        parse_filters(
+            ["name=a", "kind~^p", "count>=10"],
+            option="--where-any",
+            allow_repeats=True,
+        ),
+        expressions={"name": "`name`", "kind": "`kind`", "count": "`count`"},
+    )
+
+    assert condition == "(`name` = %s OR `kind` REGEXP %s OR `count` >= %s)"
+    assert params == ["a", "^p", "10"]
+
+
+def test_an_alternative_whose_field_a_kind_lacks_is_dropped() -> None:
+    """Per-kind scoping: a field the kind does not declare is false for it."""
+    filters = parse_filters(
+        ["supplier=acme", "batch=B1"], option="--where-any", allow_repeats=True
+    )
+
+    condition, params = build_any_condition(
+        filters, expressions={"supplier": "`supplier`"}
+    )
+    assert condition == "(`supplier` = %s)"
+    assert params == ["acme"]
+
+    condition, params = build_any_condition(
+        filters, expressions={"batch": "`batch`"}
+    )
+    assert condition == "(`batch` = %s)"
+    assert params == ["B1"]
+
+    # Every alternative dropped: the kind contributes nothing.
+    condition, params = build_any_condition(
+        filters, expressions={"kind": "`kind`"}
+    )
+    assert condition is None
+    assert params == []
+
+
+def test_no_alternative_at_all_is_no_condition() -> None:
+    """``--where-any`` absent (or empty) adds nothing to a kind's query."""
+    assert build_any_condition([], expressions={"name": "`name`"}) == (None, [])
+
+
+def test_the_or_group_shares_the_coercion_and_empty_rules() -> None:
+    """An alternative is built exactly like one ``--where`` filter."""
+    kind = _kind_with(
+        label=Field(type=FieldType.string), count=Field(type=FieldType.int)
+    )
+    coerced: list[tuple[str, str]] = []
+
+    def coerce(field: str, raw: str) -> str:
+        coerced.append((field, raw))
+        return raw.upper()
+
+    condition, params = build_any_condition(
+        parse_filters(
+            ["label=", "count=a"], option="--where-any", allow_repeats=True
+        ),
+        expressions={"label": "`label`", "count": "`count`"},
+        coerce=coerce,
+        empty=lambda field, expression: empty_condition(kind, field, expression),
+    )
+
+    assert condition == "((`label` IS NULL OR `label` = '') OR `count` = %s)"
+    assert params == ["A"]
+    assert coerced == [("count", "a")]
+
+
+def test_the_or_group_reports_its_own_option_for_a_typed_error() -> None:
+    """An ordered comparison on a field without an order names the group."""
+    kind = _kind_with(value=Field(type=FieldType.bool))
+
+    with pytest.raises(UsageError, match="--where-any"):
+        build_any_condition(
+            parse_filters(
+                ["value>1"], option="--where-any", allow_repeats=True
+            ),
+            expressions={"value": "`value`"},
+            kind=kind,
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [["entity", "list"], ["stock", "list"], ["box", "list"], ["find"]],
+    ids=["entity", "stock", "box", "find"],
+)
+def test_the_help_documents_the_or_group(command: list[str]) -> None:
+    """The four commands that filter advertise ``--where-any``."""
+    result = CliRunner().invoke(app, [*command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--where-any" in result.output
+    assert "OR group" in result.output
+    # The examples are single-quoted: the shell would read <, > and !.
+    assert "'resistance=kan'" in result.output
+    assert "'resistance=amp'" in result.output
