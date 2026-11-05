@@ -112,7 +112,7 @@ tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
 # Lookup: find, alias, history, lineage
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
-tm alias add OBJ_TYPE ID ALIAS ; tm alias remove ...
+tm alias add OBJ_TYPE REF ALIAS ; tm alias remove ...   # REF: id, alias or unique id prefix; a box also by its name
 tm history ID               # aliquot_event + dolt_log entries touching the object
 tm lineage ID [--up | --down] [--depth N] [--json] [--format text|dot]   # descent graph (see below)
 

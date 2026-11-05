@@ -915,6 +915,31 @@ def _resolve_box(session: Any, ref: str) -> dict[str, Any]:
     return _resolve_core(session, "box", ref)
 
 
+def _resolve_object_ref(session: Any, object_type: str, ref: str) -> dict[str, Any]:
+    """Resolve an ``add_alias`` reference, accepting a box's human name.
+
+    Every other box reference (``tm box show``/``move``/``rename``/``purge``,
+    ``--box`` and ``tm history``) accepts the box name, so ``tm alias add box``
+    follows the same name-first precedence as ``_resolve_box``: exact name,
+    then full id, then exact alias, then unique id prefix.  The fallback goes
+    through ``_resolve_core_with_hint`` so a plain miss keeps the ``try
+    tm find`` suffix and an ambiguous prefix stays a hint-free usage error.
+    Entity/stock/aliquot names are nullable or non-unique (and a stock has no
+    name at all), so those types keep the id/alias/prefix rules unchanged.
+
+    Only ``add_alias`` uses this: its in-session re-check stays
+    ``_resolve_core`` because ``canonical_id`` is a full id and a name-first
+    lookup could pick a different box whose name equals that id string.
+    """
+    if object_type == "box":
+        rows = session.query(
+            f"SELECT * FROM {_quote('box')} WHERE {_quote('name')} = %s", (ref,)
+        )
+        if rows:
+            return dict(rows[0])
+    return _resolve_core_with_hint(session, object_type, ref)
+
+
 def _load_record(
     session: Any, ledger: Ledger, object_type: str, object_id: str
 ) -> dict[str, Any]:
@@ -4011,7 +4036,7 @@ def add_alias(
     text = str(alias).strip()
     if not text:
         raise UsageError("an alias must not be empty")
-    resolved = _resolve_core_with_hint(ledger.driver, checked_type, str(object_id))
+    resolved = _resolve_object_ref(ledger.driver, checked_type, str(object_id))
     canonical_id = str(resolved["id"])
 
     with ledger.write(
