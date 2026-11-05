@@ -257,22 +257,41 @@ def test_stock_list_empty_kind_ref_and_core_column(
 ) -> None:
     ledger, rows = where_ledger
 
+    # Every tube here was never moved into a box, so every stock is depleted:
+    # the empty-filter assertions read the wider scope (the default stock
+    # listing is active-only) exactly as before.
     # A kind ref field: NULL on the empty and child tubes, set on the full one.
     expected = {rows["tube_empty"], rows["tube_child"]}
-    assert ids(ledger.stocks.ls(where=["purification="])) == expected
-    assert set(ids(cli_json(ledger, "stock", "list", "--where", "purification="))) == (
-        expected
-    )
+    assert ids(ledger.stocks.ls(where=["purification="], all_statuses=True)) == expected
+    assert set(
+        ids(
+            cli_json(
+                ledger, "stock", "list", "--all", "--where", "purification="
+            )
+        )
+    ) == expected
 
     # A core column: ``parent_stock_id`` is set only on the child tube.
     expected_parent = {rows["tube_full"], rows["tube_empty"]}
-    assert ids(ledger.stocks.ls(where=["parent_stock_id="])) == expected_parent
+    assert (
+        ids(ledger.stocks.ls(where=["parent_stock_id="], all_statuses=True))
+        == expected_parent
+    )
     assert set(
-        ids(cli_json(ledger, "stock", "list", "--where", "parent_stock_id="))
+        ids(
+            cli_json(
+                ledger,
+                "stock",
+                "list",
+                "--all",
+                "--where",
+                "parent_stock_id=",
+            )
+        )
     ) == expected_parent
 
     # A string kind field matches both NULL and ''.
-    assert ids(ledger.stocks.ls(where=["supplier="])) == {
+    assert ids(ledger.stocks.ls(where=["supplier="], all_statuses=True)) == {
         rows["tube_empty"],
         rows["tube_child"],
     }
@@ -359,11 +378,21 @@ def test_empty_int_and_decimal_never_match_zero(where_ledger) -> None:
     assert rows["beta"] in ids(decimal_rows)
     assert ids(ledger.entities.ls(where=["amount=0"])) == {rows["alpha"]}
 
-    # The same on the stock kind's int/decimal fields.
-    assert rows["tube_full"] not in ids(ledger.stocks.ls(where=["count="]))
-    assert rows["tube_empty"] in ids(ledger.stocks.ls(where=["count="]))
-    assert rows["tube_full"] not in ids(ledger.stocks.ls(where=["amount="]))
-    assert rows["tube_empty"] in ids(ledger.stocks.ls(where=["amount="]))
+    # The same on the stock kind's int/decimal fields.  The tubes are depleted,
+    # so the wider scope is what lists them (the default stock scope is
+    # active-only); the NULL-vs-zero rule is unchanged.
+    assert rows["tube_full"] not in ids(
+        ledger.stocks.ls(where=["count="], all_statuses=True)
+    )
+    assert rows["tube_empty"] in ids(
+        ledger.stocks.ls(where=["count="], all_statuses=True)
+    )
+    assert rows["tube_full"] not in ids(
+        ledger.stocks.ls(where=["amount="], all_statuses=True)
+    )
+    assert rows["tube_empty"] in ids(
+        ledger.stocks.ls(where=["amount="], all_statuses=True)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -472,14 +501,16 @@ def test_facades_treat_none_and_empty_as_the_list_form(where_ledger) -> None:
     ledger, rows = where_ledger
 
     cases = [
-        (ledger.entities.ls, "code"),
-        (ledger.stocks.ls, "purification"),
-        (ledger.boxes.ls, "parent_box_id"),
+        (ledger.entities.ls, "code", {}),
+        # The tubes are depleted, so the wider stock scope keeps this
+        # comparison about the empty filter, not about availability.
+        (ledger.stocks.ls, "purification", {"all_statuses": True}),
+        (ledger.boxes.ls, "parent_box_id", {}),
     ]
-    for ls, field in cases:
-        from_list = ls(where=[f"{field}="])
-        from_empty = ls(where={field: ""})
-        from_none = ls(where={field: None})
+    for ls, field, scope in cases:
+        from_list = ls(where=[f"{field}="], **scope)
+        from_empty = ls(where={field: ""}, **scope)
+        from_none = ls(where={field: None}, **scope)
         assert ids(from_list) == ids(from_empty) == ids(from_none)
 
     # The old bug turned None into the literal text "None": the row that
@@ -540,13 +571,20 @@ def test_non_empty_values_still_match_exactly(cli_env: None, where_ledger) -> No
 
     assert ids(ledger.entities.ls(where=["code=X1"])) == {rows["alpha"]}
     assert ids(ledger.entities.ls(where=["label=  "])) == {rows["delta"]}
-    assert ids(ledger.stocks.ls(where=["supplier=Acme"])) == {rows["tube_full"]}
-    assert ids(ledger.stocks.ls(where=[f"purification={rows['holder']}"])) == {
-        rows["tube_full"]
-    }
-    assert ids(ledger.stocks.ls(where=[f"parent_stock_id={rows['tube_full']}"])) == {
-        rows["tube_child"]
-    }
+    # The stock rows are depleted; the default stock listing is active-only.
+    assert ids(
+        ledger.stocks.ls(where=["supplier=Acme"], all_statuses=True)
+    ) == {rows["tube_full"]}
+    assert ids(
+        ledger.stocks.ls(
+            where=[f"purification={rows['holder']}"], all_statuses=True
+        )
+    ) == {rows["tube_full"]}
+    assert ids(
+        ledger.stocks.ls(
+            where=[f"parent_stock_id={rows['tube_full']}"], all_statuses=True
+        )
+    ) == {rows["tube_child"]}
     assert ids(ledger.boxes.ls(where=[f"parent_box_id={rows['box_top']}"])) == {
         rows["box_child"]
     }

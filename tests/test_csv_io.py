@@ -349,7 +349,9 @@ def test_explicit_legacy_ids_are_accepted(ledger_factory, tmp_path: Path) -> Non
 
     assert result.rows == 2
     assert commit_count(ledger) == before + 1
-    ids = [row["id"] for row in ledger.stocks.ls("lot")]
+    # The imported lots have no aliquots yet: empty stocks are hidden by the
+    # default active-only listing, so read the wider scope.
+    ids = [row["id"] for row in ledger.stocks.ls("lot", all_statuses=True)]
     assert ids == ["0826FP01", "0826FP02"]
 
 

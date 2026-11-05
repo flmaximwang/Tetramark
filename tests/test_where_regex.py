@@ -77,13 +77,20 @@ def test_a_pattern_filters_the_stock_list(base_ledger) -> None:
     lot = ledger.stocks.add("lot", entity=item["id"], values={"supplier": "Acme"})
     ledger.stocks.add("lot", entity=item["id"], values={"supplier": "other"})
 
-    assert [row["id"] for row in ledger.stocks.ls(where=["supplier~^Ac"])] == [
-        lot["id"]
-    ]
-    # A pattern is case-sensitive; ``(?i)`` makes it case-insensitive.
-    assert ledger.stocks.ls(where=["supplier~^ac"]) == []
+    # Both lots' tubes were never placed, so the stocks are depleted: the
+    # default stock listing is active-only, and these tests are about the
+    # pattern, so they read the wider scope.
     assert [
-        row["id"] for row in ledger.stocks.ls(where=["supplier~(?i)^ac"])
+        row["id"]
+        for row in ledger.stocks.ls(where=["supplier~^Ac"], all_statuses=True)
+    ] == [lot["id"]]
+    # A pattern is case-sensitive; ``(?i)`` makes it case-insensitive.
+    assert ledger.stocks.ls(where=["supplier~^ac"], all_statuses=True) == []
+    assert [
+        row["id"]
+        for row in ledger.stocks.ls(
+            where=["supplier~(?i)^ac"], all_statuses=True
+        )
     ] == [lot["id"]]
 
 
@@ -286,11 +293,23 @@ def test_a_cross_kind_stock_combination_still_validates_the_pattern(
     ledger.stocks.add("lot", entity=item["id"], values={"supplier": "Acme"})
     ledger.stocks.add("prep", entity=everything["id"], values={"batch": "B1"})
 
-    # ``supplier`` is a lot field and ``batch`` a prep field.
-    assert ledger.stocks.ls(where=["supplier=Acme", "batch=B1"]) == []
-    assert ledger.stocks.ls(where=["supplier~^Ac", "batch~^B"]) == []
+    # ``supplier`` is a lot field and ``batch`` a prep field.  Both stocks are
+    # depleted, so the wider scope keeps these assertions about the kind rule
+    # instead of the default active listing.
+    assert (
+        ledger.stocks.ls(
+            where=["supplier=Acme", "batch=B1"], all_statuses=True
+        )
+        == []
+    )
+    assert (
+        ledger.stocks.ls(
+            where=["supplier~^Ac", "batch~^B"], all_statuses=True
+        )
+        == []
+    )
     with pytest.raises(UsageError) as error:
-        ledger.stocks.ls(where=["supplier~[", "batch~x"])
+        ledger.stocks.ls(where=["supplier~[", "batch~x"], all_statuses=True)
     assert "supplier~[" in str(error.value)
 
 

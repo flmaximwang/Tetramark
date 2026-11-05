@@ -221,9 +221,31 @@ def test_stock_list_runs_one_batched_read(
 
     rows = ledger.stocks.ls()
 
-    # Kinds in sorted order (bacterial, lot, prep), each kind's rows by id.
-    assert [row["kind"] for row in rows] == ["bacterial", "lot", "lot", "prep"]
+    # The default scope is active-only: the `lot` with a tube in SHELF-1 and
+    # the placed stock, in kind order (bacterial, lot, prep) and then by id
+    # within the kind.
+    assert [row["kind"] for row in rows] == ["lot", "lot"]
     assert [row["id"] for row in rows] == [
+        built["stocks"][0]["id"],
+        built["stocks"][3]["id"],
+    ]
+    assert_single_read_process(invoke_log)
+
+    # The columns the list table prints come from the same batched read: the
+    # owning design's name, how many tubes are still on the shelf and the
+    # status derived from them.
+    by_id = {row["id"]: row for row in rows}
+    placed = by_id[built["stocks"][3]["id"]]
+    assert placed["entity_name"] == "alpha"
+    assert placed["aliquots_in_stock"] == 1
+    assert placed["status"] == "active"
+
+    # ``all_statuses=True`` is the same single batch: the empty and depleted
+    # rows come back in the same kind-then-id order.
+    clear(invoke_log)
+    all_rows = ledger.stocks.ls(all_statuses=True)
+    assert [row["kind"] for row in all_rows] == ["bacterial", "lot", "lot", "prep"]
+    assert [row["id"] for row in all_rows] == [
         built["stocks"][1]["id"],
         built["stocks"][0]["id"],
         built["stocks"][3]["id"],
@@ -231,16 +253,12 @@ def test_stock_list_runs_one_batched_read(
     ]
     assert_single_read_process(invoke_log)
 
-    # The columns the list table prints come from the same batched read: the
-    # owning design's name, how many tubes are still on the shelf and the
-    # status derived from them (a stock with no aliquots is empty).
-    by_id = {row["id"]: row for row in rows}
-    placed = by_id[built["stocks"][3]["id"]]
-    assert placed["entity_name"] == "alpha"
-    assert placed["aliquots_in_stock"] == 1
-    assert placed["status"] == "active"
+    all_by_id = {row["id"]: row for row in all_rows}
+    depleted = all_by_id[built["stocks"][1]["id"]]
+    assert depleted["aliquots_in_stock"] == 0
+    assert depleted["status"] == "depleted"
 
-    prep = by_id[built["stocks"][2]["id"]]
+    prep = all_by_id[built["stocks"][2]["id"]]
     assert prep["aliquots_in_stock"] == 0
     assert prep["status"] == "empty"
 
@@ -406,13 +424,16 @@ def test_per_query_path_replaces_query_many(
     assert EmbeddedDriver.query_many is not original, (
         "per_query_path did not patch query_many: both phases would run the batch"
     )
-    clear(invoke_log)
-    rows = ledger.stocks.ls()
-    assert rows, "the fixture has stocks"
-    json_calls = [fmt for fmt in invoke_log if fmt == "json"]
-    assert len(json_calls) > 1, (
-        f"per_query_path still made {len(json_calls)} JSON dolt sql call(s)"
-    )
+    # Both stock scopes still fan out to one query per kind on the old path.
+    for scope in ({}, {"all_statuses": True}):
+        clear(invoke_log)
+        rows = ledger.stocks.ls(**scope)
+        assert rows, f"the fixture has stocks (scope={scope})"
+        json_calls = [fmt for fmt in invoke_log if fmt == "json"]
+        assert len(json_calls) > 1, (
+            f"per_query_path still made {len(json_calls)} JSON dolt sql "
+            f"call(s) (scope={scope})"
+        )
 
 
 def test_list_and_show_rows_match_per_query_results(
@@ -425,6 +446,7 @@ def test_list_and_show_rows_match_per_query_results(
         "entities": ledger.entities.ls(),
         "entities_item": ledger.entities.ls("item"),
         "stocks": ledger.stocks.ls(),
+        "stocks_all": ledger.stocks.ls(all_statuses=True),
         "boxes": ledger.boxes.ls(),
         "box_grid": ledger.boxes.show("BOX-1"),
         "box_shelf": ledger.boxes.show("SHELF-1"),
@@ -438,6 +460,7 @@ def test_list_and_show_rows_match_per_query_results(
     assert ledger.entities.ls() == batched["entities"]
     assert ledger.entities.ls("item") == batched["entities_item"]
     assert ledger.stocks.ls() == batched["stocks"]
+    assert ledger.stocks.ls(all_statuses=True) == batched["stocks_all"]
     assert ledger.boxes.ls() == batched["boxes"]
     assert ledger.boxes.show("BOX-1") == batched["box_grid"]
     assert ledger.boxes.show("SHELF-1") == batched["box_shelf"]

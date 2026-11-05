@@ -119,7 +119,12 @@ def test_the_or_group_scopes_itself_per_kind_on_the_stock_list(ledger) -> None:
         "bacterial", entity=host["id"], values={"strain": "BL21"}
     )
 
-    rows = ledger.stocks.ls(where_any=["supplier=acme", "batch=B1"])
+    # None of these lots has an aliquot yet, so the derived-status default
+    # would hide every one of them; the OR group's per-kind scoping is what
+    # this test is about, so read every status.
+    rows = ledger.stocks.ls(
+        where_any=["supplier=acme", "batch=B1"], all_statuses=True
+    )
 
     assert ids(rows) == [lot_acme["id"], prep_b1["id"]]
     assert [row["kind"] for row in rows] == ["lot", "prep"]
@@ -189,8 +194,11 @@ def test_a_kind_missing_a_where_field_contributes_nothing(ledger) -> None:
 
     # ``strain`` is a bacterial field: the lot is dropped by the AND group,
     # even though the OR group has an alternative its kind could express.
+    # The lots are derived-status empty, so read every status.
     rows = ledger.stocks.ls(
-        where=["strain=BL21"], where_any=["kind=bacterial", "kind=lot"]
+        where=["strain=BL21"],
+        where_any=["kind=bacterial", "kind=lot"],
+        all_statuses=True,
     )
 
     assert ids(rows) == [bl21["id"]]
@@ -344,8 +352,12 @@ def test_the_or_group_keeps_one_read_batch(
 
     query_many_calls.clear()
     invoke_calls.clear()
-    assert ids(ledger.stocks.ls(where_any=["supplier=acme", "batch=B1"])) == [
-        lot["id"]
-    ]
+    # The lot has no aliquot, so it is derived-status empty: ask for every
+    # status.  The scope is a predicate in the same statement, so the one
+    # batch and the one read process are unchanged.
+    stock_rows = ledger.stocks.ls(
+        where_any=["supplier=acme", "batch=B1"], all_statuses=True
+    )
+    assert ids(stock_rows) == [lot["id"]]
     assert len(query_many_calls) == 1
     assert_single_read_process(invoke_calls)

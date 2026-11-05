@@ -144,7 +144,7 @@ vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
 ```sh
 tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
-tm stock list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm box list [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 ```
@@ -273,7 +273,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
-tm stock list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 tm stock purge ID|ALIAS [--json]
 tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...] [--json]
@@ -292,9 +292,12 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
   **Aliquots** below).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
-  owning design's name, printed in full. `status` is derived from the aliquots: `empty` (none),
-  `active` (at least one in stock) or `depleted` (every aliquot has left stock). `--where` takes the
-  shared filters and `--where-any` OR group (see **Filters** above).
+  owning design's name, printed in full. By default it lists only the `active` stocks (at least one
+  aliquot in stock); `--all` adds the `empty` and `depleted` ones, with the same columns. `status` is
+  derived from the aliquots: `empty` (none), `active` (at least one in stock) or `depleted` (it has
+  aliquots, but none in stock — an unplaced tube is not in stock either); it is a derived column, not
+  a `--where` field. `--where` takes the shared filters and `--where-any` OR group (see
+  **Filters** above).
 - `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**

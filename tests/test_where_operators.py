@@ -572,27 +572,31 @@ def test_the_three_listings_filter_with_the_new_operators(
     }
 
     # The stock list: a kind string field with a value, '' and NULL rows.
-    assert ids(ledger.stocks.ls(where=["batch>B1"])) == {second["id"]}
-    assert ids(ledger.stocks.ls(where=["batch!=B1"])) == {
+    # These lots have no aliquots yet, so the derived-status default would hide
+    # them; the operators are what this test is about, so read every status.
+    assert ids(ledger.stocks.ls(where=["batch>B1"], all_statuses=True)) == {
+        second["id"]
+    }
+    assert ids(ledger.stocks.ls(where=["batch!=B1"], all_statuses=True)) == {
         second["id"],
         empty["id"],
         null["id"],
     }
-    assert ids(ledger.stocks.ls(where=["batch!~^B"])) == {
+    assert ids(ledger.stocks.ls(where=["batch!~^B"], all_statuses=True)) == {
         empty["id"],
         null["id"],
     }
-    assert ids(ledger.stocks.ls(where=["batch="])) == {
+    assert ids(ledger.stocks.ls(where=["batch="], all_statuses=True)) == {
         empty["id"],
         null["id"],
     }
-    assert ids(ledger.stocks.ls(where=["batch!="])) == {
+    assert ids(ledger.stocks.ls(where=["batch!="], all_statuses=True)) == {
         first["id"],
         second["id"],
     }
-    assert ids(cli_json(ledger, "stock", "list", "--where", "batch>B1")) == {
-        second["id"]
-    }
+    assert ids(
+        cli_json(ledger, "stock", "list", "--all", "--where", "batch>B1")
+    ) == {second["id"]}
 
     # The box list: core text columns.
     assert ids(ledger.boxes.ls(where=["name<BOX-B"])) == {box_a["id"]}

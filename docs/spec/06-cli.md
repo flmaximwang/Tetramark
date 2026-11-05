@@ -92,7 +92,7 @@ tm entity purge ID|ALIAS                    # hard delete, explicit only; one co
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...] [--where-any FILTER ...]
+tm stock show|list|edit ...                 # list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
@@ -409,9 +409,14 @@ portability     no warnings
 - Aliquot IDs: `<stock_id>.<seq>`, seq = max+1 within the stock.
 
 **A list verb defaults to what is available.** When the object has an availability notion, its
-`list` prints what can be used now, not the whole history: `tm aliquot list` hides the tubes that
-left stock unless `--all` or an explicit `--status` names them. Future list verbs follow the same
-rule; the entity/stock/box lists have no availability notion and keep printing every row.
+`list` prints what can be used now, not the whole history. `tm aliquot list` hides the tubes that
+left stock unless `--all` or an explicit `--status` names them. `tm stock list` prints only the
+stocks whose derived status is `active` (at least one aliquot in stock) unless `--all`; `--all` adds
+the `empty` and `depleted` stocks. `status` is a derived view column, **not** a `--where` field:
+`tm stock list --where 'status=active'` is the unknown-field usage error (exit 2), with or without
+`--all`. The Python API mirrors the CLI — `ledger.stocks.ls(all_statuses=False)` is the default
+scope and `all_statuses=True` is `--all`. The entity and box lists have no availability notion and
+keep printing every row.
 
 List tables abbreviate uuid ids the way git abbreviates hashes: `tm entity list` and `tm stock list`
 print the shortest **unique** prefix of at least 8 characters (ids that share the first 8 grow
@@ -430,9 +435,12 @@ in full, never truncated.
   the number of the entity's stocks whose derived status is `active` (at least one aliquot in stock);
   depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots of all the
   entity's stocks. Both are `0` for an entity without stocks.
-- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. `entity_name` is
-  the owning design's name. `status` is derived from the aliquots: `empty` when the stock has none,
-  `active` when at least one is in stock, and `depleted` when every aliquot has left stock.
+- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. By default it
+  lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
+  `depleted` rows, with the same columns. `entity_name` is the owning design's name. `status` is
+  derived from the aliquots: `empty` when the stock has none, `active` when at least one aliquot is
+  in stock, and `depleted` when it has aliquots but none of them is in stock (a tube that was never
+  placed in a box is not in stock either).
 - `tm box list` prints `id name kind path occupied capacity`. The table shortens `id` to a unique
   prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
   `occupied` counts the aliquots and the immediate child boxes directly in the box, counting items
@@ -672,7 +680,8 @@ A computed kind column is accepted by `~` and `!~` as described above; view-deri
 the unknown-field usage error above. When a field is declared by only some of the kinds being listed,
 only those kinds are read: a kind without **every** filtered field contributes no rows rather than
 ignoring the filter (`tm stock list --where 'induction=iptg'` reads the stock kinds that declare
-`induction` and not the others). On `tm find` the valid set is wider — the core columns of entity,
+`induction` and not the others; like every `tm stock list`, it shows active stocks, so add `--all`
+for every status). On `tm find` the valid set is wider — the core columns of entity,
 stock and box and the fields of every entity/stock/box kind — and a filtered field that only some
 kinds have simply excludes the other kinds from the result.
 
@@ -758,7 +767,9 @@ exit-1 message stays `no match for '<QUERY>'` and appends `(also tried: '<REWRIT
 
 The Python API mirrors the CLI: `ledger.find(query=None, *, regex=False, where=(), where_any=(),
 with_rewrite=False)`, `ledger.entities.ls(kind=None, *, where=(), where_any=())`,
-`ledger.stocks.ls(...)` and `ledger.boxes.ls(...)`. A `where`/`where_any` **mapping** is equality
+`ledger.stocks.ls(kind=None, *, where=(), where_any=(), all_statuses=False)` and
+`ledger.boxes.ls(...)`; the stock default lists only active stocks, exactly like the CLI, and
+`all_statuses=True` is `--all`. A `where`/`where_any` **mapping** is equality
 only (`where={"name": "pUC19"}`): its key is the field and its value is the value, so an operator is
 never parsed from either (`{"name": "pUC19~x"}` compares the text `pUC19~x`), and a `None` or `""`
 value still means "the field is empty". A list of strings accepts every operator

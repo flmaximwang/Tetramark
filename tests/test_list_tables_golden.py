@@ -3,9 +3,14 @@
 ``tests/data/golden/stock_list.table`` pins the default table of ``tm stock
 list``: the column set and order (``id kind entity_id entity_name
 aliquots_in_stock status``), the shortened uuid ``entity_id``, an entity name
-long enough to prove names print in full, and the derived ``status`` values --
-``empty`` for a stock without aliquots, ``depleted`` when every aliquot has
-left stock and ``active`` while at least one is still in stock.
+long enough to prove names print in full, and only the ``active`` row -- the
+default scope hides the stocks whose derived ``status`` is ``empty`` (no
+aliquots) or ``depleted`` (every aliquot has left stock).
+
+``tests/data/golden/stock_list_all.table`` pins the same table for ``tm stock
+list --all``: the empty and depleted rows come back with the active one, in
+the same column set and order, so the ``--all`` widening has its own stable
+golden and the default file stays active-only.
 
 ``tests/data/golden/entity_list.table`` pins the default table of ``tm entity
 list``: the column set and order (``id kind name stocks_available
@@ -198,13 +203,18 @@ def _build_boxes(ledger) -> None:
 
 
 def test_stock_list_golden_table(cli_env: None, ledger_factory) -> None:
-    """The default list table: columns, full entity name, derived statuses."""
+    """The default table is active-only; ``--all`` adds the other statuses."""
     ledger = ledger_factory(
         [REPO_PRESETS / "base.yaml"], name="golden-stock-list", id_prefix="77"
     )
     _build_stocks(ledger)
 
+    # The default scope: exactly the stock with a tube still in stock.
     _assert_golden(_table(ledger, "stock", "list"), "stock_list.table")
+    # ``--all``: the same columns with the empty and depleted rows restored.
+    _assert_golden(
+        _table(ledger, "stock", "list", "--all"), "stock_list_all.table"
+    )
 
 
 def test_entity_list_golden_table(cli_env: None, ledger_factory) -> None:

@@ -185,16 +185,18 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
     stock_id = stock["id"]
     assert not is_uuid4(stock_id)  # datecode ids are never shortened
 
-    stock_table = invoke(ledger, "stock", "list")
+    # The tube was never moved into a box, so the stock is depleted: the
+    # default listing is active-only, and --all is what prints this row.
+    stock_table = invoke(ledger, "stock", "list", "--all")
     assert stock_table.exit_code == 0, stock_table.output
     assert entity_id[:8] in _row_tokens(stock_table.output, stock_id)
     assert entity_id not in stock_table.output
     assert stock_id in stock_table.output
 
-    stock_json = json.loads(invoke(ledger, "--json", "stock", "list").output)
+    stock_json = json.loads(invoke(ledger, "--json", "stock", "list", "--all").output)
     assert stock_json[0]["entity_id"] == entity_id
 
-    stock_csv = invoke(ledger, "--format", "csv", "stock", "list")
+    stock_csv = invoke(ledger, "--format", "csv", "stock", "list", "--all")
     assert stock_csv.exit_code == 0, stock_csv.output
     assert f"{stock_id},lot,{entity_id},alpha,0,depleted" in (
         stock_csv.output.splitlines()
