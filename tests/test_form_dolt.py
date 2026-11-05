@@ -302,6 +302,8 @@ def test_stock_add_without_aliquots_still_creates_one(
             "lot",
             "--entity",
             item["id"],
+            "--set",
+            "supplier=Acme",
             "--json",
         ],
     )
