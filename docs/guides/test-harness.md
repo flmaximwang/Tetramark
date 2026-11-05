@@ -35,10 +35,13 @@ uv run pytest -q -m fast      # Dolt-free unit tests: 30 s ceiling
 
 The limits are enforced by the suite itself, not by a wrapper:
 
-- **Session wall clock — 300 s.** `tests/conftest.py` starts a timer on the pytest controller at
-  `pytest_sessionstart`, collects every test's call duration, and on `pytest_sessionfinish` prints
-  the elapsed time and the 25 slowest tests, sets the exit status non-zero, and fails the run even
-  if every test passed. `TETRAMARK_SUITE_BUDGET_SECONDS=<seconds>` overrides the budget for
+- **Session wall clock — 300 s.** `tests/conftest.py` starts a timer on the pytest controller in
+  `pytest_configure` (first), collects every test's call duration, and in a `trylast`
+  `pytest_sessionfinish` — after xdist's worker teardown and pytest's own tmp_path cleanup, which
+  are part of the run — prints the elapsed time and the 25 slowest tests, sets the exit status
+  non-zero, and fails the run even if every test passed. (Before Tetramark-aut the check ran
+  before the tmp_path plugin deleted old `pytest-N` directories, so a loaded machine could spend
+  minutes there unseen: a 158 s fast lane exited 0.) `TETRAMARK_SUITE_BUDGET_SECONDS=<seconds>` overrides the budget for
   profiling; an empty value disables the guard.
 - **Fast lane — 30 s.** The same guard selects 30 s when the mark expression contains `fast`.
 - **Per-test timeout — 60 s.** `pytest-timeout` is in the dev group and
@@ -68,7 +71,14 @@ The fast lane is ~2.5 s (729 passed).
 - a subprocess (CLI, migration script) **borrows** the parent's server through that sidecar instead
   of failing to start a second one (a database directory allows only one `dolt sql-server`);
 - every owned server is killed on eviction, on `pytest_sessionfinish`/`pytest_unconfigure`, and at
-  interpreter exit. A green run leaves **zero** `dolt sql-server` children.
+  interpreter exit. A green run leaves **zero** `dolt sql-server` children;
+- a run that is *killed* (SIGKILL, a cancelled agent command, a crashed worker) cannot clean up, and
+  its servers are reparented to pid 1. Each new session therefore starts with
+  `tetramark.driver.server.reap_orphaned_servers()`: a reparented `dolt sql-server` in Tetramark's
+  exact argv shape is stopped when its ledger lies under pytest's per-user temp root or its sidecar
+  names an owner pid that has exited. A server whose owner is alive is never a candidate, whoever
+  owns it. Left alone, leaked servers starved later runs into timeouts that leaked more servers
+  (issue #68: 100 live servers, 641 s).
 
 ## 4. Fixtures and layout
 
@@ -89,7 +99,9 @@ tests/test_server_driver.py                       server-backend contract, cache
 
 - Use `ledger_factory([...])` for "a normal ledger of this shape"; it returns an opened `Ledger`.
   Under the server default that `Ledger` talks to a `dolt sql-server`, exactly like `tm` would.
-- **Session templates are built once per pytest worker and then copied.** `LedgerTemplates.ledger()`
+- **Session templates are built once per pytest session and then copied.** All xdist workers share
+  `<session basetemp>/ledger-templates/`; the first worker that needs a shape builds it under an
+  exclusive `flock` and writes `<key>.ready`, the others wait and copy. `LedgerTemplates.ledger()`
   closes the `Ledger` `init_ledger` returns and (with the server backend) stops its cached server before
   publishing the path, so `install()` always copies a **closed** directory: no server is mutating
   it and no discovery file points at a live port.

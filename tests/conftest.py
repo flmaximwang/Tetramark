@@ -29,12 +29,14 @@ presets, another ``id_prefix``/``author`` — keeps the real init path; see
 
 from __future__ import annotations
 
+import fcntl
 import itertools
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -193,14 +195,57 @@ _CONTROLLER: pytest.Session | None = None
 _SLOW_TESTS: list[tuple[float, str]] = []
 
 
+#: Controller clock start, set in ``pytest_configure`` (``None`` on xdist
+#: workers).  The budget covers the whole run: worker start-up, collection,
+#: tests, worker teardown and every plugin's session-finish cleanup.
+_SUITE_STARTED: float | None = None
+
+
+def _scratch_root(config: pytest.Config) -> Path:
+    """The temporary tree this harness owns (pytest's per-user base temp root)."""
+    basetemp = config.getoption("basetemp", default=None)
+    if basetemp:
+        return Path(basetemp).resolve()
+    from _pytest.tmpdir import get_user
+
+    return Path(tempfile.gettempdir(), f"pytest-of-{get_user() or 'unknown'}")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Start the budget clock and reap servers that killed runs abandoned.
+
+    A run that is killed (Ctrl-C twice, a cancelled agent command, a worker
+    crash) never reaches :func:`shutdown_all_servers`, so its ``dolt
+    sql-server`` children are reparented to pid 1 and keep their memory.  Left
+    alone they starve every later run, whose timeouts then leak more servers.
+    Only reparented servers in Tetramark's argv shape whose ledger lives in this
+    harness's temporary tree (or whose recorded owner has exited) are stopped.
+    """
+    global _SUITE_STARTED
+    if hasattr(config, "workerinput"):
+        return
+    _SUITE_STARTED = time.monotonic()
+    try:
+        from tetramark.driver.server import reap_orphaned_servers
+    except Exception:  # pragma: no cover - PyMySQL absent
+        return
+    reaped = reap_orphaned_servers(scratch_root=_scratch_root(config))
+    if reaped:
+        print(
+            f"tetramark: stopped {len(reaped)} orphaned dolt sql-server "
+            "process(es) left by an interrupted run",
+            file=sys.stderr,
+        )
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Start the wall-clock budget on the controller (never on xdist workers)."""
+    """Remember the controller session (never on xdist workers)."""
     global _CONTROLLER, _SLOW_TESTS
     if hasattr(session.config, "workerinput"):
         return
     _CONTROLLER = session
     _SLOW_TESTS = []
-    session._tetramark_started = time.monotonic()  # type: ignore[attr-defined]
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -214,8 +259,16 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     _SLOW_TESTS.append((report.duration, report.nodeid))
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Stop servers, then enforce the wall-clock budget on the controller."""
+    """Stop servers, then enforce the wall-clock budget on the controller.
+
+    ``trylast`` puts the check after every other ``sessionfinish``.  Plugins
+    registered before this conftest -- pytest's own tmp_path plugin among them
+    -- are otherwise called *after* it: that plugin deletes old ``pytest-N``
+    directories full of Dolt ledgers, which under load took minutes that the
+    old guard never saw (a 158 s fast lane exited 0; GitHub issue #68).
+    """
     try:
         from tetramark.driver.server import (
             server_start_count,
@@ -238,10 +291,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     if hasattr(session.config, "workerinput"):
         return
-    started = getattr(session, "_tetramark_started", None)
-    if started is None:  # pragma: no cover - sessionstart always ran
+    if _SUITE_STARTED is None:  # pragma: no cover - configure always ran
         return
-    elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - _SUITE_STARTED
     budget = _suite_budget_seconds(session.config)
     if budget is None or elapsed <= budget:
         return
@@ -501,11 +553,15 @@ class LedgerTemplates:
     directory to the test's target path (the ledgers are otherwise identical to
     a fresh init — same schema, ``ledger_meta``, generated ``dolt_tests``, same
     two commits).  A ledger is one directory, so the copy needs no workspace.
+
+    The root is shared by every xdist worker of the session: the first worker
+    that needs a shape builds it under an exclusive ``flock`` and publishes a
+    ``<key>.ready`` marker; the others wait for the lock and copy the same
+    closed directory.  One init per shape per *session*, not per worker.
     """
 
-    def __init__(self, root: Path, env: dict[str, str]) -> None:
+    def __init__(self, root: Path) -> None:
         self._root = root
-        self._env = env
         self._ledgers: dict[str, Path] = {}
 
     def ledger(self, key: str) -> Path:
@@ -519,21 +575,32 @@ class LedgerTemplates:
         """
         if key not in self._ledgers:
             target = self._root / f"{key}-template"
-            ledger = init_ledger(
-                target,
-                TEMPLATE_LEDGER_NAME,
-                list(TEMPLATE_SHAPES[key]),
-                id_prefix=TEMPLATE_ID_PREFIX,
-                author=FACTORY_AUTHOR,
-                env=self._env,
-            )
-            try:
-                assert isinstance(ledger, Ledger)
-            finally:
-                ledger.close()
-                _discard_server(target)
+            ready = self._root / f"{key}.ready"
+            with open(self._root / f"{key}.lock", "w", encoding="utf-8") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if not ready.exists():
+                    # A half-built directory from a worker that died mid-init.
+                    shutil.rmtree(target, ignore_errors=True)
+                    self._build(key, target)
+                    ready.touch()
             self._ledgers[key] = target
         return self._ledgers[key]
+
+    def _build(self, key: str, target: Path) -> None:
+        env = isolated_env(self._root / key / "dolt-root", self._root / key / "home")
+        ledger = init_ledger(
+            target,
+            TEMPLATE_LEDGER_NAME,
+            list(TEMPLATE_SHAPES[key]),
+            id_prefix=TEMPLATE_ID_PREFIX,
+            author=FACTORY_AUTHOR,
+            env=env,
+        )
+        try:
+            assert isinstance(ledger, Ledger)
+        finally:
+            ledger.close()
+            _discard_server(target)
 
     def install(
         self,
@@ -553,9 +620,18 @@ class LedgerTemplates:
 
 @pytest.fixture(scope="session")
 def template_ledgers(tmp_path_factory: pytest.TempPathFactory) -> LedgerTemplates:
-    """The session's pre-built ledgers, one per standard shape (lazily built)."""
-    root = tmp_path_factory.mktemp("ledger-templates")
-    return LedgerTemplates(root, isolated_env(root / "dolt-root", root / "home"))
+    """The session's pre-built ledgers, one per standard shape (lazily built).
+
+    Under xdist every worker's base temp is ``<session base>/popen-gwN``, so the
+    parent is the one directory all workers of *this* session share (and no
+    other session sees).
+    """
+    base = tmp_path_factory.getbasetemp()
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        base = base.parent
+    root = base / "ledger-templates"
+    root.mkdir(exist_ok=True)
+    return LedgerTemplates(root)
 
 
 @pytest.fixture

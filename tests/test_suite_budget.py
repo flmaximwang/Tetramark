@@ -71,3 +71,67 @@ def test_an_empty_budget_disables_the_guard(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "SUITE TIME BUDGET EXCEEDED" not in result.stdout + result.stderr
+
+
+#: A plugin for the inner session: a 3 s fast-lane budget, and a controller
+#: ``sessionfinish`` that takes 5 s.  A ``-p`` plugin is registered before
+#: ``tests/conftest.py``, so pluggy calls its hook *after* an unmarked conftest
+#: hook -- exactly like pytest's own tmp_path plugin, whose session-finish
+#: cleanup deletes old ``pytest-N`` directories full of Dolt ledgers.  Under
+#: load that cleanup took minutes while the guard had already stopped its
+#: clock, so fast-lane runs of 86 s and 158 s exited 0 (GitHub issue #68).
+SLOW_FINISH_PLUGIN = '''
+import sys, time
+
+def pytest_configure(config):
+    for name, module in list(sys.modules.items()):
+        if name.endswith("conftest") and hasattr(module, "FAST_SUITE_BUDGET_SECONDS"):
+            module.FAST_SUITE_BUDGET_SECONDS = 3.0
+
+def pytest_sessionfinish(session):
+    if not hasattr(session.config, "workerinput"):
+        time.sleep(5)
+'''
+
+
+# One xdist worker plus a 5 s session finish; generous for an inner session
+# under load.
+@pytest.mark.timeout(120)
+def test_the_fast_lane_budget_counts_the_whole_session_finish(tmp_path: Path) -> None:
+    """``-m fast`` over its budget fails even when the time is spent finishing."""
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "slow_finish.py").write_text(SLOW_FINISH_PLUGIN, encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("TETRAMARK_SUITE_BUDGET_SECONDS", None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(plugins), str(ROOT / "src")]
+        + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-m",
+            "fast",
+            "-n",
+            "1",
+            "-p",
+            "slow_finish",
+            "-p",
+            "no:cacheprovider",
+            str(ROOT / "tests" / "test_ids.py"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=110,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "SUITE TIME BUDGET EXCEEDED" in output
+    assert "> 3s" in output
