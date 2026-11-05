@@ -149,47 +149,74 @@ tm box list [--where FILTER ...] [--json]
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--with-rewrite] [--json]
 ```
 
-- `FILTER` is `field=value` (exact) or `field~pattern` (regex). It is split at the first `=` or `~`, so
-  the value may contain either; the field name must be an identifier and is case-sensitive.
+- `FILTER` is one of `field=value` (exact), `field~pattern` (regex), `field!=value`,
+  `field!~pattern`, and the ordered comparisons `field<value`, `field<=value`, `field>value`,
+  `field>=value`. The operator is the one that follows the field name, so the value may contain
+  `=`, `~`, `!`, `<` and `>`; the field name must be an identifier and is case-sensitive;
+  whitespace before the name and between the name and the operator is skipped, and the value is
+  everything after the operator, verbatim.
 - `=` applies the field's schema coercion on a kind field (`enum` checked, `ref` resolves an id or
   alias, numbers/dates parsed); a core column is compared as written, so `entity_id` takes the stored
   id, not an alias.
+- `field!=value` is the complement of `field=`: another value, and the `NULL` rows (the same
+  coercion, the same core-column rule). `--where 'notes!=checked'` finds the rows whose `notes` is
+  something else, including rows without `notes`.
 - `field=` (an empty value) finds the rows where the field is empty: `NULL` or `''` on a text-like
   column (kind `string`/`text`/`enum`/`sequence`/`ref`, and every core column except `created_at`),
   `NULL` only on a non-text one (kind `int`/`decimal`/`bool`/`date`/`datetime`, core `created_at`;
   a stored `0` never matches).
   It skips the schema coercion and alias resolution above, so an empty `ref`/`enum`/`int` is not
-  resolved or parsed; `none`/`null` stay literal and whitespace-only values are not special. There is
-  no "not empty" operator: use `field~.`.
+  resolved or parsed; `none`/`null` stay literal and whitespace-only values are not special.
+  `field!=` (an empty value) is its complement: the rows that have a value, the `NULL` and empty
+  rows excluded — the "this field is filled in" filter.
 - `~` matches the column's **text form** with a regex: a *search* (unanchored; anchor with `^`/`$`),
   **case-sensitive** (`(?i)` ignores case), compiled by Dolt in its ICU dialect (`\d`, `\p{L}`,
   lookarounds; not Python `re`). An `int`/`date`/`datetime`/`created_at` column matches its printed
-  value (`length_bp~^15`, `created_at~^2026-11-04`); a `ref` matches the stored id, never an alias;
-  `NULL` never matches a `~` pattern (not even `field~^$`); use `field=` to find empty values.
-- Rules: one `=` per field (a second is a usage error), no `=`+`~` on one field, any number of `~` per
-  field (ANDed), no empty pattern (`name~`), an invalid pattern is a usage error that names the filter,
-  and an unknown field is a usage error listing the valid fields.
+  value (`'length_bp~^15'`, `'created_at~^2026-11-04'`); a `ref` matches the stored id, never an
+  alias; `NULL` never matches a `~` pattern (not even `'field~^$'`); use `field=` to find empty
+  values.
+- `field!~pattern` is the complement of `~`: the rows whose text form does not match, plus the
+  `NULL` rows. `--where 'name!~GFP'` finds the rows without `GFP` in the name, unnamed rows included.
+- Ordered comparisons (`--where 'od600>=2'`) are typed by the field: a kind field's value is coerced
+  like an `=` value (so `--where 'count<abc'` is the integer usage error) and a core column takes the
+  text as written, except `created_at`. `int`/`decimal` compare numerically, `date`/`datetime`
+  chronologically, and `string`/`text`/core text columns in the database's collation order (the
+  order `=` uses); core `created_at` is chronological and takes an ISO date or datetime, a date
+  meaning its midnight (`tm find --where 'created_at>=2026-01-01'`); `bool`, `enum`, `ref`, `sequence`
+  and computed fields have no order (usage error, exit 2; an enum's declaration order is not used); a
+  `NULL` never matches. A kind that declares a filtered field with no order makes the whole listing
+  or `tm find` fail instead of skipping that kind.
+- The negated operators are the complements of their positive ones: `!=` of `=`, `!~` of `~`, and
+  `field!=` of `field=`. `field!=x` includes the `NULL` rows, so it is not "the field is set"; only
+  `field!=` is.
+- Rules: one `=` per field (a second is a usage error), no `=` mixed with another operator on one
+  field, any number of the other operators per field (ANDed), no empty pattern (`name~`) or
+  comparison value (`count<`), an invalid pattern is a usage error that names the filter, and an
+  unknown field is a usage error listing the valid fields.
 - Valid fields: the object's core filter columns (`id`, `kind`, `name` for entity/box, `created_at`,
   `notes`, plus `entity_id`/`parent_stock_id`/`source_aliquot_id` for stock and
   `parent_box_id`/`parent_slot` for box) and the fields of the kinds in scope. A listing only reads
-  kinds that have every filtered field. A computed kind column works with `~` (its text form) but not
-  `=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not filterable. `tm find`
-  accepts the union over entity/stock/box kinds, applies the filters to every hit, and excludes
-  aliquots whenever a filter is given.
+  kinds that have every filtered field. A computed kind column works with `~` and `!~` (its text
+  form) but not `=` or `!=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not
+  filterable. `tm find` accepts the union over entity/stock/box kinds, applies the filters to every
+  hit, and excludes aliquots whenever a filter is given.
 - With no `QUERY`, `tm find --where ...` lists every match (`match` = `filter`) sorted by object type,
   kind and id; passing neither a QUERY nor `--where` is a usage error. No match exits 1 for `find`
   (`no match for '<Q>'`, or `no objects match the --where filters`); a listing with no rows prints
   `(none)` (empty in JSON) and exits 0. A bad filter or regex exits 2.
-- Python: `where=` takes a mapping (equality only; a `None`/`""` value means empty, e.g.
-  `{"name": "pUC19"}` or `{"notes": None}`) or a list of strings with both operators. Listings and
-  `find` read in one batch.
+- Python: `where=` takes a mapping (equality only; an operator is never parsed from a key or a value,
+  and a `None`/`""` value means empty, e.g. `{"name": "pUC19"}` or `{"notes": None}`) or a list of
+  strings with every operator (`where=["od600>=2", "notes!="]`). Listings and `find` read in one
+  batch.
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
 of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
-error with no literal fallback. `--where ~` and `-E` use the database (ICU) dialect; the ledger's
-`find.rewrites` rules are Python `re` and do not share it (see **Aliases, search, history** below).
+error with no literal fallback. The `--where` patterns (`~` and `!~`) and `-E` use the database (ICU)
+dialect; the ledger's `find.rewrites` rules are Python `re` and do not share it (see **Aliases,
+search, history** below).
 
-`tm aliquot list --where` is its own exact-only `FIELD=VALUE` filter, not this syntax.
+`tm aliquot list --where` is its own exact-only `FIELD=VALUE` filter, not this syntax; it does not
+take the new operators in this release.
 
 ## Entities
 

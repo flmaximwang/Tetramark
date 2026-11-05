@@ -75,7 +75,7 @@ TO_VERSION = 4
 #: The base counter of the spec-6 closure this step's target schema belongs to.
 #: Pinned so the step cannot run against a mixed closure (its plan would then
 #: carry changes that belong to another step).
-BASE_VERSION = 5
+BASE_VERSION = 6
 
 #: The amino-acid alphabet a protein construct's ``sequence`` now carries.
 AMINO_ACID_PATTERN = "[ACDEFGHIKLMNPQRSTVWYXBZUO*]+"
@@ -129,7 +129,8 @@ def _require_ready(ledger: Ledger, schema: EffectiveSchema) -> None:
             f"the loaded base copy is version {loaded.get('base')!r}, expected "
             f"{BASE_VERSION}; the v4 proteins preset belongs to the spec-6 "
             "closure. Replace the ledger's copies with this checkout's "
-            "status-free ones first (migration/spec/5-to-6/README.md)."
+            "status-free ones first (migration/spec/5-to-6/README.md) and then "
+            "run migration/presets/base/5-to-6/README.md."
         )
     version = loaded.get(PRESET)
     if version != TO_VERSION:

@@ -48,6 +48,15 @@ part/bundle table, the include graph and the rule for adding a part.
 - **Inspecting.** `tm presets list` lists the presets a bare name resolves from
   (`$TETRAMARK_PRESETS_DIR` or the bundled copies); `tm presets show NAME|PATH` prints one
   include-resolved preset. `tm config` exposes only `author`; there is no `presets_dir` setting.
+- **Versions.** A preset or part bumps its `version:` — and gets exactly one
+  `migration/presets/<name>/N-to-N+1/` folder — whenever it changes the stored shape **or**
+  relaxes or tightens a **write check**, even when no DDL moves and no stored value changes: two
+  ledgers recording the same `preset_versions` must accept the same writes, so a bound one copy
+  enforces and another does not needs its own counter (base 5 → 6 drops the slotless `capacity`,
+  which was enforced on writes). A **read-only** change — `lineage: true` on a `ref` field, say —
+  bumps nothing: it moves no DDL and no stored value and validates no write differently, so it only
+  makes the ledger's fingerprint stale and is refreshed by `tm schema apply` — a meta refresh, not
+  a step.
 
 Every stock kind uses the same fixed aliquot status set (§1.1); a preset never declares `statuses:`
 or a status set. Life-cycle detail that used to be a status — an animal's fate, a culture's
@@ -59,10 +68,19 @@ on the mouse cohort and the fish group/clutch, `fate` (discarded, lost) on the f
 
 Preset catalogue:
 
-- `base` (**version 5**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
-  `shelf`/`freezer`/`drawer` (slotless, with a capacity) and `incubator` (slotless, unbounded);
+- `base` (**version 6**) — box kinds `grid9x9` (A–J!I × 1–9), `grid8x12` (A–H × 1–12), `rack` (named),
+  `shelf`/`freezer`/`drawer` (slotless, unbounded) and `incubator` (slotless, unbounded);
   entity kind `item` (name, category, description); stock kind `lot` (supplier, catalog_no,
   received_on, expires_on).
+  Version 6 drops the slotless `capacity` of `shelf`/`freezer`/`drawer` (12/6/1): how many racks
+  sit on a shelf, how many shelves a freezer has and how many boxes a drawer takes is a property of
+  that piece of furniture, not of the kind. The bound was enforced on writes, so a base-5 ledger
+  refused the (N+1)th tube or child box (`box 'X' is full (capacity N aliquots + child boxes)`).
+  The hand-run step is `migration/presets/base/5-to-6/`: a README-only folder with a frozen
+  `base-6.yaml` that replaces the ledger's copy, and one `tm schema apply` that writes the counter,
+  the fingerprint, `tetramark_version` and the `ledger.yaml` copy — no DDL and no row change,
+  because the capacity was never stored. `migration/presets/base/4-to-5/` installs the frozen
+  `base-5.yaml` (base 5, capacities and all), so the ordered 4 → 5 → 6 path stays reproducible.
   Version 5 drops the `status_sets:` block and the per-kind `statuses:` keys: every aliquot now
   uses the fixed status set of §1.1, so `base` declares no status vocabulary. Version 4 renamed the
   `grid96` kind to `grid8x12` with the same geometry (spec 5, ticket 30); the hand-run step is

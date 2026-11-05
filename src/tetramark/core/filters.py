@@ -1,4 +1,4 @@
-"""Shared ``--where`` filters: ``field=value`` and ``field~pattern``.
+"""Shared ``--where`` filters: ``=``, ``~``, ``!=``, ``!~``, ``<``, ``<=``, ``>``, ``>=``.
 
 One filter backend serves the entity/stock/box listings (spec §6): the
 ``--where`` option of ``tm entity list``, ``tm stock list`` and ``tm box list``
@@ -7,23 +7,29 @@ as
 
 * ``field=value`` -- the column equals the value: a kind field is coerced by
   its schema (an enum is checked, a ref is resolved to the id it stores), a
-  core column takes the text as it is; and
+  core column takes the text as it is;
 * ``field~pattern`` -- the column's *text form* matches the regular expression
-  ``pattern``.
+  ``pattern``;
+* ``field!=value`` -- the column holds another value (or is ``NULL``);
+* ``field!~pattern`` -- the column's text form does not match the pattern (or
+  is ``NULL``);
+* ``field<value``, ``field<=value``, ``field>value``, ``field>=value`` -- the
+  column compares to the value in the order of its type.
 
-The parser splits a filter at the first ``=`` or ``~``, so a value may contain
-either character; the field name must be an identifier.  A pattern is a
-*search*: it is unanchored (users anchor it with ``^``/``$``) and
-case-sensitive (``(?i)`` makes it case-insensitive).  The database compiles the
-pattern (Dolt's ICU dialect), so the same pattern means the same thing in the
-query and in the error message.
+The parser splits a filter at the operator that follows its field name, so a
+value may contain ``=``, ``~``, ``!``, ``<`` and ``>``; the field name must be
+an identifier.  A pattern is a *search*: it is unanchored (users anchor it
+with ``^``/``$``) and case-sensitive (``(?i)`` makes it case-insensitive).
+The database compiles the pattern (Dolt's ICU dialect), so the same pattern
+means the same thing in the query and in the error message.
 
 Rules:
 
 * a field is filtered by ``=`` at most once; a second ``=`` on the same field
-  is an error, and so is mixing ``=`` and ``~`` on one field;
-* any number of ``~`` filters may address one field; they are ANDed;
-* an empty pattern (``name~``) is an error;
+  is an error, and so is mixing ``=`` with any other operator on one field;
+* any number of the other operators may address one field; they are ANDed;
+* an empty pattern (``name~``) and an empty comparison value (``count<``) are
+  errors;
 * an invalid pattern is reported as a usage error naming the filter;
 * ``field=`` (an empty value) means "the field is empty": ``NULL`` or ``''``
   on a text-like column (the kind types ``string``/``text``/``enum``/
@@ -34,9 +40,26 @@ Rules:
 * ``NULL`` never matches a ``~`` pattern (not even ``field~^$``), and a
   ``ref`` field matches the id it stores.
 
+Three-valued logic makes the negated operators the complements of their
+positive ones, but not in the same way:
+
+* ``field!=value`` is the complement of ``field=value``: it matches the rows
+  whose value differs *and* the ``NULL`` rows;
+* ``field!~pattern`` is the complement of ``field~pattern``: it matches the
+  rows that do not match *and* the ``NULL`` rows;
+* ``field!=`` (an empty value) is the complement of ``field=``: it matches the
+  rows that have a value and excludes the ``NULL`` and the empty rows.
+
+An ordered comparison is typed by its field: a number compares numerically, a
+date or a datetime compares chronologically and a string compares in the
+database's collation order (the order ``=`` uses).  A bool, an enum, a ref, a
+sequence and a computed field have no order, so an ordered comparison on one
+of them is a usage error.
+
 A mapping (``where={"name": "pUC19"}``) means equality only, and a mapping
 value ``None`` or ``""`` means "is empty"; a list of strings
-(``where=["name~^pUC"]`` or ``where=["name="]``) accepts both operators.
+(``where=["name~^pUC"]``, ``where=["name="]`` or ``where=["count>=10"]``)
+accepts every operator.
 """
 
 from __future__ import annotations
@@ -44,6 +67,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from tetramark.errors import LedgerError, UsageError
@@ -56,10 +80,17 @@ if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
 __all__ = [
     "EQUALS",
     "REGEXP",
+    "NOT_EQUALS",
+    "NOT_REGEXP",
+    "LESS",
+    "LESS_EQUAL",
+    "GREATER",
+    "GREATER_EQUAL",
     "Filter",
     "build_conditions",
     "check_fields",
     "coerce_value",
+    "comparison_type",
     "empty_condition",
     "filter_fields",
     "parse_filters",
@@ -74,10 +105,50 @@ EQUALS = "="
 #: The operator of a regular-expression filter (``field~pattern``).
 REGEXP = "~"
 
+#: The operator of an inequality filter (``field!=value``).
+NOT_EQUALS = "!="
+
+#: The operator of a negated regular-expression filter (``field!~pattern``).
+NOT_REGEXP = "!~"
+
+#: The operator of the ordered comparison ``field<value``.
+LESS = "<"
+
+#: The operator of the ordered comparison ``field<=value``.
+LESS_EQUAL = "<="
+
+#: The operator of the ordered comparison ``field>value``.
+GREATER = ">"
+
+#: The operator of the ordered comparison ``field>=value``.
+GREATER_EQUAL = ">="
+
+#: Every operator, the longest first: the parser takes the longest match at
+#: the position right after the field name.
+_OPERATORS = (
+    NOT_EQUALS,
+    NOT_REGEXP,
+    LESS_EQUAL,
+    GREATER_EQUAL,
+    EQUALS,
+    REGEXP,
+    LESS,
+    GREATER,
+)
+
+#: The operators that compare an ordered value.
+_ORDERED_OPERATORS = frozenset({LESS, LESS_EQUAL, GREATER, GREATER_EQUAL})
+
+#: The operators that carry a pattern.
+_PATTERN_OPERATORS = frozenset({REGEXP, NOT_REGEXP})
+
 #: A field name is an identifier: a letter or an underscore, then letters,
 #: digits or underscores.  Core columns and kind fields are identifiers by
 #: construction, so anything else is a typo (and never reaches the SQL).
 _FIELD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+#: The leading identifier of a filter text (the field name).
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 #: A statement that compiles a pattern without reading a row.
 _PROBE_SQL = "SELECT %s REGEXP %s"
@@ -101,10 +172,15 @@ _TEXT_FIELD_TYPES = frozenset(
     }
 )
 
+#: The kinds of order an ordered comparison can use.
+TEXT_ORDER = "text"
+NUMBER_ORDER = "number"
+DATETIME_ORDER = "datetime"
+
 
 @dataclass(frozen=True)
 class Filter:
-    """One parsed filter: ``field=value`` (exact) or ``field~pattern``."""
+    """One parsed filter: a field, an operator and a value."""
 
     field: str
     operator: str
@@ -121,18 +197,21 @@ def parse_filters(
     *,
     option: str = "--where",
 ) -> tuple[Filter, ...]:
-    """Parse ``field=value`` / ``field~pattern`` filters.
+    """Parse the ``--where`` filters of one listing.
 
     A mapping is equality only (``{"name": "pUC19"}``); a list of strings
-    accepts both operators (``["name~^pUC"]``).  The operator is the first
-    ``=`` or ``~`` of the text, so a value may contain either character.
+    accepts every operator (``["name~^pUC"]``, ``["count>=10"]``).  The
+    operator is the one that follows the field name, so a value may contain
+    any operator character.
 
     Raises :class:`UsageError` for a malformed filter, a field name that is
     not an identifier, a repeated ``=`` on one field, a field filtered with
-    both operators and an empty pattern.
+    ``=`` and another operator, an empty pattern and an empty comparison
+    value.
     """
     filters: list[Filter] = []
-    operators: dict[str, str] = {}
+    equals: set[str] = set()
+    others: dict[str, str] = {}
     for field, operator, value, text in _split_filters(values, option=option):
         if not field:
             raise UsageError(f"invalid {option} {text!r}: the field name is empty")
@@ -140,21 +219,36 @@ def parse_filters(
             raise UsageError(
                 f"invalid {option} {text!r}: {field!r} is not a valid field name"
             )
-        previous = operators.get(field)
-        if previous is not None:
-            if previous == operator == EQUALS:
+        previous = others.get(field)
+        if field in equals:
+            if operator == EQUALS:
                 raise UsageError(f"field {field!r} appears twice in {option}")
-            if previous != operator:
+            raise UsageError(
+                f"field {field!r} cannot be filtered with both {EQUALS!r} and "
+                f"{operator!r} in {option}"
+            )
+        if operator == EQUALS:
+            if previous is not None:
                 raise UsageError(
                     f"field {field!r} cannot be filtered with both {EQUALS!r} and "
-                    f"{REGEXP!r} in {option}"
+                    f"{previous!r} in {option}"
                 )
-        if operator == REGEXP and not value:
+            equals.add(field)
+        else:
+            # Every operator but ``=`` may be repeated on one field; they are
+            # ANDed.  The first one is kept, so the error message names the
+            # operator the field was already filtered with.
+            others.setdefault(field, operator)
+        if operator in _PATTERN_OPERATORS and not value:
             raise UsageError(
-                f"the pattern of the {option} filter {field + REGEXP!r} must not "
+                f"the pattern of the {option} filter {field + operator!r} must not "
                 "be empty"
             )
-        operators[field] = operator
+        if operator in _ORDERED_OPERATORS and not value:
+            raise UsageError(
+                f"the value of the {option} filter {field + operator!r} must not "
+                "be empty"
+            )
         filters.append(Filter(field, operator, value))
     return tuple(filters)
 
@@ -187,40 +281,118 @@ def build_conditions(
     expressions: Mapping[str, str],
     coerce: Callable[[str, str], Any] | None = None,
     empty: Callable[[str, str], str] | None = None,
+    kind: Kind | None = None,
+    option: str = "--where",
 ) -> tuple[list[str], list[Any]]:
     """The SQL conditions and parameters of one kind's filters.
 
     ``expressions`` maps every filtered field to the SQL expression that holds
     its value: a quoted column of the kind's view, or the joined expression of
     a box kind's core row and kind row.  ``coerce`` turns the text of an ``=``
-    filter into the value the column stores (the schema's coercion for a kind
-    field, the raw text for a core column); it is not called for a ``~``
-    filter, whose pattern is matched against the column's text form.
+    (or ``!=``) filter into the value the column stores (the schema's coercion
+    for a kind field, the raw text for a core column); it is not called for a
+    pattern filter, whose pattern is matched against the column's text form.
 
     An ``=`` filter whose value is exactly the empty string means "the field
     is empty": it emits ``empty(field, expression)`` with no parameter and
     never calls ``coerce``.  ``empty`` lets the caller choose the SQL by field
     type (:func:`empty_condition`); without it the column is matched as text
     (``IS NULL OR = ''``).
+
+    The negated and the ordered operators:
+
+    * ``field!=value`` matches the rows whose value differs and the ``NULL``
+      rows, so it is the complement of ``field=value``; an empty value means
+      "the field has a value", the complement of ``field=``;
+    * ``field!~pattern`` matches the rows whose text form does not match and
+      the ``NULL`` rows, so it is the complement of ``field~pattern``;
+    * ``field<value`` (and ``<=``, ``>``, ``>=``) compares the column with the
+      value in the order of the field's type; a ``NULL`` never matches.
+
+    ``kind`` tells an ordered comparison how the field compares; without it
+    every field compares as text.
     """
     conditions: list[str] = []
     params: list[Any] = []
     for item in filters:
         expression = expressions[item.field]
-        if item.operator == EQUALS:
+        operator = item.operator
+        if operator == EQUALS:
             if item.value == "":
-                conditions.append(
-                    empty(item.field, expression)
-                    if empty is not None
-                    else f"({expression} IS NULL OR {expression} = '')"
-                )
+                conditions.append(_empty_sql(item.field, expression, empty=empty))
                 continue
             conditions.append(f"{expression} = %s")
             params.append(coerce(item.field, item.value) if coerce else item.value)
-        else:
+        elif operator == NOT_EQUALS:
+            if item.value == "":
+                conditions.append(
+                    f"NOT ({_empty_sql(item.field, expression, empty=empty)})"
+                )
+                continue
+            conditions.append(f"({expression} IS NULL OR {expression} <> %s)")
+            params.append(coerce(item.field, item.value) if coerce else item.value)
+        elif operator == REGEXP:
             conditions.append(f"{expression} REGEXP %s")
             params.append(item.value)
+        elif operator == NOT_REGEXP:
+            conditions.append(
+                f"({expression} IS NULL OR NOT ({expression} REGEXP %s))"
+            )
+            params.append(item.value)
+        else:
+            order = comparison_type(
+                kind, item.field, text=item.text, option=option
+            )
+            conditions.append(f"{expression} {operator} %s")
+            params.append(
+                _ordered_value(
+                    kind,
+                    item,
+                    order=order,
+                    coerce=coerce,
+                    option=option,
+                )
+            )
     return conditions, params
+
+
+def comparison_type(
+    kind: Kind | None,
+    field: str,
+    *,
+    text: str = "",
+    option: str = "--where",
+) -> str:
+    """How an ordered comparison on ``field`` compares: text, number, datetime.
+
+    A kind field is compared by its declared type: ``string``/``text`` compare
+    as text, ``int``/``decimal`` compare numerically and ``date``/``datetime``
+    compare chronologically.  A core column compares as text, except
+    ``created_at`` (a datetime).  A bool, an enum, a ref, a sequence and a
+    computed field have no order: an ordered comparison on one of them is a
+    usage error naming the filter and the field type.
+    """
+    schema_field = kind.fields.get(field) if kind is not None else None
+    if schema_field is not None:
+        field_type = schema_field.type
+        if field_type is FieldType.computed:
+            raise UsageError(
+                f"invalid {option} {text!r}: the field {field!r} is computed and "
+                "cannot be compared"
+            )
+        if field_type in (FieldType.string, FieldType.text):
+            return TEXT_ORDER
+        if field_type in (FieldType.int, FieldType.decimal):
+            return NUMBER_ORDER
+        if field_type in (FieldType.date, FieldType.datetime):
+            return DATETIME_ORDER
+        raise UsageError(
+            f"invalid {option} {text!r}: the field {field!r} is of type "
+            f"{field_type.value}, which has no order"
+        )
+    if field == "created_at":
+        return DATETIME_ORDER
+    return TEXT_ORDER
 
 
 def empty_condition(kind: Kind, field: str, expression: str) -> str:
@@ -348,24 +520,89 @@ def _split_filters(
     split: list[tuple[str, str, str, str]] = []
     for item in values:
         text = str(item)
-        index = _operator_index(text)
-        if index is None:
+        parsed = _split_filter_text(text)
+        if parsed is None:
             raise UsageError(
-                f"invalid {option} {text!r}: expected field=value or field~pattern"
+                f"invalid {option} {text!r}: expected field=value, "
+                "field~pattern, field!=value, field!~pattern, or "
+                "field<value / <= / > / >="
             )
-        split.append((text[:index].strip(), text[index], text[index + 1 :], text))
+        field, operator, value = parsed
+        split.append((field, operator, value, text))
     return split
 
 
-def _operator_index(text: str) -> int | None:
-    """The index of the first ``=`` or ``~`` in ``text``, or ``None``."""
-    equals = text.find(EQUALS)
-    tilde = text.find(REGEXP)
-    if equals < 0:
-        return tilde if tilde >= 0 else None
-    if tilde < 0:
-        return equals
-    return min(equals, tilde)
+def _split_filter_text(text: str) -> tuple[str, str, str] | None:
+    """The ``(field, operator, value)`` of one filter text, or ``None``.
+
+    The field name is the identifier the text starts with (after the
+    whitespace); the operator is the longest one that follows it (after the
+    whitespace between the name and the operator); everything after the
+    operator is the value, verbatim.
+    """
+    length = len(text)
+    index = 0
+    while index < length and text[index].isspace():
+        index += 1
+    match = _IDENT_RE.match(text, index)
+    if match is None:
+        return None
+    field = match.group(0)
+    index = match.end()
+    while index < length and text[index].isspace():
+        index += 1
+    for operator in _OPERATORS:
+        if text.startswith(operator, index):
+            return field, operator, text[index + len(operator) :]
+    return None
+
+
+def _empty_sql(
+    field: str, expression: str, *, empty: Callable[[str, str], str] | None
+) -> str:
+    """The SQL of the empty filter on one field."""
+    if empty is not None:
+        return empty(field, expression)
+    return f"({expression} IS NULL OR {expression} = '')"
+
+
+def _ordered_value(
+    kind: Kind | None,
+    item: Filter,
+    *,
+    order: str,
+    coerce: Callable[[str, str], Any] | None,
+    option: str,
+) -> Any:
+    """The value an ordered comparison compares with.
+
+    A kind field is coerced by its schema (the same coercion an ``=`` filter
+    uses), so an int compares numerically and a date compares chronologically.
+    A core column takes the text as it is; ``created_at`` is a datetime, so
+    its value must be an ISO date or datetime and is compared as a datetime
+    (a date means its midnight), never as an arbitrary string.
+    """
+    if order == DATETIME_ORDER and (kind is None or item.field not in kind.fields):
+        return _iso_datetime(item, option=option)
+    if coerce is None:
+        return item.value
+    return coerce(item.field, item.value)
+
+
+def _iso_datetime(item: Filter, *, option: str) -> datetime:
+    """The datetime an ordered comparison on a core datetime column compares with."""
+    text = item.value.strip()
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.combine(date.fromisoformat(text), datetime.min.time())
+    except ValueError:
+        raise UsageError(
+            f"invalid {option} {item.text!r}: the value {item.value!r} is not an "
+            "ISO date or datetime"
+        ) from None
 
 
 def _is_regex_error(error: BaseException) -> bool:
@@ -374,9 +611,9 @@ def _is_regex_error(error: BaseException) -> bool:
 
 
 def _offending_pattern(driver: Any, filters: Iterable[Filter]) -> Filter | None:
-    """The first ``~`` filter whose pattern the database refuses, or ``None``."""
+    """The first pattern filter the database refuses, or ``None``."""
     for item in filters:
-        if item.operator != REGEXP:
+        if item.operator not in _PATTERN_OPERATORS:
             continue
         try:
             driver.query(_PROBE_SQL, (_PROBE_SUBJECT, item.value))

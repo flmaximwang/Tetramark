@@ -99,7 +99,37 @@ last scripted step below spec 6 (for example `migration/spec/4-to-5` and its bas
 `migration/spec/5-to-6/README.md` and its README-only `migration/presets/*/N-to-N+1/` copies to reach
 spec 6 / base 5, then run `migration/spec/6-to-7/migrate.py --apply` to reach the current spec 7.
 
-`tm init` always creates a spec-7 ledger with the current presets: `molbio` 3 (`base` 5,
+The `base` counter has its own path, and it runs after the spec counters:
+`migration/presets/base/4-to-5/` at spec 5, then `migration/spec/5-to-6/` (spec 6), then
+`migration/spec/6-to-7/` (spec 7), then `migration/presets/base/5-to-6/` for base 6 and finally
+`migration/presets/proteins/3-to-4/`, which needs base 6. The two base steps are **ordered**, and
+each installs its own **frozen** copy next to its README, so both keep working whatever the
+checkout's `presets/base.yaml` says later: `4-to-5/base-5.yaml` is base 5 (with the slotless
+capacities 12/6/1), `5-to-6/base-6.yaml` is base 6 (without them). A ledger still on base 4 runs
+`4-to-5` before `migration/spec/5-to-6/`: that spec step's `tm schema apply` writes the counter of
+the copy the ledger holds, so the ledger must hold the frozen `base-5.yaml` at that moment.
+
+Run `migration/presets/base/5-to-6/` on a **spec-7** ledger: `tm schema apply` writes the tool's
+current `spec_version`, so on an older ledger it would move the spec counter to 7 without the
+6 → 7 step's row work (the `note` → `message` rename and the `purpose` fold). A spec-6 ledger
+runs `migration/spec/6-to-7/migrate.py --apply` first. The step is README-only: it replaces one
+file and changes no row.
+
+```sh
+LEDGER=/path/to/ledger
+cp migration/presets/base/5-to-6/base-6.yaml "$LEDGER/presets/base.yaml"
+tm -l "$LEDGER" schema plan    # schema is up to date; ledger_meta is stale
+tm -l "$LEDGER" schema apply   # exactly one commit
+```
+
+`tm schema plan` reports *schema is up to date* and *ledger_meta is stale*; `tm schema apply` makes
+exactly one commit that writes `preset_versions` (now `base: 6`), the fingerprint, `tetramark_version`
+and the `ledger.yaml` copy — no DDL and no row change, because the capacity was never stored. A
+ledger whose `proteins` counter is still 3 runs this step **before**
+`migration/presets/proteins/3-to-4/`: that step refuses a base-5 closure and names
+`migration/presets/base/5-to-6/README.md`.
+
+`tm init` always creates a spec-7 ledger with the current presets: `molbio` 3 (`base` 6,
 `nucleic_acids` 3, `bacteria` 2, `proteins` 4, `cell_culture` 3), `cellbio` 1 and `angenet` 1.
 
 If you need columns the preset does not have, add a local kind/field first
@@ -188,7 +218,7 @@ Old `box_01`/`box_02` are *views* of the same tube positions; `box_map_all` is t
 
 ## 5. Map status
 
-A ledger created from this checkout is **spec 6**: every aliquot has one status from the one fixed
+A ledger created from this checkout is **spec 7**: every aliquot has one status from the one fixed
 set — `pending`, `stored`, `missing`, `consumed` — and no stock kind has its own vocabulary or
 `status_sets:` block (`docs/spec/01-concepts.md` §1.1). `stored` is the only in-stock status. Map
 explicitly, never by inference:

@@ -6,7 +6,7 @@ Counter: `ledger_meta.preset_versions.base` 4 → 5.
 written by `tm schema apply`, which records the version of the preset copy the
 ledger holds. The shared procedure — replacing the copies, remapping
 `aliquot.status`, adding the `CHECK`, recording the `migrated:` events and
-committing — is in [`migration/spec/5-to-6/README.md`](../../spec/5-to-6/README.md).
+committing — is in [`migration/spec/5-to-6/README.md`](../../../spec/5-to-6/README.md).
 
 ## What changes
 
@@ -26,21 +26,32 @@ geometries are the same as in base 4.
 - `ledger_meta.spec_version = 5` and `ledger_meta.preset_versions.base = 4`.
   The spec step does the row work and writes the counters; this README only
   covers the files (see
-  [`migration/spec/5-to-6/README.md`](../../spec/5-to-6/README.md)).
+  [`migration/spec/5-to-6/README.md`](../../../spec/5-to-6/README.md)).
+- This step targets the **spec-5 format**: it installs the frozen `base-5.yaml`
+  and nothing else. Its `base: 5` counter is written by the spec step's
+  `tm schema apply`, which records the version of the copy you installed here.
+- `base: 6` is a **separate, later** step ([`5-to-6`](../5-to-6/README.md)),
+  not part of the spec step's apply: it needs the **current** spec (7), so a
+  ledger that is still at spec 6 runs
+  [`spec/6-to-7`](../../../spec/6-to-7/README.md) first.
 - Every **pending historical** preset step runs first: the frozen scripts under
   `migration/presets/` target spec 5 and install the spec-5 copies.
 - A backup of the ledger directory exists (the spec step's step 1).
 
 ## Manual procedure
 
-1. Replace the ledger's stored copy of this preset with this checkout's copy
-   (files, not Dolt content). Run it from the root of the Tetramark checkout
-   that has the new presets:
+1. Replace the ledger's stored copy of this preset with the frozen v5 file
+   (files, not Dolt content). Run it from the root of the Tetramark checkout:
 
    ```sh
    LEDGER=/path/to/ledger
-   cp presets/base.yaml "$LEDGER/presets/base.yaml"
+   cp migration/presets/base/4-to-5/base-5.yaml "$LEDGER/presets/base.yaml"
    ```
+
+   The copy is frozen next to this README on purpose: this step installs
+   **base 5**, and the shipped `presets/base.yaml` moves on — it is at version 6
+   now ([`5-to-6`](../5-to-6/README.md) drops the slotless box capacities).
+   Copying the checkout's file here would install v6 behind a v5 counter.
 
 2. Replace **every** other preset copy the ledger holds in the same go — a
    closure that mixes the old and the new model does not load. The spec step's
@@ -64,8 +75,9 @@ uv run tm -l "$LEDGER" schema plan
 uv run tm -l "$LEDGER" check
 ```
 
-Expected: the grep finds nothing, `preset_versions` names `base: 5`, the
-plan reports no pending steps and `tm check` prints no `FAIL`.
+Expected: the grep finds nothing, `preset_versions` names `base: 5` (the
+separate [`5-to-6`](../5-to-6/README.md) step moves it to 6 later), the plan
+reports no pending steps and `tm check` prints no `FAIL`.
 
 ## Rollback
 
@@ -76,4 +88,4 @@ plan reports no pending steps and `tm check` prints no `FAIL`.
 - Do both. A copy and a counter that disagree make the ledger load a preset it
   does not claim to have.
 
-See also [`migration/README.md`](../../README.md).
+See also [`migration/README.md`](../../../README.md).
