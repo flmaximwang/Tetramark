@@ -747,6 +747,7 @@ def test_aliquot_and_box_payloads() -> None:
     assert box.payload() == {
         "kind": "grid96",
         "name": "BOX-1",
+        "values": {},
         "parent": "SHELF",
         "slot": None,
         "notes": "n",

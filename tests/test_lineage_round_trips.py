@@ -27,6 +27,7 @@ import yaml
 from conftest import isolated_env
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
+from tetramark.driver.server import discard_server
 from tetramark.ops.history import history, history_rows, render_history_text
 from tetramark.ops.lineage import lineage, render_dot, render_text
 
@@ -126,6 +127,14 @@ def template(
     )
     ids = build_rows(ledger)
     ledger.close()
+    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
+    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
+    # the server reports integers as strings (``'1'``), so the fixture stops it
+    # before the embedded reopen.
+    discard_server(root / "template")
+    assert not (root / "template" / ".dolt" / "sql-server.info").exists(), (
+        "a cached sql-server would route the fixture's embedded reads through it"
+    )
     ledger = open_ledger(
         root / "template", env={**env, "TETRAMARK_DRIVER": "embedded"}
     )

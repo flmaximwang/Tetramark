@@ -20,8 +20,7 @@ def add_alias_command(
     object_id: str = typer.Argument(
         ...,
         help=(
-            "ID of the object (an incomplete ID is accepted when it prefixes "
-            "exactly one object)."
+            "ID, alias or unique ID prefix of the object; a box also by its name"
         ),
     ),
     alias: str = typer.Argument(..., help="Alias text (unique per object type)."),

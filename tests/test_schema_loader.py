@@ -296,6 +296,7 @@ def test_list_presets_reads_a_presets_directory(tmp_path: Path) -> None:
     ]
     assert list_presets(PRESETS) == [
         "base",
+        "boxfields",
         "chain",
         "extras",
         "fixed",

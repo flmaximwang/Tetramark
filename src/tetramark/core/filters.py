@@ -25,10 +25,18 @@ Rules:
 * any number of ``~`` filters may address one field; they are ANDed;
 * an empty pattern (``name~``) is an error;
 * an invalid pattern is reported as a usage error naming the filter;
-* ``NULL`` never matches, and a ``ref`` field matches the id it stores.
+* ``field=`` (an empty value) means "the field is empty": ``NULL`` or ``''``
+  on a text-like column (the kind types ``string``/``text``/``enum``/
+  ``sequence``/``ref``, and every core column but ``created_at``), ``NULL``
+  only on a non-text one (the kind types ``int``/``decimal``/``bool``/
+  ``date``/``datetime``, and core ``created_at``); it skips the coercion and
+  the ``ref``/alias resolution;
+* ``NULL`` never matches a ``~`` pattern (not even ``field~^$``), and a
+  ``ref`` field matches the id it stores.
 
-A mapping (``where={"name": "pUC19"}``) means equality only; a list of strings
-(``where=["name~^pUC"]``) accepts both operators.
+A mapping (``where={"name": "pUC19"}``) means equality only, and a mapping
+value ``None`` or ``""`` means "is empty"; a list of strings
+(``where=["name~^pUC"]`` or ``where=["name="]``) accepts both operators.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from tetramark.errors import LedgerError, UsageError
+from tetramark.schema.model import FieldType
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from tetramark.core.ledger import Ledger
@@ -51,6 +60,7 @@ __all__ = [
     "build_conditions",
     "check_fields",
     "coerce_value",
+    "empty_condition",
     "filter_fields",
     "parse_filters",
     "pattern_is_invalid",
@@ -77,6 +87,19 @@ _PROBE_SUBJECT = "x"
 
 #: The part of a driver error that says the pattern is the problem.
 _REGEX_MARKER = "regular expression"
+
+#: Kind field types whose column is text-like: an empty ``=`` filter means
+#: ``NULL`` or ``''``.  The other types (``int``, ``decimal``, ``bool``,
+#: ``date``, ``datetime``) mean ``NULL`` only, so a stored ``0`` never matches.
+_TEXT_FIELD_TYPES = frozenset(
+    {
+        FieldType.string,
+        FieldType.text,
+        FieldType.enum,
+        FieldType.sequence,
+        FieldType.ref,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -163,6 +186,7 @@ def build_conditions(
     *,
     expressions: Mapping[str, str],
     coerce: Callable[[str, str], Any] | None = None,
+    empty: Callable[[str, str], str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """The SQL conditions and parameters of one kind's filters.
 
@@ -172,18 +196,57 @@ def build_conditions(
     filter into the value the column stores (the schema's coercion for a kind
     field, the raw text for a core column); it is not called for a ``~``
     filter, whose pattern is matched against the column's text form.
+
+    An ``=`` filter whose value is exactly the empty string means "the field
+    is empty": it emits ``empty(field, expression)`` with no parameter and
+    never calls ``coerce``.  ``empty`` lets the caller choose the SQL by field
+    type (:func:`empty_condition`); without it the column is matched as text
+    (``IS NULL OR = ''``).
     """
     conditions: list[str] = []
     params: list[Any] = []
     for item in filters:
         expression = expressions[item.field]
         if item.operator == EQUALS:
+            if item.value == "":
+                conditions.append(
+                    empty(item.field, expression)
+                    if empty is not None
+                    else f"({expression} IS NULL OR {expression} = '')"
+                )
+                continue
             conditions.append(f"{expression} = %s")
             params.append(coerce(item.field, item.value) if coerce else item.value)
         else:
             conditions.append(f"{expression} REGEXP %s")
             params.append(item.value)
     return conditions, params
+
+
+def empty_condition(kind: Kind, field: str, expression: str) -> str:
+    """The SQL condition for an empty ``=`` filter on one kind.
+
+    A kind field is matched by its declared type: text-like fields (``string``,
+    ``text``, ``enum``, ``sequence``, ``ref``) match ``NULL`` or ``''``, and
+    the remaining types (``int``, ``decimal``, ``bool``, ``date``,
+    ``datetime``) match ``NULL`` only, so a stored ``0`` never looks empty.
+    A core column works the same way, except ``created_at``: every core column
+    is text-like but that one is a datetime.  A computed field keeps the
+    ``--set`` usage error: it cannot be written, so it cannot be filtered by an
+    empty value either.
+    """
+    schema_field = kind.fields.get(field)
+    if schema_field is not None:
+        if schema_field.type is FieldType.computed:
+            raise UsageError(f"field {field!r} is computed and cannot be set")
+        if schema_field.type in _TEXT_FIELD_TYPES:
+            return f"({expression} IS NULL OR {expression} = '')"
+        return f"{expression} IS NULL"
+    # Not a kind field: a core column.  Every core column is text-like except
+    # the creation timestamp (a DATETIME).
+    if field == "created_at":
+        return f"{expression} IS NULL"
+    return f"({expression} IS NULL OR {expression} = '')"
 
 
 def coerce_value(
@@ -273,10 +336,15 @@ def _split_filters(
     if isinstance(values, Mapping):
         # A mapping is equality only: the key is the field, the value is the
         # value (a ``~`` in either is part of the text, never an operator).
-        return [
-            (str(key).strip(), EQUALS, str(value), f"{key}={value}")
-            for key, value in values.items()
-        ]
+        # A ``None`` value means the empty value (``field=``), not the text
+        # ``"None"`` (the bug this spells out).
+        split_mapping: list[tuple[str, str, str, str]] = []
+        for key, value in values.items():
+            text = "" if value is None else str(value)
+            split_mapping.append(
+                (str(key).strip(), EQUALS, text, f"{key}={text}")
+            )
+        return split_mapping
     split: list[tuple[str, str, str, str]] = []
     for item in values:
         text = str(item)
