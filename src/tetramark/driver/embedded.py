@@ -128,10 +128,14 @@ class EmbeddedDriver(Driver):
     def query(
         self, sql: str, params: Params = None, *, fill_columns: bool = True
     ) -> list[dict[str, Any]]:
-        """Run one read; ``fill_columns=False`` skips the CSV header run.
+        """Run one read in one ``dolt sql`` process.
 
-        The caller must have proved every selected column is ``NOT NULL``:
-        without the CSV run a ``NULL`` column is simply absent from the row.
+        A ``SELECT``/``WITH`` read gets its column names from the same process
+        (:meth:`_query_probed`), so a ``NULL`` column is present as ``None``.
+        Other reads, and any probe Dolt rejects, fall back to a second
+        ``-r csv`` header run.  ``fill_columns=False`` skips the column names:
+        the caller must have proved every selected column is ``NOT NULL``,
+        because a ``NULL`` column is then simply absent from the row.
         """
         rendered = render_sql(sql, params)
         if self._pending:
@@ -157,13 +161,15 @@ class EmbeddedDriver(Driver):
         *,
         fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]]:
-        """Run a whole read batch in one ``dolt sql`` process (plus one CSV run).
+        """Run a whole read batch in one ``dolt sql`` process.
 
         ``-r json`` emits one line per statement (``{}`` when a statement has no
         rows), so the batch stays aligned.  JSON omits a column whose value is
-        ``NULL``, so one ``-r csv`` run then supplies every statement's column
-        list (CSV prints one header even for zero rows) and the columns are
-        filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
+        ``NULL``; for a batch of ``SELECT``/``WITH`` reads the same process also
+        prints every statement's column list (:meth:`_query_probed`).  Any
+        other batch, or a probe Dolt rejects, uses the historical second
+        ``-r csv`` run (CSV prints one header even for zero rows) and the
+        columns are filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
         be aligned (an unexpected Dolt output shape), the statements fall back to
         individual :meth:`query` calls: the batching only changes speed, never
         the result.
