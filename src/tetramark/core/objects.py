@@ -695,6 +695,23 @@ def _require_fields(kind: Kind, kind_name: str, fields: Mapping[str, Any]) -> No
         )
 
 
+def _kind_result_fields(kind: Kind, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The kind-table values a create reports: given fields plus schema defaults.
+
+    A field whose schema declares a default is absent from ``fields`` at insert
+    time (the database fills it), so a create reports that default explicitly:
+    ``tm box add fieldbox F1 --json`` says ``{"label": "unnamed"}``.  A
+    computed field is derived, never set, so it is not reported.
+    """
+    values = dict(fields)
+    for name, schema_field in kind.fields.items():
+        if name in values or schema_field.type is FieldType.computed:
+            continue
+        if schema_field.has_default:
+            values[name] = schema_field.default
+    return values
+
+
 def _mirror_name(kind: Kind, core: dict[str, Any], fields: dict[str, Any]) -> None:
     """Keep ``entity.name`` and a kind's own ``name`` field in sync.
 
@@ -3710,11 +3727,18 @@ def add_box(
     kind_name: str,
     name: str,
     *,
+    values: Iterable[str] | Mapping[str, Any] | None = (),
     parent: str | None = None,
     slot: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    """Create a box, its ``slot`` rows and its generated view in one commit."""
+    """Create a box, its ``slot`` rows, its kind row and its view in one commit.
+
+    ``values`` fills the box kind's fields exactly as ``tm box edit`` coerces
+    them.  The name stays the NAME argument (``--set name=`` is refused), a
+    placement changes only through :func:`move_box`, and ``notes`` may come
+    from ``--notes`` or ``--set notes=`` but not both.
+    """
     kind = _kind_for(ledger, "box", kind_name)
     box_name = str(name).strip()
     if not box_name:
@@ -3725,6 +3749,35 @@ def add_box(
     geometry = _box_geometry(kind)
 
     with ledger.write(f"{kind_name} {box_id}", verb="add", object="box") as session:
+        raw = _parse_pairs(values)
+        if "name" in raw:
+            raise UsageError("give the box name as the NAME argument")
+        for field in _BOX_STRUCTURAL_FIELDS:
+            if field in raw:
+                raise UsageError(
+                    f"{field} is structural; place a new box with "
+                    "--in PARENT [--slot S]"
+                )
+        for field in _STRUCTURAL_FIELDS:
+            if field in raw:
+                raise UsageError(f"{field} is structural and cannot be set")
+        if "notes" in raw and notes is not None:
+            raise UsageError(
+                "the box notes were given twice (--notes and --set notes=...)"
+            )
+        core, fields = _split_values(
+            session,
+            ledger,
+            kind,
+            kind_name,
+            "box",
+            raw,
+            core_allowed=_CORE_ON_ADD["box"],
+        )
+        _require_fields(kind, kind_name, fields)
+        if notes is not None:
+            core["notes"] = notes
+
         _check_box_name(session, box_name)
         duplicate = session.query(
             f"SELECT {_quote('id')} FROM {_quote('box')} WHERE {_quote('name')} = %s",
@@ -3745,10 +3798,9 @@ def add_box(
             "parent_box_id": parent_row["id"] if parent_row is not None else None,
             "parent_slot": parent_slot,
         }
-        if notes is not None:
-            payload["notes"] = notes
+        payload.update(core)
         _insert(session, "box", payload)
-        _insert(session, table_name("box", kind_name), {"id": box_id})
+        _insert(session, table_name("box", kind_name), {"id": box_id, **fields})
         rows = slot_rows(box_id, geometry)
         for row in rows:
             _insert(session, "slot", row)
@@ -3767,6 +3819,7 @@ def add_box(
         "parent_box_id": parent_row["id"] if parent_row is not None else None,
         "parent_slot": parent_slot,
         "slots": len(rows),
+        "fields": _kind_result_fields(kind, fields),
     }
 
 
@@ -4704,12 +4757,19 @@ class BoxOps:
         kind: str,
         name: str,
         *,
+        values: Iterable[str] | Mapping[str, Any] | None = (),
         parent: str | None = None,
         slot: str | None = None,
         notes: str | None = None,
     ) -> dict[str, Any]:
         return add_box(
-            self.ledger, kind, name, parent=parent, slot=slot, notes=notes
+            self.ledger,
+            kind,
+            name,
+            values=values,
+            parent=parent,
+            slot=slot,
+            notes=notes,
         )
 
     def edit(
