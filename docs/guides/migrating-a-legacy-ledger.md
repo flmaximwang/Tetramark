@@ -64,15 +64,24 @@ not by `tm adopt`. (A parent `workspace.yaml` from a 0.4 data directory is ignor
 path is explicit, and discovery from inside the new ledger finds the ledger before the stale file.)
 
 An existing Tetramark ledger is upgraded in place first: run the step for every counter it still
-carries, oldest first, and only then import. **The current format is spec 6** — every aliquot uses
-one fixed status set (`docs/spec/01-concepts.md` §1.1) — and its step is **manual**:
-`migration/spec/5-to-6/README.md`. Run every pending historical preset step before it (the frozen
-steps target spec 5): then replace the whole `<ledger>/presets/` closure with the status-free copies,
-remap statuses (one `migrated: <old status>` event per remapped aliquot), add the `CHECK`, and let
-`tm schema plan`/`apply` write `spec_version` 6, `preset_versions` and the regenerated tests. Past
-events stay untouched and the new enum stock properties are not backfilled. An older ledger still
-opens with its own stored copies, and `tm` warns `ledger is spec N, tm is spec N+1: follow
-migration/spec/N-to-N+1/README.md to upgrade it manually`.
+carries, oldest first, and only then import. **The current format is spec 7** — every aliquot uses
+one fixed status set (`docs/spec/01-concepts.md` §1.1) and `aliquot_event` carries the event text in
+`message`. Reach it in order. First the **manual** `migration/spec/5-to-6/README.md`: run every
+pending historical preset step before it (the frozen steps target spec 5), then replace the whole
+`<ledger>/presets/` closure with the status-free copies, remap statuses (one `migrated: <old status>`
+event per remapped aliquot), add the `CHECK`, and let `tm schema plan`/`apply` write `spec_version`
+6, `preset_versions` and the regenerated tests. Then the scripted
+`migration/spec/6-to-7/migrate.py --apply` (without `--apply` it is a dry run): it renames
+`aliquot_event.note` to `message`, folds every non-empty `purpose` into that message and drops
+`purpose`, in one commit tagged `pre-migrate-spec-6`.
+
+The 5 → 6 step leaves past events untouched; the 6 → 7 fold is the one exception, for that event
+column only, and the original values stay in Dolt history behind the tag. The new enum stock
+properties are not backfilled. An older ledger still opens with its own stored copies, and `tm` warns
+`ledger is spec N, tm is spec N+1: follow migration/spec/N-to-N+1/README.md to upgrade it manually`.
+Commands that read or write event rows (`use`, `move`, `status`, `aliquot show`, `history` and an
+aliquot-creating import) refuse a spec-6 ledger with the upgrade text; `tm status`, `tm schema plan`
+and the list commands keep working with the warning only.
 
 The preset steps below keep their historical detail. A molbio-2 ledger (0.2.x) runs
 `migration/spec/3-to-4` while it is still spec 3 (place the current preset copies first, as that
@@ -88,9 +97,39 @@ tables and the greps for hand-written rules); those historical steps ship the pr
 install next to their `migrate.py`, so they keep working after a later version is released. After the
 last scripted step below spec 6 (for example `migration/spec/4-to-5` and its base step), finish with
 `migration/spec/5-to-6/README.md` and its README-only `migration/presets/*/N-to-N+1/` copies to reach
-spec 6 / base 5, then run `migration/presets/base/5-to-6/` for base 6.
+spec 6 / base 5, then run `migration/spec/6-to-7/migrate.py --apply` to reach the current spec 7.
 
-`tm init` always creates a spec-6 ledger with the current presets: `molbio` 3 (`base` 6,
+The `base` counter has its own path, and it runs after the spec counters:
+`migration/presets/base/4-to-5/` at spec 5, then `migration/spec/5-to-6/` (spec 6), then
+`migration/spec/6-to-7/` (spec 7), then `migration/presets/base/5-to-6/` for base 6 and finally
+`migration/presets/proteins/3-to-4/`, which needs base 6. The two base steps are **ordered**, and
+each installs its own **frozen** copy next to its README, so both keep working whatever the
+checkout's `presets/base.yaml` says later: `4-to-5/base-5.yaml` is base 5 (with the slotless
+capacities 12/6/1), `5-to-6/base-6.yaml` is base 6 (without them). A ledger still on base 4 runs
+`4-to-5` before `migration/spec/5-to-6/`: that spec step's `tm schema apply` writes the counter of
+the copy the ledger holds, so the ledger must hold the frozen `base-5.yaml` at that moment.
+
+Run `migration/presets/base/5-to-6/` on a **spec-7** ledger: `tm schema apply` writes the tool's
+current `spec_version`, so on an older ledger it would move the spec counter to 7 without the
+6 → 7 step's row work (the `note` → `message` rename and the `purpose` fold). A spec-6 ledger
+runs `migration/spec/6-to-7/migrate.py --apply` first. The step is README-only: it replaces one
+file and changes no row.
+
+```sh
+LEDGER=/path/to/ledger
+cp migration/presets/base/5-to-6/base-6.yaml "$LEDGER/presets/base.yaml"
+tm -l "$LEDGER" schema plan    # schema is up to date; ledger_meta is stale
+tm -l "$LEDGER" schema apply   # exactly one commit
+```
+
+`tm schema plan` reports *schema is up to date* and *ledger_meta is stale*; `tm schema apply` makes
+exactly one commit that writes `preset_versions` (now `base: 6`), the fingerprint, `tetramark_version`
+and the `ledger.yaml` copy — no DDL and no row change, because the capacity was never stored. A
+ledger whose `proteins` counter is still 3 runs this step **before**
+`migration/presets/proteins/3-to-4/`: that step refuses a base-5 closure and names
+`migration/presets/base/5-to-6/README.md`.
+
+`tm init` always creates a spec-7 ledger with the current presets: `molbio` 3 (`base` 6,
 `nucleic_acids` 3, `bacteria` 2, `proteins` 4, `cell_culture` 3), `cellbio` 1 and `angenet` 1.
 
 If you need columns the preset does not have, add a local kind/field first
@@ -179,7 +218,7 @@ Old `box_01`/`box_02` are *views* of the same tube positions; `box_map_all` is t
 
 ## 5. Map status
 
-A ledger created from this checkout is **spec 6**: every aliquot has one status from the one fixed
+A ledger created from this checkout is **spec 7**: every aliquot has one status from the one fixed
 set — `pending`, `stored`, `missing`, `consumed` — and no stock kind has its own vocabulary or
 `status_sets:` block (`docs/spec/01-concepts.md` §1.1). `stored` is the only in-stock status. Map
 explicitly, never by inference:
