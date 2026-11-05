@@ -201,13 +201,14 @@ spec 6. `tm schema show KIND` resolves and prints the same fixed block for every
   change. The repository's `presets/` only holds the current version, so a new bump retrofits older
   scripted steps with frozen copies where needed.
 - **A core format bump ships** `migration/spec/N-to-N+1/`, scripted or README-only.
-- **Spec 5 → 6 is manual:** `migration/spec/5-to-6/README.md`. Every pending historical preset step
-  runs first (they target spec 5), then the whole `<ledger>/presets/` closure is replaced with the
-  status-free copies of this checkout, `aliquot.status` is remapped with one `migrated: <old status>`
-  event per remapped aliquot, and `tm schema plan`/`apply` writes `spec_version` 6,
-  `preset_versions`, the `aliquot.status` `CHECK` and the regenerated `dolt_tests`. Past events are
-  untouched and the new enum properties are not backfilled. A ledger that still declares
-  `status_sets:`/`statuses:` opens as spec 5; a closure that mixes both models does not load. `tm`
+- **Spec 5 → 6 is manual:** `migration/spec/5-to-6/README.md` remaps the old status vocabulary.
+  Every pending historical preset step runs first (they target spec 5), then the whole
+  `<ledger>/presets/` closure is replaced with the status-free copies of this checkout,
+  `aliquot.status` is remapped with one `migrated: <old status>` event per remapped aliquot, and the
+  operator runs `tm schema plan`/`apply` to write `spec_version` 6, `preset_versions`, the
+  `aliquot.status` `CHECK` and the regenerated `dolt_tests`. Past events are untouched and the new
+  enum properties are not backfilled. A ledger that still declares `status_sets:`/`statuses:` opens
+  as spec 5; a closure that mixes both models does not load. `tm`
   warns on an older ledger: `ledger is spec N, tm is spec N+1: follow
   migration/spec/N-to-N+1/README.md to upgrade it manually`.
 - The parts bumped by the spec-5 → 6 transition are `base` 4→5, `proteins` 2→3, `nucleic_acids` 2→3,

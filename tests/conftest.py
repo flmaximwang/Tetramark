@@ -72,12 +72,12 @@ FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
 #: counts every line of ``SKILL.md`` -- YAML frontmatter included.  ``body``
 #: counts every line *after* the closing frontmatter delimiter, including the
 #: blank line that separates it from the heading -- so the visible version line
-#: and its blank line count.  ``tetramark-schema`` sits exactly at its ceiling;
-#: **171 may only go down** (the trim is Tetramark-0pj).  Do not raise a budget
-#: to fit new prose: move detail into ``references/`` instead.
+#: and its blank line count.  ``tetramark-schema`` sits at its ceiling; **150
+#: may only go down**.  Do not raise a budget to fit new prose: move detail into
+#: ``references/`` instead.
 SKILL_LINE_BUDGETS: dict[str, tuple[str, int]] = {
     "tetramark": ("file", 150),
-    "tetramark-schema": ("body", 171),
+    "tetramark-schema": ("body", 150),
 }
 
 #: ``---`` delimited YAML frontmatter at the very start of a SKILL.md.
@@ -98,7 +98,7 @@ def skill_line_count(name: str) -> int:
 
     Shared by ``tests/test_docs_commands.py`` (the documentation contract) and
     ``tests/test_skill_version.py`` (the version stamp contract) so the two
-    cannot disagree about what "150 lines" or "171 body lines" means.
+    cannot disagree about what "150 lines" or "150 body lines" means.
     """
     mode, _limit = SKILL_LINE_BUDGETS[name]
     path = Path(__file__).resolve().parents[1] / "skills" / name / "SKILL.md"

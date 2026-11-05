@@ -18,7 +18,7 @@ tm [-l|--ledger PATH] [-b|--branch BRANCH] [--dry-run] [--no-commit]
 | `--no-commit` | Execute the write but leave it uncommitted (advanced). |
 | `--json` | Print reads and write results as JSON. |
 | `--format table\|json\|csv` | Read output format (default `table`). |
-| `--version` | Print the version. |
+| `--version` | Print `tetramark <version>` on stdout. When the installed package metadata disagrees with the code (an editable checkout), also print one warning on stderr naming both versions, the checkout and the pinned reinstall command. |
 
 **Resolution** (P3): an explicit `-l/--ledger PATH` wins and is validated directly; otherwise the CLI
 walks up from the current directory and stops at the nearest directory containing both `.dolt/` and
@@ -455,6 +455,11 @@ only entry. For an aliquot the list shows the **stock** kinds: an aliquot has no
 Then come the **fields of the chosen kind in schema order**, each with its description and a `*`
 when it is required (for a box they follow its name and precede its parent). **Computed** fields are
 never asked; **sequence** fields are.
+
+At the kind step of `tm box add-form` each box kind also shows structured facts under its
+description: its geometry, the resolved row/column or slot labels, its slot count and capacity, and
+whether it holds boxes. They come from the effective schema only — the capacity is the same
+`tm box list` formula — so choosing a kind never queries occupancy.
 
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 

@@ -135,6 +135,11 @@ def _message(prompt: Prompt) -> FormattedText:
             if choice.detail:
                 fragments.append(("class:choice-detail", f"  {choice.detail}"))
             fragments.append(("", "\n"))
+            for label, value in choice.facts:
+                # Plain text fragments: markup-like labels stay literal.
+                fragments.append(
+                    ("class:choice-detail", f"       {label}: {value}\n")
+                )
     elif step.type == "enum" and step.values:
         # Enum values can be picked by number as well as by value.
         for number, value in enumerate(step.values, start=1):

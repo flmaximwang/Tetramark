@@ -64,10 +64,10 @@ changes.
 ## The new dependency
 
 `prompt_toolkit` is a new **runtime** dependency, pulled in by the form. It is pure Python and is
-installed with the wheel:
+installed with the wheel; install the 0.6.0 release from its tag:
 
 ```sh
-uv tool install --upgrade tetramark      # or: pip install -U tetramark
+uv tool install --reinstall "git+https://github.com/flmaximwang/Tetramark@v0.6.0"
 ```
 
 `dolt` (>= 2.3.5) is still required on `PATH`, unchanged, and nothing else about the environment

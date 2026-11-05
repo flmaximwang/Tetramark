@@ -75,6 +75,7 @@ mistake the workflow cannot undo: it does not move tags.
 | Change check | the version at the previous tip of `main` must differ from the version being merged; a dependency-only edit to `pyproject.toml` does not release |
 | Tag | annotated `v<version>` at `github.sha` — the merge commit for a PR merge — pushed to origin |
 | Release | `gh release create` with the notes file, or GitHub generated notes when it is missing |
+| Assets | `uv build` writes `tetramark-<version>-py3-none-any.whl` and `tetramark-<version>.tar.gz` in the runner's temp dir; the workflow attaches the ones the release is missing and skips the rest, so a re-run never replaces an asset |
 | Re-runs | idempotent: an existing tag is never touched, an existing release is left alone, a tag without a release gets its release |
 
 The repository convention is that **tags sit on the merge commit** (`v0.5.0` → `d69b4d6`, `v0.4.2` →
