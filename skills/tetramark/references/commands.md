@@ -358,7 +358,7 @@ argument, and a missing, blank or whitespace-only `message` is refused exactly l
 ## Boxes
 
 ```sh
-tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--json]
+tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--set f=v ...] [--json]
 tm box show NAME|ID|ALIAS [--json]
 tm box list [--kind KIND] [--where FILTER ...] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
@@ -379,7 +379,8 @@ slotless parents take one child box each (up to `capacity`). Nesting must stay a
 box holds tubes only**, so `--in` a grid box is refused. Every box name must be **view-safe**: the
 generated view `v_box_<name>` must not collide with a core view, the name is at most 58 characters,
 and it must not differ only in case from an existing box name (`tm box add`, box import and the CSV
-path refuse it).
+path refuse it). `--set` fills the box kind's fields — repeatable, long-only (`-s` is `--slot`) — a
+required field without a default must be given, and `name`/the structural fields are refused.
 
 `box rename` applies the same name rules (a case-only change of the box's own name is allowed),
 refuses a name that is another box's name or alias, keeps the old name as an alias, and replaces

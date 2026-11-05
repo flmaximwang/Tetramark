@@ -100,7 +100,7 @@ tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything l
 tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
 tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
-tm box add KIND NAME [--in PARENT [--slot S]]   # PARENT: a named or slotless box, never a grid
+tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]   # PARENT: a named or slotless box, never a grid
 tm box show NAME            # terminal grid / list; --json gives {id, box, kind, geometry, path, aliases, slots:[...]}
 tm box list [--where FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
@@ -224,6 +224,10 @@ box's own name). **Grid boxes hold tubes only**, so
 `tm box add … --in GRIDBOX` and `tm box move … --in GRIDBOX` are refused; a box nests only in a
 named or slotless box — for example a freezer, `tm box move WFL-12-02 --in FR-1` — and a box never
 nests in a grid box.
+
+`tm box add KIND NAME --set field=value …` fills the box kind's fields at creation, coerced exactly
+as `tm box edit` coerces them: `--set` is repeatable and long-only (`-s` is `--slot`), a required
+field without a default must be given, and `name` and the structural fields are refused.
 
 `tm entity edit`, `tm stock edit` and `tm box edit` change the editable fields of one object and
 nothing else: `notes` plus the fields the object's kind declares, coerced and validated exactly as
@@ -443,7 +447,8 @@ at `tm <object> add`. Nothing is written, and no lock is taken.
 the ledger's effective schema. It is shown even when there is only one kind, and Enter accepts the
 only entry. For an aliquot the list shows the **stock** kinds: an aliquot has no kind of its own.
 Then come the **fields of the chosen kind in schema order**, each with its description and a `*`
-when it is required. **Computed** fields are never asked; **sequence** fields are.
+when it is required (for a box they follow its name and precede its parent). **Computed** fields are
+never asked; **sequence** fields are.
 
 **Per-type checks** happen as you type, so a mistake is caught on the field that caused it:
 

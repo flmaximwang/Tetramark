@@ -2284,6 +2284,294 @@ def test_cli_stock_aliquot_help_names_amount_unit_and_aliquot_add() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Add: box kind fields (Tetramark-026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fast
+def test_cli_box_add_help_lists_set_long_only_and_keeps_slot_short_flag() -> None:
+    """AC11: ``--set`` has no short form; ``-s`` still means ``--slot``."""
+    result = CliRunner().invoke(app, ["box", "add", "--help"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    set_line = next(line for line in lines if "--set" in line)
+    slot_line = next(line for line in lines if "--slot" in line)
+    assert "-s" not in set_line.replace("--set", "")
+    assert "-s" in slot_line
+
+
+def test_cli_box_add_sets_kind_fields_and_reports_them(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC1: ``--set`` fills the kind row; the result reports the coerced fields."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-fields", id_prefix="77")
+    before = commit_count(ledger)
+    added = json.loads(
+        write(
+            ledger,
+            "box",
+            "add",
+            "reqbox",
+            "R1",
+            "--set",
+            "label=alpha",
+            "--set",
+            "count=3",
+            "--json",
+        ).output
+    )
+
+    assert commit_count(ledger) == before + 1
+    assert set(added) == {
+        "object",
+        "kind",
+        "id",
+        "name",
+        "parent_box_id",
+        "parent_slot",
+        "slots",
+        "fields",
+    }
+    assert added["object"] == "box"
+    assert added["kind"] == "reqbox"
+    assert added["name"] == "R1"
+    assert added["parent_box_id"] is None and added["parent_slot"] is None
+    assert added["slots"] == 0
+    assert added["fields"] == {"label": "alpha", "count": 3}
+
+    # `box show --json` is the slot view and carries no kind fields (out of
+    # scope here), so the stored row and the filtered list prove the values.
+    shown = json.loads(read(ledger, "box", "show", "R1", "--json").output)
+    assert shown["id"] == added["id"] and shown["box"] == "R1"
+    assert ledger.driver.query(
+        "SELECT `label`, `count` FROM `box_reqbox` WHERE `id` = %s",
+        (added["id"],),
+    ) == [{"label": "alpha", "count": 3}]
+    listed = json.loads(
+        read(ledger, "box", "list", "--where", "label=alpha", "--json").output
+    )
+    assert [(row["name"], row["count"]) for row in listed] == [("R1", 3)]
+
+
+def test_cli_box_add_requires_a_required_kind_field(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC2: a required field without a default must be given."""
+    ledger = ledger_factory(
+        [BOXFIELDS], name="cli-box-add-required", id_prefix="77"
+    )
+    before = commit_count(ledger)
+    refused = invoke(ledger, "box", "add", "reqbox", "R2")
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert "missing required field(s) for kind 'reqbox': label" in str(
+        refused.exception
+    )
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_box_add_refuses_unknown_computed_and_uncoercible_fields(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC3/AC4/AC5: the edit coercion messages apply to add verbatim."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-refusals", id_prefix="77")
+    before = commit_count(ledger)
+    cases = [
+        (
+            ("--set", "label=a", "--set", "bogus=1"),
+            "unknown field(s) 'bogus' for box kind 'reqbox'; valid fields:",
+        ),
+        (
+            ("--set", "label=a", "--set", "label_len=1"),
+            "field 'label_len' is computed and cannot be set",
+        ),
+        (
+            ("--set", "label=a", "--set", "count="),
+            "field 'count' must be an integer (got '')",
+        ),
+    ]
+    for index, (args, message) in enumerate(cases):
+        refused = invoke(ledger, "box", "add", "reqbox", f"R{index + 3}", *args)
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert message in str(refused.exception)
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_box_add_refuses_name_and_structural_fields(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC6/AC7: the NAME argument and placement/identity columns are not --set."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-guards", id_prefix="77")
+    before = commit_count(ledger)
+
+    refused = invoke(ledger, "box", "add", "reqbox", "R6", "--set", "label=a", "--set", "name=X")
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert str(refused.exception) == "give the box name as the NAME argument"
+
+    for field in ("parent_box_id", "parent_slot", "id", "kind", "created_at"):
+        refused = invoke(
+            ledger,
+            "box",
+            "add",
+            "reqbox",
+            "R7",
+            "--set",
+            "label=a",
+            "--set",
+            f"{field}=x",
+        )
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        assert "is structural" in str(refused.exception), field
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_box_add_notes_via_set_and_twice_is_refused(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC8: ``--set notes=`` fills the notes column; both spellings are refused."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-notes", id_prefix="77")
+    added = json.loads(
+        write(
+            ledger,
+            "box",
+            "add",
+            "reqbox",
+            "R7",
+            "--set",
+            "label=a",
+            "--set",
+            "notes=hi",
+            "--json",
+        ).output
+    )
+    assert ledger.driver.query(
+        "SELECT `notes` FROM `box` WHERE `id` = %s", (added["id"],)
+    ) == [{"notes": "hi"}]
+    listed = json.loads(
+        read(ledger, "box", "list", "--where", "name=R7", "--json").output
+    )
+    assert [row["notes"] for row in listed] == ["hi"]
+
+    before = commit_count(ledger)
+    refused = invoke(
+        ledger,
+        "box",
+        "add",
+        "reqbox",
+        "R8",
+        "--set",
+        "label=a",
+        "--notes",
+        "hi",
+        "--set",
+        "notes=hi",
+    )
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert "given twice" in str(refused.exception)
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_box_add_refuses_a_field_given_twice(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC9: ``--set label=a --set label=b`` is a duplicate-key usage error."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-twice", id_prefix="77")
+    before = commit_count(ledger)
+    refused = invoke(
+        ledger,
+        "box",
+        "add",
+        "reqbox",
+        "R9",
+        "--set",
+        "label=a",
+        "--set",
+        "label=b",
+    )
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert "appears twice in --set" in str(refused.exception)
+    assert commit_count(ledger) == before
+    assert dirty(ledger) == []
+
+
+def test_cli_box_add_reports_defaults_and_an_empty_field_map(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC10: a schema default is reported; a field-less kind reports ``{}``."""
+    ledger = ledger_factory([BOXFIELDS], name="cli-box-add-default", id_prefix="77")
+    fieldbox = json.loads(
+        write(ledger, "box", "add", "fieldbox", "F1", "--json").output
+    )
+    assert fieldbox["fields"] == {"label": "unnamed"}
+
+    grid_ledger = ledger_factory([BASE], name="cli-box-add-nofields", id_prefix="77")
+    grid = json.loads(
+        write(grid_ledger, "box", "add", "grid96", "G1", "--json").output
+    )
+    assert grid["fields"] == {}
+    assert grid["slots"] == 96
+
+
+def test_cli_box_add_placement_and_slot_short_flag_still_work(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC11: ``--in``/``-s`` keep their meaning when ``--set`` is also given."""
+    ledger = ledger_factory(
+        [BASE, BOXFIELDS], name="cli-box-add-placement", id_prefix="77"
+    )
+    parent = json.loads(write(ledger, "box", "add", "rack", "RACK-1", "--json").output)
+    assert parent["fields"] == {}
+    child = json.loads(
+        write(
+            ledger,
+            "box",
+            "add",
+            "reqbox",
+            "R11",
+            "--in",
+            "RACK-1",
+            "-s",
+            "top",
+            "--set",
+            "label=a",
+            "--json",
+        ).output
+    )
+    assert child["parent_box_id"] == parent["id"]
+    assert child["parent_slot"] == "top"
+    assert child["fields"] == {"label": "a"}
+
+
+def test_box_add_python_api_takes_strings_or_a_mapping(
+    cli_env: None, ledger_factory
+) -> None:
+    """AC12: ``ledger.boxes.add(..., values=...)`` accepts both spellings."""
+    ledger = ledger_factory([BOXFIELDS], name="box-add-api", id_prefix="77")
+    before = commit_count(ledger)
+    mapped = ledger.boxes.add("reqbox", "R10", values={"label": "a"})
+    assert mapped["fields"] == {"label": "a"}
+    listed = ledger.boxes.add("reqbox", "R11", values=["label=b", "count=2"])
+    assert listed["fields"] == {"label": "b", "count": 2}
+    assert commit_count(ledger) == before + 2
+    assert ledger.driver.query(
+        "SELECT `name`, `label`, `count` FROM `box` b "
+        "JOIN `box_reqbox` k ON k.`id` = b.`id` ORDER BY b.`name`"
+    ) == [
+        {"name": "R10", "label": "a", "count": None},
+        {"name": "R11", "label": "b", "count": 2},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Edit: box kind fields, rename-only names, clear-empty (Tetramark-p1j)
 # ---------------------------------------------------------------------------
 

@@ -31,13 +31,16 @@ def add_box_command(
         None, "--slot", "-s", help="Slot in the parent box (slotted parents only)."
     ),
     notes: str | None = typer.Option(None, "--notes", help="Free-text notes."),
+    values: list[str] = typer.Option(
+        [], "--set", help="Field value as field=value; repeat for more fields."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the created box as JSON."),
 ) -> None:
     """Create a box and materialise its slots from the kind geometry."""
     ledger = resolve_ledger(ctx)
     try:
         result = ledger.boxes.add(
-            kind, name, parent=parent, slot=slot, notes=notes
+            kind, name, values=values, parent=parent, slot=slot, notes=notes
         )
         emit_write(
             ledger,
