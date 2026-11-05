@@ -3554,6 +3554,12 @@ def list_aliquots(
     if any(not status for status in normalised):
         raise UsageError("a --status value must not be empty")
 
+    if isinstance(where, Mapping):
+        # A missing value means "empty" here too.  ``_parse_pairs`` would
+        # otherwise spell ``None`` as the literal text "None" and match it.
+        where = {
+            field: "" if value is None else value for field, value in where.items()
+        }
     filters = _parse_pairs(where, option="--where")
     if "status" in filters:
         raise UsageError(
@@ -3627,8 +3633,20 @@ def list_aliquots(
         status_slots = ", ".join(["%s"] * len(normalised))
         conditions.append(f"a.{_quote('status')} IN ({status_slots})")
         params.extend(normalised)
+    # An empty value means "this field is empty" and carries no parameter.
+    # ``seq``/``quantity``/``created_at`` are non-text columns, where the empty
+    # string is not a stored value, so only NULL matches; the text columns can
+    # hold both NULL and ``''``.
+    null_only = frozenset({"seq", "quantity", "created_at"})
     for field, value in filters.items():
-        conditions.append(f"a.{_quote(field)} = %s")
+        column = f"a.{_quote(field)}"
+        if value == "":
+            if field in null_only:
+                conditions.append(f"{column} IS NULL")
+            else:
+                conditions.append(f"({column} IS NULL OR {column} = '')")
+            continue
+        conditions.append(f"{column} = %s")
         params.append(value)
     if scope is not None:
         scope_sql, scope_params = _in_stock_scope_sql(ledger)
