@@ -75,14 +75,14 @@ def fake_root(tmp_path: Path, skill_version: str | None) -> Path:
     root = tmp_path / "root"
     root.mkdir()
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "tetramark"\nversion = "0.8.14"\n', encoding="utf-8"
+        '[project]\nname = "tetramark"\nversion = "0.8.25"\n', encoding="utf-8"
     )
     (root / "src" / "tetramark").mkdir(parents=True)
     (root / "src" / "tetramark" / "__init__.py").write_text(
-        '__version__ = "0.8.14"\n', encoding="utf-8"
+        '__version__ = "0.8.25"\n', encoding="utf-8"
     )
     (root / "uv.lock").write_text(
-        '[[package]]\nname = "tetramark"\nversion = "0.8.14"\n', encoding="utf-8"
+        '[[package]]\nname = "tetramark"\nversion = "0.8.25"\n', encoding="utf-8"
     )
     for name in SKILL_SPECS:
         path = root / "skills" / name / "SKILL.md"
@@ -172,15 +172,15 @@ def test_collect_reports_a_missing_skill_version(tmp_path: Path) -> None:
 
 
 def test_collect_reports_a_differing_skill_version(tmp_path: Path) -> None:
-    root = fake_root(tmp_path, skill_version="0.8.13")
+    root = fake_root(tmp_path, skill_version="0.8.24")
     report = load_release_check().collect(root, offline=True)
     assert report["ready"] is False
     assert (
-        "skills/tetramark/SKILL.md says 0.8.13, pyproject.toml says 0.8.14"
+        "skills/tetramark/SKILL.md says 0.8.24, pyproject.toml says 0.8.25"
         in report["problems"]
     )
     assert (
-        "skills/tetramark-schema/SKILL.md says 0.8.13, pyproject.toml says 0.8.14"
+        "skills/tetramark-schema/SKILL.md says 0.8.24, pyproject.toml says 0.8.25"
         in report["problems"]
     )
 
@@ -221,18 +221,18 @@ def test_resolve_skill_errors_for_an_unknown_name() -> None:
 @pytest.mark.parametrize(
     ("skill_version", "tm_version", "expected"),
     [
-        ("0.8.14", "0.8.14", "match"),
+        ("0.8.25", "0.8.25", "match"),
         ("0.9", "0.9.0", "match"),
-        ("0.8.14", "0.8.15", "older"),
-        ("0.8.15", "0.8.14", "newer"),
-        ("0.9", "0.8.14", "newer"),
-        ("0.4.1", "0.8.14", "older"),
-        (None, "0.8.14", "missing"),
-        ("", "0.8.14", "missing"),
-        ("0.8.14", None, "unknown"),
-        ("0.8.14", "", "unknown"),
-        ("not-a-version", "0.8.14", "unknown"),
-        ("0.8.14", "not-a-version", "unknown"),
+        ("0.8.25", "0.8.26", "older"),
+        ("0.8.26", "0.8.25", "newer"),
+        ("0.9", "0.8.25", "newer"),
+        ("0.4.1", "0.8.25", "older"),
+        (None, "0.8.25", "missing"),
+        ("", "0.8.25", "missing"),
+        ("0.8.25", None, "unknown"),
+        ("0.8.25", "", "unknown"),
+        ("not-a-version", "0.8.25", "unknown"),
+        ("0.8.25", "not-a-version", "unknown"),
     ],
 )
 def test_compare_classifies_a_skill_copy(

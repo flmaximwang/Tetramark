@@ -162,10 +162,10 @@ def compare(skill_version: str | None, tm_version: str | None) -> str:
 
 
 def _version_key(text: str) -> tuple[int, ...] | None:
-    """``"0.8.14"`` -> ``(0, 8, 14)``; ``None`` for anything else.
+    """``"0.8.25"`` -> ``(0, 8, 25)``; ``None`` for anything else.
 
     Trailing zero components are dropped so ``0.9`` and ``0.9.0`` compare
-    equal.  Pre-release suffixes (``0.8.14rc1``) are not modelled: the CLI
+    equal.  Pre-release suffixes (``0.8.25rc1``) are not modelled: the CLI
     prints plain dotted versions, and an unrecognised string must not be
     silently ordered.
     """
