@@ -79,6 +79,13 @@ BASE_V3 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-3.yaml"
 #: fixed model, so the pre-spec-4 fixtures start from this frozen copy - the
 #: content the repository shipped before that bump.
 LEGACY_BASE_V4 = ROOT / "migration" / "presets" / "base" / "3-to-4" / "base-4.yaml"
+#: Tetramark-500: base 6 drops the slotless ``capacity`` of shelf/freezer/drawer.
+#: The baseline a base-5 ledger holds is frozen next to its manual step, and the
+#: v6 target is frozen the same way so this historical step keeps working after
+#: a later bump.
+BASE_5 = ROOT / "migration" / "presets" / "base" / "4-to-5" / "base-5.yaml"
+BASE_6 = ROOT / "migration" / "presets" / "base" / "5-to-6" / "base-6.yaml"
+BASE_5_TO_6_README = ROOT / "migration" / "presets" / "base" / "5-to-6" / "README.md"
 #: The frozen bacteria v1 and library v2 the old preset steps keep installing
 #: after Tetramark-epn.4 bumped those parts (the repository copies are v2/v3).
 FROZEN_BACTERIA_1 = (
@@ -3731,6 +3738,54 @@ def test_proteins_3_to_4_renames_the_construct_length(
     )
 
 
+def write_proteins_v3_base_5_presets(directory: Path) -> Path:
+    """A spec-6 closure with proteins 3 still on the **base-5** copy.
+
+    Tetramark-500: the frozen ``proteins-4.yaml`` includes ``base``, so running
+    proteins 3 -> 4 on a base-5 closure would pull the capacity change into that
+    step's plan.  The step therefore pins ``BASE_VERSION = 6`` and must refuse
+    this ledger, naming the manual base step.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("bacteria", "cell_culture", "nucleic_acids", "molbio"):
+        shutil.copyfile(REPO_PRESETS / f"{name}.yaml", directory / f"{name}.yaml")
+    shutil.copyfile(BASE_5, directory / "base.yaml")
+    shutil.copyfile(PROTEINS_3, directory / "proteins.yaml")
+    return directory / "molbio.yaml"
+
+
+def test_proteins_3_to_4_refuses_a_base_5_closure(
+    embedded_ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """Tetramark-500: a base-5 closure must run base/5-to-6 first.
+
+    The refusal is actionable, writes nothing (no commit, no tag) and leaves the
+    ledger's proteins copy exactly as it found it.
+    """
+    ledger = embedded_ledger_factory(
+        [write_proteins_v3_base_5_presets(tmp_path / "proteins-v3-base-5")],
+        name="proteins-v3-base-5",
+        real_init=True,
+    )
+    versions = {**PROTEINS_V3_VERSIONS, "base": 5}
+    assert ledger.schema.preset_versions == versions
+    assert json.loads(ledger.meta["preset_versions"]) == versions
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    proteins_copy = (ledger.path / "presets" / "proteins.yaml").read_bytes()
+
+    result = run_python(PROTEINS_3_TO_4, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "the loaded base copy is version 5, expected 6" in output
+    assert "migration/presets/base/5-to-6/README.md" in output
+    # Nothing was written: no tag, no commit, and the placed v4 copy was restored.
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    assert (ledger.path / "presets" / "proteins.yaml").read_bytes() == proteins_copy
+
+
 # ---------------------------------------------------------------------------
 # spec/4-to-5: one view per box, positions follow in stock (ticket 30)
 # ---------------------------------------------------------------------------
@@ -4740,6 +4795,145 @@ def test_every_counter_step_has_one_folder_with_a_readme() -> None:
                 )
 
 
+# ---------------------------------------------------------------------------
+# Tetramark-500: base 5 -> 6, the capacity-free slotless containers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fast
+def test_base_5_and_base_6_frozen_copies_keep_versions_and_capacities() -> None:
+    """T2: the historical copies cannot drift with the shipped base preset.
+
+    ``4-to-5`` installs the frozen v5 content (a bound on the slotless kinds),
+    ``5-to-6`` installs the frozen v6 content (no bound), and the shipped base
+    is the v6 file.  The mouse ``cage`` keeps its own capacity 5: a cage's
+    occupant limit is a property of the kind, unlike a shelf/freezer/drawer.
+    """
+    base_5 = yaml.safe_load(BASE_5.read_text(encoding="utf-8"))
+    assert base_5["version"] == 5
+    for kind, capacity in (("shelf", 12), ("freezer", 6), ("drawer", 1)):
+        assert base_5["kinds"][kind]["geometry"] == {
+            "type": "slotless",
+            "capacity": capacity,
+        }, kind
+        # The historical descriptions still promise the bound.
+        assert "holds" in base_5["kinds"][kind]["description"], kind
+
+    base_6 = yaml.safe_load(BASE_6.read_text(encoding="utf-8"))
+    assert base_6["version"] == 6
+    for kind in ("shelf", "freezer", "drawer", "incubator"):
+        assert base_6["kinds"][kind]["geometry"] == {"type": "slotless"}, kind
+
+    shipped = REPO_PRESETS / "base.yaml"
+    assert BASE_6.read_bytes() == shipped.read_bytes()
+    assert yaml.safe_load(shipped.read_text(encoding="utf-8"))["version"] == 6
+
+    mouse = yaml.safe_load(
+        (REPO_PRESETS / "mouse.yaml").read_text(encoding="utf-8")
+    )
+    assert mouse["kinds"]["cage"]["geometry"] == {
+        "type": "slotless",
+        "capacity": 5,
+    }
+
+
+@pytest.mark.fast
+def test_manual_base_step_readmes_copy_their_frozen_preset_files() -> None:
+    """T3: both manual base steps copy their frozen file, never the checkout's."""
+    readme_4_to_5 = (
+        ROOT / "migration" / "presets" / "base" / "4-to-5" / "README.md"
+    ).read_text(encoding="utf-8")
+    assert (
+        'cp migration/presets/base/4-to-5/base-5.yaml "$LEDGER/presets/base.yaml"'
+        in readme_4_to_5
+    )
+    assert "cp presets/base.yaml" not in readme_4_to_5
+    assert not (BASE_5.parent / "migrate.py").exists()
+
+    readme_5_to_6 = BASE_5_TO_6_README.read_text(encoding="utf-8")
+    assert (
+        'cp migration/presets/base/5-to-6/base-6.yaml "$LEDGER/presets/base.yaml"'
+        in readme_5_to_6
+    )
+    assert "schema is up to date" in readme_5_to_6
+    assert "ledger_meta is stale" in readme_5_to_6
+    assert "schema apply" in readme_5_to_6
+    assert "apply(schema): refresh ledger_meta" in readme_5_to_6
+    # The step is README-only: no runner, no dummy migrate.py.
+    assert not (BASE_6.parent / "migrate.py").exists()
+
+
+def test_base_5_to_6_manual_step_lifts_the_slotless_capacity(
+    embedded_ledger_factory, tmp_path: Path
+) -> None:
+    """T1: a real base-5 ledger refuses the second drawer box until it upgrades.
+
+    Follows ``migration/presets/base/5-to-6/README.md``: copy the frozen v6
+    file, plan (up to date + stale meta), apply (one metadata-only commit), then
+    the previously refused write succeeds and ``tm check`` still has no FAIL.
+    """
+    ledger = embedded_ledger_factory(
+        [BASE_5], name="base-5-capacity", real_init=True
+    )
+    assert ledger.schema.preset_versions == {"base": 5}
+    ledger.boxes.add("drawer", "DRAWER")
+    ledger.boxes.add("rack", "RACK-1", parent="DRAWER")
+    with pytest.raises(LedgerError, match=r"box 'DRAWER' is full \(capacity 1"):
+        ledger.boxes.add("rack", "RACK-2", parent="DRAWER")
+
+    tables_before = table_names(ledger)
+    counts_before = row_counts(ledger, tables_before)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    # The README's step 1: replace the ledger's copy with the frozen v6 file.
+    shutil.copyfile(BASE_6, ledger.path / "presets" / "base.yaml")
+    ledger.close()
+    reopened = open_ledger(ledger.path)
+    try:
+        assert reopened.schema.preset_versions == {"base": 6}
+        planned = CliRunner().invoke(app, [*base_args(reopened), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "schema is up to date" in planned.output
+        assert "ledger_meta is stale" in planned.output
+        applied = CliRunner().invoke(
+            app, [*base_args(reopened), "schema", "apply"]
+        )
+        assert applied.exit_code == 0, applied.output
+        assert "Applied" in applied.output
+    finally:
+        reopened.close()
+
+    migrated = open_ledger(ledger.path)
+    try:
+        # The counter, fingerprint and ledger.yaml copy moved in one commit.
+        assert migrated.schema.preset_versions == {"base": 6}
+        assert json.loads(migrated.meta["preset_versions"]) == {"base": 6}
+        assert migrated.check_fingerprint(warn=False) is True
+        assert commit_count(migrated) == commits_before + 1
+        assert commit_message(migrated, head(migrated)) == (
+            "apply(schema): refresh ledger_meta"
+        )
+        assert tags(migrated) == {}
+        # No DDL and no row moves: the table set and every row count are intact.
+        assert table_names(migrated) == tables_before
+        assert row_counts(migrated, tables_before) == counts_before
+        assert "capacity" not in (
+            migrated.path / "presets" / "base.yaml"
+        ).read_text(encoding="utf-8")
+
+        # The write the old bound refused now succeeds.
+        migrated.boxes.add("rack", "RACK-2", parent="DRAWER")
+        checked = tm_check(migrated)
+        assert checked.exit_code == 0, checked.output
+        assert "FAIL" not in checked.output
+        planned = CliRunner().invoke(app, [*base_args(migrated), "schema", "plan"])
+        assert planned.exit_code == 0, planned.output
+        assert "up to date" in planned.output
+    finally:
+        migrated.close()
+
+
 @pytest.mark.fast
 def test_manual_step_readme_points_at_the_next_manual_step() -> None:
     """A step behind its ledger names the next (manual) step's README."""
@@ -4756,6 +4950,11 @@ def test_manual_step_readme_points_at_the_next_manual_step() -> None:
     assert (
         manual_step_readme(step("preset", 3, preset="base"))
         == "migration/presets/base/4-to-5/README.md"
+    )
+    # T5 (Tetramark-500): base 5 -> 6 is the next manual step after 4 -> 5.
+    assert (
+        manual_step_readme(step("preset", 4, preset="base"))
+        == "migration/presets/base/5-to-6/README.md"
     )
     # A scripted next step keeps the plain counter message: there the
     # migrate.py is the thing to run, not a README to follow.
