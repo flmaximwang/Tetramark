@@ -92,7 +92,7 @@ tm entity purge ID|ALIAS                    # hard delete, explicit only; one co
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
-tm stock show|list|edit ...                 # list [KIND] [--where FILTER ...]
+tm stock show|list|edit ...                 # list [KIND] [--all] [--where FILTER ...]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
