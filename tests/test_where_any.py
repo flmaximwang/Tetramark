@@ -28,6 +28,7 @@ from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.errors import UsageError
 
 from conftest import PRESETS
+from support.read_asserts import assert_single_read_process
 
 FULL = [str(PRESETS / "full")]
 
@@ -339,7 +340,7 @@ def test_the_or_group_keeps_one_read_batch(
     )
     assert ids(rows) == [alpha["id"]]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"]
+    assert_single_read_process(invoke_calls)
 
     query_many_calls.clear()
     invoke_calls.clear()
@@ -347,4 +348,4 @@ def test_the_or_group_keeps_one_read_batch(
         lot["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"]
+    assert_single_read_process(invoke_calls)
