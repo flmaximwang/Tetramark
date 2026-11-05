@@ -220,7 +220,7 @@ def test_versionless_copy_warns_and_still_exits_zero(tmp_path: Path) -> None:
     assert result.stdout == f"skill ? ({path.resolve()}); tm {__version__}; mismatch\n"
     assert result.stderr.strip() == (
         f"warning: {path.resolve()} carries no version; it predates versioned "
-        "skills (tetramark < 0.8.14)"
+        "skills (tetramark < 0.8.25)"
     )
 
 

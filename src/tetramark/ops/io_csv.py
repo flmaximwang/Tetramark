@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from tetramark.core.events import record_event
 from tetramark.core.ids import next_aliquot_id, parse_aliquot_id
 from tetramark.core.objects import (
-    _CORE_EDITABLE,
+    _CORE_ON_ADD,
     _box_geometry,
     _coerce_field,
     _create_box_views,
@@ -1255,8 +1255,13 @@ class _Planner:
         object_type: str,
         values: Mapping[str, str],
     ) -> tuple[dict[str, Any], dict[str, Any], set[tuple[str, str]]]:
-        """Split values into core columns and kind fields (with virtual refs)."""
-        valid = set(kind.fields) | set(_CORE_EDITABLE[object_type])
+        """Split values into core columns and kind fields (with virtual refs).
+
+        An import creates a row, so it uses the create allowlist: a CSV may
+        carry a ``name`` column (and a box row always has one), which an
+        ``edit`` never accepts.
+        """
+        valid = set(kind.fields) | set(_CORE_ON_ADD[object_type])
         unknown = sorted(set(values) - valid)
         if unknown:
             choices = ", ".join(sorted(valid)) or "(none)"

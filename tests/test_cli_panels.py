@@ -53,7 +53,7 @@ EXPECTED_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "entity": ("add", "add-form", "show", "list", "edit", "rename", "purge"),
     "stock": ("add", "add-form", "aliquot", "show", "list", "edit", "renumber", "purge"),
     "aliquot": ("add", "add-form", "show", "list", "move", "use", "status", "label", "purge"),
-    "box": ("add", "add-form", "show", "list", "move", "rename", "purge"),
+    "box": ("add", "add-form", "show", "list", "edit", "move", "rename", "purge"),
     "alias": ("add", "remove"),
     "branch": ("list", "create", "delete"),
     "remote": ("add", "list", "push", "pull", "remove"),

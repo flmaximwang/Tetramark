@@ -30,11 +30,12 @@ from tetramark.core.ids import aliquot_id
 from tetramark.form.session import run_add_form
 from tetramark.form.source import Reply, ScriptedSource
 
-from conftest import REPO_PRESETS
+from conftest import PRESETS, REPO_PRESETS
 
 pytestmark = pytest.mark.embedded
 
 BASE = REPO_PRESETS / "base.yaml"
+BOXFIELDS = PRESETS / "boxfields"
 
 runner = CliRunner()
 
@@ -374,6 +375,46 @@ def test_box_form_stores_what_add_stores(ledger_factory) -> None:
         "slots": 96,
     }
     assert created["slots"] == added["slots"] == 96
+
+
+def test_box_form_stores_box_kind_fields_what_add_stores(ledger_factory) -> None:
+    """The box form asks the kind's fields (after the name) and writes them.
+
+    ``tm box add`` gained ``--set`` (Tetramark-026); the form still calls the
+    same ``ledger.boxes.add(..., values=...)``, so the two rows must match.  A
+    box kind's own ``name`` field is not asked: the form's name step is the
+    core NAME argument.
+    """
+    form_ledger = ledger_factory([BOXFIELDS], name="boxfields-form")
+    add_ledger = ledger_factory([BOXFIELDS], name="boxfields-add")
+
+    created, source = run_form(
+        form_ledger,
+        "box",
+        "reqbox",  # kind
+        "R-FORM",  # name
+        "alpha",  # label (required, no default)
+        "3",  # count
+        "",  # parent: none
+        "",  # notes: none
+        "y",  # review: write
+    )
+    added = add_ledger.boxes.add(
+        "reqbox", "R-FORM", values={"label": "alpha", "count": 3}
+    )
+
+    asked = [prompt.step.key for prompt in source.prompts if prompt.step]
+    assert asked == ["kind", "name", "label", "count", "parent", "notes"]
+    row_sql = (
+        "SELECT b.`name`, b.`notes`, k.`label`, k.`count` FROM `box` b "
+        "JOIN `box_reqbox` k ON k.`id` = b.`id` WHERE b.`id` = %s"
+    )
+    form_row = form_ledger.driver.query(row_sql, (created["id"],))
+    add_row = add_ledger.driver.query(row_sql, (added["id"],))
+    assert form_row == add_row == [
+        {"name": "R-FORM", "notes": None, "label": "alpha", "count": 3}
+    ]
+    assert created["fields"] == added["fields"] == {"label": "alpha", "count": 3}
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ directory (human) or ``{"name", "path", "source"}`` (``--json``).  ``source`` is
 ``tm skill version`` compares the copy's frontmatter ``version:`` with
 ``tm --version`` and prints a single line::
 
-    skill 0.8.15 (/repo/skills/tetramark/SKILL.md); tm 0.8.15; match
+    skill 0.8.26 (/repo/skills/tetramark/SKILL.md); tm 0.8.26; match
 
 ``--json`` prints ``{"name", "skill_version", "skill_path", "tm_version",
 "match"}``.  ``--file PATH`` checks another copy instead -- a ``SKILL.md`` or
@@ -27,7 +27,7 @@ reason to fail a command that reads only local files.  The warnings are:
 * ``warning: skill <s> describes an older|a newer CLI than tm <t>; use the
   copy at $(tm skill path) instead``
 * ``warning: <path> carries no version; it predates versioned skills
-  (tetramark < 0.8.14)`` -- ``skill_version`` is ``null`` and ``match`` false;
+  (tetramark < 0.8.25)`` -- ``skill_version`` is ``null`` and ``match`` false;
 * ``warning: skill version '<s>' is not comparable with tm <t>``.
 
 Only a missing file or a file without YAML frontmatter exits 1.  The warnings
@@ -190,7 +190,7 @@ def skill_version(
     elif classification == "missing":
         _warn(
             f"{skill_file} carries no version; it predates versioned skills "
-            "(tetramark < 0.8.14)"
+            "(tetramark < 0.8.25)"
         )
     elif classification == "unknown":
         _warn(
