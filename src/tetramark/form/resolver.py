@@ -35,6 +35,11 @@ class LedgerResolver:
     def __init__(self, ledger: Ledger) -> None:
         self.ledger = ledger
         self.schema = ledger.schema
+        #: Box ref -> slotted, for this form session.  The form asks for every
+        #: step it renders, and each lookup is a ``dolt sql`` process on the
+        #: embedded driver; a box's kind cannot change while the form only
+        #: reads (the final ``add`` resolves the box again before writing).
+        self._slotted: dict[str, bool] = {}
 
     @property
     def driver(self) -> Any:
@@ -221,10 +226,12 @@ class LedgerResolver:
         return choices
 
     def is_slotted(self, box: str) -> bool:
-        row = self._box_row(box)
-        kind = self.schema.kind(str(row["kind"]))
-        geometry = kind.geometry
-        return bool(geometry is not None and geometry.is_slotted)
+        if box not in self._slotted:
+            row = self._box_row(box)
+            kind = self.schema.kind(str(row["kind"]))
+            geometry = kind.geometry
+            self._slotted[box] = bool(geometry is not None and geometry.is_slotted)
+        return self._slotted[box]
 
     def free_slots(self, box: str) -> list[str]:
         row = self._box_row(box)
