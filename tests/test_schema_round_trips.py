@@ -25,7 +25,6 @@ import pytest
 import yaml
 
 from conftest import PRESETS, REPO_PRESETS
-from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import (
     LEDGER_FILE,
     Ledger,
@@ -112,7 +111,9 @@ def test_plan_runs_one_batched_driver_round_trip(
     # Two dolt processes regardless of the kind count: the six catalog reads,
     # the SHOW CREATE TABLE statements, the box rows and ledger_meta all share
     # one query_many (JSON rows + CSV column lists).
-    assert_single_read_process(invoke_log)
+    assert invoke_log == ["json", "csv"], (
+        f"plan issued {len(invoke_log)} dolt processes: {invoke_log}"
+    )
 
 
 # ---------------------------------------------------------------------------
