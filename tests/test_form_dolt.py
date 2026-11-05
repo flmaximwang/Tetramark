@@ -18,6 +18,7 @@ real ``tm init`` per test.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -296,6 +297,7 @@ def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:
         "lot",  # kind (the stock's kind)
         form_stock["id"],  # stock
         "2",  # count
+        "",  # quantity: none (and so no unit)
         "FORM-96",  # box
         "",  # slots: Enter accepts the next free ones
         "y",  # review: write
@@ -339,6 +341,125 @@ def test_aliquot_form_stores_what_add_stores(ledger_factory) -> None:
         aliquot_id(form_stock["id"], 2),
     ]
     assert added["ids"] == stored_ids(add_ledger, add_stock["id"])
+
+
+def create_events(ledger, aliquot: str) -> list[dict]:
+    """One tube's ``create`` events as the values the two write paths share."""
+    return [
+        {
+            "amount": Decimal(str(event["amount"])),
+            "unit": event["unit"],
+            "to_box": event["to_box"],
+            "to_slot": event["to_slot"],
+            "new_status": event["new_status"],
+        }
+        for event in ledger.aliquots.show(aliquot)["events"]
+        if event["event"] == "create"
+    ]
+
+
+def test_aliquot_form_with_quantity_and_unit_stores_what_add_stores(
+    ledger_factory,
+) -> None:
+    """The quantity is the amount of EACH tube, written exactly as ``add`` does."""
+    form_ledger, add_ledger = ledger_pair(ledger_factory, "aliquot-quantity")
+    form_item = form_ledger.entities.add("item", values={"name": "TM item"})
+    add_item = add_ledger.entities.add("item", values={"name": "TM item"})
+    for ledger in (form_ledger, add_ledger):
+        ledger.boxes.add("grid8x12", "FORM-96")
+    form_stock = form_ledger.stocks.add(
+        "lot", entity=form_item["id"], values={"supplier": "Acme"}, aliquots=0
+    )
+    add_stock = add_ledger.stocks.add(
+        "lot", entity=add_item["id"], values={"supplier": "Acme"}, aliquots=0
+    )
+
+    created, _ = run_form(
+        form_ledger,
+        "aliquot",
+        "lot",  # kind (the stock's kind)
+        form_stock["id"],  # stock
+        "2",  # count
+        "0.5",  # quantity
+        "ml",  # unit
+        "FORM-96",  # box
+        "",  # slots: Enter accepts the next free ones
+        "y",  # review: write
+    )
+    added = add_ledger.aliquots.add(
+        add_stock["id"],
+        count=2,
+        box="FORM-96",
+        slots=["A1", "A2"],
+        quantity="0.5",
+        unit="ml",
+    )
+
+    # Per tube, not divided: each of the two tubes holds 0.5 ml.
+    view = aliquot_view(form_ledger, form_stock["id"])
+    assert view == aliquot_view(add_ledger, add_stock["id"])
+    assert [(row["seq"], row["unit"], row["slot"]) for row in view] == [
+        (1, "ml", "A1"),
+        (2, "ml", "A2"),
+    ]
+    assert [Decimal(str(row["quantity"])) for row in view] == [
+        Decimal("0.5"),
+        Decimal("0.5"),
+    ]
+    # Each tube's create event carries the same amount and unit.
+    assert [create_events(form_ledger, alq) for alq in created["ids"]] == [
+        [
+            {
+                "amount": Decimal("0.5"),
+                "unit": "ml",
+                "to_box": "FORM-96",
+                "to_slot": slot,
+                "new_status": "stored",
+            }
+        ]
+        for slot in ("A1", "A2")
+    ]
+    assert create_events(form_ledger, created["ids"][0]) == create_events(
+        add_ledger, added["ids"][0]
+    )
+
+
+def test_aliquot_form_zero_quantity_is_stored_with_its_unit(ledger_factory) -> None:
+    ledger = ledger_factory([BASE], name="aliquot-zero")
+    ledger.boxes.add("grid8x12", "ZERO-96")
+    item = ledger.entities.add("item", values={"name": "TM item"})
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
+    )
+
+    created, _ = run_form(
+        ledger,
+        "aliquot",
+        "lot",  # kind
+        stock["id"],  # stock
+        "2",  # count
+        "0",  # quantity: zero is a quantity
+        "ul",  # unit
+        "ZERO-96",  # box
+        "",  # slots
+        "y",  # review: write
+    )
+
+    view = aliquot_view(ledger, stock["id"])
+    assert [Decimal(str(row["quantity"])) for row in view] == [
+        Decimal("0"),
+        Decimal("0"),
+    ]
+    assert [row["unit"] for row in view] == ["ul", "ul"]
+    assert create_events(ledger, created["ids"][0]) == [
+        {
+            "amount": Decimal("0"),
+            "unit": "ul",
+            "to_box": "ZERO-96",
+            "to_slot": "A1",
+            "new_status": "stored",
+        }
+    ]
 
 
 def test_box_form_stores_what_add_stores(ledger_factory) -> None:
@@ -520,6 +641,100 @@ def test_add_form_cli_message_and_json_match_add(
     assert payload["id"] == "E00002"
     assert set(payload) == {"aliases", "id", "kind", "name", "object"}
     assert payload["aliases"] == ["SH-3", "SH-4"]
+
+
+def test_add_form_cli_aliquot_quantity_and_json_match_add(
+    cli_env: None, ledger_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The aliquot form prints exactly what ``tm aliquot add -q -u`` prints."""
+    form_ledger = ledger_factory([BASE], name="cli-aliquot-form")
+    add_ledger = ledger_factory([BASE], name="cli-aliquot-add")
+    stocks = []
+    for ledger in (form_ledger, add_ledger):
+        item = ledger.entities.add("item", values={"name": "TM item"})
+        stocks.append(
+            ledger.stocks.add(
+                "lot", entity=item["id"], values={"supplier": "Acme"}, aliquots=0
+            )
+        )
+    form_stock, add_stock = stocks
+    # The datecode stock id is deterministic, so both messages name the same
+    # stock and the aliquot ids line up.
+    assert form_stock["id"] == add_stock["id"]
+
+    replies = (
+        "lot",  # kind
+        form_stock["id"],  # stock
+        "2",  # count
+        "0.5",  # quantity
+        "ml",  # unit
+        "",  # box: none
+        "y",  # review: write
+    )
+    monkeypatch.setattr(form_commands, "_stdin_is_tty", lambda: True)
+    sources = [
+        ScriptedSource(tuple(Reply(text=text) for text in replies)),
+        ScriptedSource(tuple(Reply(text=text) for text in replies)),
+    ]
+    monkeypatch.setattr(form_commands, "_make_source", lambda: sources.pop(0))
+
+    form_plain = runner.invoke(
+        app, ["--ledger", str(form_ledger.path), "aliquot", "add-form"]
+    )
+    assert form_plain.exit_code == 0, form_plain.output
+    add_plain = runner.invoke(
+        app,
+        [
+            "--ledger",
+            str(add_ledger.path),
+            "aliquot",
+            "add",
+            form_stock["id"],
+            "--count",
+            "2",
+            "--quantity",
+            "0.5",
+            "--unit",
+            "ml",
+        ],
+    )
+    assert add_plain.exit_code == 0, add_plain.output
+    # Byte for byte, not just "contains": the form prints add's message.
+    assert form_plain.output == add_plain.output
+
+    form_json = runner.invoke(
+        app, ["--ledger", str(form_ledger.path), "aliquot", "add-form", "--json"]
+    )
+    assert form_json.exit_code == 0, form_json.output
+    add_json = runner.invoke(
+        app,
+        [
+            "--ledger",
+            str(add_ledger.path),
+            "aliquot",
+            "add",
+            form_stock["id"],
+            "--count",
+            "2",
+            "--quantity",
+            "0.5",
+            "--unit",
+            "ml",
+            "--json",
+        ],
+    )
+    assert add_json.exit_code == 0, add_json.output
+    assert form_json.output == add_json.output
+    payload = json.loads(form_json.output)
+    assert payload["object"] == "aliquot"
+    assert payload["stock_id"] == form_stock["id"]
+    assert payload["ids"] == [
+        aliquot_id(form_stock["id"], 3),
+        aliquot_id(form_stock["id"], 4),
+    ]
+    assert [Decimal(str(row["quantity"])) for row in aliquot_view(
+        form_ledger, form_stock["id"]
+    )] == [Decimal("0.5")] * 4
 
 
 # ---------------------------------------------------------------------------

@@ -82,7 +82,8 @@ class Step:
     ``type`` is either a :class:`~tetramark.schema.model.FieldType` value
     (``string``, ``text``, ``int``, ``decimal``, ``bool``, ``date``,
     ``datetime``, ``enum``, ``sequence``, ``ref``) or one of the form-only
-    types ``kind``, ``count``, ``box``, ``slots`` and ``aliases``.
+    types ``kind``, ``count``, ``box``, ``slots``, ``aliases``, ``quantity``
+    and ``unit``.
     """
 
     key: str
@@ -336,6 +337,24 @@ def _aliquot_steps(kind_name: str) -> list[Step]:
             default="1",
             minimum=1,
             description="How many aliquots to add.",
+        ),
+        Step(
+            key="quantity",
+            label="quantity",
+            type="quantity",
+            description=(
+                "Quantity of each new aliquot (optional; every tube gets "
+                "the same amount)."
+            ),
+        ),
+        Step(
+            key="unit",
+            label="unit",
+            type="unit",
+            required=True,
+            description=(
+                "Unit of the quantity (e.g. ml, µl, mg; at most 32 characters)."
+            ),
         ),
         Step(
             key="box",

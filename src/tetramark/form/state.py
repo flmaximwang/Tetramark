@@ -214,6 +214,11 @@ class FormState:
                 parent = self.answers.get("parent")
                 if not parent or not self._slotted(parent):
                     continue
+            elif step.key == "unit" and object_type == "aliquot":
+                # The unit is only asked once a quantity is there: a unit
+                # without a quantity is unreachable (the core refuses it).
+                if not self.answers.get("quantity"):
+                    continue
             result.append(step)
         return result
 
@@ -567,6 +572,30 @@ class FormState:
             if not number.is_finite():
                 raise FormError(f"{step.label} must be a finite number")
             value = str(number)
+        elif kind == "quantity":
+            # The core's rules, word for word: a decimal, finite and not
+            # negative; zero is a quantity like any other.  The answer is kept
+            # as typed (trimmed), so the core parses exactly what was typed.
+            text = raw.strip()
+            try:
+                number = Decimal(text)
+            except (InvalidOperation, ValueError):
+                raise FormError(
+                    f"{step.label} must be a decimal number (got {text!r})"
+                ) from None
+            if not number.is_finite() or number < 0:
+                raise FormError(
+                    f"{step.label} must be a finite, non-negative number "
+                    f"(got {text!r})"
+                )
+            value = text
+        elif kind == "unit":
+            # Free text: trimmed, not empty (the required check above says so)
+            # and at most 32 characters, like the core's unit.
+            text = raw.strip()
+            if len(text) > 32:
+                raise FormError(f"{step.label} must be at most 32 characters")
+            value = text
         elif kind == "bool":
             word = _BOOL_WORDS.get(raw.strip().lower())
             if word is None:
@@ -703,6 +732,11 @@ class FormState:
             self.answers.pop("slots", None)
         if step.key == "parent":
             self.answers.pop("slot", None)
+        if step.key == "quantity" and self.plan.object_type == "aliquot":
+            # A quantity and a unit go together: without a quantity there is
+            # no unit, so a cleared quantity drops the unit as well.
+            self.answers.pop("unit", None)
+            self.labels.pop("unit", None)
 
     def _advance(self) -> None:
         self.error = None
@@ -800,6 +834,10 @@ class FormState:
             return {
                 "stock": answers["stock"],
                 "count": self._count(),
+                # Always present: None means "no quantity", which the core
+                # stores as NULL, exactly as before.
+                "quantity": answers.get("quantity"),
+                "unit": answers.get("unit"),
                 "box": answers.get("box"),
                 "slots": list(answers.get("slots") or []),
             }

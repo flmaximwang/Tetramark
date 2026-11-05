@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tetramark.core.objects import _parse_quantity_unit
+from tetramark.errors import UsageError
 from tetramark.form.editor import (
     SCISSORS,
     edit_value,
@@ -277,7 +279,211 @@ def test_stock_and_box_and_aliquot_steps() -> None:
     assert box == ["name", "parent", "slot", "notes"]
 
     aliquot = [step.key for step in build_plan(FULL, "aliquot").steps("prep")]
-    assert aliquot == ["stock", "count", "box", "slots"]
+    assert aliquot == ["stock", "count", "quantity", "unit", "box", "slots"]
+
+
+# ---------------------------------------------------------------------------
+# Aliquot quantity and unit (Tetramark-b3p)
+# ---------------------------------------------------------------------------
+
+
+def aliquot_state() -> FormState:
+    """An aliquot form that has chosen its kind and picked the stock."""
+    state = state_for("aliquot")
+    state.submit("1")  # kind: bacterial
+    at(state, "stock").submit("s1")
+    return state
+
+
+def test_aliquot_asks_the_quantity_and_the_unit_after_the_count() -> None:
+    steps = build_plan(FULL, "aliquot").steps("prep")
+    assert [step.key for step in steps] == [
+        "stock",
+        "count",
+        "quantity",
+        "unit",
+        "box",
+        "slots",
+    ]
+    by_key = {step.key: step for step in steps}
+    assert by_key["quantity"].type == "quantity"
+    assert by_key["quantity"].required is False  # optional
+    assert by_key["quantity"].default is None  # nothing is pre-filled
+    assert by_key["unit"].type == "unit"
+    assert by_key["unit"].required is True  # required once it is asked
+    assert by_key["unit"].default is None
+
+
+def test_the_unit_is_asked_only_after_a_quantity() -> None:
+    state = aliquot_state()
+    assert "unit" not in [step.key for step in state.visible_steps()]
+    at(state, "quantity").submit("2.5")
+    assert [step.key for step in state.visible_steps()] == [
+        "kind",
+        "stock",
+        "count",
+        "quantity",
+        "unit",
+        "box",
+    ]
+
+
+def test_an_empty_quantity_skips_the_unit_and_stores_nothing() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("")
+    assert "quantity" not in state.answers
+    assert "unit" not in state.answers
+    assert "unit" not in [step.key for step in state.visible_steps()]
+    payload = state.payload()
+    assert payload["quantity"] is None
+    assert payload["unit"] is None
+
+
+def test_the_quantity_is_checked_as_typed() -> None:
+    for raw, message in (
+        ("abc", "quantity must be a decimal number (got 'abc')"),
+        ("-1", "quantity must be a finite, non-negative number (got '-1')"),
+        ("NaN", "quantity must be a finite, non-negative number (got 'NaN')"),
+        (
+            "Infinity",
+            "quantity must be a finite, non-negative number (got 'Infinity')",
+        ),
+    ):
+        state = aliquot_state()
+        at(state, "quantity").submit(raw)
+        assert state.error == message
+        assert "quantity" not in state.answers
+
+    # Zero is a quantity like any other, and the answer is kept as typed.
+    state = aliquot_state()
+    at(state, "quantity").submit("0")
+    assert state.error is None
+    assert state.answers["quantity"] == "0"
+
+    state = aliquot_state()
+    at(state, "quantity").submit(" 2.5 ")
+    assert state.error is None
+    assert state.answers["quantity"] == "2.5"
+
+
+@pytest.mark.parametrize("raw", ["0", "2.5", "1e3", "1_000", ".5", "007", "3.000", "-0"])
+def test_the_quantity_accepts_exactly_what_the_core_accepts(raw: str) -> None:
+    """S3: same inputs as core ``_parse_quantity_unit`` -- nothing stricter."""
+    assert _parse_quantity_unit(raw, "ml")[0] is not None
+    state = aliquot_state()
+    at(state, "quantity").submit(raw)
+    assert state.error is None
+    assert state.answers["quantity"] == raw
+
+
+@pytest.mark.parametrize("raw", ["abc", "-1", "NaN", "Infinity", "0.5ml"])
+def test_the_quantity_refuses_with_the_core_word_for_word(raw: str) -> None:
+    """S3: the form's refusal is the core's message, word for word."""
+    with pytest.raises(UsageError) as core_error:
+        _parse_quantity_unit(raw, "ml")
+    state = aliquot_state()
+    at(state, "quantity").submit(raw)
+    assert state.error == str(core_error.value)
+
+
+def test_the_long_unit_message_matches_the_core() -> None:
+    with pytest.raises(UsageError) as core_error:
+        _parse_quantity_unit("1", "m" * 33)
+    state = aliquot_state()
+    at(state, "quantity").submit("1")
+    at(state, "unit").submit("m" * 33)
+    assert state.error == str(core_error.value) == "unit must be at most 32 characters"
+
+
+def test_the_unit_is_required_and_at_most_32_characters() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("")
+    assert state.error == "unit is required"
+    assert "unit" not in state.answers
+
+    at(state, "unit").submit("   ")
+    assert state.error == "unit is required"
+
+    at(state, "unit").submit("m" * 33)
+    assert state.error == "unit must be at most 32 characters"
+
+    at(state, "unit").submit("  ml  ")
+    assert state.error is None
+    assert state.answers["unit"] == "ml"
+
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("m" * 32)
+    assert state.error is None
+    assert state.answers["unit"] == "m" * 32
+
+
+def test_clearing_the_quantity_drops_the_unit() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("ml")
+    assert state.answers["unit"] == "ml"
+
+    state.back()  # Shift+Tab: back to the unit
+    assert state.current().key == "unit"
+    state.back()  # and back to the quantity
+    assert state.current().key == "quantity"
+    state.submit("")  # cleared: the unit goes with it
+    assert "quantity" not in state.answers
+    assert "unit" not in state.answers
+    assert "unit" not in [step.key for step in state.visible_steps()]
+
+
+def test_a_review_jump_that_clears_the_quantity_drops_the_unit() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("ml")
+    at(state, "box").submit("")
+    assert state.mode == "review"
+    rows = {row.label: row.value for row in state.review_rows()}
+    assert rows["quantity"] == "2.5"
+    assert rows["unit"] == "ml"
+
+    state.review_input("4")  # jump back to the quantity step
+    assert state.current().key == "quantity"
+    state.submit("")
+    assert "quantity" not in state.answers
+    assert "unit" not in state.answers
+
+
+def test_the_review_shows_the_quantity_and_the_unit() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("ml")
+    at(state, "box").submit("")
+    assert state.mode == "review"
+    rows = {row.label: row.value for row in state.review_rows()}
+    assert rows["quantity"] == "2.5"
+    assert rows["unit"] == "ml"
+
+    # A skipped quantity shows empty and the unit row is not there at all.
+    state = aliquot_state()
+    at(state, "quantity").submit("")
+    at(state, "box").submit("")
+    assert state.mode == "review"
+    rows = {row.label: row.value for row in state.review_rows()}
+    assert rows["quantity"] == ""
+    assert "unit" not in rows
+
+
+def test_a_core_rejection_about_the_quantity_or_the_unit_focuses_that_step() -> None:
+    state = aliquot_state()
+    at(state, "quantity").submit("2.5")
+    at(state, "unit").submit("ml")
+
+    state.reject("quantity must be a finite, non-negative number (got '-1')")
+    assert state.mode == "input"
+    assert state.current().key == "quantity"
+
+    state.reject("unit must be at most 32 characters")
+    assert state.mode == "input"
+    assert state.current().key == "unit"
 
 
 # ---------------------------------------------------------------------------
@@ -792,15 +998,38 @@ def test_stock_payload_uses_core_arguments() -> None:
 def test_aliquot_and_box_payloads() -> None:
     aliquot = state_for("aliquot")
     aliquot.fill(
-        {"stock": "s1", "count": "3", "box": "RACK1", "slots": ["top"]},
+        {
+            "stock": "s1",
+            "count": "3",
+            "quantity": "0.5",
+            "unit": "ml",
+            "box": "RACK1",
+            "slots": ["top"],
+        },
         kind="bacterial",
     )
     payload = aliquot.payload()
     assert payload == {
         "stock": "s1",
         "count": 3,
+        "quantity": "0.5",
+        "unit": "ml",
         "box": "RACK1",
         "slots": ["top"],
+    }
+
+    # Without a quantity there is no unit either: both are None, which the
+    # core stores as NULL, exactly as before.
+    aliquot = state_for("aliquot")
+    aliquot.fill({"stock": "s1", "count": "1"}, kind="bacterial")
+    payload = aliquot.payload()
+    assert payload == {
+        "stock": "s1",
+        "count": 1,
+        "quantity": None,
+        "unit": None,
+        "box": None,
+        "slots": [],
     }
 
     box = state_for("box")
