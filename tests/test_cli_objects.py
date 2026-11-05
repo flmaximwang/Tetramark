@@ -642,11 +642,11 @@ def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory)
     assert refused.exception.exit_code == 1
     assert "final status" in str(refused.exception)
 
-    # --force without --note is a usage error (main() exits 2).
+    # --force without -m/--message is a usage error (main() exits 2).
     usage = invoke(ledger, "aliquot", "status", alq, "stored", "--force")
     assert isinstance(usage.exception, UsageError)
     assert usage.exception.exit_code == 2
-    assert "--force requires --note" in str(usage.exception)
+    assert "--force requires -m/--message" in str(usage.exception)
 
     # A forced change into a status that is not in stock is allowed and
     # recorded (the position is already absent).
@@ -658,7 +658,7 @@ def test_cli_status_creation_transition_and_force(cli_env: None, ledger_factory)
             alq,
             "missing",
             "--force",
-            "--note",
+            "-m",
             "found in the back of the shelf",
             "--json",
         ).output
@@ -758,7 +758,7 @@ def test_cli_aliquot_status_clears_position(cli_env: None, ledger_factory) -> No
             alq,
             "missing",
             "--force",
-            "--note",
+            "-m",
             "tube found",
             "--json",
         ).output
@@ -785,6 +785,139 @@ def test_cli_aliquot_status_clears_position(cli_env: None, ledger_factory) -> No
         ).output
     )
     assert restored["status"] == "stored"
+
+
+def test_cli_aliquot_status_message_option_replaces_the_old_note(
+    cli_env: None, ledger_factory
+) -> None:
+    """--note is gone; both message spellings work and validation writes nothing."""
+    ledger = ledger_factory([BASE], name="cli-status-message", id_prefix="77")
+    entity = json.loads(
+        write(ledger, "entity", "add", "item", "--name", "a", "--json").output
+    )
+    write(ledger, "box", "add", "grid96", "BOX")
+    stock = json.loads(
+        write(
+            ledger,
+            "stock",
+            "add",
+            "lot",
+            "--entity",
+            entity["id"],
+            "--aliquots",
+            "2",
+            "--box",
+            "BOX",
+            "--slot",
+            "A1",
+            "--slot",
+            "A2",
+            "--json",
+        ).output
+    )
+    first, second = stock["aliquots"]
+
+    # The former option is gone: Click refuses it before anything is written.
+    before = commit_count(ledger)
+    statuses = ledger.driver.query(
+        "SELECT `id`, `status` FROM `aliquot` ORDER BY `id`"
+    )
+    removed = invoke(ledger, "aliquot", "status", first, "missing", "--note", "x")
+    assert removed.exit_code == 2
+    assert "No such option" in removed.output
+    assert "--note" in removed.output
+    assert commit_count(ledger) == before
+    assert ledger.driver.query(
+        "SELECT `id`, `status` FROM `aliquot` ORDER BY `id`"
+    ) == statuses
+
+    # Both spellings work and store the trimmed text on the status event.
+    short = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "status",
+            first,
+            "missing",
+            "-m",
+            "  gone  ",
+            "--json",
+        ).output
+    )
+    assert short["status"] == "missing"
+    event = ledger.driver.query(
+        "SELECT `message`, `forced` FROM `aliquot_event` "
+        "WHERE `aliquot_id` = %s ORDER BY `id` DESC LIMIT 1",
+        (first,),
+    )[0]
+    assert event == {"message": "gone", "forced": 0}
+    long = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "status",
+            second,
+            "missing",
+            "--message",
+            "  absent  ",
+            "--json",
+        ).output
+    )
+    assert long["status"] == "missing"
+    event = ledger.driver.query(
+        "SELECT `message`, `forced` FROM `aliquot_event` "
+        "WHERE `aliquot_id` = %s ORDER BY `id` DESC LIMIT 1",
+        (second,),
+    )[0]
+    assert event == {"message": "absent", "forced": 0}
+
+    # --force needs a message; a blank one is refused, and nothing is written.
+    before = commit_count(ledger)
+    missing = invoke(ledger, "aliquot", "status", first, "stored", "--force")
+    assert isinstance(missing.exception, UsageError)
+    assert missing.exception.exit_code == 2
+    assert (
+        "--force requires -m/--message: record why the transition rules are "
+        "overridden" in str(missing.exception)
+    )
+    blank_force = invoke(
+        ledger, "aliquot", "status", first, "stored", "--force", "-m", "   "
+    )
+    assert isinstance(blank_force.exception, UsageError)
+    assert blank_force.exception.exit_code == 2
+    assert "--force requires -m/--message" in str(blank_force.exception)
+    blank = invoke(ledger, "aliquot", "status", second, "stored", "-m", "   ")
+    assert isinstance(blank.exception, UsageError)
+    assert blank.exception.exit_code == 2
+    assert "a status message must not be empty" in str(blank.exception)
+    assert commit_count(ledger) == before
+
+    # A forced event stores the trimmed text in aliquot_event.message.
+    write(ledger, "aliquot", "status", first, "consumed", "-m", "used up")
+    forced = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "status",
+            first,
+            "missing",
+            "--force",
+            "-m",
+            "  found again  ",
+            "--json",
+        ).output
+    )
+    assert forced["forced"] is True
+    row = ledger.driver.query(
+        "SELECT `message`, `forced` FROM `aliquot_event` "
+        "WHERE `aliquot_id` = %s ORDER BY `id` DESC LIMIT 1",
+        (first,),
+    )[0]
+    assert row == {"message": "found again", "forced": 1}
+    record = json.loads(read(ledger, "aliquot", "show", first, "--json").output)
+    last = record["events"][-1]
+    assert last["message"] == "found again"
+    assert last["forced"] is True
 
 
 def test_cli_aliquot_move_status_option(cli_env: None, ledger_factory) -> None:
@@ -1284,7 +1417,7 @@ def test_cli_aliquot_show_json_events_are_the_tubes_trail(
     write(ledger, "box", "add", "grid96", "BOX2")
     write(ledger, "aliquot", "move", alq, "--box", "BOX2", "--slot", "B1", "-m", "m")
     write(ledger, "aliquot", "use", alq, "50", "ul", "-m", "assay")
-    write(ledger, "aliquot", "status", alq, "missing", "--note", "not found")
+    write(ledger, "aliquot", "status", alq, "missing", "-m", "not found")
 
     record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
 
@@ -1790,7 +1923,7 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
         ).output
     )
     first, second = stock["aliquots"]
-    write(ledger, "aliquot", "status", second, "missing", "--note", "gone")
+    write(ledger, "aliquot", "status", second, "missing", "-m", "gone")
     write(ledger, "alias", "add", "aliquot", first, "tube-A")
 
     before = commit_count(ledger)

@@ -126,7 +126,7 @@ four-entry `statuses:` block for every stock kind.
 Creation (`--status` on `tm stock add`/`tm aliquot add`, the CSV `status` column) accepts any of the
 four; only `stored` counts as in stock, so `tm aliquot list` shows `stored` tubes by default and only
 a `stored` tube may carry a box position. A later change (`tm aliquot status ALQ NEW`) must follow the
-table. `--force` requires `--note TEXT`, overrides the transition check and records
+table. `--force` requires `-m/--message TEXT`, overrides the transition check and records
 `aliquot_event.forced = TRUE`; putting a wrongly `consumed` tube back means placing it again — a
 `move` of a not-in-stock tube restores `stored`.
 
@@ -134,7 +134,7 @@ Detailed life states are **stock properties or event messages**, not statuses: o
 on `mouse_cohort` and `fish_group`/`fish_clutch` (euthanized, found_dead, transferred, cancelled) and
 on `fly_culture` (discarded, lost), and optional enum `condition` on `worm_culture` (growing,
 starved, contaminated). Set them with `tm stock edit STOCK --set fate=euthanized` or
-`--set condition=starved`, or record a one-off in the event's `--note`. `thawed` is `consumed`: a cryo
+`--set condition=starved`, or record a one-off in the event's `-m/--message`. `thawed` is `consumed`: a cryo
 vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
 ## Filters (`--where`, `tm find`)
@@ -318,7 +318,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
-tm aliquot status ALQ STATUS [--note TEXT] [--force] [--json]
+tm aliquot status ALQ STATUS [-m/--message TEXT] [--force] [--json]
 tm aliquot label ALQ LABEL [--replace] [--json]
 tm aliquot purge ALQ [--json]
 ```
@@ -370,10 +370,12 @@ tm aliquot purge ALQ [--json]
   (`used_amount` is `null` for a whole use of a tube with no quantity).
 - `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
   is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
-  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s old `--purpose`/`--note`
-  flags are removed outright (no aliases); `tm aliquot status --force --note` is unchanged.
+  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s former purpose and note
+  options are removed outright (no aliases); `tm aliquot status` takes the same `-m/--message`
+  (optional, required with `--force`), and its former note option is removed outright since 0.8.37
+  — no alias.
 - `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
-  `--force --note TEXT` overrides an illegal transition deliberately (the event records
+  `--force -m TEXT` overrides an illegal transition deliberately (the event records
   `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
   change.
 - An aliquot's **position follows its status**: a `stored` aliquot needs a box (and a slot in a
@@ -403,7 +405,8 @@ The Python API mirrors the CLI through `ledger.aliquots`:
 `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no event-text
 argument other than `message`, and a missing, blank or whitespace-only `message` is refused exactly
-like on the CLI.
+like on the CLI. `ledger.aliquots.status(ref, status, *, message=None, force=False)` takes the same
+optional message and has no `note` argument (`note=` raises `TypeError`).
 
 ## Boxes
 
@@ -484,8 +487,9 @@ blocks and writes the same thing.
   (the field name, its description and its pattern go below a git-style scissors line and are removed
   from what you edit, while `#` lines are kept), `Ctrl+C` aborts and writes nothing. A footer lists
   the keys.
-- The stock form asks: entity (ref, with search) → the kind's fields → aliquot count → box (`?`
-  lists the boxes) → slots (the next free slots are filled in by default; `?` shows the free slots).
+- The stock form asks: entity (ref, with search) → the kind's fields, and creates the stock with
+  **no aliquots** (same as `tm stock add ... --aliquots 0`); it then prints a `Next:` line — add
+  tubes with `tm aliquot add-form` or `tm aliquot add <stock>`.
 - The review screen numbers every value (long values in short form): a number jumps back to that
   step, `y` writes, `q` cancels. The write lock is taken only on `y`; the write is the same
   `ledger.<objects>.add(...)` as `add`, prints the same message, and `--dry-run`/`--no-commit`/

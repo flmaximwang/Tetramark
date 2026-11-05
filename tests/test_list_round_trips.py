@@ -384,7 +384,7 @@ def test_empty_list_does_not_start_a_process(
     assert rows == []
     # Every kind's SELECT returned no rows, so there is nothing to recover
     # column names for: one JSON batch, no CSV pass, no per-kind process.
-    assert invoke_log == ["json"]
+    assert_single_read_process(invoke_log)
 
 
 # ---------------------------------------------------------------------------

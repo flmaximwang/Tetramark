@@ -15,6 +15,7 @@ import pytest
 
 from support.read_asserts import assert_single_read_process
 from tetramark.driver.embedded import EmbeddedDriver
+from support.read_asserts import assert_single_read_process
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so
@@ -60,7 +61,7 @@ def test_find_without_hits_skips_the_csv_run(
     invoke_log.clear()
 
     assert ledger.find("nothing-like-this") == []
-    assert invoke_log == ["json"]
+    assert_single_read_process(invoke_log)
 
 
 def test_aliquot_show_reads_one_tube_in_one_batch(

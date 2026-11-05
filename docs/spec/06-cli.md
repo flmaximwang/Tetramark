@@ -103,7 +103,7 @@ tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --n
                 [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
-tm aliquot status ALQ NEW [--force --note TEXT]   # NEW: pending|stored|missing|consumed (§1.1)
+tm aliquot status ALQ NEW [--force] [-m MSG]   # NEW: pending|stored|missing|consumed (§1.1); MSG required with --force
 tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
 tm box add KIND NAME [--in PARENT [--slot S]] [--set f=v ...]   # PARENT: a named or slotless box, never a grid
@@ -157,8 +157,10 @@ configured backup is a usage error; nothing is created implicitly. A directory l
 
 Creating aliquots accepts any of the four fixed statuses `pending`, `stored`, `missing`, `consumed`
 (`--status`, or the import `status` column); changing one follows the fixed transitions (§1.1).
-`--force` requires `--note`, records `aliquot_event.forced = TRUE` and is the only way to make an
-unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
+`--force` requires `-m/--message`, records `aliquot_event.forced = TRUE` and is the only way to make
+an unforced-illegal change; without `--force` the CLI refuses and names the allowed next status(es).
+Without `--force`, `-m/--message` is optional; a given value is trimmed, refused when empty or
+whitespace-only, and stored in `aliquot_event.message`.
 
 `tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]` is
 positional sugar for `tm aliquot add STOCK --quantity AMOUNT --unit UNIT` with the same options:
@@ -183,9 +185,10 @@ result must be `stored`.
 `tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
 `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
 option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
-event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s old
-`--purpose` and `--note` flags are removed outright — no aliases; `tm aliquot status --force --note`
-is unchanged, and `move` never had either flag.
+event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s
+former purpose and note options are removed outright — no aliases; `tm aliquot status` takes the same
+`-m/--message` (optional, required with `--force`); its former note option is removed outright since
+0.8.37 — no alias. `move` never had either flag.
 
 `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
@@ -202,6 +205,8 @@ use of a tube with no quantity).
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no event-text
 argument other than `message`, and a `move` message is required and validated like a `use` message.
+`ledger.aliquots.status(ref, status, *, message=None, force=False)` takes the same optional message;
+`note=` is removed (it raises `TypeError`).
 
 `tm entity purge`, `tm stock purge`, `tm aliquot purge` and `tm box purge` are explicit **hard
 deletes**, only for an object added by mistake: the rows leave the tables and Dolt history keeps
@@ -494,10 +499,13 @@ on the step.
 | `Ctrl+E` | edit the current field in `$VISUAL` → `$EDITOR` → `vi`; it works on every field. The field name, its description and its pattern are put below a git-style scissors line and removed from what you edit, while `#` lines are kept |
 | `Ctrl+C` | abort: nothing is written |
 
-**The stock form** is the worked example of the steps a form needs beyond the fields, in this order:
-the **entity** (a ref, with search), the **kind's fields**, the **aliquot count**, the **box** (`?`
-lists the boxes) and the **slots** (the next free slots are filled in by default; `?` shows the free
-slots). The other forms ask for what their `add` command needs, in the same way.
+**The stock form** asks for the stock itself and nothing else, in this order: the **kind**, the
+**entity** (a ref, with search) and the **kind's fields**. It never creates aliquots: it writes
+exactly what `tm stock add KIND --entity E --aliquots 0` writes, so the new stock is empty, and then
+prints a `Next:` line pointing at `tm aliquot add-form` (or `tm aliquot add <stock> --count N
+--quantity Q --unit U`). Tubes, with their count, quantity, unit, box and slots, are always added
+through the aliquot workflow; `tm stock add` keeps `--aliquots` (default 1) for agents and scripts.
+The other forms ask for what their `add` command needs, in the same way.
 
 **The review screen** lists every value, numbered, with long values in short form. Typing a number
 jumps back to that step, `y` writes, `q` cancels.
