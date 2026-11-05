@@ -28,7 +28,7 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 
-from conftest import SKILL_BODY_LINE_LIMITS, skill_body_lines
+from conftest import SKILL_LINE_BUDGETS, skill_line_count
 
 runner = CliRunner()
 
@@ -719,9 +719,9 @@ def test_skills_have_frontmatter_triggers_and_disclosure() -> None:
     assert front["description"].startswith("Use when")
     for trigger in ("台账", "样品", "盒", "冻存", "库存", "管", "分装"):
         assert trigger in front["description"]
-    # Body lines only (the frontmatter is metadata, not the skill text); the
-    # same helper and ceilings guard both skills in test_skill_version.py.
-    assert len(skill_body_lines(skill_file)) <= SKILL_BODY_LINE_LIMITS["tetramark"]
+    # The whole file counts for the primary skill, frontmatter included; the
+    # same table and helper guard both skills in test_skill_version.py.
+    assert skill_line_count("tetramark") <= SKILL_LINE_BUDGETS["tetramark"][1]
 
     for relative in (
         "skills/tetramark/references/commands.md",

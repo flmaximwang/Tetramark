@@ -32,7 +32,7 @@ import yaml
 
 from tetramark import skills
 
-from conftest import SKILL_BODY_LINE_LIMITS, skill_body_lines
+from conftest import SKILL_LINE_BUDGETS, skill_body_lines, skill_line_count
 
 pytestmark = pytest.mark.fast
 
@@ -242,15 +242,18 @@ def test_compare_classifies_a_skill_copy(
 
 
 # ---------------------------------------------------------------------------
-# Body-line ceilings, shared with tests/test_docs_commands.py
+# Line budgets, shared with tests/test_docs_commands.py
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("name", "limit"), sorted(SKILL_BODY_LINE_LIMITS.items()))
-def test_skill_body_stays_within_its_line_limit(name: str, limit: int) -> None:
-    body = skill_body_lines(skill_file(name))
-    assert len(body) <= limit, (
-        f"{name} body is {len(body)} lines; the ceiling is {limit}. "
-        "The tetramark-schema ceiling may only go down (Tetramark-0pj): move "
+@pytest.mark.parametrize(
+    ("name", "mode", "limit"),
+    [(name, mode, limit) for name, (mode, limit) in sorted(SKILL_LINE_BUDGETS.items())],
+)
+def test_skill_stays_within_its_line_budget(name: str, mode: str, limit: int) -> None:
+    counted = skill_line_count(name)
+    assert counted <= limit, (
+        f"{name} {mode} is {counted} lines; the budget is {limit}. "
+        "The tetramark-schema budget may only go down (Tetramark-0pj): move "
         "detail into references/ instead of raising it."
     )

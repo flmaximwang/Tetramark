@@ -65,33 +65,48 @@ FACTORY_AUTHOR = "Ledger Factory <factory@tetramark.invalid>"
 
 
 # ---------------------------------------------------------------------------
-# Skill body lines (the documentation contract)
+# Skill line budgets (the documentation contract)
 # ---------------------------------------------------------------------------
 
-#: Body-line ceilings for the shipped skills.  The body is every line *after*
-#: the closing frontmatter delimiter, including the blank line that separates
-#: it from the heading -- so the visible version line and its blank line count.
-#: ``tetramark-schema`` sits exactly at its ceiling; **171 may only go down**
-#: (the trim is Tetramark-0pj).  Do not raise a limit to fit new prose: move
-#: detail into ``references/`` instead.
-SKILL_BODY_LINE_LIMITS = {"tetramark": 150, "tetramark-schema": 171}
+#: Line budget per shipped skill, with the counting mode it uses.  ``file``
+#: counts every line of ``SKILL.md`` -- YAML frontmatter included.  ``body``
+#: counts every line *after* the closing frontmatter delimiter, including the
+#: blank line that separates it from the heading -- so the visible version line
+#: and its blank line count.  ``tetramark-schema`` sits exactly at its ceiling;
+#: **171 may only go down** (the trim is Tetramark-0pj).  Do not raise a budget
+#: to fit new prose: move detail into ``references/`` instead.
+SKILL_LINE_BUDGETS: dict[str, tuple[str, int]] = {
+    "tetramark": ("file", 150),
+    "tetramark-schema": ("body", 171),
+}
 
 #: ``---`` delimited YAML frontmatter at the very start of a SKILL.md.
 SKILL_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
 
 
 def skill_body_lines(path: Path) -> list[str]:
-    """The lines of a ``SKILL.md`` after its YAML frontmatter.
-
-    Shared by ``tests/test_docs_commands.py`` (the documentation contract) and
-    ``tests/test_skill_version.py`` (the version stamp contract) so the two
-    cannot disagree about what "150 lines" means.
-    """
+    """The lines of a ``SKILL.md`` after its YAML frontmatter."""
     text = Path(path).read_text(encoding="utf-8")
     match = SKILL_FRONTMATTER_RE.match(text)
     if match is None:
         raise AssertionError(f"{path} does not start with YAML frontmatter")
     return text[match.end() :].splitlines()
+
+
+def skill_line_count(name: str) -> int:
+    """The lines a shipped skill's budget counts, in the mode its entry names.
+
+    Shared by ``tests/test_docs_commands.py`` (the documentation contract) and
+    ``tests/test_skill_version.py`` (the version stamp contract) so the two
+    cannot disagree about what "150 lines" or "171 body lines" means.
+    """
+    mode, _limit = SKILL_LINE_BUDGETS[name]
+    path = Path(__file__).resolve().parents[1] / "skills" / name / "SKILL.md"
+    if mode == "file":
+        return len(path.read_text(encoding="utf-8").splitlines())
+    if mode == "body":
+        return len(skill_body_lines(path))
+    raise AssertionError(f"{name}: unknown skill budget mode {mode!r}")
 
 
 #: ``subprocess.run`` signature use in fixtures/tests: run_dolt("sql", "-q", "SELECT 1")
