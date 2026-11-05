@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.38](v0.8.38.md) | `v0.8.38.md` | `tm aliquot add-form` asks for an optional per-tube quantity and its unit |
 | [0.8.33](v0.8.33.md) | `v0.8.33.md` | docs only: the `tetramark-schema` skill body trimmed to the 150-line budget, with the detail moved into its references |
 | [0.8.32](v0.8.32.md) | `v0.8.32.md` | `tm box add-form` shows each box kind's geometry, slot labels, slot count, capacity and whether it holds boxes |
 | [0.8.31](v0.8.31.md) | `v0.8.31.md` | releases attach the wheel and sdist; the wheel ships the skills; pinned install docs |
