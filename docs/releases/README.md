@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.31](v0.8.31.md) | `v0.8.31.md` | releases attach the wheel and sdist; the wheel ships the skills; pinned install docs |
 | [0.8.30](v0.8.30.md) | `v0.8.30.md` | isolated `tm` entry point, lazy package import, version-drift warning |
 | [0.8.29](v0.8.29.md) | `v0.8.29.md` | ledger discovery ignores Dolt's global config directory and no longer suggests `tm adopt` for it |
 | [0.8.28](v0.8.28.md) | `v0.8.28.md` | `aliquot_event.message` replaces `note`/`purpose` (spec 7): the event column is renamed, `purpose` is dropped, and a 6-to-7 migration ships |

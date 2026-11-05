@@ -10,7 +10,9 @@ name: release
 #
 # The workflow is idempotent. Re-running it on an already tagged commit heals a
 # half-finished release: a tag without a release gets its release, a complete
-# release is left alone. Nothing is ever retagged.
+# release is left alone. Nothing is ever retagged. It also builds the wheel and
+# the sdist and attaches the ones the release does not already have, so a
+# release can be installed without a checkout (see docs/guides/releasing.md).
 
 on:
   push:
@@ -154,6 +156,65 @@ jobs:
             gh release create "$TAG" --title "$TAG" --generate-notes
           fi
 
+      - name: Set up uv
+        if: steps.check.outputs.ready == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.19"
+
+      - name: Build the distributions
+        id: build
+        if: steps.check.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The dist dir lives in the runner's temp dir, never in the checkout:
+          # a stray artifact in the tree would make the next release check
+          # report a dirty tree.  Leftover files from an earlier run are gone.
+          out="$RUNNER_TEMP/dist"
+          rm -rf "$out"
+          uv build --out-dir "$RUNNER_TEMP/dist"
+
+          # `uv build` builds the wheel from the sdist, so this also proves the
+          # sdist carries everything the wheel ships.  A version that does not
+          # match the release gate is a failure, not something to upload.
+          expected=("tetramark-${VERSION}-py3-none-any.whl" "tetramark-${VERSION}.tar.gz")
+          actual="$(find "$out" -maxdepth 1 -type f ! -name '.*' -exec basename {} \; | sort)"
+          wanted="$(printf '%s\n' "${expected[@]}" | sort)"
+          if [ "$actual" != "$wanted" ]; then
+            echo "::error::uv build did not produce exactly ${expected[*]}"
+            printf 'found in %s:\n%s\n' "$out" "${actual:- (nothing)}" >&2
+            exit 1
+          fi
+          echo "::notice::built ${expected[*]}"
+
+      - name: Attach the distributions to the release
+        id: attach
+        if: >-
+          steps.check.outputs.ready == 'true' &&
+          steps.check.outputs.changed == 'true' &&
+          inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.check.outputs.tag }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/dist"
+          # Idempotent by design: a re-run (or a workflow_dispatch backfill)
+          # skips every asset the release already has and never replaces one,
+          # so there is no --clobber anywhere in this workflow.
+          existing="$(gh release view "$TAG" --json assets -q '.assets[].name')"
+          for name in "tetramark-${VERSION}-py3-none-any.whl" "tetramark-${VERSION}.tar.gz"; do
+            if printf '%s\n' "$existing" | grep -Fxq "$name"; then
+              echo "::notice::$TAG already has $name; not uploading it again"
+              continue
+            fi
+            gh release upload "$TAG" "$out/$name"
+            echo "::notice::attached $name to $TAG"
+          done
+
       - name: Verify the tag is on the remote
         if: >-
           steps.check.outputs.ready == 'true' &&
@@ -180,4 +241,5 @@ jobs:
             echo "| notes file | \`${{ steps.check.outputs.notes_path }}\` (${{ steps.check.outputs.notes_present }}) |"
             echo "| commit | \`${{ steps.check.outputs.head }}\` |"
             echo "| tag created | ${{ steps.check.outputs.tag_exists == 'true' && 'no (already present)' || 'yes' }} |"
+            echo "| assets | \`tetramark-${{ steps.check.outputs.version }}-py3-none-any.whl\`, \`tetramark-${{ steps.check.outputs.version }}.tar.gz\` (build: ${{ steps.build.outcome || 'skipped' }}) |"
           } >> "$GITHUB_STEP_SUMMARY"
