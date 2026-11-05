@@ -32,7 +32,7 @@ import yaml
 
 from tetramark import skills
 
-from conftest import SKILL_BODY_LINE_LIMITS, skill_body_lines
+from conftest import SKILL_LINE_BUDGETS, skill_body_lines, skill_line_count
 
 pytestmark = pytest.mark.fast
 
@@ -75,14 +75,14 @@ def fake_root(tmp_path: Path, skill_version: str | None) -> Path:
     root = tmp_path / "root"
     root.mkdir()
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "tetramark"\nversion = "0.8.14"\n', encoding="utf-8"
+        '[project]\nname = "tetramark"\nversion = "0.8.25"\n', encoding="utf-8"
     )
     (root / "src" / "tetramark").mkdir(parents=True)
     (root / "src" / "tetramark" / "__init__.py").write_text(
-        '__version__ = "0.8.14"\n', encoding="utf-8"
+        '__version__ = "0.8.25"\n', encoding="utf-8"
     )
     (root / "uv.lock").write_text(
-        '[[package]]\nname = "tetramark"\nversion = "0.8.14"\n', encoding="utf-8"
+        '[[package]]\nname = "tetramark"\nversion = "0.8.25"\n', encoding="utf-8"
     )
     for name in SKILL_SPECS:
         path = root / "skills" / name / "SKILL.md"
@@ -172,15 +172,15 @@ def test_collect_reports_a_missing_skill_version(tmp_path: Path) -> None:
 
 
 def test_collect_reports_a_differing_skill_version(tmp_path: Path) -> None:
-    root = fake_root(tmp_path, skill_version="0.8.13")
+    root = fake_root(tmp_path, skill_version="0.8.24")
     report = load_release_check().collect(root, offline=True)
     assert report["ready"] is False
     assert (
-        "skills/tetramark/SKILL.md says 0.8.13, pyproject.toml says 0.8.14"
+        "skills/tetramark/SKILL.md says 0.8.24, pyproject.toml says 0.8.25"
         in report["problems"]
     )
     assert (
-        "skills/tetramark-schema/SKILL.md says 0.8.13, pyproject.toml says 0.8.14"
+        "skills/tetramark-schema/SKILL.md says 0.8.24, pyproject.toml says 0.8.25"
         in report["problems"]
     )
 
@@ -221,18 +221,18 @@ def test_resolve_skill_errors_for_an_unknown_name() -> None:
 @pytest.mark.parametrize(
     ("skill_version", "tm_version", "expected"),
     [
-        ("0.8.14", "0.8.14", "match"),
+        ("0.8.25", "0.8.25", "match"),
         ("0.9", "0.9.0", "match"),
-        ("0.8.14", "0.8.15", "older"),
-        ("0.8.15", "0.8.14", "newer"),
-        ("0.9", "0.8.14", "newer"),
-        ("0.4.1", "0.8.14", "older"),
-        (None, "0.8.14", "missing"),
-        ("", "0.8.14", "missing"),
-        ("0.8.14", None, "unknown"),
-        ("0.8.14", "", "unknown"),
-        ("not-a-version", "0.8.14", "unknown"),
-        ("0.8.14", "not-a-version", "unknown"),
+        ("0.8.25", "0.8.26", "older"),
+        ("0.8.26", "0.8.25", "newer"),
+        ("0.9", "0.8.25", "newer"),
+        ("0.4.1", "0.8.25", "older"),
+        (None, "0.8.25", "missing"),
+        ("", "0.8.25", "missing"),
+        ("0.8.25", None, "unknown"),
+        ("0.8.25", "", "unknown"),
+        ("not-a-version", "0.8.25", "unknown"),
+        ("0.8.25", "not-a-version", "unknown"),
     ],
 )
 def test_compare_classifies_a_skill_copy(
@@ -242,15 +242,18 @@ def test_compare_classifies_a_skill_copy(
 
 
 # ---------------------------------------------------------------------------
-# Body-line ceilings, shared with tests/test_docs_commands.py
+# Line budgets, shared with tests/test_docs_commands.py
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("name", "limit"), sorted(SKILL_BODY_LINE_LIMITS.items()))
-def test_skill_body_stays_within_its_line_limit(name: str, limit: int) -> None:
-    body = skill_body_lines(skill_file(name))
-    assert len(body) <= limit, (
-        f"{name} body is {len(body)} lines; the ceiling is {limit}. "
-        "The tetramark-schema ceiling may only go down (Tetramark-0pj): move "
+@pytest.mark.parametrize(
+    ("name", "mode", "limit"),
+    [(name, mode, limit) for name, (mode, limit) in sorted(SKILL_LINE_BUDGETS.items())],
+)
+def test_skill_stays_within_its_line_budget(name: str, mode: str, limit: int) -> None:
+    counted = skill_line_count(name)
+    assert counted <= limit, (
+        f"{name} {mode} is {counted} lines; the budget is {limit}. "
+        "The tetramark-schema budget may only go down (Tetramark-0pj): move "
         "detail into references/ instead of raising it."
     )

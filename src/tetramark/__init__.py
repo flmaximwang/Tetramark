@@ -7,6 +7,6 @@ it upward from the current directory; a 0.5.0 ledger has no workspace layer.
 
 from tetramark.core.ledger import Ledger, adopt_ledger, init_ledger, open
 
-__version__ = "0.8.15"
+__version__ = "0.8.25"
 
 __all__ = ["Ledger", "__version__", "adopt_ledger", "init_ledger", "open"]
