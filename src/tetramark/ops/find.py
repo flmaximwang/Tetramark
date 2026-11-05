@@ -61,6 +61,7 @@ from tetramark.core.filters import (
     build_conditions,
     check_fields,
     coerce_value,
+    empty_condition,
     filter_fields,
     parse_filters,
     pattern_is_invalid,
@@ -510,6 +511,9 @@ def _add_filter_statements(
                 expressions=expressions,
                 coerce=lambda field, raw: coerce_value(
                     kind, field, raw, ledger=ledger, session=ledger.driver
+                ),
+                empty=lambda field, expression: empty_condition(
+                    kind, field, expression
                 ),
             )
             from_sql = (

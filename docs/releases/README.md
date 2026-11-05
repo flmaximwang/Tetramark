@@ -17,7 +17,8 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
-| [0.8.14](v0.8.14.md) | `v0.8.14.md` | both skills carry the package version; release check and fast lane guard it |
+| [0.8.22](v0.8.22.md) | `v0.8.22.md` | `--where FIELD=` matches empty fields (NULL/''; NULL only for non-text); `{"f": None}` mapping fix |
+| [0.8.19](v0.8.19.md) | `v0.8.19.md` | test harness only: per-query oracle restored; no user-visible change |
 | [0.8.4](v0.8.4.md) | `v0.8.4.md` | `tm aliquot show` carries the tube's events; `tm aliquot label` |
 | [0.8.3](v0.8.3.md) | `v0.8.3.md` | explicit purge for entities, stocks and boxes; aliquot aliases/references |
 | [0.8.2](v0.8.2.md) | `v0.8.2.md` | box ids in `box list`/`box show`; aliquot help points at `move`/`use`/`status` |

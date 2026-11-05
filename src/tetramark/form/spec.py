@@ -276,37 +276,45 @@ def _aliquot_steps(kind_name: str) -> list[Step]:
 
 
 def _box_steps(kind: Kind) -> list[Step]:
-    del kind  # box kinds have a geometry but add_box takes no field values
-    return [
+    steps: list[Step] = [
         Step(
             key="name",
             label="name",
             type="string",
             required=True,
             description="Unique human-readable box name (e.g. WFL-08-01).",
-        ),
-        Step(
-            key="parent",
-            label="parent",
-            type="box",
-            description="Parent box to nest this box in (optional; never a grid).",
-            help="Type a box name, or ? to list the boxes.",
-        ),
-        Step(
-            key="slot",
-            label="slot",
-            type="slot",
-            description="Slot in the parent box (slotted parents only).",
-            help="? shows the free slots of the parent.",
-        ),
-        Step(
-            key="notes",
-            label="notes",
-            type="text",
-            long=True,
-            description="Free-text notes about the box.",
-        ),
+        )
     ]
+    # The name is the box NAME argument, not a kind field: ``add_box`` refuses
+    # ``--set name=...``, so a kind's own ``name`` field is not a second
+    # question.
+    steps.extend(step for step in _schema_steps(kind) if step.key != "name")
+    steps.extend(
+        [
+            Step(
+                key="parent",
+                label="parent",
+                type="box",
+                description="Parent box to nest this box in (optional; never a grid).",
+                help="Type a box name, or ? to list the boxes.",
+            ),
+            Step(
+                key="slot",
+                label="slot",
+                type="slot",
+                description="Slot in the parent box (slotted parents only).",
+                help="? shows the free slots of the parent.",
+            ),
+            Step(
+                key="notes",
+                label="notes",
+                type="text",
+                long=True,
+                description="Free-text notes about the box.",
+            ),
+        ]
+    )
+    return steps
 
 
 def _steps_for(kind: Kind) -> list[Step]:
