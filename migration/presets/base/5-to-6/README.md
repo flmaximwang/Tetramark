@@ -36,12 +36,25 @@ only the copy the ledger loads.
 
 ## Preconditions
 
-- `ledger_meta.spec_version = 6` and `ledger_meta.preset_versions.base = 5`.
-  A base-4 ledger runs [`presets/base/4-to-5`](../4-to-5/README.md) first; a
+- `ledger_meta.spec_version = 7` — the **current** format — and
+  `ledger_meta.preset_versions.base = 5`.
+  A spec-6 ledger runs
+  [`migration/spec/6-to-7`](../../../spec/6-to-7/README.md) first:
+
+  ```sh
+  uv run migration/spec/6-to-7/migrate.py --ledger "$LEDGER" --apply
+  ```
+
+  This step must **not** be used to skip that one: `tm schema apply` writes the
+  tool's own `SPEC_VERSION`, so an apply on a spec-6 ledger would record spec 7
+  on a ledger that never got the spec-7 `aliquot_event` shape (the `note` →
+  `message` rename and the dropped `purpose` column) — it would claim a format
+  the ledger does not have.
+- A base-4 ledger runs [`presets/base/4-to-5`](../4-to-5/README.md) first; a
   spec-5 ledger runs [`migration/spec/5-to-6`](../../../spec/5-to-6/README.md)
   first.
 - Every **pending historical** preset step has run: this step assumes the
-  closure is already status-free and at spec 6.
+  closure is already status-free and at the current spec.
 - A backup of the ledger directory exists (`tm backup` or a filesystem copy) —
   the preset copy is a file and is not in Dolt history.
 
@@ -69,7 +82,8 @@ Run it from the root of the Tetramark checkout that ships `base` version 6.
 
    `schema apply` writes `preset_versions` (`base: 6`), the fingerprint,
    `tetramark_version` and the `ledger.yaml` copy from the files the ledger now
-   holds. It has no DDL step to run and touches no row.
+   holds, and re-writes `spec_version` — which **stays 7**, the format the
+   ledger already had. It has no DDL step to run and touches no row.
 
 Nothing else is needed: no box is created, moved or deleted, and a box that the
 old bound refused is simply recordable from now on.
@@ -82,16 +96,17 @@ LEDGER=/path/to/ledger
 grep -n "capacity:" "$LEDGER/presets/base.yaml"          # expected: empty
 # ... and from the effective schema it loads
 uv run tm -l "$LEDGER" schema show shelf | grep -n "capacity"   # expected: empty
-# the counter
+# the counters
 dolt sql -q "SELECT \`value\` FROM \`ledger_meta\` WHERE \`key\` = 'preset_versions'"
+dolt sql -q "SELECT \`value\` FROM \`ledger_meta\` WHERE \`key\` = 'spec_version'"   # 7
 # nothing pending, nothing failing
 uv run tm -l "$LEDGER" schema plan
 uv run tm -l "$LEDGER" check
 ```
 
 Expected: both greps find nothing (a `mouse` ledger still shows `capacity: 5`
-for `cage`), `preset_versions` names `base: 6`, the plan reports no pending
-step and `tm check` prints no `FAIL`.
+for `cage`), `preset_versions` names `base: 6`, `spec_version` is still `7`, the
+plan reports no pending step and `tm check` prints no `FAIL`.
 
 ## Rollback
 
@@ -104,5 +119,5 @@ step and `tm check` prints no `FAIL`.
   load a preset it does not claim to have, and the old write bound comes back
   without warning if the copy is the only thing restored.
 
-See also [`migration/README.md`](../../README.md) and the base entry in
-[`presets/README.md`](../../../presets/README.md).
+See also [`migration/README.md`](../../../README.md) and the base entry in
+[`presets/README.md`](../../../../presets/README.md).

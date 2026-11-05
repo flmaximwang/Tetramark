@@ -146,7 +146,27 @@ uv run migration/presets/proteins/3-to-4/migrate.py --ledger "$LEDGER"
 ```
 
 The v4 step runs **after** step 5 (`tm schema apply`): it refuses a ledger
-whose spec is still 5.
+whose spec is still 5. It also needs `base: 6`, so it runs after
+`migration/presets/base/5-to-6/` — and therefore after
+`migration/spec/6-to-7/`, which that base step requires.
+
+**A part that bumped again after spec 6 — `base`.** The loop installs this
+checkout's `presets/base.yaml`, which is **version 6**: the capacity-free copy
+that `migration/presets/base/5-to-6/README.md` upgrades to. Leaving it would
+skip the 4 → 5 counter (a base-4 ledger would never record `base: 5`) and turn
+`base/5-to-6` into a step that can never run (it expects `base: 5`) — the
+ordered 4 → 5 → 6 upgrade would not be real. Put the frozen v5 copy back after
+the loop, so step 5 writes `base: 5`:
+
+```sh
+cp migration/presets/base/4-to-5/base-5.yaml "$LEDGER/presets/base.yaml"
+```
+
+After this step's apply and `migration/spec/6-to-7/`, the operator runs
+`migration/presets/base/5-to-6/` to record `base: 6`. The frozen
+`base/4-to-5/base-5.yaml` is the v5 content a base-4 ledger already installed;
+restoring it here keeps every ledger's copy and counter in step, and leaves the
+two base steps independent of this one.
 
 Check the result — the expected output is empty:
 
@@ -246,8 +266,9 @@ uv run tm -l "$LEDGER" schema apply     # one Dolt commit
 
 - `ledger_meta.spec_version` → `6`;
 - `ledger_meta.preset_versions` → the versions of the copies you installed in
-  step 2 (this is how the preset counters are bumped — see the preset step
-  READMEs);
+  step 2 — `base: 5` and `proteins: 3` from the two frozen copies the
+  exceptions restore (this is how the preset counters are bumped — see the
+  preset step READMEs);
 - `ledger_meta.fingerprint` and `ledger_meta.tetramark_version`;
 - the regenerated `dolt_tests`: the fixed `core_status_event_allowed` rule
   replaces `core_aliquot_status_known`.

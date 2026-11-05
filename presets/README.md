@@ -62,8 +62,12 @@ the one fixed status set (`pending`, `stored`, `missing`, `consumed`) — see
 `v_box_<kind>` views and names one generated view after each box instead, so the kind name no
 longer has to be a view name (`v_box_grid96` was one).
 A base-5 ledger moves to 6 with `migration/presets/base/5-to-6/` (manual: replace
-the copy, `tm schema apply` writes the counter; no DDL and no row moves).
-A base-4 ledger moves to 5 with `migration/presets/base/4-to-5/`. A base-3 ledger moves to 4 with
+the copy with the frozen `base-6.yaml`, then `tm schema apply` writes the counter; no DDL and
+no row moves). The ledger must be at the current spec (7) when it does: `tm schema apply`
+writes the tool's own `spec_version`, so a spec-6 ledger runs `migration/spec/6-to-7/` first.
+A base-4 ledger moves to 5 with `migration/presets/base/4-to-5/`, which installs the frozen
+`base-5.yaml` next to its README — not the checkout's base 6 — so the ordered 4 → 5 → 6
+upgrade stays reproducible. A base-3 ledger moves to 4 with
 `migration/presets/base/3-to-4/`; that step runs **after** `migration/spec/4-to-5/` and after the
 older preset steps (`base/2-to-3`, `molbio/2-to-3`, `cell_culture`/`library`) — it renames the base
 v3 copies those steps install. A spec-4/base-2 ledger (e.g. molbio-2) follows: `spec/4-to-5`, then
@@ -84,8 +88,8 @@ base 4, and the nucleic step requires proteins already at 2. They run **after**
 longer loads the nucleotide `sequence_fields` mixin — it carries the amino-acid pattern itself —
 and its computed length column is `length_aa` (renamed from `length_bp`). `plasmid` keeps the
 nucleotide `sequence_fields`. The step `migration/presets/proteins/3-to-4/` applies the rename and
-runs **after** `migration/spec/5-to-6/` and `migration/presets/base/5-to-6/` (the preset belongs to
-the spec-6 / base-6 closure).
+runs **after** `migration/spec/5-to-6/`, `migration/spec/6-to-7/` and
+`migration/presets/base/5-to-6/` (the preset belongs to the spec-6-or-newer / base-6 closure).
 
 ## The include graph
 
@@ -256,7 +260,9 @@ zsqlab table or the entity.
    version `N+1` it installs (placed with `vendor_preset_files`, so the step keeps working after a
    later bump). `migration/presets/cell_culture/1-to-2/` is the worked example. Any **other** step
    that records this part's counter must freeze the same old copy — `migration/presets/molbio/2-to-3/`
-   ships `cell_culture-1.yaml` for exactly that reason.
+   ships `cell_culture-1.yaml` for exactly that reason. A **manual** step (README-only) freezes the
+   same content: `migration/presets/base/4-to-5/` ships the frozen `base-5.yaml` it installs and
+   `migration/presets/base/5-to-6/` ships the frozen `base-6.yaml`.
 8. Record the decision in the part's `description:`/comments if the include direction or the home
    of a shared mixin was arguable.
 

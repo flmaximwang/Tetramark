@@ -6,7 +6,7 @@ Counter: `ledger_meta.preset_versions.base` 4 → 5.
 written by `tm schema apply`, which records the version of the preset copy the
 ledger holds. The shared procedure — replacing the copies, remapping
 `aliquot.status`, adding the `CHECK`, recording the `migrated:` events and
-committing — is in [`migration/spec/5-to-6/README.md`](../../spec/5-to-6/README.md).
+committing — is in [`migration/spec/5-to-6/README.md`](../../../spec/5-to-6/README.md).
 
 ## What changes
 
@@ -26,7 +26,14 @@ geometries are the same as in base 4.
 - `ledger_meta.spec_version = 5` and `ledger_meta.preset_versions.base = 4`.
   The spec step does the row work and writes the counters; this README only
   covers the files (see
-  [`migration/spec/5-to-6/README.md`](../../spec/5-to-6/README.md)).
+  [`migration/spec/5-to-6/README.md`](../../../spec/5-to-6/README.md)).
+- This step targets the **spec-5 format**: it installs the frozen `base-5.yaml`
+  and nothing else. Its `base: 5` counter is written by the spec step's
+  `tm schema apply`, which records the version of the copy you installed here.
+- `base: 6` is a **separate, later** step ([`5-to-6`](../5-to-6/README.md)),
+  not part of the spec step's apply: it needs the **current** spec (7), so a
+  ledger that is still at spec 6 runs
+  [`spec/6-to-7`](../../../spec/6-to-7/README.md) first.
 - Every **pending historical** preset step runs first: the frozen scripts under
   `migration/presets/` target spec 5 and install the spec-5 copies.
 - A backup of the ledger directory exists (the spec step's step 1).
@@ -69,7 +76,7 @@ uv run tm -l "$LEDGER" check
 ```
 
 Expected: the grep finds nothing, `preset_versions` names `base: 5` (the
-[`5-to-6`](../5-to-6/README.md) step moves it to 6 afterwards), the plan
+separate [`5-to-6`](../5-to-6/README.md) step moves it to 6 later), the plan
 reports no pending steps and `tm check` prints no `FAIL`.
 
 ## Rollback
@@ -81,4 +88,4 @@ reports no pending steps and `tm check` prints no `FAIL`.
 - Do both. A copy and a counter that disagree make the ledger load a preset it
   does not claim to have.
 
-See also [`migration/README.md`](../../README.md).
+See also [`migration/README.md`](../../../README.md).
