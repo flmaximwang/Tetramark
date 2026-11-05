@@ -811,6 +811,11 @@ class FormState:
 
     def reject(self, message: str) -> None:
         """The core rejected the write: show it and go back to the field."""
+        # The ledger may have changed under the form (that can be why the
+        # write was refused): re-read boxes and free slots from here on.
+        forget = getattr(self.resolver, "forget", None)
+        if forget is not None:
+            forget()
         self.error = message
         self.mode = "input"
         self.from_review = False

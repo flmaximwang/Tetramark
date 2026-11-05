@@ -28,6 +28,7 @@ from tetramark.ops import find as find_module
 from tetramark.ops.find import find, search
 
 from conftest import PRESETS
+from support.read_asserts import assert_single_read_process
 
 FULL = [str(PRESETS / "full")]
 
@@ -330,6 +331,154 @@ def test_neither_a_query_nor_a_filter_is_a_usage_error(where_ledger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The other --where operators (Tetramark-d0x.1)
+# ---------------------------------------------------------------------------
+
+
+def seed_operator_rows(ledger) -> dict[str, str]:
+    """Create the rows the ``!=``/``!~``/ordered find tests read.
+
+    ``pUC19``, ``pUC57`` and ``pUC-box`` are the query hits; the two
+    ``everything`` rows carry the ``count``/``legacy`` values the filters
+    address, and the ``prep`` stock gives the search an aliquot to exclude.
+    """
+    puc19 = ledger.entities.add("plasmid", name="pUC19")
+    puc57 = ledger.entities.add("item", name="pUC57")
+    box = ledger.boxes.add("shelf", "pUC-box")
+    vector = ledger.entities.add(
+        "everything",
+        name="vector",
+        values={"code": "AAA", "count": 1, "legacy": "L1"},
+    )
+    carrier = ledger.entities.add(
+        "everything",
+        name="pUC-vec",
+        values={"code": "BBB", "count": 5, "legacy": "M1"},
+    )
+    stock = ledger.stocks.add(
+        "prep", entity=carrier["id"], values={"batch": "pUC-batch"}
+    )
+    aliquot = stock["aliquots"][0]
+    ledger.aliases.add("aliquot", aliquot, "pUC-tube")
+    created = {
+        "puc19": puc19["id"],
+        "puc57": puc57["id"],
+        "box": box["id"],
+        "vector": vector["id"],
+        "carrier": carrier["id"],
+        "stock": stock["id"],
+        "aliquot": aliquot,
+    }
+    return {name: str(value) for name, value in created.items()}
+
+
+def test_where_filters_with_the_negated_and_ordered_operators(where_ledger) -> None:
+    """``!=``, ``!~`` and an ordered comparison narrow the find hits."""
+    ledger = where_ledger
+    rows = seed_operator_rows(ledger)
+
+    # ``!=`` is the complement of ``=``: the filter-only listing keeps every
+    # entity and box whose name differs (stock kinds have no name column).
+    not_equals = ledger.find(where=["name!=pUC19"])
+    assert {row["id"] for row in not_equals} == {
+        rows["puc57"],
+        rows["vector"],
+        rows["carrier"],
+        rows["box"],
+    }
+    assert {row["match"] for row in not_equals} == {"filter"}
+    assert {row["object"] for row in not_equals} == {"entity", "box"}
+
+    # ``!~`` is the complement of ``~``: only the everything kind declares
+    # ``legacy``, and the row whose value starts with L stays out.
+    negated = ledger.find(where=["legacy!~^L"])
+    assert [row["id"] for row in negated] == [rows["carrier"]]
+    assert negated[0]["match"] == "filter"
+
+    # An ordered comparison keeps the rows whose value is in range.
+    ordered = ledger.find(where=["count>=4"])
+    assert [row["id"] for row in ordered] == [rows["carrier"]]
+    assert ordered[0]["match"] == "filter"
+
+    # The same filters narrow a QUERY's hits instead of listing everything.
+    narrowed = ledger.find("pUC", where=["name!=pUC19"])
+    assert {row["id"] for row in narrowed} == {
+        rows["puc57"],
+        rows["box"],
+        rows["carrier"],
+    }
+    assert {row["match"] for row in narrowed} == {"name"}
+
+    ordered_query = ledger.find("pUC", where=["count>=4"])
+    assert [row["id"] for row in ordered_query] == [rows["carrier"]]
+    assert ordered_query[0]["match"] == "name"
+
+    negated_query = ledger.find("pUC", where=["legacy!~^L"])
+    assert [row["id"] for row in negated_query] == [rows["carrier"]]
+
+    # An invalid ``!~`` pattern is the shared usage error, like ``~``.
+    with pytest.raises(UsageError) as error:
+        ledger.find("pUC", where=["name!~["])
+    assert "invalid regular expression in the --where filter 'name!~['" in str(
+        error.value
+    )
+
+    # Aliquots stay excluded whenever a filter is given, even with the new
+    # operators: the filter-only listing keeps the one matching stock and
+    # never lists its tube; without a filter the id and alias still resolve.
+    listed = ledger.find(where=["batch!=zzz"])
+    assert [row["object"] for row in listed] == ["stock"]
+    assert [row["id"] for row in listed] == [rows["stock"]]
+    assert ledger.find(rows["aliquot"], where=["batch!=zzz"]) == []
+    assert ledger.find("pUC-tube", where=["batch!=zzz"]) == []
+    assert ledger.find(rows["aliquot"])[0]["object"] == "aliquot"
+    assert ledger.find("pUC-tube")[0]["object"] == "aliquot"
+
+
+def test_cli_where_with_the_negated_and_ordered_operators(
+    cli_env: None, where_ledger
+) -> None:
+    """The CLI passes ``!=``, ``!~`` and ordered comparisons to the search."""
+    ledger = where_ledger
+    rows = seed_operator_rows(ledger)
+
+    listed = run_cli(ledger, "find", "--where", "count>=4", "--json")
+    assert listed.exit_code == 0, listed.output
+    listed_payload = json.loads(listed.output)
+    assert [row["id"] for row in listed_payload] == [rows["carrier"]]
+    assert listed_payload[0]["match"] == "filter"
+    assert listed_payload[0]["score"] == 0
+    assert listed_payload[0]["rank"] == 1
+
+    narrowed = run_cli(ledger, "find", "pUC", "--where", "name!=pUC19", "--json")
+    assert narrowed.exit_code == 0, narrowed.output
+    narrowed_payload = json.loads(narrowed.output)
+    assert {row["id"] for row in narrowed_payload} == {
+        rows["puc57"],
+        rows["box"],
+        rows["carrier"],
+    }
+    assert {row["match"] for row in narrowed_payload} == {"name"}
+
+    negated = run_cli(ledger, "find", "pUC", "--where", "legacy!~^L", "--json")
+    assert negated.exit_code == 0, negated.output
+    assert [row["id"] for row in json.loads(negated.output)] == [rows["carrier"]]
+
+    batches = run_cli(ledger, "find", "--where", "batch!=zzz", "--json")
+    assert batches.exit_code == 0, batches.output
+    batches_payload = json.loads(batches.output)
+    assert [row["object"] for row in batches_payload] == ["stock"]
+    assert [row["id"] for row in batches_payload] == [rows["stock"]]
+
+    # A filter still excludes the aliquot: its id and alias match the query,
+    # but no entity/stock/box object does, so the CLI reports a miss.
+    for query in (rows["aliquot"], "pUC-tube"):
+        excluded = run_cli(ledger, "find", query, "--where", "batch!=zzz")
+        assert isinstance(excluded.exception, LedgerError)
+        assert "no match" in str(excluded.exception)
+
+
+# ---------------------------------------------------------------------------
 # The search() seam (Tetramark-53r.1)
 # ---------------------------------------------------------------------------
 
@@ -544,7 +693,7 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"]
+    assert_single_read_process(invoke_calls)
 
     query_many_calls.clear()
     invoke_calls.clear()
@@ -552,7 +701,7 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"]
+    assert_single_read_process(invoke_calls)
 
     query_many_calls.clear()
     invoke_calls.clear()
@@ -560,6 +709,6 @@ def test_regex_and_where_keep_one_read_batch(
         item["id"]
     ]
     assert len(query_many_calls) == 1
-    assert invoke_calls == ["json", "csv"]
+    assert_single_read_process(invoke_calls)
     # The batch really carries the search, the filter queries and the maps.
     assert len(query_many_calls[0]) >= 10

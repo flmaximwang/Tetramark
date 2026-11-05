@@ -515,6 +515,8 @@ def _add_filter_statements(
                 empty=lambda field, expression: empty_condition(
                     kind, field, expression
                 ),
+                kind=kind,
+                option="--where",
             )
             from_sql = (
                 box_kind_from(kind_name)

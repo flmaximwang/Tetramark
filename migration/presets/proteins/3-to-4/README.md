@@ -30,12 +30,20 @@ constructs and validates them against the amino-acid alphabet instead.
 
 ## Preconditions
 
-- `ledger_meta.spec_version = 6` — the v4 preset belongs to the spec-6
-  closure.  A spec-5 ledger runs the manual
-  [`spec/5-to-6`](../../../spec/5-to-6/README.md) upgrade first.
+- `ledger_meta.spec_version` = 6 **or newer** — the v4 preset belongs to the
+  spec-6 closure, and the step's `REQUIRED_SPEC` only refuses a ledger still
+  below 6 (the current format is spec 7).  A spec-5 ledger runs the manual
+  [`spec/5-to-6`](../../../spec/5-to-6/README.md) upgrade first; a spec-6 ledger
+  runs [`spec/6-to-7`](../../../spec/6-to-7/README.md) first
+  (`uv run migration/spec/6-to-7/migrate.py --ledger "$LEDGER" --apply`),
+  because the base step below needs the current spec.
 - `ledger_meta.preset_versions.proteins = 3` (a second run refuses).
-- The ledger's copies are the spec-6 ones (`base` 5): this step places only
+- The ledger's copies are the base-6 ones (`base` 6): this step places only
   `proteins.yaml`; every other copy is already the one the target schema reads.
+  A base-5 ledger runs [`presets/base/5-to-6`](../../base/5-to-6/README.md)
+  first — the frozen `proteins-4.yaml` here includes the repo's base, so a
+  base-5 copy would pull the capacity change into this step's plan, and the
+  step's `base` refusal names that README.
 - A clean working set and a backup of the ledger directory (the restore point
   is the tag, but the preset copies are files, not Dolt content).
 
