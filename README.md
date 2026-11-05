@@ -49,21 +49,59 @@ here is versioned by Dolt. The CLI is `tm`.
 ## Install
 
 Requires Python >= 3.11 and the [`dolt`](https://docs.dolthub.com/introduction/installation) binary
-(>= 2.3.5) on `PATH`. The wheel bundles the presets, so a bare `--preset molbio` works from an
-installed tool; `$TETRAMARK_PRESETS_DIR` can point at another directory of preset files instead
-(§8 of the spec).
+(>= 2.3.5) on `PATH`. Install `tm` with [`uv`](https://docs.astral.sh/uv/) from the pinned release
+tag — replace `v0.8.18` with the release you want:
 
 ```sh
-uv tool install .
+uv tool install --reinstall "git+https://github.com/flmaximwang/Tetramark@v0.8.18"
 tm --version
 ```
 
-For development:
+That is a normal, non-editable install: the wheel bundles the presets and both skills, so a bare
+`--preset molbio`, `tm skill path` and the agent manuals work from the installed tool with no
+checkout. `$TETRAMARK_PRESETS_DIR` can point at another directory of preset files instead (§8 of
+the spec).
+
+If you prefer a single downloadable file, install the wheel attached to the same release (the same
+`--reinstall` form):
+
+```sh
+uv tool install --reinstall \
+  "https://github.com/flmaximwang/Tetramark/releases/download/v0.8.18/tetramark-0.8.18-py3-none-any.whl"
+```
+
+To **upgrade**, run the same command with the new tag (or the new wheel URL): `--reinstall`
+replaces the previous tool in place.
+
+For development from a checkout, use the editable install — **development only**, never a tool you
+rely on:
 
 ```sh
 uv sync
 uv run tm --help
+uv tool install -e .          # development only: this checkout's tm on PATH
 ```
+
+The editable install follows the checkout: editing the code changes `tm` immediately, and
+`tm --version` warns when the installed metadata and the code drift apart.
+
+### Troubleshooting
+
+**`tm: ignoring PYTHONPATH entries from another Python: …`** — your shell's `PYTHONPATH` points at
+another interpreter's `site-packages`. `tm` drops those entries and runs normally; `unset
+PYTHONPATH` (or fix the export) to silence the line.
+
+**`warning: installed metadata says tetramark X but the code is Y`** — `tm` is an editable install
+or a stale copy whose metadata no longer matches its code. Install the pinned release command above;
+it replaces the tool with a versioned wheel.
+
+**`no ledger found from /Users/you`** — `tm` looks for a ledger in the current directory and its
+parents; `$HOME/.dolt` is Dolt's global configuration directory, not a ledger. `cd` into the ledger
+directory (the one with `ledger.yaml` and `.dolt/`) or pass `-l PATH`; `tm init PATH` creates a new
+one. `tm adopt PATH` is only for an existing bare Dolt database, never for `$HOME`.
+
+**Where is the installed skill?** `tm skill path` prints the directory of the packaged
+`tetramark` skill, so an agent can read the manual that belongs to this exact `tm`.
 
 ### Testing
 

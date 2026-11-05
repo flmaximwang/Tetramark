@@ -321,7 +321,7 @@ tm aliquot purge ALQ [--json]
   printed on its own line), the derived `in_stock` flag (true exactly when the status is `stored`)
   and the tube's `events`, oldest first (`[]` when there are none). Each event names its `event`,
   `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot` (names, falling back to
-  ids), the `old_status`/`new_status`, `forced` and `actor`/`purpose`/`note`. The text output ends
+  ids), the `old_status`/`new_status`, `forced` and `actor`/`message`. The text output ends
   with `events  N` and one line per event rendered by the same `event_line` helper `history` uses;
   `--json` prints the whole record with the full ids, events included; `--format csv` keeps the flat
   single row and drops `events` (use `tm history ALQ --format csv` for the event rows). `ALQ` is the
@@ -341,11 +341,8 @@ tm aliquot purge ALQ [--json]
   (`used_amount` is `null` for a whole use of a tube with no quantity).
 - `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
   is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
-  `aliquot_event.note` (new `use`/`move` events leave `purpose` NULL) — never the ASCII commit
-  message. `use`'s old `--purpose`/`--note` flags are removed outright (no aliases); `tm aliquot
-  status --force --note` is unchanged. **Temporary naming mismatch:** the CLI says `--message` while
-  `tm history --json` reports the same value as the event's `note`; a follow-up change will align the
-  names.
+  `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s old `--purpose`/`--note`
+  flags are removed outright (no aliases); `tm aliquot status --force --note` is unchanged.
 - `status` moves a tube to one of the four fixed statuses and must follow the transition table above;
   `--force --note TEXT` overrides an illegal transition deliberately (the event records
   `forced = TRUE`). Putting a wrongly `consumed` tube back is a `move` into a box, not a status
@@ -375,8 +372,9 @@ Change placement with `move`, quantity with `use`, and status with `status` (als
 
 The Python API mirrors the CLI through `ledger.aliquots`:
 `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
-`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no `purpose`/`note`
-argument, and a missing, blank or whitespace-only `message` is refused exactly like on the CLI.
+`ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`. Both take no event-text
+argument other than `message`, and a missing, blank or whitespace-only `message` is refused exactly
+like on the CLI.
 
 ## Boxes
 

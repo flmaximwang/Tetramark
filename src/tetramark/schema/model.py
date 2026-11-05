@@ -80,8 +80,11 @@ __all__ = [
 #: kind; v6 made the aliquot status one fixed, hardcoded set for every stock
 #: kind (no ``status_sets``/``statuses`` in a new preset), put a real DB
 #: ``CHECK`` back on ``aliquot.status``, and replaced the generated
-#: ``core_aliquot_status_known`` test with the fixed transition rules.
-SPEC_VERSION = 6
+#: ``core_aliquot_status_known`` test with the fixed transition rules; v7
+#: renamed ``aliquot_event.note`` to ``message`` and dropped the unused
+#: ``purpose`` column (``migration/spec/6-to-7/`` folds a non-empty purpose
+#: into the message).
+SPEC_VERSION = 7
 
 #: Views that exist for every ledger, independent of the selected kinds.
 #: ``box_name_problem`` reserves the ``v_box_*`` ones: a per-box view must never

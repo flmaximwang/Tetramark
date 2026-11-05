@@ -20,6 +20,7 @@ import typer
 from typer.core import TyperGroup
 
 from tetramark import __version__
+from tetramark._entry import installed_version_drift
 from tetramark.cli.alias import alias_app
 from tetramark.cli.aliquot import aliquot_app
 from tetramark.cli.box import box_app
@@ -139,6 +140,24 @@ app = typer.Typer(
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"tetramark {__version__}")
+        drift = installed_version_drift()
+        if drift is not None:
+            metadata_version, editable_dir = drift
+            if metadata_version != __version__:
+                warning = (
+                    f"warning: installed metadata says tetramark {metadata_version} "
+                    f"but the code is {__version__}"
+                )
+                if editable_dir is not None:
+                    warning += (
+                        f": editable install of {editable_dir}, "
+                        "it follows that checkout"
+                    )
+                warning += (
+                    "; install a pinned release: uv tool install --reinstall "
+                    f'"git+https://github.com/flmaximwang/Tetramark@v{__version__}"'
+                )
+                typer.echo(warning, err=True)
         raise typer.Exit(EXIT_OK)
 
 

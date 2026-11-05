@@ -588,7 +588,7 @@ def test_migration_can_run_on_a_branch(
 def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
     ledger_factory,
 ) -> None:
-    """No spec guard: a stale fingerprint and an upgrade hint, writes allowed."""
+    """No refusal: a stale fingerprint, an upgrade hint, entity writes allowed."""
     ledger = ledger_factory([PRESETS / "base"])
     downgrade_to_spec1(ledger)
     spec1_head = head(ledger)
@@ -600,8 +600,8 @@ def test_current_tm_opens_a_spec_1_ledger_with_a_fingerprint_warning(
         messages = [str(item.message) for item in caught]
         assert any("fingerprint does not match" in text for text in messages), messages
         assert any(
-            "ledger is spec 1, tm is spec 6: follow migration/spec/1-to-2"
-            in text
+            f"ledger is spec 1, tm is spec {model.SPEC_VERSION}: "
+            "follow migration/spec/1-to-2" in text
             for text in messages
         ), messages
         assert reopened.warnings  # collected on the ledger too
@@ -4843,3 +4843,433 @@ def test_a_step_behind_its_ledger_points_at_the_manual_readme(
     assert "migration/presets/base/4-to-5/README.md" in output
     assert head(ledger) == head_before
     assert commit_count(ledger) == commits_before
+
+
+# ---------------------------------------------------------------------------
+# spec/6-to-7: aliquot_event.message replaces note/purpose
+# ---------------------------------------------------------------------------
+
+SPEC_6_TO_7 = ROOT / "migration" / "spec" / "6-to-7" / "migrate.py"
+
+#: The spec-7 ``aliquot_event`` column order the step must produce.
+SPEC7_EVENT_COLUMNS = (
+    "id",
+    "aliquot_id",
+    "event",
+    "amount",
+    "unit",
+    "from_box_id",
+    "from_slot",
+    "to_box_id",
+    "to_slot",
+    "old_status",
+    "new_status",
+    "forced",
+    "actor",
+    "message",
+    "at",
+)
+
+
+def spec6_fingerprint(ledger: Ledger) -> str:
+    """The fingerprint a spec-6 tool would have written (SPEC_VERSION=6)."""
+    saved = model.SPEC_VERSION
+    model.SPEC_VERSION = 6
+    try:
+        return ledger.schema.fingerprint()
+    finally:
+        model.SPEC_VERSION = saved
+
+
+def downgrade_to_spec6(
+    ledger: Ledger,
+    *,
+    note: bool = True,
+    message: bool = False,
+    purpose: bool = True,
+    name: str = "spec6",
+) -> None:
+    """Turn a fresh spec-7 ledger into a spec-6 (or hand-patched) event shape.
+
+    ``note``/``message``/``purpose`` say which event-text columns the ledger
+    ends up with: the normal spec-6 shape is ``note + purpose``; the matrix
+    tests pick the ambiguous (both) and damaged (neither) shapes from the same
+    helper.  The counter and fingerprint are the spec-6 ones, so the ledger
+    looks exactly like one written by 0.8.7.
+    """
+    statements: list[Any] = []
+    if note and message:
+        # The ambiguous hand-patched shape: both text columns exist.
+        statements.append(
+            "ALTER TABLE `aliquot_event` ADD COLUMN `note` MEDIUMTEXT"
+        )
+    elif note:
+        statements.append(
+            "ALTER TABLE `aliquot_event` RENAME COLUMN `message` TO `note`"
+        )
+    elif not message:
+        statements.append("ALTER TABLE `aliquot_event` DROP COLUMN `message`")
+    if purpose:
+        statements.append(
+            "ALTER TABLE `aliquot_event` ADD COLUMN `purpose` MEDIUMTEXT "
+            "AFTER `actor`"
+        )
+    statements.extend(
+        [
+            "UPDATE `ledger_meta` SET `value` = '6' WHERE `key` = 'spec_version'",
+            "UPDATE `ledger_meta` SET `value` = '0.8.7' "
+            "WHERE `key` = 'tetramark_version'",
+            (
+                "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
+                (spec6_fingerprint(ledger),),
+            ),
+        ]
+    )
+    ledger.driver.execute_many(statements)
+    ledger.driver.commit(f"test: simulate the spec-6 shape ({name})")
+    ledger.read_meta()
+
+
+def spec6_ledger(factory, *, name: str = "spec6", **shape: bool):
+    """A ledger with one stock, one placed tube, and a spec-6 event table."""
+    ledger = factory([PRESETS / "base"], name=name, id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    shelf = ledger.boxes.add("shelf", "SHELF")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, box="SHELF", quantity=10, unit="ul"
+    )
+    downgrade_to_spec6(ledger, name=name, **shape)
+    return ledger, stock["aliquots"][0]
+
+
+def add_spec6_event(
+    ledger: Ledger,
+    alq: str,
+    *,
+    purpose: str | None,
+    note: str | None,
+    text_column: str = "note",
+) -> None:
+    """One hand-written event row with the spec-6 text columns.
+
+    ``text_column`` is ``note`` for the normal spec-6 shape and ``message`` for
+    the hand-patched ``message + purpose`` matrix row.
+    """
+    ledger.driver.execute(
+        f"INSERT INTO `aliquot_event` (`aliquot_id`, `event`, `purpose`, "
+        f"`{text_column}`) VALUES (%s, 'edit', %s, %s)",
+        (alq, purpose, note),
+    )
+
+
+def event_columns_in_order(ledger: Ledger) -> list[str]:
+    rows = ledger.driver.query(
+        "SELECT `column_name` AS `name` FROM `information_schema`.`columns` "
+        "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot_event' "
+        "ORDER BY `ordinal_position`"
+    )
+    return [str(row["name"]) for row in rows]
+
+
+def test_spec_6_to_7_renames_folds_and_drops_in_one_commit(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Apply: the rename, all four fold cases, the drop, one commit and a tag."""
+    ledger, alq = spec6_ledger(ledger_factory, name="spec6-fold")
+    # All four fold cases, plus the whitespace-only variants: "empty" means
+    # NULL or TRIM(x) = ''; the values are copied verbatim, never trimmed.
+    add_spec6_event(ledger, alq, purpose=None, note="note only")
+    add_spec6_event(ledger, alq, purpose="purpose only", note=None)
+    add_spec6_event(ledger, alq, purpose="why", note="the note")
+    add_spec6_event(ledger, alq, purpose="   ", note="whitespace purpose")
+    add_spec6_event(ledger, alq, purpose=None, note="   ")
+    ledger.driver.commit("test: seed the fold cases")
+    ledger.read_meta()
+    assert "purpose" in column_names(ledger, "aliquot_event")
+
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    head_before_columns = event_columns_in_order(ledger)
+
+    applied = run_python(
+        SPEC_6_TO_7, "--ledger", str(ledger.path), "--apply", env=script_env
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "purpose folded into message: 2 row(s)" in applied.stdout
+    assert "migrate(ledger): spec 6 -> 7" in applied.stdout
+
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "7"
+    assert ledger.meta["tetramark_version"] == __version__
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+
+    columns = column_names(ledger, "aliquot_event")
+    assert "note" not in columns and "purpose" not in columns
+    assert "message" in columns
+    assert event_columns_in_order(ledger) == list(SPEC7_EVENT_COLUMNS)
+    assert event_columns_in_order(ledger) != head_before_columns
+
+    messages = [
+        row["message"]
+        for row in ledger.driver.query(
+            "SELECT `message` FROM `aliquot_event` ORDER BY `id`"
+        )
+    ]
+    # The ledger's own create event comes first (no text), then the five rows.
+    assert messages[:3] == [None, "note only", "purpose only"]
+    assert messages[3] == "why; the note"
+    assert messages[4] == "whitespace purpose"
+    assert messages[5] == "   "
+
+    assert commit_count(ledger) == commits_before + 1
+    assert commit_message(ledger, head(ledger)) == "migrate(ledger): spec 6 -> 7"
+    assert tags(ledger) == {"pre-migrate-spec-6": head_before}
+    assert row_count(ledger, "dolt_tests") == expected_installed_tests(ledger)
+
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+
+def test_spec_6_to_7_dry_run_is_the_default_and_writes_nothing(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """No ``--apply`` is a dry run; ``--dry-run`` prints exactly the same plan."""
+    ledger, alq = spec6_ledger(ledger_factory, name="spec6-dry")
+    add_spec6_event(ledger, alq, purpose="why", note="kept")
+    ledger.driver.commit("test: one foldable row")
+    ledger.read_meta()
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    tags_before = tags(ledger)
+
+    plain = run_python(SPEC_6_TO_7, "--ledger", str(ledger.path), env=script_env)
+    assert plain.returncode == 0, plain.stdout + plain.stderr
+    assert "migration: spec 6 -> 7" in plain.stdout
+    assert "purpose folded into message: 1 row(s)" in plain.stdout
+    assert "RENAME COLUMN `note` TO `message`" in plain.stdout
+    assert "DROP COLUMN `purpose`" in plain.stdout
+    assert "'spec_version', '7'" in plain.stdout
+    assert "dry run:" in plain.stdout
+    # The dry run writes nothing: HEAD, commits and tags are unchanged.
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == tags_before
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "6"
+    assert "purpose" in column_names(ledger, "aliquot_event")
+
+    explicit = run_python(
+        SPEC_6_TO_7, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+    assert explicit.stdout == plain.stdout
+    assert head(ledger) == head_before
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected", "forbidden"),
+    [
+        (
+            {"note": True, "purpose": True},
+            [
+                "RENAME COLUMN `note` TO `message`",
+                "DROP COLUMN `purpose`",
+                "CONCAT(`purpose`, '; ', `message`)",
+            ],
+            ["MODIFY COLUMN `message`"],
+        ),
+        (
+            {"note": True, "purpose": False},
+            ["RENAME COLUMN `note` TO `message`"],
+            ["DROP COLUMN `purpose`", "MODIFY COLUMN `message`"],
+        ),
+        (
+            {"note": False, "message": True, "purpose": True},
+            ["DROP COLUMN `purpose`", "CONCAT(`purpose`, '; ', `message`)"],
+            ["RENAME COLUMN `note` TO `message`", "MODIFY COLUMN `message`"],
+        ),
+        (
+            {"note": False, "message": True, "purpose": False},
+            ["MODIFY COLUMN `message` MEDIUMTEXT AFTER `actor`"],
+            ["RENAME COLUMN `note` TO `message`", "DROP COLUMN `purpose`"],
+        ),
+    ],
+    ids=["note+purpose", "note only", "message+purpose", "message only"],
+)
+def test_spec_6_to_7_matrix_plans_each_live_shape(
+    ledger_factory,
+    script_env: dict[str, str],
+    shape: dict[str, bool],
+    expected: list[str],
+    forbidden: list[str],
+) -> None:
+    """Acceptance 5: the four migratable matrix rows build the right statements."""
+    ledger, alq = spec6_ledger(ledger_factory, name="spec6-matrix", **shape)
+    if shape.get("purpose"):
+        add_spec6_event(
+            ledger,
+            alq,
+            purpose="why",
+            note="kept",
+            text_column="note" if shape.get("note") else "message",
+        )
+        ledger.driver.commit("test: one foldable row")
+        ledger.read_meta()
+    result = run_python(SPEC_6_TO_7, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for text in expected:
+        assert text in result.stdout, result.stdout
+    for text in forbidden:
+        assert text not in result.stdout, result.stdout
+    assert "migration: spec 6 -> 7" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        (
+            {"note": True, "message": True, "purpose": True},
+            "both `note` and `message`",
+        ),
+        (
+            {"note": False, "message": False, "purpose": True},
+            "neither `note` nor `message`",
+        ),
+    ],
+    ids=["ambiguous", "damaged"],
+)
+def test_spec_6_to_7_matrix_refusals_write_nothing(
+    ledger_factory,
+    script_env: dict[str, str],
+    shape: dict[str, bool],
+    reason: str,
+) -> None:
+    """Acceptance 5: the two refusal rows write nothing, not even the tag."""
+    ledger, _alq = spec6_ledger(ledger_factory, name="spec6-refuse", **shape)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    for flags in ((), ("--apply",)):
+        result = run_python(
+            SPEC_6_TO_7, "--ledger", str(ledger.path), *flags, env=script_env
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert "refusing to migrate spec 6 -> 7" in output
+        assert reason in output
+        assert head(ledger) == head_before
+        assert commit_count(ledger) == commits_before
+        assert tags(ledger) == {}
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "6"
+
+
+def test_spec_6_to_7_refuses_a_spec_7_ledger_by_the_counter(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """The (d) case: a fresh, already spec-7 ledger is not stepped twice."""
+    ledger = ledger_factory([PRESETS / "base"], name="already-spec7", id_prefix="77")
+    ledger.entities.add("item", name="alpha")
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    result = run_python(SPEC_6_TO_7, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "spec_version 7, expected 6" in result.stdout + result.stderr
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+
+
+# ---------------------------------------------------------------------------
+# The spec-7 event guard: three paths refuse a spec-6 ledger by name
+# ---------------------------------------------------------------------------
+
+
+def spec6_guard_message(ledger: Ledger) -> str:
+    """The exact LedgerError text the three spec-7 paths must raise."""
+    return (
+        "ledger is spec 6, tm is spec 7: aliquot_event still has the spec-6 "
+        "columns (note, purpose). Upgrade it with:\n"
+        f"uv run migration/spec/6-to-7/migrate.py --ledger {ledger.path} --apply\n"
+        "(dry run without --apply; see migration/spec/6-to-7/README.md)"
+    )
+
+
+def test_the_spec7_event_guard_refuses_show_and_history(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """``show_aliquot`` and the history event read name the upgrade, not a DB error."""
+    ledger, alq = spec6_ledger(ledger_factory, name="spec6-guard-reads")
+    expected = spec6_guard_message(ledger)
+
+    with pytest.raises(LedgerError) as shown:
+        ledger.aliquots.show(alq)
+    assert str(shown.value) == expected
+    assert shown.value.exit_code == 1
+
+    with pytest.raises(LedgerError) as historic:
+        ledger.history(alq)
+    assert str(historic.value) == expected
+
+    # The CLI surfaces the same text for both commands.
+    for command in (("aliquot", "show", alq), ("history", alq)):
+        result = CliRunner().invoke(app, [*base_args(ledger), *command])
+        assert result.exit_code == 1, result.output
+        assert expected in str(result.exception)
+
+
+def test_the_spec7_event_guard_refuses_every_event_write(
+    ledger_factory, script_env: dict[str, str], tmp_path: Path
+) -> None:
+    """use/move/status/import abort before the INSERT; nothing is committed."""
+    from tetramark.ops.io_csv import import_csv
+
+    ledger, alq = spec6_ledger(ledger_factory, name="spec6-guard-writes")
+    expected = spec6_guard_message(ledger)
+    box = ledger.driver.query("SELECT `name` FROM `box`")[0]["name"]
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    events_before = row_count(ledger, "aliquot_event")
+    quantity_before = ledger.driver.query(
+        "SELECT `quantity`, `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s",
+        (alq,),
+    )
+
+    for flags in (("aliquot", "use", alq, "1", "ul", "-m", "x"),
+                  ("aliquot", "move", alq, "--box", str(box), "-m", "x"),
+                  ("aliquot", "status", alq, "missing", "--note", "x")):
+        result = CliRunner().invoke(app, [*base_args(ledger), *flags])
+        assert result.exit_code == 1, result.output
+        assert str(result.exception) == expected
+
+    # An import that creates an aliquot goes through record_event too.
+    csv_path = tmp_path / "lots.csv"
+    csv_path.write_text(
+        "entity,aliquots,quantity,unit\n" f"{ledger.stocks.ls('lot')[0]['entity_id']},1,5,ul\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(LedgerError) as refused:
+        import_csv(ledger, "lot", csv_path)
+    assert str(refused.value) == expected
+
+    # Nothing was committed and no row moved.
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert row_count(ledger, "aliquot_event") == events_before
+    assert ledger.driver.query(
+        "SELECT `quantity`, `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s",
+        (alq,),
+    ) == quantity_before
+
+
+def test_a_spec_6_ledger_keeps_the_warn_only_commands(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """``tm status``, ``tm schema plan`` and the list commands still work."""
+    ledger, _alq = spec6_ledger(ledger_factory, name="spec6-warn-only")
+
+    for command in (("status",), ("schema", "plan"), ("aliquot", "list")):
+        result = CliRunner().invoke(app, [*base_args(ledger), *command])
+        assert result.exit_code == 0, (command, result.output)
