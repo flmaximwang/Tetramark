@@ -24,7 +24,7 @@ enum checks.  This module adds the rules Dolt cannot express (spec §3):
 * box nesting must be acyclic and a slot holds aliquots *or* one child box;
 * an aliquot's status belongs to its stock kind's status set, creation accepts
   any status of the set and every later change follows the set's ``to:`` rules
-  (:func:`ensure_status_change`; ``--force --note`` records the exception).
+  (:func:`ensure_status_change`; ``--force -m`` records the exception).
 
 Placement rules are checked through the open :class:`WriteSession`, so several
 aliquots created by one command see each other (the embedded driver replays the
@@ -421,7 +421,7 @@ def ensure_status_change(
     )
     raise LedgerError(
         f"cannot change an aliquot of stock kind {stock_kind!r} from {old!r} to "
-        f"{new!r}: allowed next status(es): {allowed}. Pass --force --note TEXT "
+        f"{new!r}: allowed next status(es): {allowed}. Pass --force -m TEXT "
         "to record a forced exception (aliquot_event.forced = TRUE)"
     )
 
@@ -2593,22 +2593,25 @@ def set_aliquot_status(
     ref: str,
     status: str,
     *,
-    note: str | None = None,
+    message: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Change an aliquot's status, recording a ``status`` event.
 
     The change must follow the stock kind's status set (spec 4);
-    ``force=True`` overrides a transition rule, must carry a note, and records
-    ``aliquot_event.forced = TRUE`` so ``tm check`` can tell a deliberate
-    exception from a hand-made illegal row.
+    ``force=True`` overrides a transition rule, must carry a message, and
+    records ``aliquot_event.forced = TRUE`` so ``tm check`` can tell a
+    deliberate exception from a hand-made illegal row.  A given message is
+    trimmed and refused when it is empty.
     """
-    note_text = None if note is None else str(note).strip()
-    if force and not note_text:
+    message_text = None if message is None else str(message).strip()
+    if force and not message_text:
         raise UsageError(
-            "--force requires --note: record why the transition rules are "
-            "overridden"
+            "--force requires -m/--message: record why the transition rules "
+            "are overridden"
         )
+    if not force and message is not None and not message_text:
+        raise UsageError("a status message must not be empty")
     existing = _resolve_core(ledger.driver, "aliquot", ref)
     alq_id = str(existing["id"])
 
@@ -2667,7 +2670,7 @@ def set_aliquot_status(
             new_status=target_text,
             forced=force,
             actor=ledger.actor,
-            message=note_text,
+            message=message_text,
         )
         return {
             "object": "aliquot",
@@ -3313,7 +3316,7 @@ def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
     and went to (the box name next to its id), the status change, whether the
     change was forced, and who did it and why.  The reason is the shared
     ``message`` column (spec 7): the ``-m/--message`` text of a ``use``/``move``,
-    or the ``--note`` of a forced status change.  ``forced`` is a bool, so the
+    or the ``-m/--message`` of a status change.  ``forced`` is a bool, so the
     JSON record says ``true``/``false`` and not the driver's 0/1.
     """
     return {
@@ -4791,11 +4794,11 @@ class AliquotOps:
         ref: str,
         status: str,
         *,
-        note: str | None = None,
+        message: str | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
         return set_aliquot_status(
-            self.ledger, ref, status, note=note, force=force
+            self.ledger, ref, status, message=message, force=force
         )
 
     def label(self, ref: str, label: str, *, replace: bool = False) -> dict[str, Any]:

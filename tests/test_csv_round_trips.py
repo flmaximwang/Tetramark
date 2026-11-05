@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver import EmbeddedDriver
 from tetramark.driver.server import discard_server
@@ -253,9 +254,7 @@ def test_export_all_reads_every_file_in_one_batch(
 
     exported = export_csv(ledger, "all", out_dir=tmp_path / "export")
 
-    assert invoke_log == ["json"], (
-        f"export issued {len(invoke_log)} dolt processes: {invoke_log}"
-    )
+    assert_single_read_process(invoke_log)
     # Every file the preset can write is still written, in the same shape.
     assert sorted(path.name for path in exported.files) == sorted(
         [

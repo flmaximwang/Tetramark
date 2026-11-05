@@ -18,6 +18,7 @@ import pytest
 
 from tetramark.driver import Driver, EmbeddedDriver
 from tetramark.errors import LedgerError
+from support.read_asserts import assert_single_read_process
 
 #: These tests pin budgets by counting the embedded driver's ``dolt sql``
 #: processes; the opt-in server backend has no such per-statement process, so
@@ -291,7 +292,7 @@ def test_query_many_costs_one_dolt_process(
     assert results[2] == [{"n": 2}]
     assert results[3] == []
     assert results[4] == [{"note": "first"}]
-    assert calls == ["json"], calls
+    assert_single_read_process(calls)
 
     # An all-empty batch needs no CSV run, but must stay aligned and cheap.
     calls.clear()
