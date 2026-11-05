@@ -397,4 +397,4 @@ def test_a_pattern_keeps_one_read_batch(
 
     assert names(rows) == ["pUC19"]
     # One JSON batch for the rows, one CSV pass for the column names.
-    assert calls == ["json", "csv"]
+    assert calls == ["json"]

@@ -161,7 +161,7 @@ tm aliquot list                      # the tubes an experiment can use (in stock
 tm box show WFL-12-01
 tm find pZET035                      # id → alias → name/text, case-insensitive
 tm find -E '^pZET'                   # -E: case-insensitive ICU regex over the same places
-tm entity list --where 'name~(?i)^pzet'   # --where: field=value exact, field~pattern regex
+tm entity list --where 'name~(?i)^pzet'   # --where: exact, regex, inequality, ordered comparison
 tm check
 ```
 
@@ -176,8 +176,10 @@ the `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes a
 (in stock by default; `--all` includes consumed, missing and other history), `box show` prints the
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
 (exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and
-`--where` filters the entity/stock/box lists or `tm find` by `field=value` (exact) or
-`field~pattern` (ICU regex); see [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
+`--where` filters the entity/stock/box lists or `tm find` with `field=value` (exact),
+`field~pattern` (ICU regex), `field!=value`, `field!~pattern` or an ordered comparison such as
+`--where 'created_at>=2026-01-01'`; write the filter in single quotes, because `<`, `>` and `!` are
+special in the shell. See [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
 Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.

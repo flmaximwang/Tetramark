@@ -154,14 +154,19 @@ tm find -E '^pZET'           # regex: ids, aliases, names and kind text, case-in
 tm find --where 'resistance=kan'              # list every object with that field (no aliquots)
 tm entity list --where 'name~(?i)^pzet'       # filter one object type by one column
 tm stock list --where 'strain~BL21' --where 'medium=LB'   # filters AND; active stocks (--all for every status)
+tm stock list --where 'od600>=2'              # ordered comparison: OD 2 or more
+tm entity list --where 'name!~GFP'            # negation: every name without GFP
 ```
 
 Use `tm find` when you have a handle (id, alias, name or a piece of kind text); `-E` is the same
 search with a case-insensitive ICU regex. Use `--where` when you know the column and want a set:
-`=` is exact, `~` is an unanchored, case-sensitive regex search — anchor with `^`/`$`, use `(?i)` to
-ignore case. The same filters work on `tm entity|stock|box list`; `tm find --where` spans every
-object type and excludes aliquots. `tm stock list` shows active stocks by default — add `--all` for
-every status. The aliquot list's own `--where` is exact-only.
+`=` is exact, `!=` is "another value or nothing", `~` is an unanchored, case-sensitive regex search
+(anchor with `^`/`$`, use `(?i)` to ignore case), `!~` is its negation, and an ordered comparison
+such as `'od600>=2'` compares numbers, dates and text in order. `field!=` (no value) asks for
+"this field is filled in"; `field!=x` does not — it also matches the rows where the field is empty.
+The same filters work on `tm entity|stock|box list`; `tm find --where` spans every object type and
+excludes aliquots. `tm stock list` shows active stocks by default — add `--all` for every status.
+The aliquot list's own `--where` is exact-only and does not take the new operators.
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (Python `re`): a literal query with no
 hits falls back to the first rule that hits (a stderr line names the rule), and `--with-rewrite` adds

@@ -270,12 +270,13 @@ def test_default_query_keeps_an_all_null_column_while_the_opt_out_drops_it(
     rows = driver.query("SELECT NULL AS `only_null`, 1 AS `one`")
     assert rows == [{"only_null": None, "one": 1}]
     assert "only_null" in rows[0]
-    # Default: the JSON row plus the CSV header run that restores NULL columns.
-    assert calls.count == 2, calls.sql()
+    # Default: one process returns the rows and every column name (the
+    # temporary-table probe restores the NULL column).
+    assert calls.count == 1, calls.sql()
 
     calls.reset()
     rows = driver.query("SELECT NULL AS `only_null`, 1 AS `one`", fill_columns=False)
-    # Opted out: the NULL column is simply absent, and one process was saved.
+    # Opted out: the NULL column is simply absent (still one process).
     assert rows == [{"one": 1}]
     assert "only_null" not in rows[0]
     assert calls.count == 1, calls.sql()
@@ -294,7 +295,7 @@ def test_query_many_fill_columns_opt_out_is_per_batch(
 
     results = driver.query_many(statements)
     assert results == [[{"only_null": None}], [{"one": 1}]]
-    assert calls.count == 2, calls.sql()  # JSON rows + CSV headers
+    assert calls.count == 1, calls.sql()  # rows + column probes, one run
 
     calls.reset()
     results = driver.query_many(statements, fill_columns=False)
@@ -303,3 +304,71 @@ def test_query_many_fill_columns_opt_out_is_per_batch(
     assert len(results) == 2
     assert results == [[{}], [{"one": 1}]]
     assert calls.count == 1, calls.sql()
+
+
+# ---------------------------------------------------------------------------
+# The single-process column probe and its fallbacks (Tetramark-aut)
+# ---------------------------------------------------------------------------
+
+
+def test_a_probe_dolt_rejects_falls_back_to_the_csv_header_run(
+    dolt_repo: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicate column names cannot be materialised; the read still answers."""
+    driver = EmbeddedDriver(dolt_repo, env=dolt_env)
+    calls = Invocations(monkeypatch)
+
+    rows = driver.query("SELECT 1 AS `x`, NULL AS `x`, NULL AS `gone`")
+
+    # Same answer the two-process path always gave (JSON keeps one ``x``).
+    assert rows == [{"x": 1, "gone": None}]
+    assert [fmt for _sql, fmt in calls.calls] == ["json", "json", "csv"]
+
+
+def test_a_failing_read_reports_dolt_s_own_error_text(
+    dolt_repo: Path, dolt_env: dict[str, str]
+) -> None:
+    """The probe never leaks into an error: the plain query's message is raised."""
+    driver = EmbeddedDriver(dolt_repo, env=dolt_env)
+
+    with pytest.raises(LedgerError) as probed:
+        driver.query("SELECT `missing_column` FROM `no_such_table`")
+    with pytest.raises(LedgerError) as plain:
+        driver.query(
+            "SELECT `missing_column` FROM `no_such_table`", fill_columns=False
+        )
+
+    assert str(probed.value) == str(plain.value)
+    assert "tm_columns" not in str(probed.value)
+
+
+def test_a_non_select_read_keeps_the_two_process_path(
+    dolt_repo: Path, dolt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``SHOW`` cannot be a derived table, so it is never probed."""
+    driver = EmbeddedDriver(dolt_repo, env=dolt_env)
+    calls = Invocations(monkeypatch)
+
+    rows = driver.query("SHOW TABLES")
+
+    assert [fmt for _sql, fmt in calls.calls] in (["json"], ["json", "csv"])
+    assert not any("tm_columns" in sql for sql in calls.sql())
+    assert isinstance(rows, list)
+
+
+def test_the_probe_leaves_the_working_set_clean(
+    dolt_repo: Path, dolt_env: dict[str, str]
+) -> None:
+    """Temporary tables are session-only: nothing to commit afterwards."""
+    driver = EmbeddedDriver(dolt_repo, env=dolt_env)
+    driver.execute("CREATE TABLE `t` (`id` INT PRIMARY KEY, `note` TEXT)")
+    driver.execute("INSERT INTO `t` VALUES (1, NULL)")
+    driver.commit("seed")
+
+    assert driver.query("SELECT * FROM `t`") == [{"id": 1, "note": None}]
+    assert driver.query_many(
+        [("SELECT `note` FROM `t`", None), ("SELECT `id` FROM `t`", None)]
+    ) == [[{"note": None}], [{"id": 1}]]
+    assert driver.query(
+        "SELECT `table_name` FROM `dolt_status`", fill_columns=False
+    ) == []
