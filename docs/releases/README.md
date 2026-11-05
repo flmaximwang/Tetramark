@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.29](v0.8.29.md) | `v0.8.29.md` | ledger discovery ignores Dolt's global config directory and no longer suggests `tm adopt` for it |
 | [0.8.28](v0.8.28.md) | `v0.8.28.md` | `aliquot_event.message` replaces `note`/`purpose` (spec 7): the event column is renamed, `purpose` is dropped, and a 6-to-7 migration ships |
 | [0.8.27](v0.8.27.md) | `v0.8.27.md` | `tm alias add box` accepts the box's name |
 | [0.8.26](v0.8.26.md) | `v0.8.26.md` | `tm skill path`/`tm skill version` with stale-copy warnings; documented-command sweep |

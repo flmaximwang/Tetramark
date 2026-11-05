@@ -22,7 +22,8 @@ import pytest
 import yaml
 
 from tetramark.cli.app import main
-from tetramark.errors import EXIT_OK, EXIT_USAGE
+from tetramark.core import ledger as ledger_module
+from tetramark.errors import EXIT_ERROR, EXIT_OK, EXIT_USAGE
 
 WORKSPACE_FILE = "workspace.yaml"
 LEDGER_FILE = "ledger.yaml"
@@ -41,6 +42,22 @@ def make_stub_ledger(path: Path, *, name: str | None = None) -> Path:
         yaml.safe_dump({"name": name or path.name, "presets": ["base"]}),
         encoding="utf-8",
     )
+    return path
+
+
+def make_stub_bare_database(path: Path) -> Path:
+    """A bare Dolt database: ``.dolt/noms/`` and no ``ledger.yaml``."""
+    (path / ".dolt" / "noms").mkdir(parents=True)
+    return path
+
+
+def make_stub_config_only_dolt(path: Path) -> Path:
+    """Dolt's global configuration directory: ``.dolt/`` without a database."""
+    dolt = path / ".dolt"
+    (dolt / "creds").mkdir(parents=True)
+    (dolt / "eventsData").mkdir()
+    (dolt / "config_global.json").write_text('{"user": {}}\n', encoding="utf-8")
+    (dolt / "version_check.txt").write_text("1.0.0\n", encoding="utf-8")
     return path
 
 
@@ -189,8 +206,7 @@ def test_an_unformatted_database_exits_2_with_the_adopt_hint(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A bare 0.4 Dolt database (``.dolt/``, no ``ledger.yaml``) is not a ledger."""
-    bare = tmp_path / "zsqlab_05"
-    (bare / ".dolt").mkdir(parents=True)
+    bare = make_stub_bare_database(tmp_path / "zsqlab_05")
 
     code, out, err = run_cli(["-l", bare, "config", "get"], monkeypatch, capsys)
 
@@ -198,6 +214,92 @@ def test_an_unformatted_database_exits_2_with_the_adopt_hint(
     assert "is not a ledger" in err
     assert "no ledger.yaml" in err
     assert "tm adopt" in err
+
+
+@pytest.mark.fast
+def test_a_config_only_dolt_home_is_walked_past(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Dolt's global ``~/.dolt`` is no ledger: the error says "no ledger found"."""
+    home = make_stub_config_only_dolt(tmp_path / "home")
+    monkeypatch.chdir(home)
+
+    code, out, err = run_cli(["config", "get", "author"], monkeypatch, capsys)
+
+    assert code == EXIT_USAGE == 2
+    assert "no ledger found from" in err
+    assert str(home.resolve()) in err
+    assert "tm adopt" not in err
+
+
+@pytest.mark.fast
+def test_a_config_only_dolt_home_is_walked_past_from_a_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A directory below Dolt's global config dir finds no ledger either."""
+    home = make_stub_config_only_dolt(tmp_path / "home")
+    child = home / "projects" / "notes"
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+
+    code, out, err = run_cli(["config", "get", "author"], monkeypatch, capsys)
+
+    assert code == EXIT_USAGE == 2
+    assert "no ledger found from" in err
+    assert str(child.resolve()) in err
+    assert "tm adopt" not in err
+
+
+@pytest.mark.fast
+def test_an_explicit_config_only_dolt_says_it_is_the_global_config_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``tm -l ~/.dolt`` names Dolt's config directory -- without an adopt hint."""
+    home = make_stub_config_only_dolt(tmp_path / "home")
+
+    code, out, err = run_cli(["-l", home, "config", "get"], monkeypatch, capsys)
+
+    assert code == EXIT_USAGE == 2
+    assert "is not a ledger" in err
+    assert "global configuration directory" in err
+    assert str(home.resolve()) in err
+    assert "tm adopt" not in err
+    assert "tm init" in err
+
+
+@pytest.mark.fast
+def test_adopt_refuses_a_config_only_dolt_before_any_dolt_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``tm adopt ~/.dolt`` never runs ``dolt`` against the global config."""
+    home = make_stub_config_only_dolt(tmp_path / "home")
+    before = sorted(entry.name for entry in (home / ".dolt").iterdir())
+
+    def _no_driver(*args: object, **kwargs: object) -> object:
+        raise AssertionError("dolt must not be run against a config-only .dolt/")
+
+    monkeypatch.setattr(ledger_module, "driver_for", _no_driver)
+
+    code, out, err = run_cli(
+        ["adopt", home, "-p", "base", "--author", "Tester <t@example.invalid>"],
+        monkeypatch,
+        capsys,
+    )
+
+    assert code == EXIT_ERROR
+    assert "global configuration directory" in err
+    assert "tm adopt" not in err
+    # Nothing was written into the config directory.
+    assert sorted(entry.name for entry in (home / ".dolt").iterdir()) == before
+    assert not (home / LEDGER_FILE).exists()
 
 
 @pytest.mark.fast

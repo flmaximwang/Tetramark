@@ -26,6 +26,7 @@ from tetramark.driver.resolution import (
     LEDGER_FILE,
     WORKSPACE_FILE,
     LedgerRef,
+    is_dolt_database,
     is_ledger_dir,
     ledger_dir,
     ledger_name,
@@ -62,6 +63,27 @@ def make_workspace(path: Path, *, default_ledger: str | None = None) -> Path:
     (path / WORKSPACE_FILE).write_text(
         yaml.safe_dump(payload), encoding="utf-8"
     )
+    return path
+
+
+def make_bare_database(path: Path) -> Path:
+    """A stub bare Dolt database: ``.dolt/noms/`` and no ``ledger.yaml``."""
+    (path / ".dolt" / "noms").mkdir(parents=True)
+    return path
+
+
+def make_config_only_dolt(path: Path) -> Path:
+    """A stub Dolt *configuration* directory: ``.dolt/`` without a database.
+
+    This is what Dolt's global ``~/.dolt`` looks like: ``creds/``,
+    ``eventsData/``, ``config_global.json`` and ``version_check.txt``, but no
+    ``noms/`` and no ``repo_state.json``.
+    """
+    dolt = path / ".dolt"
+    (dolt / "creds").mkdir(parents=True)
+    (dolt / "eventsData").mkdir()
+    (dolt / "config_global.json").write_text('{"user": {}}\n', encoding="utf-8")
+    (dolt / "version_check.txt").write_text("1.0.0\n", encoding="utf-8")
     return path
 
 
@@ -184,13 +206,12 @@ def test_explicit_workspace_directory_gets_the_same_guard(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# P3(d): .dolt/ without ledger.yaml is not a ledger
+# P3(d): a real Dolt database without ledger.yaml is not a ledger
 # ---------------------------------------------------------------------------
 
 
 def test_dolt_without_ledger_yaml_is_not_a_ledger(tmp_path: Path) -> None:
-    bare = tmp_path / "zsqlab_05"
-    (bare / ".dolt").mkdir(parents=True)
+    bare = make_bare_database(tmp_path / "zsqlab_05")
 
     with pytest.raises(UsageError) as error:
         ledger_dir(bare)
@@ -202,13 +223,107 @@ def test_dolt_without_ledger_yaml_is_not_a_ledger(tmp_path: Path) -> None:
 
 def test_bare_database_stops_the_upward_walk(tmp_path: Path) -> None:
     """Standing in an unformatted database reports it instead of walking past."""
-    bare = tmp_path / "zsqlab_05"
-    (bare / ".dolt").mkdir(parents=True)
+    bare = make_bare_database(tmp_path / "zsqlab_05")
     inner = bare / "sub"
     inner.mkdir()
 
     with pytest.raises(UsageError, match="is not a ledger"):
         ledger_dir(cwd=inner)
+
+
+def test_a_repo_state_json_alone_is_a_bare_database(tmp_path: Path) -> None:
+    """``.dolt/repo_state.json`` is a database too -- the adopt hint stays."""
+    bare = tmp_path / "zsqlab_05"
+    (bare / ".dolt").mkdir(parents=True)
+    (bare / ".dolt" / "repo_state.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(UsageError) as error:
+        ledger_dir(bare)
+    message = str(error.value)
+    assert "is not a ledger" in message
+    assert "tm adopt" in message
+
+
+# ---------------------------------------------------------------------------
+# A config-only .dolt/ is Dolt's global configuration, not a ledger
+# ---------------------------------------------------------------------------
+
+
+def test_is_dolt_database_recognises_a_real_database(tmp_path: Path) -> None:
+    """``noms/`` and ``repo_state.json`` each count as a database."""
+    assert not is_dolt_database(tmp_path)
+
+    with_noms = make_bare_database(tmp_path / "with-noms")
+    assert is_dolt_database(with_noms)
+
+    with_state = tmp_path / "with-state"
+    (with_state / ".dolt").mkdir(parents=True)
+    (with_state / ".dolt" / "repo_state.json").write_text("{}", encoding="utf-8")
+    assert is_dolt_database(with_state)
+
+
+def test_is_dolt_database_is_false_for_a_config_only_dolt(tmp_path: Path) -> None:
+    """Dolt's global ``~/.dolt`` holds no database."""
+    config_only = make_config_only_dolt(tmp_path / "home")
+    assert not is_dolt_database(config_only)
+
+    empty = tmp_path / "empty"
+    (empty / ".dolt").mkdir(parents=True)
+    assert not is_dolt_database(empty)
+
+
+def test_the_upward_walk_steps_past_a_config_only_dolt(tmp_path: Path) -> None:
+    """Standing in Dolt's global config dir reports "no ledger found"."""
+    home = make_config_only_dolt(tmp_path / "home")
+
+    with pytest.raises(UsageError) as error:
+        ledger_dir(cwd=home)
+    message = str(error.value)
+    assert "no ledger found" in message
+    assert str(home.resolve()) in message
+    assert "tm adopt" not in message
+
+
+def test_the_upward_walk_steps_past_a_config_only_dolt_from_a_child(
+    tmp_path: Path,
+) -> None:
+    """A directory below Dolt's global config dir finds no ledger either."""
+    home = make_config_only_dolt(tmp_path / "home")
+    child = home / "projects" / "notes"
+    child.mkdir(parents=True)
+
+    with pytest.raises(UsageError) as error:
+        ledger_dir(cwd=child)
+    message = str(error.value)
+    assert "no ledger found" in message
+    assert str(child.resolve()) in message
+    assert "tm adopt" not in message
+
+
+def test_explicit_config_only_dolt_names_the_global_config_directory(
+    tmp_path: Path,
+) -> None:
+    """``-l ~/.dolt`` says what it is -- and never suggests ``tm adopt``."""
+    home = make_config_only_dolt(tmp_path / "home")
+
+    with pytest.raises(UsageError) as error:
+        ledger_dir(home)
+    message = str(error.value)
+    assert "is not a ledger" in message
+    assert "global configuration directory" in message
+    assert "tm adopt" not in message
+    assert "tm init" in message
+
+
+def test_a_ledger_with_a_config_only_dolt_is_still_a_ledger(
+    tmp_path: Path,
+) -> None:
+    """``is_ledger_dir`` is unchanged: ``.dolt/`` + ``ledger.yaml`` is a ledger."""
+    ledger = make_ledger(tmp_path / "lab")
+    (ledger / ".dolt" / "creds").mkdir()
+
+    assert is_ledger_dir(ledger)
+    assert ledger_dir(ledger) == ledger.resolve()
 
 
 # ---------------------------------------------------------------------------
