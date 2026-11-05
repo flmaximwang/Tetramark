@@ -279,8 +279,10 @@ choice, so it turns the implicit in-stock scope off; combined with `--not-in-sto
 never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
 and includes the box plus every box nested inside it; `--where FIELD=VALUE` (repeatable, AND) matches
 aliquot core columns exactly, except `status` (`--where status=…` is a usage error pointing at
-`--status`). This is the aliquot's own exact-only `--where`; the shared `field=value` / `field~pattern`
-syntax of §6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
+`--status`). An empty value (`FIELD=`) means the column is empty: `NULL` or `''` for `id`, `stock_id`,
+`box_id`, `slot`, `unit`, `label` and `notes`, and `NULL` only for `seq`, `quantity` and `created_at`.
+This is the aliquot's own exact-only `--where`; the shared `field=value` / `field~pattern` syntax of
+§6.4 applies to the entity/stock/box lists and `tm find`. The table and CSV print the narrow
 rows `id stock_kind status quantity unit label path`
 (`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
 prints without `events`, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only
@@ -511,6 +513,17 @@ is normalised. On a core column the text is compared as written: `id`, `kind`, `
 `parent_slot`) take the stored value itself, so a core `ref` such as `entity_id` takes the id, never
 an alias.
 
+`field=` (an empty value) selects the rows whose field is empty: `NULL` or `''` on a text-like
+column, and `NULL` only on a non-text column (a stored `0` never counts as empty). Text-like means
+the kind field types `string`, `text`, `enum`, `sequence` and `ref`, and every core column except
+`created_at`; non-text means the kind types `int`, `decimal`, `bool`, `date` and `datetime`, and the
+core `created_at`. The empty value
+skips the schema coercion and the alias resolution above (an empty `ref`, `enum` or `int` is not
+resolved, checked or parsed), and it does not mean the literal text `none`/`null`, which still
+compares exactly like any other value. Only the truly empty string is special: a whitespace-only
+value is not (`name=  ` compares the two spaces exactly). There is no "not empty" operator; ask for
+it with `field~.`.
+
 `field~pattern` matches the column's **text form** with a regular expression. It is a *search*, not a
 full match: unanchored, so anchor it with `^`/`$` when needed (`name~^pZET` starts with, `name~ZET`
 contains). It is case-sensitive; write `(?i)` in the pattern for case-insensitive (`name~(?i)^pzet`).
@@ -519,8 +532,9 @@ lookarounds behave as there, not exactly as in Python `re`; the ledger's `find.r
 (described below) are Python `re` patterns and do not share this dialect. The text form of an `int`, a
 `decimal`, a `date`/`datetime` or `created_at` is its printed value (`length_bp~^15`,
 `created_at~^2026-11-04`); a `ref` column, core or kind, is matched against the id it stores, never
-its aliases; `NULL` never matches, not even `field~^$`. A computed kind column can be addressed by
-`~` (its text form), while `=` applies the `--set` coercion and so refuses it.
+its aliases; `NULL` never matches a `~` pattern, not even `field~^$` (use `field=` to find empty
+values). A computed kind column can be addressed by `~` (its text form), while `=` is refused by the
+computed-field usage error, empty value included.
 
 The rules are the same everywhere:
 

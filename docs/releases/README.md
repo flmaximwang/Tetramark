@@ -18,6 +18,8 @@ automating away.
 | Version | Notes | What changed |
 |---|---|---|
 | [0.8.25](v0.8.25.md) | `v0.8.25.md` | shipped skills carry the package version, visible and agreed by the release check; primary skill back within 150 lines |
+| [0.8.24](v0.8.24.md) | `v0.8.24.md` | docs only: `--where FIELD=` empty-field semantics in spec §6.4, the aliquot `--where` paragraph, the filters docstring, the skill reference, `SKILL.md` and the five `--where` help strings; no behaviour change |
+| [0.8.23](v0.8.23.md) | `v0.8.23.md` | `tm aliquot list --where FIELD=` matches empty fields (NULL/''; NULL only for seq/quantity/created_at); `{"f": None}` facade mapping fix |
 | [0.8.22](v0.8.22.md) | `v0.8.22.md` | `--where FIELD=` matches empty fields (NULL/''; NULL only for non-text); `{"f": None}` mapping fix |
 | [0.8.19](v0.8.19.md) | `v0.8.19.md` | test harness only: per-query oracle restored; no user-visible change |
 | [0.8.4](v0.8.4.md) | `v0.8.4.md` | `tm aliquot show` carries the tube's events; `tm aliquot label` |
