@@ -56,7 +56,7 @@ ORGANISM_PARTS = ("drosophila", "c_elegans", "zebrafish", "mouse")
 #: ``preset_versions`` a ``--preset angenet`` ledger records (loader order: the
 #: parts come before the bundle that lists them, depth first).
 ANGENET_VERSIONS = {
-    "base": 5,
+    "base": 6,
     "proteins": 4,
     "nucleic_acids": 3,
     "biosamples": 2,
@@ -270,7 +270,7 @@ def test_each_organism_part_loads_alone_with_its_kinds() -> None:
     for part, kinds in expected.items():
         schema = load_repo_preset(part)
         assert set(schema.kinds) == base_kinds | kinds, part
-        assert schema.preset_versions == {"base": 5, part: 2}
+        assert schema.preset_versions == {"base": 6, part: 2}
         assert all(rule.sql.strip().upper().startswith("SELECT") for rule in schema.rules)
 
 

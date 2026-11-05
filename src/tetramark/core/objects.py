@@ -1073,32 +1073,35 @@ def _check_aliquot_placement(
             raise LedgerError(
                 f"box {label!r} has slots: every stored aliquot needs --slot"
             )
-        exists = session.query(
-            f"SELECT {_quote('label')} FROM {_quote('slot')} "
-            f"WHERE {_quote('box_id')} = %s AND {_quote('label')} = %s",
-            (box_id, text),
-        )
-        if not exists:
+        # One read for the three facts (one ``dolt sql`` process on the
+        # embedded driver instead of three).  Every column is NOT NULL, so no
+        # column-name run is needed.
+        excluded = ""
+        params: list[Any] = [box_id, text, box_id, text, box_id, text]
+        if exclude_aliquot is not None:
+            excluded = f" AND {_quote('id')} <> %s"
+            params.append(exclude_aliquot)
+        facts = session.query(
+            f"SELECT (SELECT COUNT(*) FROM {_quote('slot')} "
+            f"WHERE {_quote('box_id')} = %s AND {_quote('label')} = %s) "
+            f"AS {_quote('slots')}, "
+            f"COALESCE((SELECT MIN({_quote('id')}) FROM {_quote('box')} "
+            f"WHERE {_quote('parent_box_id')} = %s AND {_quote('parent_slot')} = %s), "
+            f"'') AS {_quote('child')}, "
+            f"(SELECT COUNT(*) FROM {_quote('aliquot')} "
+            f"WHERE {_quote('box_id')} = %s AND {_quote('slot')} = %s{excluded}) "
+            f"AS {_quote('n')}",
+            tuple(params),
+            fill_columns=False,
+        )[0]
+        if not int(facts["slots"]):
             raise LedgerError(f"box {label!r} has no slot {text!r}")
-        child = session.query(
-            f"SELECT {_quote('id')} FROM {_quote('box')} "
-            f"WHERE {_quote('parent_box_id')} = %s AND {_quote('parent_slot')} = %s",
-            (box_id, text),
-        )
-        if child:
+        if facts["child"]:
             raise LedgerError(
                 f"slot {text!r} in box {label!r} is occupied by child box "
-                f"{child[0]['id']!r}"
+                f"{facts['child']!r}"
             )
-        sql = (
-            f"SELECT COUNT(*) AS {_quote('n')} FROM {_quote('aliquot')} "
-            f"WHERE {_quote('box_id')} = %s AND {_quote('slot')} = %s"
-        )
-        params: list[Any] = [box_id, text]
-        if exclude_aliquot is not None:
-            sql += f" AND {_quote('id')} <> %s"
-            params.append(exclude_aliquot)
-        used = int(session.query(sql, tuple(params))[0]["n"])
+        used = int(facts["n"])
         if used >= box_kind.slot_capacity:
             raise LedgerError(
                 f"slot {text!r} in box {label!r} is full "
@@ -1110,20 +1113,19 @@ def _check_aliquot_placement(
         raise LedgerError(f"box {label!r} has no slots; omit --slot")
     capacity = geometry.capacity
     if capacity is not None:
-        sql = (
-            f"SELECT COUNT(*) AS {_quote('n')} FROM {_quote('aliquot')} "
-            f"WHERE {_quote('box_id')} = %s"
-        )
-        params = [box_id]
+        excluded = ""
+        params = [box_id, box_id]
         if exclude_aliquot is not None:
-            sql += f" AND {_quote('id')} <> %s"
-            params.append(exclude_aliquot)
-        used = int(session.query(sql, tuple(params))[0]["n"])
-        used += int(
+            excluded = f" AND {_quote('id')} <> %s"
+            params.insert(1, exclude_aliquot)
+        used = int(
             session.query(
-                f"SELECT COUNT(*) AS {_quote('n')} FROM {_quote('box')} "
-                f"WHERE {_quote('parent_box_id')} = %s",
-                (box_id,),
+                f"SELECT (SELECT COUNT(*) FROM {_quote('aliquot')} "
+                f"WHERE {_quote('box_id')} = %s{excluded}) + "
+                f"(SELECT COUNT(*) FROM {_quote('box')} "
+                f"WHERE {_quote('parent_box_id')} = %s) AS {_quote('n')}",
+                tuple(params),
+                fill_columns=False,
             )[0]["n"]
         )
         if used >= capacity:
@@ -1638,6 +1640,8 @@ def _list_records(
             empty=lambda field, expression: empty_condition(
                 kind, field, expression
             ),
+            kind=kind,
+            option="--where",
         )
         if column_sql is not None:
             select_items = [

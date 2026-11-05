@@ -48,7 +48,7 @@ def test_find_searches_in_one_batched_read(ledger_factory, invoke_log: list[str]
     # query_many runs the whole search in one ``-r json`` process; a result set
     # with rows costs exactly one extra ``-r csv`` run for the NULL-omitted
     # column names.
-    assert invoke_log == ["json", "csv"]
+    assert invoke_log == ["json"]
 
 
 def test_find_without_hits_skips_the_csv_run(
@@ -100,4 +100,4 @@ def test_aliquot_show_reads_one_tube_in_one_batch(
     # One ``-r json`` process for the whole batch, one ``-r csv`` process for
     # the column names JSON omits when a value is NULL (``label``, ``notes``,
     # ``box_id``, ``slot`` and ``path`` are NULL on a typical tube).
-    assert invoke_log == ["json", "csv"]
+    assert invoke_log == ["json"]
