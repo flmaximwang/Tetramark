@@ -313,6 +313,47 @@ def list_aliquots_command(
         ledger.close()
 
 
+@aliquot_app.command("edit")
+@write_command
+def edit_aliquot_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Aliquot id or alias."),
+    set_values: list[str] = typer.Option(
+        [], "--set", "-s", help="Field value as field=value; repeat for more fields."
+    ),
+    message: str | None = typer.Option(
+        None,
+        "-m",
+        "--message",
+        help="Why the current value was corrected; trimmed and stored on the edit event.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
+) -> None:
+    """Correct quantity, unit, notes or created_at; other columns have their own commands.
+
+    An edit corrects the stored value, not history: the create/use/move events
+    keep what really happened, and a corrected quantity is the *remaining*
+    amount.  ``quantity`` must be finite and greater than 0 (``tm aliquot use``
+    records consumption), quantity and unit must end up both set or both empty,
+    and ``created_at`` is an ISO datetime that cannot be cleared.  ``label``,
+    ``status``, ``box_id``/``slot`` and the identity columns ``id``/``stock_id``/
+    ``seq`` are refused with the command that owns them.  One edit is one Dolt
+    commit and appends one ``edit`` event whose message is the field summary
+    plus ``; reason: <MSG>`` when ``-m`` is given.
+    """
+    ledger = resolve_ledger(ctx)
+    try:
+        result = ledger.aliquots.edit(ref, values=set_values, message=message)
+        emit_write(
+            ledger,
+            result,
+            f"Edited aliquot {result['id']}: {result['changes']}",
+            as_json=json_output(ctx, as_json),
+        )
+    finally:
+        ledger.close()
+
+
 @aliquot_app.command("move")
 @write_command
 def move_aliquot_command(

@@ -97,6 +97,7 @@ __all__ = [
     "add_stock",
     "box_kind_columns",
     "box_kind_from",
+    "edit_aliquot",
     "edit_box",
     "edit_entity",
     "edit_stock",
@@ -2448,6 +2449,67 @@ def list_stocks(
 # Aliquots
 # ---------------------------------------------------------------------------
 
+#: The columns of the core ``aliquot`` row, in DDL order.  An edit accepts
+#: every column in this list unless :data:`_ALIQUOT_EDIT_REFUSED` says another
+#: command owns it: the refusal map is the rule and this list is the default,
+#: so a new column added here is editable without a second allowlist to grow.
+_ALIQUOT_COLUMNS: tuple[str, ...] = (
+    "id",
+    "stock_id",
+    "seq",
+    "box_id",
+    "slot",
+    "status",
+    "quantity",
+    "unit",
+    "label",
+    "created_at",
+    "notes",
+)
+
+#: Aliquot columns ``tm aliquot edit`` refuses, with the command that owns
+#: the change.  Identity is not data (an aliquot id is ``<stock_id>.<seq>``),
+#: a label also keeps the old label as an alias, a status follows the stock
+#: kind's transition rules, and a position is a physical move.  ``{ref}`` is
+#: the ref the user typed, so the remedy command is copy-pasteable.
+_ALIQUOT_EDIT_REFUSED: dict[str, str] = {
+    "id": (
+        "id is identity data and cannot be edited: an aliquot id is "
+        "<stock_id>.<seq>, so add a new aliquot instead"
+    ),
+    "stock_id": (
+        "stock_id is identity data and cannot be edited: an aliquot id is "
+        "<stock_id>.<seq>"
+    ),
+    "seq": (
+        "seq is identity data and cannot be edited: an aliquot id is "
+        "<stock_id>.<seq>"
+    ),
+    "label": (
+        "label cannot be edited here: set it with 'tm aliquot label {ref} "
+        "LABEL [--replace]' (the old label is kept as an alias)"
+    ),
+    "status": (
+        "status cannot be edited here: change it with 'tm aliquot status "
+        "{ref} NEW [--force -m MSG]'"
+    ),
+    "box_id": (
+        "box_id is placement, not data: move the tube with 'tm aliquot move "
+        "{ref} --box NAME [--slot S] -m MSG'"
+    ),
+    "slot": (
+        "slot is placement, not data: move the tube with 'tm aliquot move "
+        "{ref} --box NAME [--slot S] -m MSG'"
+    ),
+}
+
+#: The columns a ``tm aliquot edit`` may write: everything no other command
+#: owns.  Derived, never written out: the blacklist above is the rule, and an
+#: unrefused column is editable by default (the user's requirement).
+_ALIQUOT_EDITABLE: frozenset[str] = frozenset(_ALIQUOT_COLUMNS) - frozenset(
+    _ALIQUOT_EDIT_REFUSED
+)
+
 
 def add_aliquots(
     ledger: Ledger,
@@ -2920,6 +2982,282 @@ def set_aliquot_label(
         "old_label": old_label or None,
         "aliases": aliases,
     }
+
+
+def _check_aliquot_edit_fields(ref: str, raw: Mapping[str, str]) -> None:
+    """Refuse unknown columns and the columns another command owns.
+
+    The check runs on the raw ``--set`` keys, before the tube is even read, so
+    a typo or a label/status/placement attempt never needs a database lookup.
+    The unknown-field error lists :data:`_ALIQUOT_EDITABLE`, which grows on its
+    own when a column is added to :data:`_ALIQUOT_COLUMNS` and not refused.
+    """
+    unknown = sorted(set(raw) - set(_ALIQUOT_COLUMNS))
+    if unknown:
+        editable = ", ".join(sorted(_ALIQUOT_EDITABLE))
+        raise UsageError(
+            f"unknown field(s) {', '.join(repr(name) for name in unknown)} "
+            f"for aliquot; editable fields: {editable}"
+        )
+    for field in raw:
+        refused = _ALIQUOT_EDIT_REFUSED.get(field)
+        if refused is not None:
+            raise UsageError(refused.format(ref=ref))
+
+
+def _parse_aliquot_quantity(text: str, ref: str) -> Decimal | None:
+    """Parse ``--set quantity=``: "" clears, otherwise a finite number > 0.
+
+    Zero is the one value that means a deliberate consumption rather than a
+    correction, so it gets the ``tm aliquot use`` remedy instead of the generic
+    positive-number text.
+    """
+    if text == "":
+        return None
+    try:
+        amount = Decimal(text.strip())
+    except (InvalidOperation, ValueError):
+        raise UsageError(
+            f"quantity must be a decimal number (got {text!r})"
+        ) from None
+    if not amount.is_finite():
+        raise UsageError(f"quantity must be a finite number (got {text!r})")
+    if amount == 0:
+        raise UsageError(
+            "quantity must be greater than 0: record consumption with "
+            f"'tm aliquot use {ref} AMOUNT UNIT -m MSG'"
+        )
+    if amount < 0:
+        raise UsageError(f"quantity must be a positive number (got {text!r})")
+    return amount
+
+
+def _parse_aliquot_unit(text: str) -> str | None:
+    """Parse ``--set unit=``: "" clears, otherwise trimmed text of 1..32 chars."""
+    if text == "":
+        return None
+    unit = text.strip()
+    if not unit:
+        raise UsageError("unit must not be empty")
+    if len(unit) > 32:
+        raise UsageError("unit must be at most 32 characters")
+    return unit
+
+
+def _parse_aliquot_created_at(text: str) -> _dt.datetime:
+    """Parse ``--set created_at=`` like :mod:`tetramark.ops.io_csv` parses one.
+
+    The column is ``DATETIME NOT NULL``: an empty value has no meaning, and a
+    time zone cannot be stored in it, so both are refused rather than silently
+    normalised (an edit must write exactly what the user asked for).
+    """
+    if text == "":
+        raise UsageError(
+            "created_at cannot be cleared: aliquot.created_at is NOT NULL"
+        )
+    prepared = text.strip().replace("T", " ")
+    try:
+        parsed = _dt.datetime.fromisoformat(prepared)
+    except ValueError:
+        raise UsageError(
+            "created_at must be an ISO datetime like 2026-06-24 12:34:56 "
+            f"(got {text!r})"
+        ) from None
+    if parsed.tzinfo is not None:
+        raise UsageError(
+            "created_at must not carry a time zone: aliquot.created_at is a "
+            f"DATETIME without one (got {text!r})"
+        )
+    return parsed
+
+
+def _aliquot_edit_values(
+    row: Mapping[str, Any], raw: Mapping[str, str], ref: str
+) -> dict[str, Any]:
+    """The editable columns after applying ``--set``, validated as one record.
+
+    The untouched columns keep the row's current values; a touched column is
+    coerced by its own rule, while ``notes`` (and any future unrefused column)
+    takes the text as given.  Nothing is written here: the caller compares the
+    result with the row only after every rule has passed.
+    """
+    values = {
+        field: row.get(field)
+        for field in _ALIQUOT_COLUMNS
+        if field in _ALIQUOT_EDITABLE
+    }
+    for field in _ALIQUOT_COLUMNS:
+        if field not in _ALIQUOT_EDITABLE or field not in raw:
+            continue
+        text = raw[field]
+        if field == "quantity":
+            values[field] = _parse_aliquot_quantity(text, ref)
+        elif field == "unit":
+            values[field] = _parse_aliquot_unit(text)
+        elif field == "created_at":
+            values[field] = _parse_aliquot_created_at(text)
+        else:
+            # ``notes`` and any future editable column: arbitrary text, and an
+            # exactly empty value clears the nullable column to NULL.  A
+            # whitespace-only value is not empty and is kept as given.
+            values[field] = None if text == "" else text
+    return values
+
+
+def _check_aliquot_edit_pairing(values: Mapping[str, Any]) -> None:
+    """Enforce the final quantity/unit pair after merging this edit.
+
+    The pair is a property of the stored record, not of one ``--set``: a
+    quantity may be corrected without repeating its unit, but either value
+    alone cannot be read, so both must end up set or both empty.
+    """
+    quantity = values["quantity"]
+    unit = values["unit"]
+    if (quantity is None) == (unit is None):
+        return
+    if quantity is not None:
+        raise UsageError(
+            "quantity and unit must be given together: add --set unit=UNIT "
+            f"to pair with quantity {plain_decimal(quantity)}"
+        )
+    raise UsageError(
+        "quantity and unit must be given together: add --set quantity=AMOUNT "
+        "to pair with the unit, or clear both with --set quantity= --set unit="
+    )
+
+
+def _aliquot_decimal(value: Any) -> Decimal | None:
+    """A stored quantity as a :class:`Decimal` (the driver may return text)."""
+    return None if value is None else Decimal(str(value).strip())
+
+
+def _aliquot_created_at(value: Any) -> Any:
+    """A stored ``created_at`` as a datetime (the driver may return text)."""
+    if isinstance(value, _dt.datetime):
+        return value
+    try:
+        return _dt.datetime.fromisoformat(str(value).strip().replace("T", " "))
+    except ValueError:
+        return value
+
+
+def _aliquot_values_equal(field: str, old: Any, new: Any) -> bool:
+    """Whether a column would keep its stored value, type-normalised."""
+    if field == "quantity":
+        return _aliquot_decimal(old) == _aliquot_decimal(new)
+    if field == "created_at":
+        return _aliquot_created_at(old) == _aliquot_created_at(new)
+    return old == new
+
+
+def _aliquot_change_value(field: str, value: Any) -> str:
+    """One side of a change summary; NULL reads as ``(none)``."""
+    if value is None:
+        return "(none)"
+    if field == "quantity":
+        return plain_decimal(value)
+    if field == "created_at":
+        parsed = _aliquot_created_at(value)
+        if isinstance(parsed, _dt.datetime):
+            return parsed.isoformat(sep=" ")
+        return str(parsed)
+    return str(value)
+
+
+def _aliquot_changes_text(changes: Sequence[tuple[str, Any, Any]]) -> str:
+    """The edit event's summary, in column order.
+
+    A note's text can be long (or empty), so its summary is just
+    ``notes changed``; every other column names both values, e.g.
+    ``quantity 500 -> 600; unit ul -> ml``.  Numbers use
+    :func:`plain_decimal` because the column stores ``DECIMAL(18,6)``.
+    """
+    parts: list[str] = []
+    for field, old, new in changes:
+        if field == "notes":
+            parts.append("notes changed")
+            continue
+        parts.append(
+            f"{field} {_aliquot_change_value(field, old)} -> "
+            f"{_aliquot_change_value(field, new)}"
+        )
+    return "; ".join(parts)
+
+
+def edit_aliquot(
+    ledger: Ledger,
+    ref: str,
+    *,
+    values: Iterable[str] | Mapping[str, Any] | None = (),
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Correct the current values of one aliquot, recording an ``edit`` event.
+
+    This is for a wrong entry, not for a physical action: it changes the row's
+    current quantity/unit/notes/created_at and leaves every earlier event in
+    place, so a ``use`` after an ``add`` still says what was consumed.  A
+    quantity correction is the *remaining* amount, never a recount of past
+    consumption.
+
+    The editable set is :data:`_ALIQUOT_EDITABLE` (the columns no other
+    command owns); a refused column names its own command.  Validation happens
+    after merging ``values`` into the row, so correcting only the quantity of
+    a paired row is fine while a record that would end with one of the pair
+    missing is refused.  An edit that changes nothing is a usage error.
+
+    Everything runs in one write session: one ``UPDATE``, one ``edit`` event
+    (its amount/unit/position/status columns stay NULL -- a corrected quantity
+    must not read as consumption) and one Dolt commit.  ``message`` is the
+    optional reason; trimmed, it is appended to the summary stored in
+    ``aliquot_event.message``.  ``--dry-run`` buffers the write and the
+    returned record already carries the new values.
+    """
+    raw = _parse_pairs(values)
+    if not raw:
+        raise UsageError("nothing to edit: pass at least one --set field=value")
+    _check_aliquot_edit_fields(ref, raw)
+    message_text = None if message is None else str(message).strip()
+    if message is not None and not message_text:
+        raise UsageError("an edit message must not be empty")
+    existing = _resolve_aliquot(ledger.driver, ref)
+    alq_id = str(existing["id"])
+
+    with ledger.write(f"aliquot {alq_id}", verb="edit", object="aliquot") as session:
+        row = _resolve_aliquot(session, alq_id)
+        final = _aliquot_edit_values(row, raw, ref)
+        _check_aliquot_edit_pairing(final)
+        changes: list[tuple[str, Any, Any]] = []
+        updates: dict[str, Any] = {}
+        for field in _ALIQUOT_COLUMNS:
+            if field not in _ALIQUOT_EDITABLE:
+                continue
+            old = row.get(field)
+            new = final[field]
+            if _aliquot_values_equal(field, old, new):
+                continue
+            changes.append((field, old, new))
+            updates[field] = new
+        if not updates:
+            raise UsageError(
+                f"nothing to change: aliquot {alq_id} already has those values"
+            )
+        changes_text = _aliquot_changes_text(changes)
+        _update(session, "aliquot", {"id": alq_id}, updates)
+        event_message = changes_text
+        if message_text:
+            event_message = f"{changes_text}; reason: {message_text}"
+        record_event(
+            session,
+            aliquot_id=alq_id,
+            event="edit",
+            actor=ledger.actor,
+            message=event_message,
+        )
+        record = _load_record(session, ledger, "aliquot", alq_id)
+    # A dry run buffers the UPDATE; report the values it would write.
+    record.update(updates)
+    record["changes"] = changes_text
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -5010,6 +5348,15 @@ class AliquotOps:
             all_statuses=all_statuses,
             where=where,
         )
+
+    def edit(
+        self,
+        ref: str,
+        *,
+        values: Iterable[str] | Mapping[str, Any] | None = (),
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        return edit_aliquot(self.ledger, ref, values=values, message=message)
 
     def move(
         self,

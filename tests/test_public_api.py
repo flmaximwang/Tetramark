@@ -106,6 +106,21 @@ def test_aliquots_status_takes_an_optional_message_and_no_note() -> None:
     assert "note" not in parameters
 
 
+@pytest.mark.fast
+def test_aliquots_edit_takes_set_values_and_an_optional_message() -> None:
+    """``ledger.aliquots.edit(ref, *, values=(), message=None)``."""
+    from tetramark.core.objects import AliquotOps
+
+    signature = inspect.signature(AliquotOps.edit)
+    parameters = signature.parameters
+    assert list(parameters) == ["self", "ref", "values", "message"]
+    # --set fields are the repeated keyword-only VALUES; the reason is optional.
+    assert parameters["values"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["values"].default == ()
+    assert parameters["message"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["message"].default is None
+
+
 # ---------------------------------------------------------------------------
 # Behaviour on a real ledger
 # ---------------------------------------------------------------------------
