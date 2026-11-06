@@ -32,6 +32,13 @@
   "object": "aliquot",
   "path": "Freezer-1/Shelf-2/Box:A3",
   "quantity": "100.000000",
+  "related": {
+    "entity": {
+      "id": "<entity-id>",
+      "kind": "item",
+      "name": "alpha"
+    }
+  },
   "seq": 1,
   "slot": "A3",
   "status": "stored",

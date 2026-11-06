@@ -32,6 +32,13 @@
   "object": "aliquot",
   "path": null,
   "quantity": "50.000000",
+  "related": {
+    "entity": {
+      "id": "<entity-id>",
+      "kind": "item",
+      "name": "beta"
+    }
+  },
   "seq": 1,
   "slot": null,
   "status": "pending",
