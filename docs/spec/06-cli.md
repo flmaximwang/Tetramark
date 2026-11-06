@@ -311,6 +311,80 @@ and an `aliases:` line when it has aliases. Every card keeps the rounded border;
 follows the status. `--json` keeps the enriched rows
 in the record; `--format csv` stays the machine form, and the tabular tube view is `tm aliquot list`.
 
+#### Planned: related objects in show (Tetramark-obv)
+
+**Status: agreed specification, not implemented.** Implementation requires the user's explicit
+instruction to start. This section defines the target behavior for `stock show` and `aliquot show`;
+existing descriptions above describe the current output until the implementation lands. No ledger
+schema, `spec_version`, or per-kind view change is required.
+
+Both commands preserve their existing field blocks and core id keys. Related information appears
+only in plain text lines starting at column zero with `* ` (outside Rich tables), and in an additive
+JSON `related` object. Neither command adds a top-level `entity_name` field. CSV remains byte-for-byte
+compatible with its existing output: exclude the new `related` object and add no columns or lines.
+
+For `stock show`, output order is field block → related lines → `aliquots  N` → existing cards.
+The related lines are ordered entity, parent stock, source aliquot:
+
+```text
+* entity          plasmid · pUC19
+* parent stock    bacterial_glycerol · 745b8daa (pUC19)
+* source aliquot  <full-stock-id>.1 · stored · bacterial_glycerol of pUC19
+```
+
+Use eight-character UUID prefixes as in the list display; aliquot ids remain full `<stock>.<seq>`
+values. A NULL optional reference omits its entire text line and has JSON value `null`.
+Resolve each parent stock's own entity and each source aliquot's owning stock and entity; never
+substitute the displayed child stock's entity. The JSON shape for resolved references is:
+
+```json
+{
+  "related": {
+    "entity": {"id": "…", "kind": "plasmid", "name": "pUC19"},
+    "parent_stock": {
+      "id": "…", "kind": "bacterial_glycerol",
+      "entity_id": "…", "entity_name": "pUC19", "entity_missing": false
+    },
+    "source_aliquot": {
+      "id": "….1", "seq": 1, "status": "stored", "stock_kind": "bacterial_glycerol",
+      "entity_id": "…", "entity_name": "pUC19", "entity_missing": false
+    }
+  }
+}
+```
+
+For `aliquot show`, resolve only aliquot → owning stock → that stock's entity; do not recursively
+expand parent stocks, source aliquots or other ancestors. Output order is field block → `* entity`
+line → existing optional `path:` line → existing events section. JSON adds
+`related.entity: {id, kind, name}`, retaining `entity_id`, `stock_kind` and all other existing keys.
+
+Missing-data rules apply to both commands:
+
+- An existing entity with no name displays `kind · <short entity id> (unnamed)`; its JSON `name`
+  is `null`. A missing entity displays `<entity id> (missing)` and is represented by
+  `{"id": "…", "missing": true}` in `related.entity`.
+- If a parent stock or source aliquot itself is missing, its related value is
+  `{"id": "…", "missing": true}` and its text line displays `<id> (missing)`.
+- If that related object exists but its entity has no name or is missing, preserve the object's
+  other details and mark only the entity part as `(unnamed)` or `(missing)`. Its JSON retains
+  `entity_id`, sets `entity_name: null`, and uses `entity_missing: false` for an unnamed existing
+  entity or `true` for a missing entity. Do not mark the whole related object as missing.
+- Missing references do not make an otherwise successful show fail (exit 0).
+- In related text lines, replace actual control characters such as newline, carriage return and
+  tab with the literal separator ` | `, rather than visible backslash escape sequences. Preserve
+  ordinary spaces, punctuation and Unicode text. JSON retains original values; CSV is unchanged.
+
+Read cost is bounded: stock show uses its existing batch plus at most one `query_many` batch for
+all related lookups, independent of the number of tubes. Aliquot show resolves its entity in the
+existing query batch. Do not issue a separate query for every reference.
+
+Acceptance covers both core records and CLI output: cross-entity parents and cross-stock source
+aliquots, NULL references, unnamed and missing entities, missing related objects, exact line
+prefix/order, control-character replacement, additive JSON, unchanged CSV, and bounded read batches.
+Implementation must update CLI help/docstrings and skill command documentation, adjust the aliquot
+JSON goldens where necessary, and pass the fast lane and full suite within the existing 300-second
+full-suite budget. No test-budget relaxation is part of this change.
+
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
 show <stock>` answers `<stock> is a stock; try tm stock show <stock>`, and `tm stock show
 <aliquot>` answers `<aliquot> is an aliquot; try tm aliquot show <aliquot>`. Both use the same
