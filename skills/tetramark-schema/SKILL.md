@@ -1,12 +1,12 @@
 ---
 name: tetramark-schema
 description: Use when writing or changing a Tetramark schema — authoring presets, mixins, kinds, fields, box geometry or validation rules, adding a local kind, running schema plan/apply, or doing a destructive migration (rename/drop/type change/tightening). Triggers include 建库, 预设, 字段, 盒型, 规则, 改结构, 迁移.
-version: "0.8.41"
+version: "0.8.42"
 spec: "02-schema-language"
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
-> Tetramark 0.8.41 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.42 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Authoring Tetramark schemas
 

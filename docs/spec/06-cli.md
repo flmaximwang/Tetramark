@@ -266,19 +266,22 @@ data as `alias_list` / `occupant_alias_list` (§3).
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
-`notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the
-tube's `box_id` and `slot`, the `path` read from `v_aliquot_location` (§3,
-`Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly when the status is
-`stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the tube has none). Each
-event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`,
+`notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the owning
+entity as `related.entity` (below), the tube's `box_id` and `slot`, the `path` read from
+`v_aliquot_location` (§3, `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly
+when the status is `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the
+tube has none). Each event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`,
 `from_box_resolved`, `from_slot`, `to_box_id`, `to_box`, `to_box_resolved`, `to_slot`,
 `old_status`, `new_status`, `forced` (a bool), `actor` and `message`; `from_box`/`to_box` are the
 live box name, else the stored id, and `from_box_resolved`/`to_box_resolved` say which (`true` for
-a live box row, `false` otherwise, `null` when the side has no box id). Event lines follow §6.6. `events` is not a key/value row: text output prints the field block, then the `path:` line
-(when the tube has a position), then `events  N` (two spaces before the count) and one line per
-event, oldest first, rendered by the same `event_line` helper `tm history` uses. `--json` prints
-the whole record, events included; `--format csv` stays the flat single-row record and drops
-`events` (event rows are `tm history ALQ --format csv`). The Dolt commits stay in `tm history`:
+a live box row, `false` otherwise, `null` when the side has no box id). Event lines follow §6.6.
+`events` is not a key/value row: text output prints the field block, then the `* entity` related
+line, then the `path:` line (when the tube has a position), then `events  N` (two spaces before the
+count) and one line per event, oldest first, rendered by the same `event_line` helper `tm history`
+uses. `related.entity` holds `{id, kind, name}`, or `{id, missing: true}` when the entity row is
+gone. `--json` prints the whole record, related and events included; `--format csv` stays the flat
+single-row record and drops `related` and `events`, keeping exactly its previous columns (event
+rows are `tm history ALQ --format csv`). The Dolt commits stay in `tm history`:
 show carries events only. A tube that is not in stock has `box_id`, `slot` and `path` NULL. The
 stock kind's own fields stay in `tm stock show`. The command is read-only and changes no ledger
 format — `spec_version` is untouched.
@@ -304,86 +307,46 @@ and changes no ledger format — `spec_version` is untouched.
 `tm stock show` embeds the stock's tubes. Each row carries `id`, `seq`, `status`, `quantity`, `unit`,
 `label`, `box_id`, `slot`, the slot-inclusive `path` (`NULL` when the tube is not in stock), the
 sorted `aliases` and the derived `in_stock`; the rows, paths and aliases ride in the same read batch
-as the stock. Text output prints the stock's field block, then `aliquots  N` and the tube **cards**,
-flowing left to right and wrapping at the console width: the title is `<id> · <status>` (coloured by
-status), then the quantity/unit, a `label:` line when the tube has one, the path or `not in stock`,
-and an `aliases:` line when it has aliases. Every card keeps the rounded border; only its colour
-follows the status. `--json` keeps the enriched rows
-in the record; `--format csv` stays the machine form, and the tabular tube view is `tm aliquot list`.
+as the stock. Text output prints the stock's field block, then its related lines (entity, parent
+stock, source aliquot, in that order), then `aliquots  N` and the tube **cards**, flowing left to
+right and wrapping at the console width: the title is `<id> · <status>` (coloured by status), then
+the quantity/unit, a `label:` line when the tube has one, the path or `not in stock`, and an
+`aliases:` line when it has aliases. Every card keeps the rounded border; only its colour follows
+the status. `--json` keeps the enriched rows in the record and adds a `related` object holding
+`entity: {id, kind, name}`, `parent_stock: {id, kind, entity_id, entity_name, entity_missing}` and
+`source_aliquot: {id, seq, status, stock_kind, entity_id, entity_name, entity_missing}`; a NULL
+optional reference is `null`, a deleted one is `{id, missing: true}`. `--format csv` stays the
+machine form and drops `related`, keeping exactly its previous columns; the tabular tube view is
+`tm aliquot list`.
 
-#### Planned: related objects in show (Tetramark-obv)
-
-**Status: agreed specification, not implemented.** Implementation requires the user's explicit
-instruction to start. This section defines the target behavior for `stock show` and `aliquot show`;
-existing descriptions above describe the current output until the implementation lands. No ledger
-schema, `spec_version`, or per-kind view change is required.
-
-Both commands preserve their existing field blocks and core id keys. Related information appears
-only in plain text lines starting at column zero with `* ` (outside Rich tables), and in an additive
-JSON `related` object. Neither command adds a top-level `entity_name` field. CSV remains byte-for-byte
-compatible with its existing output: exclude the new `related` object and add no columns or lines.
-
-For `stock show`, output order is field block → related lines → `aliquots  N` → existing cards.
-The related lines are ordered entity, parent stock, source aliquot:
+**Related-object lines.** Both commands print related objects as plain text lines outside the rich
+tables, starting at column zero with `* ` and the label padded to a 14-character column, so every
+value starts at column 18:
 
 ```text
 * entity          plasmid · pUC19
 * parent stock    bacterial_glycerol · 745b8daa (pUC19)
-* source aliquot  <full-stock-id>.1 · stored · bacterial_glycerol of pUC19
+* source aliquot  <full aliquot id> · stored · bacterial_glycerol of pUC19
 ```
 
-Use eight-character UUID prefixes as in the list display; aliquot ids remain full `<stock>.<seq>`
-values. A NULL optional reference omits its entire text line and has JSON value `null`.
-Resolve each parent stock's own entity and each source aliquot's owning stock and entity; never
-substitute the displayed child stock's entity. The JSON shape for resolved references is:
-
-```json
-{
-  "related": {
-    "entity": {"id": "…", "kind": "plasmid", "name": "pUC19"},
-    "parent_stock": {
-      "id": "…", "kind": "bacterial_glycerol",
-      "entity_id": "…", "entity_name": "pUC19", "entity_missing": false
-    },
-    "source_aliquot": {
-      "id": "….1", "seq": 1, "status": "stored", "stock_kind": "bacterial_glycerol",
-      "entity_id": "…", "entity_name": "pUC19", "entity_missing": false
-    }
-  }
-}
-```
-
-For `aliquot show`, resolve only aliquot → owning stock → that stock's entity; do not recursively
-expand parent stocks, source aliquots or other ancestors. Output order is field block → `* entity`
-line → existing optional `path:` line → existing events section. JSON adds
-`related.entity: {id, kind, name}`, retaining `entity_id`, `stock_kind` and all other existing keys.
-
-Missing-data rules apply to both commands:
-
-- An existing entity with no name displays `kind · <short entity id> (unnamed)`; its JSON `name`
-  is `null`. A missing entity displays `<entity id> (missing)` and is represented by
-  `{"id": "…", "missing": true}` in `related.entity`.
-- If a parent stock or source aliquot itself is missing, its related value is
-  `{"id": "…", "missing": true}` and its text line displays `<id> (missing)`.
-- If that related object exists but its entity has no name or is missing, preserve the object's
-  other details and mark only the entity part as `(unnamed)` or `(missing)`. Its JSON retains
-  `entity_id`, sets `entity_name: null`, and uses `entity_missing: false` for an unnamed existing
-  entity or `true` for a missing entity. Do not mark the whole related object as missing.
-- Missing references do not make an otherwise successful show fail (exit 0).
-- In related text lines, replace actual control characters such as newline, carriage return and
-  tab with the literal separator ` | `, rather than visible backslash escape sequences. Preserve
-  ordinary spaces, punctuation and Unicode text. JSON retains original values; CSV is unchanged.
-
-Read cost is bounded: stock show uses its existing batch plus at most one `query_many` batch for
-all related lookups, independent of the number of tubes. Aliquot show resolves its entity in the
-existing query batch. Do not issue a separate query for every reference.
-
-Acceptance covers both core records and CLI output: cross-entity parents and cross-stock source
-aliquots, NULL references, unnamed and missing entities, missing related objects, exact line
-prefix/order, control-character replacement, additive JSON, unchanged CSV, and bounded read batches.
-Implementation must update CLI help/docstrings and skill command documentation, adjust the aliquot
-JSON goldens where necessary, and pass the fast lane and full suite within the existing 300-second
-full-suite budget. No test-budget relaxation is part of this change.
+UUID ids use the same eight-character prefixes as the lists; aliquot ids stay full `<stock>.<seq>`
+values. A line is omitted entirely when its reference column is NULL and its JSON value is `null`.
+A deleted parent stock or source aliquot prints `<8-char id> (missing)` (the source keeps its full
+aliquot id) and is `{id, missing: true}`; a deleted entity prints `<8-char entity id> (missing)` in
+the entity line and is `{id, missing: true}` in `related.entity`. An existing entity with no name
+prints `kind · <8-char entity id> (unnamed)` and has JSON `name: null`. Parent-stock and
+source-aliquot lines resolve their **own** entity, never the displayed stock's: the parent's entity
+prints `(name)`, `(unnamed entity <8-char id>)` or `(missing entity <8-char id>)`, and the
+source's prints `of <name>`, `of unnamed entity <8-char id>` or `of missing entity <8-char id>`;
+their JSON keeps `entity_id`, sets `entity_name: null` for an unnamed entity and `entity_missing`
+to `false` for it or `true` when the entity is gone. Only the missing part is marked — a deleted
+object is not the same as an object whose entity is gone. Missing references never fail an
+otherwise successful show (exit 0). In these lines actual control characters (newline, carriage
+return, tab) become the literal separator ` | `, never backslash escapes; ordinary spaces,
+punctuation and Unicode stay. JSON keeps the original values and CSV is untouched: it excludes
+`related` and adds no columns or lines. The lookups are bounded: stock show adds at most one
+`query_many` batch for all related objects regardless of the tube count, and aliquot show resolves
+its entity in the query it already runs.
 
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
 show <stock>` answers `<stock> is a stock; try tm stock show <stock>`, and `tm stock show
