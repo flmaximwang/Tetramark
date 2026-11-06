@@ -2219,7 +2219,7 @@ def edit_stock(
 
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
-    """One stock, its sorted aliases (``aliases``) and its aliquots.
+    """One stock, its sorted aliases (``aliases``), its relations and its aliquots.
 
     Each embedded aliquot row carries what a reader asks of a tube: ``id``,
     ``seq``, ``status``, ``quantity``, ``unit``, ``label``, ``box_id``,
@@ -2227,6 +2227,17 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
     stock), its sorted ``aliases`` and the derived ``in_stock`` flag.  The
     rows, their paths and their aliases ride in the same read batch as the
     stock, so a stock show never pays a query per tube.
+
+    ``related`` names the objects the three id columns point at, for the
+    human ``*`` lines (spec §6): the stock's own entity (``id``/``kind``/
+    ``name``), its parent stock and its source aliquot, each resolved with its
+    own entity so a parent of another entity reads as itself.  A relation
+    whose column is NULL is ``None``; a relation whose row cannot be read is
+    ``{"id": ..., "missing": True}``; a relation whose entity has no name
+    keeps its own fields and carries ``entity_missing``, so the renderer can
+    tell "no name" from "no row".  The lookups are three extra statements in
+    the same batch: no extra ``dolt sql`` process and no growth with the tube
+    count.
 
     A ref that names an aliquot is a not-found error that points at
     ``tm aliquot show`` (spec §6); any other miss points at ``tm find``,
@@ -2256,6 +2267,39 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
                     f"AND al.`object_id` IN (SELECT a.`id` FROM `aliquot` a "
                     f"WHERE a.`stock_id` = {id_sql}) "
                     "ORDER BY al.`object_id`, al.`alias`",
+                    params,
+                ),
+                (
+                    "SELECT e.`id` AS `entity_row_id`, "
+                    "e.`kind` AS `entity_kind`, e.`name` AS `entity_name` "
+                    "FROM `entity` e "
+                    f"WHERE e.`id` = (SELECT s.`entity_id` FROM `stock` s "
+                    f"WHERE s.`id` = {id_sql})",
+                    params,
+                ),
+                (
+                    "SELECT p.`id` AS `parent_id`, p.`kind` AS `parent_kind`, "
+                    "p.`entity_id` AS `parent_entity_id`, "
+                    "e.`id` AS `parent_entity_row_id`, "
+                    "e.`name` AS `parent_entity_name` "
+                    "FROM `stock` p LEFT JOIN `entity` e "
+                    "ON e.`id` = p.`entity_id` "
+                    f"WHERE p.`id` = (SELECT s.`parent_stock_id` FROM `stock` s "
+                    f"WHERE s.`id` = {id_sql})",
+                    params,
+                ),
+                (
+                    "SELECT a.`id` AS `source_id`, a.`seq` AS `source_seq`, "
+                    "a.`status` AS `source_status`, "
+                    "s.`kind` AS `source_stock_kind`, "
+                    "s.`entity_id` AS `source_entity_id`, "
+                    "e.`id` AS `source_entity_row_id`, "
+                    "e.`name` AS `source_entity_name` "
+                    "FROM `aliquot` a "
+                    "LEFT JOIN `stock` s ON s.`id` = a.`stock_id` "
+                    "LEFT JOIN `entity` e ON e.`id` = s.`entity_id` "
+                    f"WHERE a.`id` = (SELECT s2.`source_aliquot_id` FROM `stock` s2 "
+                    f"WHERE s2.`id` = {id_sql})",
                     params,
                 ),
             ],
@@ -2293,7 +2337,69 @@ def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
         }
         for row in extra[0]
     ]
+    record["related"] = _stock_related(record, extra)
     return record
+
+
+def _stock_related(
+    record: Mapping[str, Any], extra: Sequence[Sequence[Mapping[str, Any]]]
+) -> dict[str, Any]:
+    """The ``related`` record of :func:`show_stock` (spec §6).
+
+    ``extra[2..4]`` are the entity, parent-stock and source-aliquot result sets
+    of the same read batch.  The id columns of ``record`` decide whether a
+    relation exists: a NULL column is ``None``, and a non-NULL column whose row
+    the batch did not return is ``{"id": ..., "missing": True}`` (defensive:
+    the foreign keys normally forbid it).  A relation row whose entity row is
+    absent keeps its own fields and sets ``entity_missing``, so "no name" and
+    "no row" stay distinguishable.
+    """
+    entity_id = record.get("entity_id")
+    entity: dict[str, Any] | None = None
+    if entity_id is not None:
+        if extra[2] and extra[2][0].get("entity_row_id") is not None:
+            row = extra[2][0]
+            entity = {
+                "id": str(entity_id),
+                "kind": str(row["entity_kind"]),
+                "name": row["entity_name"],
+            }
+        else:
+            entity = {"id": str(entity_id), "missing": True}
+
+    parent: dict[str, Any] | None = None
+    parent_id = record.get("parent_stock_id")
+    if parent_id is not None:
+        if not extra[3]:
+            parent = {"id": str(parent_id), "missing": True}
+        else:
+            row = extra[3][0]
+            parent = {
+                "id": str(row["parent_id"]),
+                "kind": str(row["parent_kind"]),
+                "entity_id": row["parent_entity_id"],
+                "entity_name": row["parent_entity_name"],
+                "entity_missing": row["parent_entity_row_id"] is None,
+            }
+
+    source: dict[str, Any] | None = None
+    source_id = record.get("source_aliquot_id")
+    if source_id is not None:
+        if not extra[4]:
+            source = {"id": str(source_id), "missing": True}
+        else:
+            row = extra[4][0]
+            source = {
+                "id": str(row["source_id"]),
+                "seq": int(row["source_seq"]),
+                "status": str(row["source_status"]),
+                "stock_kind": row["source_stock_kind"],
+                "entity_id": row["source_entity_id"],
+                "entity_name": row["source_entity_name"],
+                "entity_missing": row["source_entity_row_id"] is None,
+            }
+
+    return {"entity": entity, "parent_stock": parent, "source_aliquot": source}
 
 
 def list_stocks(
@@ -3787,6 +3893,14 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     as physically in stock.  A tube that is not in stock carries no position,
     so its ``box_id``, ``slot`` and ``path`` are NULL.
 
+    ``related`` resolves the ids the record already carries into the objects
+    they name (spec §6, Tetramark-obv): the owning stock's entity, read in the
+    same batch.  It is additive — ``stock_kind`` and ``entity_id`` stay — and
+    never expands further (no parent stock, no source aliquot).  A missing
+    entity row yields ``{"id": …, "missing": True}`` instead of failing the
+    show, and a record whose stock row is unexpectedly absent gets
+    ``{"entity": None}``.
+
     ``events`` is the tube's event trail, oldest first: each event names the
     boxes it moved from and to, so a reader sees what happened to the tube
     without leaving the command.  It is the same rows ``tm history`` shows, and
@@ -3818,8 +3932,13 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
             params,
         ),
         (
-            "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id` "
-            f"FROM {_quote('stock')} s WHERE s.{_quote('id')} = "
+            "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id`, "
+            "e.`id` AS `entity_row_id`, e.`kind` AS `entity_kind`, "
+            "e.`name` AS `entity_name` "
+            f"FROM {_quote('stock')} s "
+            f"LEFT JOIN {_quote('entity')} e "
+            f"ON e.{_quote('id')} = s.{_quote('entity_id')} "
+            f"WHERE s.{_quote('id')} = "
             f"(SELECT a.{_quote('stock_id')} FROM {_quote('aliquot')} a "
             f"WHERE a.{_quote('id')} = {id_sql})",
             params,
@@ -3845,6 +3964,18 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     stock_rows = fetched[2]
     stock_kind = str(stock_rows[0]["stock_kind"]) if stock_rows else ""
     entity_id = str(stock_rows[0]["entity_id"]) if stock_rows else ""
+    if not stock_rows:
+        related: dict[str, Any] = {"entity": None}
+    elif stock_rows[0]["entity_row_id"] is not None:
+        related = {
+            "entity": {
+                "id": str(stock_rows[0]["entity_row_id"]),
+                "kind": str(stock_rows[0]["entity_kind"]),
+                "name": stock_rows[0]["entity_name"],
+            }
+        }
+    else:
+        related = {"entity": {"id": entity_id, "missing": True}}
     location_rows = fetched[3]
     path = location_rows[0]["path"] if location_rows else None
     events = [_event_record(event) for event in fetched[4]]
@@ -3873,6 +4004,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         "path": path,
         "in_stock": in_stock,
         "object": "aliquot",
+        "related": related,
         "events": events,
     }
 

@@ -20,6 +20,7 @@ from tetramark.cli.options import (
     write_command,
 )
 from tetramark.cli.output import emit_read, output_format
+from tetramark.cli.related import related_lines, without_related
 from tetramark.ops.render import render_stock_aliquots
 
 stock_app = group("Stocks: logical batches/preparations of one entity.")
@@ -158,23 +159,34 @@ def show_stock_command(
     ref: str = typer.Argument(..., help="Stock id or alias."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Show one stock, its kind fields and its tubes as cards.
+    """Show one stock, its kind fields, its related objects and its tubes.
 
-    Each tube is a card with its id, status, quantity and label, its box path
-    and its aliases. `--json` keeps the record with the enriched rows;
-    `tm aliquot list STOCK` is the tabular tube view.
+    After the field block, plain `*` lines name the objects the id columns
+    point at: the stock's entity (`kind · name`), its parent stock and its
+    source aliquot, each with its own entity. `--json` carries the same data
+    as `related`; `--format csv` keeps its previous columns (no `related`),
+    and `tm aliquot list STOCK` is the tabular tube view.
     """
     ledger = resolve_ledger(ctx)
     try:
         record = ledger.stocks.show(ref)
         fmt = output_format(ctx, as_json)
-        if fmt != "table":
+        if fmt == "json":
             emit_read(record, fmt=fmt)
             return
+        if fmt == "csv":
+            emit_read(without_related(record), fmt=fmt)
+            return
         emit_read(
-            {key: value for key, value in record.items() if key != "aliquots"},
+            {
+                key: value
+                for key, value in record.items()
+                if key not in {"aliquots", "related"}
+            },
             fmt="table",
         )
+        for line in related_lines(record.get("related")):
+            typer.echo(line)
         typer.echo()
         Console().print(render_stock_aliquots(record.get("aliquots") or []))
     finally:

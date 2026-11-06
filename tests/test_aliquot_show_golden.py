@@ -131,7 +131,10 @@ def _normalise(
     * ``entity_id`` / ``box_id`` -> ``<entity-id>`` / ``<box-id>`` (canonical
       uuid4 ids; ``box_id`` stays ``null`` for a tube without a position);
     * ``stock_id`` -> ``<stock-id>`` and ``id`` -> ``<stock-id>.<seq>``, keeping
-      the contract that a tube id is its stock id plus its sequence.
+      the contract that a tube id is its stock id plus its sequence;
+    * ``related.entity.id`` is the same uuid as ``entity_id`` (checked before
+      both are replaced with ``<entity-id>``); ``related.entity.kind``/``name``
+      are fixture values the golden pins.
 
     The events get the same treatment: their instant, their id and the uuid of
     a box they name are placeholders, the rest is pinned.
@@ -157,6 +160,13 @@ def _normalise(
     normalised["box_id"] = "<box-id>" if box is not None else None
     normalised["id"] = f"<stock-id>.{record['seq']}"
     normalised["stock_id"] = "<stock-id>"
+    related = dict(record["related"])
+    related_entity = dict(related["entity"])
+    assert related_entity["id"] == record["entity_id"]
+    assert is_uuid4(related_entity["id"])
+    related_entity["id"] = "<entity-id>"
+    related["entity"] = related_entity
+    normalised["related"] = related
     normalised["events"] = _normalise_events(record.get("events") or [])
     return normalised
 

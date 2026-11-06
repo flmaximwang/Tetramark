@@ -303,7 +303,16 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
   `path`, its sorted `aliases` and the derived `in_stock`. In text output each tube is a **card**
   with a rounded border (`<id> · <status>`, quantity/unit, `label:`, path or `not in stock`,
   `aliases:`), not a JSON blob; cards flow left to right and wrap at the console width, and
-  `tm aliquot list STOCK` is the tabular view.
+  `tm aliquot list STOCK` is the tabular view. Before `aliquots  N` it prints the related `*` lines,
+  ordered entity, parent stock, source aliquot, values starting at column 18 and a NULL reference
+  printing no line: `* entity          plasmid · pUC19`,
+  `* parent stock    bacterial_glycerol · 745b8daa (pUC19)`,
+  `* source aliquot  <full aliquot id> · stored · bacterial_glycerol of pUC19`; an unnamed entity
+  ends `(unnamed)` or `(unnamed entity <short id>)`, a missing one `(missing)`/`(missing entity
+  <short id>)`, and a deleted parent/source prints `<id> (missing)`. JSON adds `related` with
+  `entity {id,kind,name}`, `parent_stock {id,kind,entity_id,entity_name,entity_missing}` and
+  `source_aliquot {id,seq,status,stock_kind,entity_id,entity_name,entity_missing}` (deleted
+  `{id,missing:true}`, NULL `null`); CSV drops `related` and keeps its previous columns.
 - `purge` hard-deletes a stock added by mistake in one commit (`purge(stock): …`): its own aliquots —
   each tube's event rows, alias rows and row — then its kind row, alias rows and stock row. It refuses
   (exit 1, nothing written) while another stock has `parent_stock_id` = it, `source_aliquot_id` = one
@@ -368,10 +377,14 @@ tm aliquot purge ALQ [--json]
   `at`, `amount`/`unit`, the `from_box`/`from_slot` and `to_box`/`to_slot`, the
   `from_box_resolved`/`to_box_resolved` flags (`null`/`true`/`false`), the `old_status`/`new_status`,
   `forced` and `actor`; the stored `message` is the last text token as `message="..."`. A name with
-  no live box row prints as `[unresolved box <full id>]`, never a cause. The text output ends with
-  `events  N` and one line per event rendered by the same `event_line` helper `history` uses; `--json`
-  prints the whole record with the full ids, events included, `--format csv` keeps the flat single
-  row and drops `events` (unchanged; event rows are `tm history ALQ --format csv`). `ALQ` is the
+  no live box row prints as `[unresolved box <full id>]`, never a cause. It also prints one related
+  `* entity` line after the field block (before `path:`), e.g. `* entity          plasmid · pUC19`;
+  an unnamed entity reads `kind · <short id> (unnamed)`, a missing one `<short id> (missing)`, and
+  JSON adds `related.entity {id,kind,name}` (deleted `{id,missing:true}`). Then the text output
+  ends with `events  N` and one line per event rendered by the same `event_line` helper `history`
+  uses; `--json` prints the whole record with the full ids, related and events included,
+  `--format csv` keeps the flat single row and drops `related` and `events` (unchanged columns;
+  event rows are `tm history ALQ --format csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,

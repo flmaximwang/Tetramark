@@ -304,13 +304,17 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         f"{stock_id}.3",
     ]
     # `show` carries the tube's events, oldest first; a list item is the same
-    # record without them (a list must not read every tube's event trail).
+    # record without them (a list must not read every tube's event trail) and
+    # without `related` (the related links are a show convenience).
     first_shown = run_json("aliquot", "show", f"{stock_id}.1")
     assert "events" in first_shown
     assert listed[0] == {
-        key: value for key, value in first_shown.items() if key != "events"
+        key: value
+        for key, value in first_shown.items()
+        if key not in {"events", "related"}
     }
     assert "events" not in listed[0]
+    assert "related" not in listed[0]
     assert [event["event"] for event in first_shown["events"]] == ["create"]
     assert set(first_shown["events"][0]) == {
         "id",

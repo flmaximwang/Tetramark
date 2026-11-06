@@ -11,6 +11,7 @@ from tetramark.cli.messages import aliquots_add_message
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_read, output_format, short_uuid_ids
+from tetramark.cli.related import related_lines, without_related
 from tetramark.core.objects import plain_decimal
 from tetramark.ops.history import event_line
 
@@ -20,10 +21,10 @@ aliquot_app = group(
 )
 
 #: Record fields the human table does not print as key/value rows: ``path``
-#: gets its own line, ``events`` its own section and ``object`` (always
-#: ``aliquot``) is noise for a human.  JSON keeps all three, exactly as the
-#: core returns them.
-_TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "events", "object")
+#: gets its own line, ``related`` its ``*`` lines, ``events`` its own section
+#: and ``object`` (always ``aliquot``) is noise for a human.  JSON keeps them
+#: all, exactly as the core returns them.
+_TEXT_ONLY_KV_KEYS: tuple[str, ...] = ("path", "related", "events", "object")
 
 #: Record fields holding a uuid id, shortened in the human table only (the way
 #: ``tm stock list`` shortens ids); JSON and CSV keep the full ids.
@@ -49,8 +50,9 @@ def _text_record(record: dict[str, Any]) -> dict[str, Any]:
 
     The fields keep the record's own order; uuid ids become their shortest
     unique prefixes.  ``path`` is dropped here because it prints on its own
-    line after the table, ``events`` because it prints as its own section
-    below it, and ``object`` is dropped as human noise.
+    line after the table, ``related`` because it prints as the ``*`` lines
+    between them, ``events`` because it prints as its own section below them,
+    and ``object`` is dropped as human noise.
     """
     rows = {
         key: value for key, value in record.items() if key not in _TEXT_ONLY_KV_KEYS
@@ -66,9 +68,12 @@ def _csv_record(record: dict[str, Any]) -> dict[str, Any]:
     """The record as the flat CSV row prints it: the tube's own fields only.
 
     The events are a list of rows, not a cell, so the flat record leaves them
-    out; ``tm history ALQ --format csv`` prints them, one row per event.
+    out; ``tm history ALQ --format csv`` prints them, one row per event.  The
+    ``related`` object is dropped too (:func:`~tetramark.cli.related.without_related`),
+    so the CSV keeps exactly the columns it had before the relation lines.
     """
-    return {key: value for key, value in record.items() if key != "events"}
+    flat = without_related(record)
+    return {key: value for key, value in flat.items() if key != "events"}
 
 
 def _echo_events(events: list[dict[str, Any]]) -> None:
@@ -211,11 +216,13 @@ def show_aliquot_command(
     The record covers the aliquot row, its sorted aliases, the owning stock's
     kind and entity, the box/slot, the path read from the box nesting and the
     tube's own events, oldest first.  The table prints the fields, then the
-    path and one line per event; `--json` prints the whole record, events
-    included, and `--format csv` the flat record without the events (they are
-    rows, not a cell: `tm history ALQ --format csv` prints them).  The stock
-    kind's own fields are in `tm stock show`, and the Dolt commits are in
-    `tm history`.  The rich per-stock listing is `tm aliquot list STOCK`.
+    `* entity` line of the owning stock's entity (its JSON `related` object),
+    the path and one line per event; `--json` prints the whole record, events
+    and `related` included, and `--format csv` the flat record without the
+    events (they are rows, not a cell: `tm history ALQ --format csv` prints
+    them) and without `related`.  The stock kind's own fields are in
+    `tm stock show`, and the Dolt commits are in `tm history`.  The rich
+    per-stock listing is `tm aliquot list STOCK`.
     """
     ledger = resolve_ledger(ctx)
     try:
@@ -228,6 +235,8 @@ def show_aliquot_command(
             emit_read(_csv_record(record), fmt=fmt)
             return
         emit_read(_text_record(record), fmt="table")
+        for line in related_lines(record.get("related")):
+            typer.echo(line)
         if record.get("path"):
             typer.echo(f"path: {record['path']}")
         _echo_events(list(record.get("events") or []))
