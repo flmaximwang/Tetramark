@@ -1287,8 +1287,13 @@ def test_cli_aliquot_show_prints_rows_and_the_path_on_its_own_line(
     field_lines = lines[:events_at]
 
     # One row per record field, in the record's order: no ``path`` row (it
-    # prints on its own line) and no ``object`` row (human noise).
-    rows = [line for line in field_lines if line and not line.startswith("path:")]
+    # prints on its own line), no ``* entity`` relation line (Tetramark-obv:
+    # related is not a key/value row) and no ``object`` row (human noise).
+    rows = [
+        line
+        for line in field_lines
+        if line and not line.startswith(("path:", "* "))
+    ]
     assert [row.split()[0] for row in rows] == ALIQUOT_SHOW_ROWS
 
     # The path closes the field block as its own line, in its human shape.
@@ -1335,6 +1340,7 @@ def test_cli_aliquot_show_json_is_the_core_record(
         "path",
         "in_stock",
         "object",
+        "related",
         "events",
     }
     assert record["id"] == alq
@@ -1353,11 +1359,13 @@ def test_cli_aliquot_show_json_is_the_core_record(
     assert json.loads(global_json.output) == record
 
     # --format csv keeps the full ids and carries the path as a column, but
-    # not the events: they are rows, not a cell.
+    # not the events (they are rows, not a cell) and not ``related`` (the CSV
+    # columns are unchanged by the relation lines).
     csv_output = read(ledger, "--format", "csv", "aliquot", "show", alq).output
     header = csv_output.splitlines()[0].split(",")
-    assert header == sorted(set(record) - {"events"})
+    assert header == sorted(set(record) - {"events", "related"})
     assert "events" not in header
+    assert "related" not in header
     assert "Freezer-1/Shelf-2/Box:A3" in csv_output
     assert made["box"]["id"] in csv_output
 
@@ -1648,9 +1656,12 @@ def test_cli_aliquot_list_json_items_carry_no_events(
     # The show record of the same tube does carry them.
     shown = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
     assert shown["events"]
+    # The list keeps its old shape: ``related`` is a show-only addition (the
+    # issue explicitly forbids widening the list), so it is excluded too.
     assert listed[0] == {
-        key: value for key, value in shown.items() if key != "events"
+        key: value for key, value in shown.items() if key not in {"events", "related"}
     }
+    assert "related" not in listed[0]
 
 
 def test_cli_aliquot_show_resolves_an_alias(cli_env: None, ledger_factory) -> None:
@@ -1933,8 +1944,11 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
     # A list row is the show record without its events, and the read writes
     # nothing.
     shown = json.loads(read(ledger, "aliquot", "show", first, "--json").output)
-    assert listed[0] == {key: value for key, value in shown.items() if key != "events"}
+    assert listed[0] == {
+        key: value for key, value in shown.items() if key not in {"events", "related"}
+    }
     assert "events" not in listed[0]
+    assert "related" not in listed[0]
     assert commit_count(ledger) == before
 
     table = read(ledger, "aliquot", "list")

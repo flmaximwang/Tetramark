@@ -3555,6 +3555,14 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     as physically in stock.  A tube that is not in stock carries no position,
     so its ``box_id``, ``slot`` and ``path`` are NULL.
 
+    ``related`` resolves the ids the record already carries into the objects
+    they name (spec §6, Tetramark-obv): the owning stock's entity, read in the
+    same batch.  It is additive — ``stock_kind`` and ``entity_id`` stay — and
+    never expands further (no parent stock, no source aliquot).  A missing
+    entity row yields ``{"id": …, "missing": True}`` instead of failing the
+    show, and a record whose stock row is unexpectedly absent gets
+    ``{"entity": None}``.
+
     ``events`` is the tube's event trail, oldest first: each event names the
     boxes it moved from and to, so a reader sees what happened to the tube
     without leaving the command.  It is the same rows ``tm history`` shows, and
@@ -3586,8 +3594,13 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
             params,
         ),
         (
-            "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id` "
-            f"FROM {_quote('stock')} s WHERE s.{_quote('id')} = "
+            "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id`, "
+            "e.`id` AS `entity_row_id`, e.`kind` AS `entity_kind`, "
+            "e.`name` AS `entity_name` "
+            f"FROM {_quote('stock')} s "
+            f"LEFT JOIN {_quote('entity')} e "
+            f"ON e.{_quote('id')} = s.{_quote('entity_id')} "
+            f"WHERE s.{_quote('id')} = "
             f"(SELECT a.{_quote('stock_id')} FROM {_quote('aliquot')} a "
             f"WHERE a.{_quote('id')} = {id_sql})",
             params,
@@ -3613,6 +3626,18 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     stock_rows = fetched[2]
     stock_kind = str(stock_rows[0]["stock_kind"]) if stock_rows else ""
     entity_id = str(stock_rows[0]["entity_id"]) if stock_rows else ""
+    if not stock_rows:
+        related: dict[str, Any] = {"entity": None}
+    elif stock_rows[0]["entity_row_id"] is not None:
+        related = {
+            "entity": {
+                "id": str(stock_rows[0]["entity_row_id"]),
+                "kind": str(stock_rows[0]["entity_kind"]),
+                "name": stock_rows[0]["entity_name"],
+            }
+        }
+    else:
+        related = {"entity": {"id": entity_id, "missing": True}}
     location_rows = fetched[3]
     path = location_rows[0]["path"] if location_rows else None
     events = [_event_record(event) for event in fetched[4]]
@@ -3641,6 +3666,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         "path": path,
         "in_stock": in_stock,
         "object": "aliquot",
+        "related": related,
         "events": events,
     }
 

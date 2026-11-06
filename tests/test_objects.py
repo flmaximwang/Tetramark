@@ -1861,10 +1861,14 @@ def test_aliquot_list_defaults_to_the_tubes_an_experiment_can_use(
     listed = ledger.aliquots.ls()
     assert [row["id"] for row in listed] == [first]
     # A list row is the show record: same keys, same values - except the
-    # events, which a list never reads.
+    # events, which a list never reads, and ``related``, which is a show-only
+    # addition (Tetramark-obv.2 does not widen the list).
     shown = ledger.aliquots.show(first)
-    assert listed[0] == {key: value for key, value in shown.items() if key != "events"}
+    assert listed[0] == {
+        key: value for key, value in shown.items() if key not in {"events", "related"}
+    }
     assert "events" not in listed[0]
+    assert "related" not in listed[0]
     assert listed[0]["in_stock"] is True
 
     every = ledger.aliquots.ls(all_statuses=True)

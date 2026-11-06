@@ -35,6 +35,13 @@
   "object": "aliquot",
   "path": null,
   "quantity": null,
+  "related": {
+    "entity": {
+      "id": "<entity-id>",
+      "kind": "item",
+      "name": "gamma"
+    }
+  },
   "seq": 1,
   "slot": null,
   "status": "pending",
