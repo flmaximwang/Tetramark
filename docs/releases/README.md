@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.41.1](v0.8.41.1.md) | `v0.8.41.1.md` | `tm aliquot edit` corrects a tube's `quantity`, `unit`, `notes` or `created_at` without rewriting history: one edit event, one Dolt commit |
 | [0.8.41](v0.8.41.md) | `v0.8.41.md` | `tm stock list` and `ledger.stocks.ls()` default to active stocks; `--all` / `all_statuses=True` restore every status |
 | [0.8.40](v0.8.40.md) | `v0.8.40.md` | the add forms ask every writable creation property: optional stock parent/source aliquot/notes, optional aliquot creation status, no duplicate notes question; `add` and the Python API unchanged |
 | [0.8.39.3](v0.8.39.3.md) | `v0.8.39.3.md` | `--where-any`: one OR group across the `--where` filters, on the entity/stock/box lists, `tm find` and the Python `where_any=` |
