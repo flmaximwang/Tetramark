@@ -25,7 +25,8 @@ Rules:
   `tm entity|stock|aliquot|box purge`, for objects added by mistake.
 - **An action done in the physical world that cannot simply be reversed needs a message.** `tm aliquot
   use` (the material is gone) and `tm aliquot move` (the tube was physically relocated) therefore
-  require `-m/--message`; `create`, `edit` and `status` do not. The message is recorded on the aliquot
+  require `-m/--message`; `create`, `edit` and `status` do not. An `edit` event always carries the
+  field-change summary, with the optional `-m` reason appended. The message is recorded on the aliquot
   event, so the timeline keeps why the action happened, not just the resulting state.
 
 ### 1.1 Aliquot status

@@ -145,6 +145,6 @@ tm check --group core
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; the explicit
   `tm entity|stock|aliquot|box purge` is a hard delete with no undo (only Dolt history recovers it),
   for an object added by mistake; it refuses while anything still references the object.
-- **Do not move a tube by editing fields.** `aliquot move` records the event and checks slot capacity
-  and exclusivity; `stock edit` only changes stock metadata. `use`/`move` need `-m/--message`.
+- **`tm aliquot edit` corrects recorded fields, never movement.** It changes only `quantity`, `unit`,
+  notes and `created_at`; placement is `tm aliquot move`, label `tm aliquot label`, status `tm aliquot status`; `use`/`move` need `-m`.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.
