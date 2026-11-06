@@ -99,6 +99,7 @@ tm stock purge ID|ALIAS                     # hard delete, explicit only; one co
 tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]   # = tm aliquot add --quantity AMOUNT --unit UNIT.
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path, events
+tm aliquot edit ALQ --set field=value ... [-m MSG]   # correct quantity/unit/notes/created_at; one edit event, one commit
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
                 [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
@@ -251,6 +252,38 @@ rebuilds a box's view) and a plain column update cannot. Structural fields are r
 exactly empty) clears an optional column to NULL, a required field cannot be cleared, and a
 whitespace-only value is not empty: it is coerced like any other value, never cleared. One edit is
 one Dolt commit, `--json` returns the loaded record and `--dry-run` writes nothing.
+
+`tm aliquot edit ALQ --set field=value …` corrects the recorded fields of one tube. `ALQ` is the
+full aliquot id (`<stock>.<seq>`) or one of the tube's aliases; a shortened id prefix is refused,
+as on `tm aliquot show`. Exactly four columns are editable: `quantity`, `unit`, `notes` and
+`created_at`. A column not listed is not editable through `edit` by default: `id`, `stock_id` and
+`seq` are identity data (an aliquot id *is* `<stock_id>.<seq>`) and have no substitute command;
+`label` changes through `tm aliquot label ALQ LABEL [--replace]`; `status` through
+`tm aliquot status ALQ NEW [--force -m MSG]`; and the position, `box_id`/`slot`, through
+`tm aliquot move ALQ --box NAME [--slot S] -m MSG`. Where a command owns the column, the refusal
+names it; identity data has no substitute. Derived values (`path`, `in_stock`, the owning stock's
+`stock_kind`) are not columns and are never editable.
+
+An edit **corrects the current value**; it does not replay or rewrite history. The tube's
+create/use/move events stay as they were, and the remaining quantity is not recomputed from past
+consumption: a tube recorded with 500 ul, used down by 100 ul, then edited to `quantity=600` now
+holds 600 ul, while the use event still records 100 ul. Editing is allowed after a `use` or a
+`move`. Each successful edit appends one `edit` event whose `amount`, `unit`, position and status
+columns stay empty; its `message` holds the summary of the changed fields, with the optional `-m`
+reason appended as `; reason: MSG` (a blank reason is refused). The exact column-by-column diff is
+kept by Dolt history rather than duplicated on the event, and the whole edit is one Dolt commit.
+
+Validation applies to the **final record** after every `--set`, and a failure writes nothing:
+`quantity`, when given a value, must be finite and greater than zero (setting it to zero is
+refused with a hint to `tm aliquot use`; negative, non-numeric and infinite values are refused).
+`quantity` and `unit` must end up both present or both empty: changing just one is allowed while
+the final pair stays valid, clearing either means clearing both, and adding one to a tube that has
+neither must be done in the same edit. `unit` must not be empty and is at most 32 characters;
+`--set notes=` clears the notes; `created_at` takes a naive ISO datetime (no time zone) and cannot
+be cleared. The whole `--set` set is validated as one change, so one invalid field leaves no
+partial update, event or commit, and an edit with no actual change is refused. `--dry-run` prints
+the planned SQL and writes nothing; `--json` returns the loaded tube record with the corrected
+values overlaid.
 
 `tm export` reads a box from `box` joined with `box_<kind>` — the per-kind `v_box_<kind>` views are
 gone (spec 5). `tm import` creates each new box's `v_box_<name>` view and applies the name and

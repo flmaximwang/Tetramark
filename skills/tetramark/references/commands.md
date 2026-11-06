@@ -331,6 +331,7 @@ rename runs with `SET FOREIGN_KEY_CHECKS=0` and restores it in the same session 
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] \
   [--quantity Q --unit U] [--json]
 tm aliquot show ALQ [--json]
+tm aliquot edit ALQ --set FIELD=VALUE ... [-m/--message TEXT] [--json]
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
@@ -375,6 +376,22 @@ tm aliquot purge ALQ [--json]
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,
   and `list STOCK` is the rich per-stock tube listing.
+- `edit` corrects the recorded fields of one tube (full `<stock>.<seq>` id or alias; an id prefix
+  is refused) and keeps the history intact: it changes the current value, never the create/use/move
+  events, and never recomputes what remains from past use. Only `quantity`, `unit`, `notes` and
+  `created_at` are editable; a column not listed is not editable — `id`/`stock_id`/`seq` are
+  identity data (no substitute), `label` is `tm aliquot label ALQ LABEL --replace`, `status` is
+  `tm aliquot status ALQ NEW [--force -m MSG]`, and placement (`box_id`/`slot`) is
+  `tm aliquot move ALQ --box NAME [--slot S] -m MSG`; the refusal names that command. Each edit
+  appends one `edit` event whose amount/unit/position/status columns are empty; its `message` is the
+  field-change summary plus the optional `-m` reason as `; reason: MSG` (a blank reason is refused),
+  and the exact diff stays in Dolt history (one commit). Validation applies to the final record:
+  `quantity` must be finite and greater than zero (`0` points at `tm aliquot use`);
+  `quantity`/`unit` must end up both set or both empty; `unit` is non-empty and at most 32
+  characters; `--set notes=` clears the notes; `created_at` takes a naive ISO datetime (no time
+  zone) and cannot be cleared. The whole `--set` set is validated once, so a failure writes
+  nothing, and a no-op edit is refused. `--json` prints the loaded record with the corrected
+  values; `--dry-run` prints the planned SQL and writes nothing.
 - `use` consumes part or all of a tube. `AMOUNT` and `UNIT` come together: passing only one of them
   is a usage error, and with an amount the unit must match the tube's unit and the amount may not
   exceed what remains. Leaving both out means "use everything left" — the event records the tube's
