@@ -260,8 +260,9 @@ grid rules above, in the same commit as the rows.
 a sorted `aliases` list in JSON output and print an `aliases` row or line in table output; `list`
 **table** output stays narrow. `tm aliquot list --json` is the exception among lists: an aliquot has
 no per-kind view to project, so its items are the `tm aliquot show` record without `events` (a list
-must not read every tube's event trail) and carry `aliases` too. The generated views expose the same
-data as `alias_list` / `occupant_alias_list` (§3).
+must not read every tube's event trail) and without `related` (the related links are a show
+convenience; a listing stays the narrow per-tube view) and carry `aliases` too. The generated views
+expose the same data as `alias_list` / `occupant_alias_list` (§3).
 
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
@@ -344,9 +345,9 @@ object is not the same as an object whose entity is gone. Missing references nev
 otherwise successful show (exit 0). In these lines actual control characters (newline, carriage
 return, tab) become the literal separator ` | `, never backslash escapes; ordinary spaces,
 punctuation and Unicode stay. JSON keeps the original values and CSV is untouched: it excludes
-`related` and adds no columns or lines. The lookups are bounded: stock show adds at most one
-`query_many` batch for all related objects regardless of the tube count, and aliquot show resolves
-its entity in the query it already runs.
+`related` and adds no columns or lines. The lookups are bounded: stock show resolves all three
+relations as extra statements inside the stock's own read batch (no extra process, no growth with
+the tube count), and aliquot show resolves its entity in the query it already runs.
 
 A reference to the wrong object type is a not-found error that names the other verb: `tm aliquot
 show <stock>` answers `<stock> is a stock; try tm stock show <stock>`, and `tm stock show
