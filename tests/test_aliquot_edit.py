@@ -141,7 +141,8 @@ def test_cli_aliquot_edit_updates_the_four_editable_fields(
     first_row = aliquot_row(ledger, first)
     first_events = aliquot_events(ledger, first)
     old_events = aliquot_events(ledger, second)
-    old_created_at = aliquot_row(ledger, second)["created_at"]
+    old_row = aliquot_row(ledger, second)
+    old_created_at = old_row["created_at"]
     before = commit_count(ledger)
 
     edited = json.loads(
@@ -166,7 +167,7 @@ def test_cli_aliquot_edit_updates_the_four_editable_fields(
     assert edited["id"] == second
     assert edited["stock_id"] == made["stock"]["id"]
     assert edited["seq"] == 2
-    assert edited["status"] == "stored"
+    assert edited["status"] == old_row["status"]  # edit never changes status
     assert edited["label"] is None
     assert edited["box_id"] is None and edited["slot"] is None
     assert Decimal(str(edited["quantity"])) == Decimal("250")
@@ -635,7 +636,7 @@ def test_cli_aliquot_edit_after_use_corrects_the_current_quantity(
     )
     assert Decimal(str(edited["quantity"])) == Decimal("120")
     assert edited["unit"] == "ul"
-    assert edited["status"] == "stored"
+    assert edited["status"] == used["status"]  # only the amount is corrected
     assert commit_count(ledger) == before + 1
 
     after_events = aliquot_events(ledger, alq)
@@ -657,6 +658,39 @@ def test_cli_aliquot_edit_after_use_corrects_the_current_quantity(
     ):
         assert edit_event[column] is None
     assert not edit_event["forced"]
+
+
+def test_cli_aliquot_edit_after_move_keeps_the_position(cli_env: None, ledger_factory) -> None:
+    """Correcting a placed tube leaves its position, status and move event alone."""
+    ledger = ledger_factory([BASE], name="cli-aliquot-edit-after-move", id_prefix="77")
+    made = make_stock(ledger, quantity="100", unit="ul")
+    alq = made["aliquots"][0]
+    write(ledger, "box", "add", "grid96", "BOX")
+    write(ledger, "aliquot", "move", alq, "--box", "BOX", "--slot", "A1", "-m", "stored it")
+    placed = aliquot_row(ledger, alq)
+    old_events = aliquot_events(ledger, alq)
+    assert [event["event"] for event in old_events] == ["create", "move"]
+
+    edited = json.loads(
+        write(
+            ledger,
+            "aliquot",
+            "edit",
+            alq,
+            "--set",
+            "quantity=250",
+            "--set",
+            "unit=ml",
+            "--json",
+        ).output
+    )
+    assert Decimal(str(edited["quantity"])) == Decimal("250")
+    assert edited["unit"] == "ml"
+    assert edited["box_id"] == placed["box_id"]
+    assert edited["slot"] == placed["slot"]
+    assert edited["status"] == placed["status"]
+    assert aliquot_row(ledger, alq)["box_id"] == placed["box_id"]
+    assert aliquot_events(ledger, alq)[:-1] == old_events
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +768,7 @@ def test_cli_aliquot_edit_json_is_the_loaded_record(
     ledger = ledger_factory([BASE], name="cli-aliquot-edit-json", id_prefix="77")
     made = make_stock(ledger, quantity="100", unit="ul")
     alq = made["aliquots"][0]
+    status_before = aliquot_row(ledger, alq)["status"]
 
     payload = json.loads(
         read(ledger, "aliquot", "edit", alq, "--set", "notes=json shape", "--json").output
@@ -757,7 +792,7 @@ def test_cli_aliquot_edit_json_is_the_loaded_record(
     assert payload["object"] == "aliquot"
     assert payload["stock_id"] == made["stock"]["id"]
     assert payload["seq"] == 1
-    assert payload["status"] == "stored"
+    assert payload["status"] == status_before
     assert payload["notes"] == "json shape"
     assert Decimal(str(payload["quantity"])) == Decimal("100")
     assert payload["unit"] == "ul"
@@ -812,6 +847,7 @@ def test_core_aliquots_edit_records_the_change_and_its_event(
     ledger = ledger_factory([BASE], name="core-aliquot-edit", id_prefix="77")
     made = make_stock(ledger, quantity="100", unit="ul")
     alq = made["aliquots"][0]
+    status_before = aliquot_row(ledger, alq)["status"]
     before = commit_count(ledger)
 
     edited = ledger.aliquots.edit(
@@ -820,7 +856,7 @@ def test_core_aliquots_edit_records_the_change_and_its_event(
     assert commit_count(ledger) == before + 1
     assert edited["id"] == alq
     assert edited["stock_id"] == made["stock"]["id"]
-    assert edited["status"] == "stored"
+    assert edited["status"] == status_before
     assert Decimal(str(edited["quantity"])) == Decimal("250")
     assert edited["unit"] == "ml"
 
