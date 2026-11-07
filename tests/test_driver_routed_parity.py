@@ -7,7 +7,11 @@ same-process ``SHOW COLUMNS`` ``Type`` (Tetramark-2gz.1); these tests prove the
 parity against the real Dolt binary, not a mock:
 
 * a test-owned ``dolt sql-server`` is started on a free loopback port against
-  the test's own database directory and torn down again (no leftover process);
+  the test's own database directory and torn down again (no leftover process).
+  Since 0.8.44.1 the embedded driver keeps one writable live session, so the
+  test closes that session before the server starts and then opens a fresh
+  driver whose session routes through the server, mirroring the real case (a
+  user server is already alive when ``tm`` runs);
 * routing is *asserted*, never assumed: a raw ``dolt sql -r json`` INT column
   must come back as a string, otherwise the test fails (a skip would hide a
   broken fixture);
@@ -173,7 +177,14 @@ def test_query_integer_parity_with_and_without_a_live_server(
         ("SELECT id FROM parity WHERE id > 100", None),
         ("SELECT text_num, dec_v, nullable FROM parity ORDER BY id", None),
     ]
-    local = {sql: driver.query(sql) for sql, _ in reads}
+    try:
+        local = {sql: driver.query(sql) for sql, _ in reads}
+    finally:
+        # Since 0.8.44.1 the embedded driver holds one writable session for the
+        # ledger, so it must be closed before a dolt sql-server may start on the
+        # same directory (the user-run server is the thing a real read finds
+        # already alive).
+        driver.close()
 
     # The no-server baseline pins the types every routed read must reproduce.
     first = local["SELECT * FROM parity ORDER BY id"][0]
@@ -190,17 +201,25 @@ def test_query_integer_parity_with_and_without_a_live_server(
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        for sql, _ in reads:
-            assert_identical(local[sql], driver.query(sql), sql)
-        routed_row = driver.query("SELECT * FROM parity WHERE id = 1")[0]
-        assert type(routed_row["big_u"]) is int
-        assert routed_row["big_u"] == UNSIGNED_BIG
-        assert type(routed_row["text_num"]) is str
-        assert type(routed_row["dec_v"]) is str
+        routed = EmbeddedDriver(dolt_repo, env=dolt_env)
+        try:
+            for sql, _ in reads:
+                assert_identical(local[sql], routed.query(sql), sql)
+            routed_row = routed.query("SELECT * FROM parity WHERE id = 1")[0]
+            assert type(routed_row["big_u"]) is int
+            assert routed_row["big_u"] == UNSIGNED_BIG
+            assert type(routed_row["text_num"]) is str
+            assert type(routed_row["dec_v"]) is str
+        finally:
+            routed.close()
 
     # After the server is gone the same reads are back on the local engine.
-    for sql, _ in reads:
-        assert_identical(local[sql], driver.query(sql), f"no server: {sql}")
+    after = EmbeddedDriver(dolt_repo, env=dolt_env)
+    try:
+        for sql, _ in reads:
+            assert_identical(local[sql], after.query(sql), f"no server: {sql}")
+    finally:
+        after.close()
 
 
 def test_query_many_and_fill_columns_false_parity(
@@ -220,9 +239,14 @@ def test_query_many_and_fill_columns_false_parity(
         ),
         ("SELECT nullable FROM parity ORDER BY id", None),
     ]
-    local = driver.query_many(statements)
-    local_unfilled = driver.query_many(statements, fill_columns=False)
-    local_single = driver.query("SELECT id, big_u FROM parity ORDER BY id", fill_columns=False)
+    try:
+        local = driver.query_many(statements)
+        local_unfilled = driver.query_many(statements, fill_columns=False)
+        local_single = driver.query(
+            "SELECT id, big_u FROM parity ORDER BY id", fill_columns=False
+        )
+    finally:
+        driver.close()
 
     first = local[0][0]
     assert type(first["id"]) is int and type(first["big_u"]) is int
@@ -237,21 +261,27 @@ def test_query_many_and_fill_columns_false_parity(
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        assert_identical(local, driver.query_many(statements), "query_many")
-        assert_identical(
-            local_unfilled,
-            driver.query_many(statements, fill_columns=False),
-            "query_many fill_columns=False",
-        )
-        assert_identical(
-            local_single,
-            driver.query("SELECT id, big_u FROM parity ORDER BY id", fill_columns=False),
-            "query fill_columns=False",
-        )
-        # fill_columns=False still restores integer types; it only skips NULLs.
-        routed_unfilled = driver.query_many(statements, fill_columns=False)
-        assert "nullable" not in routed_unfilled[4][0]
-        assert all(type(row["id"]) is int for row in routed_unfilled[0])
+        routed = EmbeddedDriver(dolt_repo, env=dolt_env)
+        try:
+            assert_identical(local, routed.query_many(statements), "query_many")
+            assert_identical(
+                local_unfilled,
+                routed.query_many(statements, fill_columns=False),
+                "query_many fill_columns=False",
+            )
+            assert_identical(
+                local_single,
+                routed.query(
+                    "SELECT id, big_u FROM parity ORDER BY id", fill_columns=False
+                ),
+                "query fill_columns=False",
+            )
+            # fill_columns=False still restores integer types; it only skips NULLs.
+            routed_unfilled = routed.query_many(statements, fill_columns=False)
+            assert "nullable" not in routed_unfilled[4][0]
+            assert all(type(row["id"]) is int for row in routed_unfilled[0])
+        finally:
+            routed.close()
 
 
 # ---------------------------------------------------------------------------
@@ -284,23 +314,34 @@ def test_pending_transaction_preview_parity(
         assert again == [{"n": 1}]
         return rows
 
-    local = preview(driver, 98)
+    try:
+        local = preview(driver, 98)
+    finally:
+        driver.close()
     assert local == [{"id": 98, "big": 42, "tiny": 1, "text_num": "007", "n": 1}]
     assert type(local[0]["id"]) is int and type(local[0]["n"]) is int
 
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        routed = preview(driver, 99)
-    assert routed == [{"id": 99, "big": 42, "tiny": 1, "text_num": "007", "n": 1}]
-    assert type(routed[0]["id"]) is int and type(routed[0]["n"]) is int
-    assert type(routed[0]["text_num"]) is str
+        routed = EmbeddedDriver(dolt_repo, env=dolt_env)
+        try:
+            routed_rows = preview(routed, 99)
+        finally:
+            routed.close()
+    assert routed_rows == [{"id": 99, "big": 42, "tiny": 1, "text_num": "007", "n": 1}]
+    assert type(routed_rows[0]["id"]) is int and type(routed_rows[0]["n"]) is int
+    assert type(routed_rows[0]["text_num"]) is str
 
     # Both previewed transactions committed on exit, and the probe after the
     # ROLLBACK never leaked a row: exactly the two committed inserts exist.
-    assert driver.query("SELECT COUNT(*) AS n FROM parity WHERE id IN (98, 99)") == [
-        {"n": 2}
-    ]
+    after = EmbeddedDriver(dolt_repo, env=dolt_env)
+    try:
+        assert after.query("SELECT COUNT(*) AS n FROM parity WHERE id IN (98, 99)") == [
+            {"n": 2}
+        ]
+    finally:
+        after.close()
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +355,12 @@ def test_branch_session_parity_with_a_live_server(
     driver = EmbeddedDriver(dolt_repo, env=dolt_env)
     make_parity_table(driver)
     # A Dolt branch starts at a commit, so the fixture data must be committed
-    # before the branch can see it.
-    driver.commit("parity data", "Parity Tests <parity@tetramark.invalid>")
+    # before the branch can see it; closing the live session first lets the
+    # separate `dolt branch` process take the manifest.
+    try:
+        driver.commit("parity data", "Parity Tests <parity@tetramark.invalid>")
+    finally:
+        driver.close()
     subprocess.run(
         [dolt_binary, "branch", "parity-branch"],
         cwd=dolt_repo,
@@ -324,29 +369,37 @@ def test_branch_session_parity_with_a_live_server(
         capture_output=True,
         text=True,
     )
-    branch_driver = EmbeddedDriver(dolt_repo, branch="parity-branch", env=dolt_env)
-    local = branch_driver.query("SELECT id, big_u, text_num FROM parity ORDER BY id")
+    local_driver = EmbeddedDriver(dolt_repo, branch="parity-branch", env=dolt_env)
+    try:
+        local = local_driver.query(
+            "SELECT id, big_u, text_num FROM parity ORDER BY id"
+        )
+    finally:
+        local_driver.close()
     assert [row["id"] for row in local] == [1, 2]
     assert type(local[0]["big_u"]) is int
 
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        routed_driver = EmbeddedDriver(
-            dolt_repo, branch="parity-branch", env=dolt_env
-        )
-        assert_identical(
-            local,
-            routed_driver.query("SELECT id, big_u, text_num FROM parity ORDER BY id"),
-            "branch query",
-        )
-        assert_identical(
-            [local],
-            routed_driver.query_many(
-                [("SELECT id, big_u, text_num FROM parity ORDER BY id", None)]
-            ),
-            "branch query_many",
-        )
+        routed_driver = EmbeddedDriver(dolt_repo, branch="parity-branch", env=dolt_env)
+        try:
+            assert_identical(
+                local,
+                routed_driver.query(
+                    "SELECT id, big_u, text_num FROM parity ORDER BY id"
+                ),
+                "branch query",
+            )
+            assert_identical(
+                [local],
+                routed_driver.query_many(
+                    [("SELECT id, big_u, text_num FROM parity ORDER BY id", None)]
+                ),
+                "branch query_many",
+            )
+        finally:
+            routed_driver.close()
 
 
 # ---------------------------------------------------------------------------
@@ -359,25 +412,33 @@ def test_non_select_and_probe_rejected_reads_are_not_coerced(
 ) -> None:
     driver = EmbeddedDriver(dolt_repo, env=dolt_env)
     make_parity_table(driver)
-
-    # SHOW is not probeable: no type metadata, so no coercion in either mode.
-    local_show = driver.query("SHOW COLUMNS FROM parity")
-    local_dup = driver.query("SELECT id AS dup, big AS dup FROM parity WHERE id = 1")
+    try:
+        # SHOW is not probeable: no type metadata, so no coercion in either mode.
+        local_show = driver.query("SHOW COLUMNS FROM parity")
+        local_dup = driver.query("SELECT id AS dup, big AS dup FROM parity WHERE id = 1")
+    finally:
+        driver.close()
     assert type(local_dup[0]["dup"]) is int
 
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        assert_identical(local_show, driver.query("SHOW COLUMNS FROM parity"), "SHOW")
-        # Duplicate column names make the temp-table probe fail; the agreed
-        # residual returns Dolt's raw value, i.e. the routed string, unchanged.
-        routed_dup = driver.query("SELECT id AS dup, big AS dup FROM parity WHERE id = 1")
-        assert type(routed_dup[0]["dup"]) is str
-        # A distinct-alias read of the same columns *is* normalised.
-        normal = driver.query(
-            "SELECT id AS a, big AS b FROM parity WHERE id = 1"
-        )
-        assert type(normal[0]["a"]) is int and type(normal[0]["b"]) is int
+        routed = EmbeddedDriver(dolt_repo, env=dolt_env)
+        try:
+            assert_identical(
+                local_show, routed.query("SHOW COLUMNS FROM parity"), "SHOW"
+            )
+            # Duplicate column names make the temp-table probe fail; the agreed
+            # residual returns Dolt's raw value, i.e. the routed string, unchanged.
+            routed_dup = routed.query(
+                "SELECT id AS dup, big AS dup FROM parity WHERE id = 1"
+            )
+            assert type(routed_dup[0]["dup"]) is str
+            # A distinct-alias read of the same columns *is* normalised.
+            normal = routed.query("SELECT id AS a, big AS b FROM parity WHERE id = 1")
+            assert type(normal[0]["a"]) is int and type(normal[0]["b"]) is int
+        finally:
+            routed.close()
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +447,10 @@ def test_non_select_and_probe_rejected_reads_are_not_coerced(
 
 
 def test_typed_read_is_still_one_dolt_process(
-    dolt_repo: Path, dolt_env: dict[str, str], dolt_binary: str, monkeypatch: pytest.MonkeyPatch
+    dolt_repo: Path,
+    dolt_env: dict[str, str],
+    dolt_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver = EmbeddedDriver(dolt_repo, env=dolt_env)
     make_parity_table(driver)
@@ -399,15 +463,22 @@ def test_typed_read_is_still_one_dolt_process(
 
     monkeypatch.setattr(EmbeddedDriver, "_invoke", counted)
 
-    assert driver.query("SELECT id FROM parity WHERE id = 1") == [{"id": 1}]
-    assert_single_read_process(calls)
+    try:
+        assert driver.query("SELECT id FROM parity WHERE id = 1") == [{"id": 1}]
+        assert_single_read_process(calls)
+    finally:
+        driver.close()
 
     calls.clear()
     with routed_server(
         dolt_repo, dolt_env, dolt_binary, "SELECT id FROM parity WHERE id = 1", "id"
     ):
-        assert driver.query("SELECT id FROM parity WHERE id = 1") == [{"id": 1}]
-    assert_single_read_process(calls)
+        routed = EmbeddedDriver(dolt_repo, env=dolt_env)
+        try:
+            assert routed.query("SELECT id FROM parity WHERE id = 1") == [{"id": 1}]
+            assert_single_read_process(calls)
+        finally:
+            routed.close()
 
 
 # ---------------------------------------------------------------------------

@@ -55,7 +55,7 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -n auto --dist worksteal"
+addopts = "-ra -n 16 --dist worksteal"
 # A hung dolt server or deadlocked fixture must fail the run, not stall it.
 # A test that legitimately needs longer overrides this with
 # @pytest.mark.timeout(<seconds>) and a comment explaining why.

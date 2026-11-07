@@ -22,7 +22,7 @@ one Dolt commit; every read is a normal `tm` command.
 3. Prefer an alias/ID from `find` over a guessed ID.
 4. Global flags (`-l/--ledger PATH`, `-b/--branch`, `--dry-run`, `--no-commit`, `--json`,
    `--format`) go before the command: `tm -l ~/lab/lab101 --json entity list plasmid`.
-5. Every command uses the embedded driver (one `dolt sql` process per statement); there is no server
+5. Every command uses the embedded driver (one long-lived `dolt sql` session per ledger); there is no server
    to start or stop. Writes are serialized by a per-ledger lock (`$TETRAMARK_LOCK_TIMEOUT` changes the
    ~10 s wait); reads never lock, but never run two writers on one ledger.
 6. Presets ship with tetramark (wheel `tetramark/presets/`) and live in the repo's `presets/`; a bare

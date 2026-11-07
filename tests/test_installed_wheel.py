@@ -27,9 +27,11 @@ import tomllib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import pytest
+
+from conftest import SharedBuilds
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAMES = ("tetramark", "tetramark-schema")
@@ -169,16 +171,35 @@ def assert_sdist_contents(sdist: Path, version: str) -> None:
     )
 
 
+def _build_dist(directory: Path) -> dict[str, Any]:
+    """Build the sdist + wheel into ``directory``/dist (once per session)."""
+    uv = shutil.which("uv")
+    assert uv is not None  # the fixture skips before asking for the build
+    checked([uv, "build", "--out-dir", str(directory / "dist")], cwd=ROOT)
+    return {}
+
+
 @pytest.fixture(scope="module")
-def installed(tmp_path_factory: pytest.TempPathFactory) -> Installed:
-    """Build the sdist + wheel once, install the wheel once, then share both."""
+def installed(
+    tmp_path_factory: pytest.TempPathFactory, shared_builds: SharedBuilds
+) -> Installed:
+    """Build the sdist + wheel once per session; install a copy per worker.
+
+    ``uv build`` is the expensive half of this fixture (tens of seconds under
+    load) and it produces the same two files for every worker, so it runs once
+    per session through ``SharedBuilds``; each worker then copies the closed
+    ``dist`` directory, asserts its contents and creates its own venv, because a
+    venv holds absolute paths and cannot be shared across workers.
+    """
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv is not on PATH; the canonical test command is `uv run pytest`")
 
     work = tmp_path_factory.mktemp("installed-wheel")
-    dist = work / "dist"
-    checked([uv, "build", "--out-dir", str(dist)], cwd=ROOT)
+    shared, _metadata = shared_builds.build(
+        "installed-wheel-dist", _build_dist, work / "shared"
+    )
+    dist = shared / "dist"
 
     version = package_version()
     wheel = dist / f"tetramark-{version}-py3-none-any.whl"
