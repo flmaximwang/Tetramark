@@ -59,7 +59,6 @@ CREATE TABLE `aliquot` (
   `unit` VARCHAR(32),
   `label` VARCHAR(255),
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `notes` MEDIUMTEXT,
   CONSTRAINT `pk_aliquot` PRIMARY KEY (`id`),
   CONSTRAINT `uq_aliquot_stock_id_seq` UNIQUE (`stock_id`, `seq`)
 );

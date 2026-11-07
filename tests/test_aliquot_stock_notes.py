@@ -28,6 +28,7 @@ from typer.testing import CliRunner
 
 from tetramark.cli.app import app
 from tetramark.cli.output import notes_cell
+from tetramark.errors import UsageError
 
 from conftest import PRESETS
 
@@ -142,8 +143,8 @@ def test_list_json_keeps_the_full_note_under_the_clean_name(noted_ledger) -> Non
         by_stock.setdefault(row["stock_id"], []).append(row)
     assert all(row["stock_notes"] == NOTE for row in by_stock[made["noted"]["id"]])
     assert all(row["stock_notes"] is None for row in by_stock[made["plain"]["id"]])
-    # The tube's own notes field still exists for now (a later ticket drops it).
-    assert all("notes" in row for row in rows)
+    # The tube's own ``notes`` column is gone (spec 8): no list row has it.
+    assert all("notes" not in row for row in rows)
 
 
 def test_list_csv_keeps_the_full_note_under_the_clean_name(noted_ledger) -> None:
@@ -250,22 +251,16 @@ def test_where_stock_notes_filters_on_the_stock_text(noted_ledger) -> None:
     }
 
 
-def test_where_stock_notes_is_not_confused_with_the_tubes_own_notes(
-    noted_ledger,
-) -> None:
-    """``notes`` stays the aliquot's own column; ``stock_notes`` the stock's."""
+def test_the_tubes_own_notes_column_is_gone(noted_ledger) -> None:
+    """Spec 8 dropped ``aliquot.notes``: ``notes`` is no longer a filter field."""
     made = noted_ledger
     ledger = made["ledger"]
-    # Give one tube its own note directly: ``tm aliquot edit --set notes=``
-    # exists, but a raw update keeps this test about the filters.
     aliquot = made["noted"]["aliquots"][0]
-    ledger.driver.execute(
-        "UPDATE `aliquot` SET `notes` = 'tube-local note' WHERE `id` = %s",
-        (aliquot,),
-    )
-    own = _json(ledger, "aliquot", "list", "--where", "notes~tube-local", "--json")
-    assert [row["id"] for row in own] == [aliquot]
-    assert own[0]["stock_notes"] == NOTE
+    refused = invoke(ledger, "aliquot", "list", "--where", "notes~tube-local")
+    assert isinstance(refused.exception, UsageError)
+    assert refused.exception.exit_code == 2
+    assert "unknown field(s) 'notes'" in str(refused.exception)
+    assert "stock_notes" in str(refused.exception)
 
     stock = _json(ledger, "aliquot", "list", "--where", "stock_notes~miniprep", "--json")
     assert aliquot in {row["id"] for row in stock}

@@ -1,7 +1,8 @@
 """``tm aliquot edit``: correct a tube's recorded fields, keep the audit trail.
 
-Tetramark-72s.  The editable fields are ``quantity``, ``unit``, ``notes`` and
-``created_at``.  Identity (``id``/``stock_id``/``seq``), ``label``, ``status``
+Tetramark-72s.  The editable fields are ``quantity``, ``unit`` and
+``created_at`` (spec 8 dropped the tube's own ``notes``: an aliquot borrows its
+stock's note).  Identity (``id``/``stock_id``/``seq``), ``label``, ``status``
 and placement (``box_id``/``slot``) belong to other commands and are refused
 with a pointer to the command that does own them.
 
@@ -127,14 +128,14 @@ def as_datetime(value) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# The four editable fields
+# The three editable fields
 # ---------------------------------------------------------------------------
 
 
-def test_cli_aliquot_edit_updates_the_four_editable_fields(
+def test_cli_aliquot_edit_updates_the_three_editable_fields(
     cli_env: None, ledger_factory
 ) -> None:
-    """quantity, unit, notes and created_at are corrected in one edit."""
+    """quantity, unit and created_at are corrected in one edit."""
     ledger = ledger_factory([BASE], name="cli-aliquot-edit-fields", id_prefix="77")
     made = make_stock(ledger, quantity="100", unit="ul", count=2)
     first, second = made["aliquots"]
@@ -156,8 +157,6 @@ def test_cli_aliquot_edit_updates_the_four_editable_fields(
             "--set",
             "unit=ml",
             "--set",
-            "notes=recounted after thawing",
-            "--set",
             "created_at=2026-06-24 12:34:56",
             "--json",
         ).output
@@ -172,13 +171,11 @@ def test_cli_aliquot_edit_updates_the_four_editable_fields(
     assert edited["box_id"] is None and edited["slot"] is None
     assert Decimal(str(edited["quantity"])) == Decimal("250")
     assert edited["unit"] == "ml"
-    assert edited["notes"] == "recounted after thawing"
     assert as_datetime(edited["created_at"]) == datetime(2026, 6, 24, 12, 34, 56)
 
     stored = aliquot_row(ledger, second)
     assert Decimal(str(stored["quantity"])) == Decimal("250")
     assert stored["unit"] == "ml"
-    assert stored["notes"] == "recounted after thawing"
     assert as_datetime(stored["created_at"]) == datetime(2026, 6, 24, 12, 34, 56)
     assert commit_count(ledger) == before + 1
     assert dirty(ledger) == []
@@ -242,24 +239,28 @@ def test_cli_aliquot_edit_clears_quantity_and_unit_together(
     assert creation[0]["unit"] == "ul"
 
 
-def test_cli_aliquot_edit_clears_notes(cli_env: None, ledger_factory) -> None:
-    """notes is optional and ``--set notes=`` clears it."""
+def test_cli_aliquot_edit_refuses_the_removed_notes_field(
+    cli_env: None, ledger_factory
+) -> None:
+    """Spec 8 dropped ``aliquot.notes``: it is an unknown editable field."""
     ledger = ledger_factory([BASE], name="cli-aliquot-edit-notes", id_prefix="77")
     made = make_stock(ledger, quantity="100", unit="ul")
     alq = made["aliquots"][0]
-
-    set_result = json.loads(
-        write(
-            ledger, "aliquot", "edit", alq, "--set", "notes=left of the rack", "--json"
-        ).output
+    before = (
+        aliquot_row(ledger, alq),
+        aliquot_events(ledger, alq),
+        commit_count(ledger),
     )
-    assert set_result["notes"] == "left of the rack"
+    assert "notes" not in before[0]
 
-    cleared = json.loads(
-        write(ledger, "aliquot", "edit", alq, "--set", "notes=", "--json").output
-    )
-    assert cleared["notes"] is None
-    assert aliquot_row(ledger, alq)["notes"] is None
+    for args in (("--set", "notes=left of the rack"), ("--set", "notes=")):
+        refused = invoke(ledger, "aliquot", "edit", alq, *args)
+        assert isinstance(refused.exception, UsageError)
+        assert refused.exception.exit_code == 2
+        message = str(refused.exception)
+        assert "unknown field(s) 'notes'" in message
+        assert "editable fields: created_at, quantity, unit" in message
+    assert_untouched(ledger, alq, *before)
 
 
 def test_cli_aliquot_edit_accepts_a_t_separated_created_at(
@@ -436,19 +437,19 @@ def test_cli_aliquot_edit_resolves_a_full_id_and_an_alias(
     write(ledger, "alias", "add", "aliquot", alq, "tube-1")
 
     by_alias = json.loads(
-        write(ledger, "aliquot", "edit", "tube-1", "--set", "notes=via alias", "--json").output
+        write(ledger, "aliquot", "edit", "tube-1", "--set", "unit=ml", "--json").output
     )
     assert by_alias["id"] == alq
-    assert by_alias["notes"] == "via alias"
+    assert by_alias["unit"] == "ml"
 
     by_id = json.loads(
-        write(ledger, "aliquot", "edit", alq, "--set", "notes=via id", "--json").output
+        write(ledger, "aliquot", "edit", alq, "--set", "quantity=250", "--json").output
     )
     assert by_id["id"] == alq
-    assert by_id["notes"] == "via id"
+    assert Decimal(str(by_id["quantity"])) == Decimal("250")
 
     # The human line names the tube it edited.
-    human = write(ledger, "aliquot", "edit", "tube-1", "--set", "notes=human")
+    human = write(ledger, "aliquot", "edit", "tube-1", "--set", "created_at=2026-06-24 12:34:56")
     assert alq in human.output
 
 
@@ -466,7 +467,7 @@ def test_cli_aliquot_edit_refuses_an_id_prefix(
     )
 
     for ref in (alq.rsplit(".", 1)[0], alq[:-1]):
-        refused = invoke(ledger, "aliquot", "edit", ref, "--set", "notes=nope")
+        refused = invoke(ledger, "aliquot", "edit", ref, "--set", "unit=ml")
         assert isinstance(refused.exception, LedgerError)
         assert not isinstance(refused.exception, UsageError)
         assert refused.exit_code == 1
@@ -577,7 +578,7 @@ def test_cli_aliquot_edit_refuses_a_no_op(cli_env: None, ledger_factory) -> None
     "args",
     [
         ("--set", "quantity=5", "--set", "unit=" + "x" * 33),
-        ("--set", "notes=looks fine", "--set", "created_at=tomorrow"),
+        ("--set", "unit=ml", "--set", "created_at=tomorrow"),
         ("--set", "quantity=5", "--set", "colour=red"),
         ("--set", "unit=ml", "--set", "quantity=0"),
     ],
@@ -713,7 +714,7 @@ def test_cli_aliquot_edit_is_one_commit_and_history_shows_the_edit(
         "edit",
         alq,
         "--set",
-        "notes=corrected",
+        "quantity=250",
         "-m",
         "typo",
     )
@@ -747,7 +748,7 @@ def test_cli_aliquot_edit_leaves_tm_check_clean(cli_env: None, ledger_factory) -
         "--set",
         "created_at=2026-06-24 12:34:56",
     )
-    write(ledger, "aliquot", "edit", alq, "--set", "notes=checked")
+    write(ledger, "aliquot", "edit", alq, "--set", "created_at=2026-07-01 00:00:00")
     write(ledger, "aliquot", "edit", alq, "--set", "quantity=", "--set", "unit=")
 
     report = json.loads(read(ledger, "check", "--json").output)
@@ -771,7 +772,7 @@ def test_cli_aliquot_edit_json_is_the_loaded_record(
     status_before = aliquot_row(ledger, alq)["status"]
 
     payload = json.loads(
-        read(ledger, "aliquot", "edit", alq, "--set", "notes=json shape", "--json").output
+        read(ledger, "aliquot", "edit", alq, "--set", "unit=ml", "--json").output
     )
     assert isinstance(payload, dict)
     assert set(payload) >= {
@@ -782,7 +783,6 @@ def test_cli_aliquot_edit_json_is_the_loaded_record(
         "quantity",
         "unit",
         "label",
-        "notes",
         "created_at",
         "box_id",
         "slot",
@@ -793,9 +793,8 @@ def test_cli_aliquot_edit_json_is_the_loaded_record(
     assert payload["stock_id"] == made["stock"]["id"]
     assert payload["seq"] == 1
     assert payload["status"] == status_before
-    assert payload["notes"] == "json shape"
     assert Decimal(str(payload["quantity"])) == Decimal("100")
-    assert payload["unit"] == "ul"
+    assert payload["unit"] == "ml"
 
 
 def test_cli_aliquot_edit_dry_run_writes_nothing(cli_env: None, ledger_factory) -> None:

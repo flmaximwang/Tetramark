@@ -32,7 +32,7 @@ database: when you copy or clone a ledger, copy its `presets/` directory too.
 |---|---|---|
 | 1 | **entity** | *What* is it? (a plasmid design, a book title, a reagent) |
 | 2 | **stock** | *Which batch*? (one preparation, lot or culture of that entity) |
-| 3 | **aliquot** | *Which unit*? (one physical tube, vial or copy: generic location/quantity/unit/status/label/notes; material properties live on the stock) |
+| 3 | **aliquot** | *Which unit*? (one physical tube, vial or copy: generic location/quantity/unit/status/label; material properties and the notes live on the stock) |
 | 4 | **box** | *Where*? (the container and slot that holds it) |
 
 A *mark* is also what you put on a tube or a shelf so you can find the thing again, and every mark

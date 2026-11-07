@@ -1575,7 +1575,9 @@ def test_aliquot_show_reads_the_tube_its_stock_and_its_path(
     assert Decimal(str(shown["quantity"])) == Decimal("100")
     assert shown["unit"] == "ul"
     assert shown["label"] is None
-    assert shown["notes"] is None
+    # Spec 8 dropped the tube's own notes: it carries the stock's instead.
+    assert shown["stock_notes"] is None
+    assert "notes" not in shown
     assert shown["created_at"] is not None
     assert shown["aliases"] == []
     assert shown["stock_kind"] == "lot"

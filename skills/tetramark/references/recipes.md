@@ -441,7 +441,7 @@ tm aliquot show 1226FP01.1 --json
 
 `ALQ` is the full `<stock>.<seq>` id or one of the tube's aliases (an alias added with `tm alias add
 aliquot …`, or an old id left by `tm stock renumber`). The table holds the aliquot row (`status`,
-`quantity`, `unit`, `label`, `notes`, `created_at`), the owning stock's note as the `* notes` row
+`quantity`, `unit`, `label`, `created_at`), the owning stock's note as the `* notes` row
 (full text, marked `*` because it is not the tube's own value), the sorted `aliases`, the owning
 stock's `stock_kind` and `entity_id`, the `box_id`/`slot` and the derived `in_stock`; the `path`
 down the box nesting (`Freezer-1/Shelf-2/Box:A3`) prints on its own line under the table, after the

@@ -31,7 +31,6 @@
   "id": "<stock-id>.1",
   "in_stock": false,
   "label": null,
-  "notes": null,
   "object": "aliquot",
   "path": null,
   "quantity": null,

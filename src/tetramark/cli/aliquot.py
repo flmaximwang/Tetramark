@@ -385,7 +385,7 @@ def edit_aliquot_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Correct quantity, unit, notes or created_at; other columns have their own commands.
+    """Correct quantity, unit or created_at; other columns have their own commands.
 
     An edit corrects the stored value, not history: the create/use/move events
     keep what really happened, and a corrected quantity is the *remaining*
@@ -393,9 +393,11 @@ def edit_aliquot_command(
     records consumption), quantity and unit must end up both set or both empty,
     and ``created_at`` is an ISO datetime that cannot be cleared.  ``label``,
     ``status``, ``box_id``/``slot`` and the identity columns ``id``/``stock_id``/
-    ``seq`` are refused with the command that owns them.  One edit is one Dolt
-    commit and appends one ``edit`` event whose message is the field summary
-    plus ``; reason: <MSG>`` when ``-m`` is given.
+    ``seq`` are refused with the command that owns them.  The tube's own
+    ``notes`` column is gone (an aliquot borrows its stock's note: `tm aliquot
+    show` and `tm aliquot list` print it as ``* notes``/``*notes``).  One edit
+    is one Dolt commit and appends one ``edit`` event whose message is the
+    field summary plus ``; reason: <MSG>`` when ``-m`` is given.
     """
     ledger = resolve_ledger(ctx)
     try:

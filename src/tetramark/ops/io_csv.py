@@ -13,8 +13,9 @@ header carries the core columns plus the kind's own fields:
 * ``box`` — ``id``, ``kind``, ``name``, ``parent``, ``parent_slot``,
   ``created_at``, ``notes``, the kind fields, ``alias``;
 * ``aliquot`` — ``id``, ``kind``, ``stock``, ``seq``, ``box``, ``slot``,
-  ``status``, ``label``, ``quantity``, ``unit``, ``created_at``, ``notes``, the
-  stock kind's aliquot fields, ``alias``;
+  ``status``, ``label``, ``quantity``, ``unit``, ``created_at``, the stock
+  kind's aliquot fields, ``alias`` (an aliquot has no notes of its own: it
+  borrows the stock's);
 * ``alias`` — ``object_type``, ``object_id``, ``alias``.
 
 Aliases use a ``;``-separated ``alias`` column (and ``aliases.csv`` is also
@@ -115,7 +116,6 @@ _CORE_COLUMNS: dict[str, tuple[str, ...]] = {
         "quantity",
         "unit",
         "created_at",
-        "notes",
     ),
     "alias": ("object_type", "object_id", "alias"),
 }
@@ -1822,9 +1822,6 @@ class _Planner:
             "quantity": quantity,
             "unit": unit,
         }
-        notes = _raw(data, "notes")
-        if notes is not None:
-            payload["notes"] = notes
         if label is not None:
             payload["label"] = label
         created = _parse_created_at(_text(data, "created_at"))

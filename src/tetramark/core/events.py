@@ -89,6 +89,13 @@ _EVENT_COLUMNS = (
 )
 
 
+#: The spec that introduced ``aliquot_event.message`` (and dropped ``note``/
+#: ``purpose``).  A ledger below this still has the spec-6 event columns; the
+#: counter moves on (spec 8 dropped ``aliquot.notes``), so this guard compares
+#: against the spec that changed the event shape, never ``SPEC_VERSION``.
+EVENT_MESSAGE_SPEC = 7
+
+
 def require_spec7_event_columns(ledger: Any) -> None:
     """Refuse a spec-6 ``aliquot_event`` shape on the paths that read/write events.
 
@@ -112,7 +119,7 @@ def require_spec7_event_columns(ledger: Any) -> None:
         stored = int(str(raw).strip())
     except (TypeError, ValueError):
         return
-    if stored >= SPEC_VERSION:
+    if stored >= EVENT_MESSAGE_SPEC:
         return
     raise LedgerError(
         f"ledger is spec {stored}, tm is spec {SPEC_VERSION}: aliquot_event "

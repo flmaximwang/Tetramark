@@ -17,7 +17,7 @@ Generation order
    :func:`box_view_statements` — so it is not part of this pure list).
 
 An aliquot has no kind table of its own: it is a **generic tube** (location,
-quantity, unit, status, label, notes) and every property of the material lives
+quantity, unit, status, label) and every property of the material lives
 on the stock kind (spec §3).  ``aliquot_event`` stays one shared table.
 
 Spec 4 made the status vocabulary a property of the **stock kind**
@@ -444,7 +444,6 @@ def _create_aliquot(schema: EffectiveSchema | None = None) -> Statement:
             f"  {_ident('unit')} VARCHAR(32),\n"
             f"  {_ident('label')} VARCHAR(255),\n"
             f"  {_ident('created_at')} DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"
-            f"  {_ident('notes')} MEDIUMTEXT,\n"
             f"  CONSTRAINT {_ident(_pk('aliquot'))} PRIMARY KEY ({_ident('id')}),\n"
             f"  CONSTRAINT {_ident(_uq('aliquot', 'stock_id', 'seq'))} "
             f"UNIQUE ({_ident('stock_id')}, {_ident('seq')})"
