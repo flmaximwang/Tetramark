@@ -48,7 +48,6 @@ RECORD_KEYS = {
     "quantity",
     "unit",
     "label",
-    "notes",
     "stock_notes",
     "created_at",
     "aliases",
@@ -84,13 +83,16 @@ def build_ledger(ledger_factory) -> dict[str, Any]:
     placed = ledger.stocks.add(
         "lot",
         entity=item["id"],
+        values={"notes": "n1"},
         aliquots=6,
         box="BOX",
         slots=("A1", "A2", "A3", "A4", "A5", "A6"),
         quantity=5,
         unit="ml",
     )
-    pending = ledger.stocks.add("lot", entity=item["id"], aliquots=4)
+    pending = ledger.stocks.add(
+        "lot", entity=item["id"], values={"notes": "n2"}, aliquots=4
+    )
     stock_one, stock_two = placed["id"], pending["id"]
     one = list(placed["aliquots"])
     two = list(pending["aliquots"])
@@ -107,18 +109,20 @@ def build_ledger(ledger_factory) -> dict[str, Any]:
         "spaces": two[2],
         "delta": two[3],
     }
-    # (seq, label, quantity, unit, created_at, notes); NULL means "unset".
+    # (seq, label, quantity, unit, created_at); NULL means "unset".  The two
+    # stocks carry the notes ("n1"/"n2"); the tubes have no notes of their own
+    # (spec 8).
     values: list[tuple[Any, ...]] = [
-        ("alpha", 1, "alpha", "10", "ml", "2026-01-05 00:00:00", "n1"),
-        ("beta", 2, "beta", "9", "ml", "2026-02-01 12:00:00", None),
-        ("gamma", 10, "gamma", "1.5", "ml", "2025-12-31 23:59:59", None),
-        ("null_label", 3, None, None, None, "2026-03-01 00:00:00", None),
-        ("empty", 4, "", "0", "ml", "2026-04-01 00:00:00", None),
-        ("none", 5, "none", "2.50", "ml", "2026-05-01 00:00:00", None),
-        ("Alpha", 2, "Alpha", "100", "ul", "2024-01-01 00:00:00", "n2"),
-        ("gamma2", 7, "gamma", "3", "ul", "2026-06-01 00:00:00", None),
-        ("spaces", 8, "  ", "4", "ul", "2026-07-01 00:00:00", None),
-        ("delta", 9, "delta", "5", "ul", "2023-06-01 00:00:00", None),
+        ("alpha", 1, "alpha", "10", "ml", "2026-01-05 00:00:00"),
+        ("beta", 2, "beta", "9", "ml", "2026-02-01 12:00:00"),
+        ("gamma", 10, "gamma", "1.5", "ml", "2025-12-31 23:59:59"),
+        ("null_label", 3, None, None, None, "2026-03-01 00:00:00"),
+        ("empty", 4, "", "0", "ml", "2026-04-01 00:00:00"),
+        ("none", 5, "none", "2.50", "ml", "2026-05-01 00:00:00"),
+        ("Alpha", 2, "Alpha", "100", "ul", "2024-01-01 00:00:00"),
+        ("gamma2", 7, "gamma", "3", "ul", "2026-06-01 00:00:00"),
+        ("spaces", 8, "  ", "4", "ul", "2026-07-01 00:00:00"),
+        ("delta", 9, "delta", "5", "ul", "2023-06-01 00:00:00"),
     ]
     # ``(stock_id, seq)`` is unique: park every row on its own temporary
     # sequence first, so the final values never collide with a row the loop has
@@ -128,11 +132,11 @@ def build_ledger(ledger_factory) -> dict[str, Any]:
             "UPDATE `aliquot` SET `seq` = %s WHERE `id` = %s",
             (100 + offset, rows[key]),
         )
-    for key, seq, label, quantity, unit, created_at, notes in values:
+    for key, seq, label, quantity, unit, created_at in values:
         ledger.driver.execute(
             "UPDATE `aliquot` SET `seq` = %s, `label` = %s, `quantity` = %s, "
-            "`unit` = %s, `created_at` = %s, `notes` = %s WHERE `id` = %s",
-            (seq, label, quantity, unit, created_at, notes, rows[key]),
+            "`unit` = %s, `created_at` = %s WHERE `id` = %s",
+            (seq, label, quantity, unit, created_at, rows[key]),
         )
     # The text-column empty rule has a row of each shape: '' and NULL.
     ledger.driver.execute(
@@ -183,7 +187,7 @@ def cli_ids(ledger, *args: str) -> list[str]:
 
 
 def test_text_operators_and_their_complements(ledger_factory) -> None:
-    """=, !=, ~, !~ and the ordered comparisons on label/unit/box/slot/notes."""
+    """=, !=, ~, !~ and the ordered comparisons on label/unit/box/slot/stock_notes."""
     data = build_ledger(ledger_factory)
     ledger, rows, all_ids = data["ledger"], data["ids"], data["population"]
 
@@ -233,7 +237,15 @@ def test_text_operators_and_their_complements(ledger_factory) -> None:
         rows["empty"],
         rows["none"],
     }
-    assert filtered(ledger, "notes<n2") == {rows["alpha"]}
+    # ``stock_notes`` compares in collation order on the owning stock's note.
+    assert filtered(ledger, "stock_notes<n2") == {
+        rows["alpha"],
+        rows["beta"],
+        rows["gamma"],
+        rows["null_label"],
+        rows["empty"],
+        rows["none"],
+    }
     # The value after the operator is kept verbatim: two spaces are two spaces.
     assert filtered(ledger, "label=  ") == {rows["spaces"]}
 

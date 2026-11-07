@@ -142,6 +142,8 @@ class SchemaPlan:
     expected_fingerprint: str = ""
     live_tetramark_version: str | None = None
     expected_tetramark_version: str = ""
+    live_spec_version: str | None = None
+    expected_spec_version: str = ""
 
     # -- summaries ---------------------------------------------------------
     @property
@@ -154,10 +156,18 @@ class SchemaPlan:
 
         A stale fingerprint is the historical reason; a missing or outdated
         ``tetramark_version`` is the other (older ledgers predate the key).
+
+        A stored ``spec_version`` below the tool's is the third: the counter
+        moves through *manual* steps that ``tm schema plan`` cannot diff (the
+        7 -> 8 ``aliquot.notes`` drop is one), so a ledger whose DDL already matches
+        still has to record the new counter.  Comparing the counter keeps
+        ``tm schema apply`` able to write it without a plan step, and without
+        the runner recording a fingerprint the format does not own.
         """
         return (
             self.live_fingerprint != self.expected_fingerprint
             or self.live_tetramark_version != self.expected_tetramark_version
+            or self.live_spec_version != self.expected_spec_version
         )
 
     @property
@@ -186,6 +196,11 @@ class SchemaPlan:
                 "live": self.live_fingerprint,
                 "expected": self.expected_fingerprint,
                 "stale": self.meta_stale,
+            },
+            "spec_version": {
+                "live": self.live_spec_version,
+                "expected": self.expected_spec_version,
+                "stale": self.live_spec_version != self.expected_spec_version,
             },
             "empty": self.is_empty,
             "sql": self.sql,
@@ -1186,6 +1201,8 @@ def build_plan(
         expected_fingerprint=schema.fingerprint(),
         live_tetramark_version=live.meta.get(META_TETRAMARK_VERSION),
         expected_tetramark_version=__version__,
+        live_spec_version=live.meta.get(META_SPEC_VERSION),
+        expected_spec_version=str(SPEC_VERSION),
     )
     buckets = _Buckets()
 

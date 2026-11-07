@@ -14,6 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tetramark.cli.app import app
+from tetramark.errors import UsageError
 from tetramark.ops.io_csv import (
     CsvImportError,
     export_csv,
@@ -531,8 +532,8 @@ def test_aliquot_rows_accept_id_or_stock_seq(
 
     first = write_csv(
         tmp_path / "one.csv",
-        "id,box,slot,status,quantity,unit,notes\n"
-        f"{stock['id']}.1,BOX,A1,stored,100,ul,first\n",
+        "id,box,slot,status,quantity,unit\n"
+        f"{stock['id']}.1,BOX,A1,stored,100,ul\n",
     )
     import_csv(ledger, "aliquot", first, object_type="aliquot")
 
@@ -543,14 +544,15 @@ def test_aliquot_rows_accept_id_or_stock_seq(
     import_csv(ledger, "lot", second, object_type="aliquot")
 
     rows = ledger.driver.query(
-        "SELECT `id`, `seq`, `slot`, `status`, `quantity`, `unit`, `notes` "
+        "SELECT `id`, `seq`, `slot`, `status`, `quantity`, `unit` "
         "FROM `aliquot` ORDER BY `seq`"
     )
     assert [row["id"] for row in rows] == [f"{stock['id']}.1", f"{stock['id']}.2"]
     assert [row["slot"] for row in rows] == ["A1", "A2"]
     assert rows[0]["status"] == "stored"
-    assert rows[0]["notes"] == "first"
     assert rows[1]["status"] == "stored"
+    # Spec 8 dropped the tube's own notes column: it is not readable either.
+    assert "notes" not in rows[0]
 
 
 def test_dry_run_reports_sql_and_writes_nothing(
@@ -581,13 +583,13 @@ def test_aliquot_label_is_imported_exported_and_round_trips(
 
     path = write_csv(
         tmp_path / "aliquots.csv",
-        "id,stock,seq,status,box,slot,label,notes\n"
-        f"{stock['id']}.1,{stock['id']},1,stored,BOX,A1,AA-12,tube one\n",
+        "id,stock,seq,status,box,slot,label\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,BOX,A1,AA-12\n",
     )
     import_csv(source, "aliquot", path, object_type="aliquot")
 
-    rows = source.driver.query("SELECT `label`, `notes` FROM `aliquot`")
-    assert rows == [{"label": "AA-12", "notes": "tube one"}]
+    rows = source.driver.query("SELECT `label` FROM `aliquot`")
+    assert rows == [{"label": "AA-12"}]
 
     # The export header carries the column right before `quantity`...
     out = tmp_path / "export"
@@ -595,6 +597,7 @@ def test_aliquot_label_is_imported_exported_and_round_trips(
     header = (out / "aliquots.csv").read_text(encoding="utf-8").splitlines()[0]
     columns = header.split(",")
     assert columns[columns.index("status") + 1] == "label"
+    assert "notes" not in columns  # spec 8: an aliquot borrows the stock's
     assert "AA-12" in (out / "aliquots.csv").read_text(encoding="utf-8")
 
     # ...and a full round trip into a fresh ledger keeps the label.
@@ -603,6 +606,24 @@ def test_aliquot_label_is_imported_exported_and_round_trips(
     assert target.driver.query("SELECT `label` FROM `aliquot`") == [
         {"label": "AA-12"}
     ]
+
+
+def test_aliquot_csv_refuses_the_removed_notes_column(
+    ledger_factory, tmp_path: Path
+) -> None:
+    """Spec 8 removed ``aliquot.notes``: a CSV that still has it is refused."""
+    ledger = ledger_factory([BASE], name="aliquot-csv-notes")
+    item = ledger.entities.add("item", name="widget")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], values={"supplier": "acme"}, aliquots=0
+    )
+    path = write_csv(
+        tmp_path / "aliquots.csv",
+        "id,stock,seq,notes\n" f"{stock['id']}.1,{stock['id']},1,tube one\n",
+    )
+    with pytest.raises(UsageError, match="unknown column\\(s\\) 'notes'"):
+        import_csv(ledger, "aliquot", path, object_type="aliquot")
+    assert ledger.driver.query("SELECT COUNT(*) AS n FROM `aliquot`") == [{"n": 0}]
 
 
 def test_aliquot_label_over_255_characters_is_rejected(

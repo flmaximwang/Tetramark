@@ -183,10 +183,9 @@ _CORE_FILTERS: dict[str, frozenset[str]] = {
             "unit",
             "label",
             "created_at",
-            "notes",
-            # The owning stock's note: an aliquot has no note of its own
-            # worth reading (it borrows the stock's), so the list and show
-            # expose it under this name and filter on it.
+            # The owning stock's note: the aliquot's own ``notes`` column is
+            # gone (spec 8) -- a tube borrows the stock's note, so the list and
+            # show expose it under this name and filter on it.
             "stock_notes",
         }
     ),
@@ -2469,7 +2468,6 @@ _ALIQUOT_COLUMNS: tuple[str, ...] = (
     "unit",
     "label",
     "created_at",
-    "notes",
 )
 
 #: Aliquot columns ``tm aliquot edit`` refuses, with the command that owns
@@ -3081,10 +3079,9 @@ def _aliquot_edit_values(
 ) -> dict[str, Any]:
     """The editable columns after applying ``--set``, validated as one record.
 
-    The untouched columns keep the row's current values; a touched column is
-    coerced by its own rule, while ``notes`` (and any future unrefused column)
-    takes the text as given.  Nothing is written here: the caller compares the
-    result with the row only after every rule has passed.
+    The untouched columns keep the row's current values and a touched column
+    is coerced by its own rule.  Nothing is written here: the caller compares
+    the result with the row only after every rule has passed.
     """
     values = {
         field: row.get(field)
@@ -3102,9 +3099,10 @@ def _aliquot_edit_values(
         elif field == "created_at":
             values[field] = _parse_aliquot_created_at(text)
         else:
-            # ``notes`` and any future editable column: arbitrary text, and an
-            # exactly empty value clears the nullable column to NULL.  A
-            # whitespace-only value is not empty and is kept as given.
+            # The default for an editable text column (the design note on
+            # ``_ALIQUOT_COLUMNS``): arbitrary text, and an exactly empty value
+            # clears the nullable column to NULL.  A whitespace-only value is
+            # not empty and is kept as given.
             values[field] = None if text == "" else text
     return values
 
@@ -3172,21 +3170,15 @@ def _aliquot_change_value(field: str, value: Any) -> str:
 def _aliquot_changes_text(changes: Sequence[tuple[str, Any, Any]]) -> str:
     """The edit event's summary, in column order.
 
-    A note's text can be long (or empty), so its summary is just
-    ``notes changed``; every other column names both values, e.g.
-    ``quantity 500 -> 600; unit ul -> ml``.  Numbers use
-    :func:`plain_decimal` because the column stores ``DECIMAL(18,6)``.
+    Every column names both values, e.g. ``quantity 500 -> 600; unit ul ->
+    ml``.  Numbers use :func:`plain_decimal` because the column stores
+    ``DECIMAL(18,6)``.
     """
-    parts: list[str] = []
-    for field, old, new in changes:
-        if field == "notes":
-            parts.append("notes changed")
-            continue
-        parts.append(
-            f"{field} {_aliquot_change_value(field, old)} -> "
-            f"{_aliquot_change_value(field, new)}"
-        )
-    return "; ".join(parts)
+    return "; ".join(
+        f"{field} {_aliquot_change_value(field, old)} -> "
+        f"{_aliquot_change_value(field, new)}"
+        for field, old, new in changes
+    )
 
 
 def edit_aliquot(
@@ -3199,7 +3191,7 @@ def edit_aliquot(
     """Correct the current values of one aliquot, recording an ``edit`` event.
 
     This is for a wrong entry, not for a physical action: it changes the row's
-    current quantity/unit/notes/created_at and leaves every earlier event in
+    current quantity/unit/created_at and leaves every earlier event in
     place, so a ``use`` after an ``add`` still says what was consumed.  A
     quantity correction is the *remaining* amount, never a recount of past
     consumption.
@@ -4003,7 +3995,6 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         "quantity": row["quantity"],
         "unit": row["unit"],
         "label": row["label"],
-        "notes": row["notes"],
         "stock_notes": stock_notes,
         "created_at": row["created_at"],
         "aliases": [str(alias["alias"]) for alias in fetched[1]],
@@ -4373,7 +4364,7 @@ def list_aliquots(
         f"a.{_quote('id')}, a.{_quote('stock_id')}, a.{_quote('seq')}, "
         f"a.{_quote('box_id')}, a.{_quote('slot')}, a.{_quote('status')}, "
         f"a.{_quote('quantity')}, a.{_quote('unit')}, a.{_quote('label')}, "
-        f"a.{_quote('created_at')}, a.{_quote('notes')}, "
+        f"a.{_quote('created_at')}, "
         f"s.{_quote('kind')} AS {_quote('stock_kind')}, "
         f"s.{_quote('entity_id')} AS {_quote('entity_id')}, "
         f"s.{_quote('notes')} AS {_quote('stock_notes')}, "
@@ -4447,7 +4438,6 @@ def list_aliquots(
                 "quantity": row["quantity"],
                 "unit": row["unit"],
                 "label": row["label"],
-                "notes": row["notes"],
                 "stock_notes": row["stock_notes"],
                 "created_at": row["created_at"],
                 "aliases": aliases.get(str(row["id"]), []),
