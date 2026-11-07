@@ -17,7 +17,8 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
-| [0.8.43](v0.8.43.md) | `v0.8.43.md` | test harness only: expensive fixtures build once per session as shared closed directories; budgets, tests and product behaviour unchanged |
+| [0.8.44.1](v0.8.44.1.md) | `v0.8.44.1.md` | test harness only: expensive fixtures build once per session as shared closed directories; budgets, tests and product behaviour unchanged |
+| [0.8.44](v0.8.44.md) | `v0.8.44.md` | the suite-budget regression is deterministic: the guard's clock is an injected `tests/conftest.py::_suite_clock` (default `time.monotonic`), the test asserts the exact `5.0s > 3s` banner without a real sleep, and a `hookwrapper` negative control pins the `trylast` ordering; budgets 30/300/60 and the product are unchanged |
 | [0.8.42](v0.8.42.md) | `v0.8.42.md` | `tm stock show` / `tm aliquot show` print related-object `*` lines and add JSON `related`; CSV and `spec_version` unchanged |
 | [0.8.41.1](v0.8.41.1.md) | `v0.8.41.1.md` | `tm aliquot edit` corrects a tube's `quantity`, `unit`, `notes` or `created_at` without rewriting history: one edit event, one Dolt commit |
 | [0.8.41](v0.8.41.md) | `v0.8.41.md` | `tm stock list` and `ledger.stocks.ls()` default to active stocks; `--all` / `all_statuses=True` restore every status |
