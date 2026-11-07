@@ -80,13 +80,16 @@ tm skill version [NAME] [--file PATH] [--json]
   its directory): a stale 0.4-era copy warns `describes an older CLI` on stderr and still exits 0,
   and a copy without a version warns that it predates versioned skills. Only a missing file or a file
   without YAML frontmatter exits 1. See spec §6.5 and §10.
-- A new ledger is **spec 6**: the shipped presets declare no status vocabulary, and `tm init` starts
+- A new ledger is **spec 8**: the shipped presets declare no status vocabulary, and `tm init` starts
   its tubes `stored` (or whatever the creation `--status` says). An older ledger still opens with its
   own stored preset copies — spec 5's per-kind status sets keep working — and `tm` warns
   `ledger is spec N, tm is spec N+1: follow migration/spec/N-to-N+1/README.md to upgrade it manually`.
-  The spec 5 → 6 step is **manual** (`migration/spec/5-to-6/README.md`): every pending historical
-  preset step runs first, then the whole preset closure is replaced with the status-free copies, the
-  statuses are remapped (one `migrated: <old status>` event per remapped aliquot), and
+  The spec 5 → 6 step is **manual** (`migration/spec/5-to-6/README.md`), and so is the latest one,
+  spec 7 → 8: `migration/spec/7-to-8/README.md` drops the unused `aliquot.notes` by hand (export any
+  non-empty notes first) and lets `tm schema apply` record the new counter; spec 6 → 7 is scripted.
+  For the 5 → 6 step itself, every pending historical preset step runs first, then the whole preset
+  closure is replaced with the status-free copies, the statuses are remapped (one
+  `migrated: <old status>` event per remapped aliquot), and
   `tm schema plan`/`apply` writes `spec_version` 6, the preset versions, the `aliquot.status` `CHECK`
   and the regenerated tests in one commit. Past events are never rewritten; the new enum stock
   properties are not backfilled.

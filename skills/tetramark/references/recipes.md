@@ -23,11 +23,13 @@ if the upward search meets one before a ledger, `tm` exits 2 telling you to `cd`
 directory (or pass `--ledger PATH`).
 
 An older ledger is never upgraded implicitly: `tm` warns `ledger is spec N, tm is spec N+1: follow
-migration/spec/N-to-N+1/README.md`. The current spec 5 → 6 step is **manual** — every pending
-historical preset step first, then replace the whole preset closure with the status-free copies,
-remap the statuses (one `migrated: <old status>` event per remapped aliquot) and let
-`tm schema plan`/`apply` write `spec_version` 6, the preset versions and the `CHECK`; see
-`migration/spec/5-to-6/README.md`.
+migration/spec/N-to-N+1/README.md`. The current step is **manual**: spec 7 → 8,
+`migration/spec/7-to-8/README.md` (export any non-empty aliquot notes, drop the column with
+`ALTER TABLE aliquot DROP COLUMN notes`, then `tm schema apply` records spec 8). The spec 5 → 6 step
+was manual as well — every pending historical preset step first, then replace the whole preset
+closure with the status-free copies, remap the statuses (one `migrated: <old status>` event per
+remapped aliquot) and let `tm schema plan`/`apply` write the counter, the preset versions and the
+`CHECK`; see `migration/spec/5-to-6/README.md`.
 
 ## 1. Register a new plasmid and its glycerol stock in a box
 

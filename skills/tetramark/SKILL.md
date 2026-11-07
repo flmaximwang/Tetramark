@@ -34,9 +34,9 @@ one Dolt commit; every read is a normal `tm` command.
    `nucleic_acids`, `bacteria`, `proteins`, `cell_culture`; `cellbio` = `base`, `nucleic_acids`,
    `cell_culture`, `immuno`, `viral_vectors`; `angenet` = `base`, `nucleic_acids`, `biosamples` and
    the four organism parts. One ledger can list any combination and the shared parts load once.
-7. A new ledger is **spec 7** (`base` version 6) and no shipped preset declares statuses. An older
+7. A new ledger is **spec 8** (`base` version 6) and no shipped preset declares statuses. An older
    ledger still opens with its own preset copies and `tm` warns `ledger is spec N, tm is spec N+1:
-   follow migration/spec/N-to-N+1/README.md`; spec 5 → 6 is a manual README step, 6 → 7 scripted.
+   follow migration/spec/N-to-N+1/README.md`; 5 → 6 and 7 → 8 are manual README steps, 6 → 7 scripted.
 
 ## Decision table
 
@@ -57,7 +57,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Hard-delete an object added by mistake (rare) | `tm entity\|stock\|aliquot\|box purge REF` (refused while referenced; a box must be empty) |
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box, or move the box itself | `tm box show NAME` (grid) or `--json`; `tm box move NAME --in PARENT [--slot S]` |
-| Rename an entity or box, or edit an entity, stock or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias); `tm entity\|stock\|box edit REF --set f=v` (notes + kind fields; a name is rename-only — `--set name=…` is refused) |
+| Rename an entity or box, or edit an entity, stock or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias); `tm entity\|stock\|box edit REF --set f=v` (notes + kind fields; a name is rename-only — `--set name=…` is refused); write a note in `$VISUAL`/`$EDITOR`, append or clear it with `tm entity\|stock\|box note REF` |
 | Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance!=amp'` (`=` exact, `!=` inequality, `~`/`!~` case-sensitive regex `(?i)`, ordered comparisons; `field=` empty, `field!=` filled in; `--where-any` is one OR group, e.g. `tm find --where-any 'resistance=kan' --where-any 'resistance=amp'`; the same operators serve `tm aliquot list`, e.g. `tm aliquot list --where 'quantity>=100' --where-any 'label~^cl'`) |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
 | Register an organism line and its colony, or record a cross / pedigree link | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse`; `tm stock add fly_culture … --set dam=ALQ --set sire=ALQ` (refs to aliquots, `lineage: true`) |
@@ -145,6 +145,6 @@ tm check --group core
 - **Soft-remove by default.** `aliquot status … consumed|missing` keeps history; the explicit
   `tm entity|stock|aliquot|box purge` is a hard delete with no undo (only Dolt history recovers it),
   for an object added by mistake; it refuses while anything still references the object.
-- **`tm aliquot edit` corrects recorded fields, never movement.** It changes only `quantity`, `unit`,
-  notes and `created_at`; placement is `tm aliquot move`, label `tm aliquot label`, status `tm aliquot status`; `use`/`move` need `-m`.
+- **`tm aliquot edit` corrects recorded fields, never movement.** It changes only `quantity`, `unit`
+  and `created_at` (a tube has no note of its own since spec 8: it borrows the stock's, shown by `list`/`show`); placement is `tm aliquot move`, label `tm aliquot label`, status `tm aliquot status`; `use`/`move` need `-m`.
 - **Check after imports and migrations**, and spot-check `box show` against the old grid.
