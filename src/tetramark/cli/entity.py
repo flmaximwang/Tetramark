@@ -112,6 +112,7 @@ def list_entities_command(
                 "name",
                 "stocks_available",
                 "aliquots_in_stock",
+                "notes",
             ],
             short_uuid_columns=("id",),
         )

@@ -75,6 +75,7 @@ STOCK_COLUMNS = [
     "entity_name",
     "aliquots_in_stock",
     "status",
+    "notes",
 ]
 
 

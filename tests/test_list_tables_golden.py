@@ -2,31 +2,36 @@
 
 ``tests/data/golden/stock_list.table`` pins the default table of ``tm stock
 list``: the column set and order (``id kind entity_id entity_name
-aliquots_in_stock status``), the shortened uuid ``entity_id``, an entity name
-long enough to prove names print in full, and only the ``active`` row -- the
-default scope hides the stocks whose derived ``status`` is ``empty`` (no
-aliquots) or ``depleted`` (every aliquot has left stock).
+aliquots_in_stock status notes``), the shortened uuid ``entity_id``, an entity
+name long enough to prove names print in full, the notes preview and only the
+``active`` row -- the default scope hides the stocks whose derived ``status``
+is ``empty`` (no aliquots) or ``depleted`` (every aliquot has left stock).
 
 ``tests/data/golden/stock_list_all.table`` pins the same table for ``tm stock
 list --all``: the empty and depleted rows come back with the active one, in
 the same column set and order, so the ``--all`` widening has its own stable
-golden and the default file stays active-only.
+golden and the default file stays active-only.  Between the two files the three
+fixture notes pin the preview: a two-line note prints ``(+1 lines)``, a note
+wider than 40 terminal cells is cut with ``…``, and a CJK/Greek note is
+measured in terminal cells.
 
 ``tests/data/golden/entity_list.table`` pins the default table of ``tm entity
 list``: the column set and order (``id kind name stocks_available
-aliquots_in_stock``), the shortened uuid ``id``, an entity name long enough to
-prove names print in full, and the two counts.  ``stocks_available`` counts the
-entity's stocks whose derived status is ``active``; depleted and empty stocks
-are not counted.  ``aliquots_in_stock`` sums the in-stock tubes of all the
-entity's stocks, so an entity with no stocks prints ``0 0``.
+aliquots_in_stock notes``), the shortened uuid ``id``, an entity name long
+enough to prove names print in full, the two counts and the notes preview.
+``stocks_available`` counts the entity's stocks whose derived status is
+``active``; depleted and empty stocks are not counted.  ``aliquots_in_stock``
+sums the in-stock tubes of all the entity's stocks, so an entity with no
+stocks prints ``0``.
 
 ``tests/data/golden/box_list.table`` pins the default table of ``tm box list``:
-the column set and order (``id name kind path occupied capacity``), the nested
-``path``, and the two counts.  ``occupied`` counts the aliquots plus the
-immediate child boxes directly in a box (items, not slots); nested contents do
-not roll up.  ``capacity`` is slots times ``slot_capacity`` for ``grid``/``named``
-geometry, the declared capacity for slotless geometry, and blank for an
-unlimited slotless box.
+the column set and order (``id name kind path occupied capacity notes``), the
+nested ``path``, the two counts and the notes preview (blank for the boxes
+without notes).  ``occupied`` counts the aliquots plus the immediate child
+boxes directly in a box (items, not slots); nested contents do not roll up.
+``capacity`` is slots times ``slot_capacity`` for ``grid``/``named`` geometry,
+the declared capacity for slotless geometry, and blank for an unlimited
+slotless box.
 
 The rows are built with explicit ids (uuid entities, datecode stocks) so the
 goldens are stable run to run.  The comparison is line by line after ``rstrip``:
@@ -68,6 +73,13 @@ UPDATE_GOLDENS_ENV = "TETRAMARK_UPDATE_GOLDENS"
 #: table would show it.
 ALPHA = "11111111-1111-4111-8111-111111111111"
 LONG_NAME = "22222222-2222-4222-8222-222222222222"
+
+#: The three notes shapes the preview has to pin: two lines, wider than 40
+#: terminal cells, and mixed CJK/Greek text (with surrounding blanks to prove
+#: the first line is stripped).
+NOTE_TWO_LINES = "first line of the note\nsecond line"
+NOTE_LONG = "a long note that is definitely wider than forty terminal cells"
+NOTE_UNICODE = "  αβγ 抗体 prep  "
 
 
 @pytest.fixture
@@ -133,7 +145,7 @@ def _build_stocks(ledger) -> None:
         "lot",
         id="7701AB01",
         entity=alpha["id"],
-        values={"supplier": "acme"},
+        values={"supplier": "acme", "notes": NOTE_TWO_LINES},
         aliquots=0,
     )
     # depleted: two tubes, both unplaced, so neither is in stock.
@@ -141,7 +153,7 @@ def _build_stocks(ledger) -> None:
         "lot",
         id="7701AB02",
         entity=alpha["id"],
-        values={"supplier": "acme"},
+        values={"supplier": "acme", "notes": NOTE_LONG},
         aliquots=2,
     )
     # active: one of the two tubes is moved into G-1 A1.
@@ -149,7 +161,7 @@ def _build_stocks(ledger) -> None:
         "lot",
         id="7701AB03",
         entity=design["id"],
-        values={"supplier": "acme"},
+        values={"supplier": "acme", "notes": NOTE_UNICODE},
         aliquots=2,
     )
     ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1", message="moved")
@@ -157,11 +169,14 @@ def _build_stocks(ledger) -> None:
 
 def _build_entities(ledger) -> None:
     """One entity with an active lot, one with only depleted/empty lots."""
-    alpha = ledger.entities.add("item", id=ALPHA, name="alpha")
+    alpha = ledger.entities.add(
+        "item", id=ALPHA, name="alpha", values={"notes": NOTE_TWO_LINES}
+    )
     design = ledger.entities.add(
         "item",
         id=LONG_NAME,
         name="a-rather-long-design-name-for-full-printing",
+        values={"notes": NOTE_UNICODE},
     )
     ledger.boxes.add("grid8x12", "G-1")
 
@@ -185,10 +200,10 @@ def _build_boxes(ledger) -> None:
     item = ledger.entities.add("item", name="alpha")
     # The unlimited incubator holds one child box (the drawer), which makes it
     # the box with one direct occupant; the drawer itself is empty.
-    ledger.boxes.add("incubator", "I-1")
-    ledger.boxes.add("drawer", "D-1", parent="I-1")
+    ledger.boxes.add("incubator", "I-1", notes=NOTE_TWO_LINES)
+    ledger.boxes.add("drawer", "D-1", parent="I-1", notes=NOTE_LONG)
     ledger.boxes.add("freezer", "F-1")
-    ledger.boxes.add("grid8x12", "G-1")
+    ledger.boxes.add("grid8x12", "G-1", notes=NOTE_UNICODE)
     ledger.boxes.add("grid9x9", "G-2")
     ledger.boxes.add("rack", "R-1")
     ledger.boxes.add("shelf", "S-1")

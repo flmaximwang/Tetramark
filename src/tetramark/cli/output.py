@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Any
 
 import typer
+from rich.cells import cell_len, chop_cells
 from rich.console import Console
 from rich.table import Table
 
@@ -30,11 +31,13 @@ from tetramark.errors import UsageError
 
 __all__ = [
     "FORMATS",
+    "NOTES_COLUMNS",
     "emit_payload",
     "emit_read",
     "emit_write",
     "is_uuid4",
     "json_default",
+    "notes_cell",
     "output_format",
     "short_uuid_ids",
 ]
@@ -47,6 +50,15 @@ _UUID_IDS = UuidIds()
 
 #: Shortest uuid prefix shown by :func:`short_uuid_ids` (git-style short hash).
 SHORT_UUID_LENGTH = 8
+
+#: Table columns that hold free-form notes and are shortened by
+#: :func:`notes_cell`.  Other commands can add a notes-like column (for
+#: example the aliquot list's ``stock_notes``) to this set instead of writing a
+#: second formatter.
+NOTES_COLUMNS: frozenset[str] = frozenset({"notes"})
+
+#: Width, in terminal cells, of the notes preview before the ellipsis.
+NOTES_CELL_LENGTH = 40
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +165,50 @@ def _cell(value: Any) -> str:
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, default=json_default)
     return str(value)
+
+
+def notes_cell(value: Any) -> str:
+    """The one-line preview of a notes value used by list tables.
+
+    The algorithm is:
+
+    * ``None``, an empty string and a string of only blank lines all yield an
+      empty cell.
+    * The first non-empty line is taken (leading blank lines are skipped) and
+      whitespace-stripped, so a note that starts with indentation still reads
+      naturally.
+    * That line is measured in terminal cells with :func:`rich.cells.cell_len`
+      so CJK and Greek glyphs count their real width.  A line of exactly
+      :data:`NOTES_CELL_LENGTH` cells is not cut; a longer one keeps the first
+      :data:`NOTES_CELL_LENGTH` cells (never splitting a wide character or a
+      combining sequence: :func:`rich.cells.chop_cells` does the cut) and gets
+      a trailing ``…``.
+    * If further non-empty lines follow, ``" (+N lines)"`` is appended, where
+      ``N`` counts those further non-empty lines (blank lines do not count).
+
+    Only the human table path uses this; ``--json`` and ``--format csv`` keep
+    the full note.
+    """
+    if value is None:
+        return ""
+    lines = [line.strip() for line in str(value).splitlines()]
+    non_empty = [line for line in lines if line]
+    if not non_empty:
+        return ""
+    first = non_empty[0]
+    if cell_len(first) > NOTES_CELL_LENGTH:
+        first = chop_cells(first, NOTES_CELL_LENGTH)[0] + "…"
+    extra_lines = len(non_empty) - 1
+    if extra_lines:
+        return f"{first} (+{extra_lines} lines)"
+    return first
+
+
+def _table_cell(name: str, value: Any) -> str:
+    """Format one table cell: notes columns get the shared short preview."""
+    if name in NOTES_COLUMNS:
+        return notes_cell(value)
+    return _cell(value)
 
 
 def _dump(payload: Any) -> None:
@@ -265,7 +321,7 @@ def _table(
     for name in names:
         table.add_column(str(name))
     for row in rows:
-        table.add_row(*(_cell(row.get(name)) for name in names))
+        table.add_row(*(_table_cell(name, row.get(name)) for name in names))
     buffer = io.StringIO()
     console = Console(
         file=buffer,
