@@ -350,6 +350,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "unit",
         "label",
         "path",
+        "*notes",
     ]
     assert [
         row["id"] for row in run_json("aliquot", "list", "--status", "missing")

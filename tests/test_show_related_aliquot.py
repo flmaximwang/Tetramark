@@ -61,12 +61,18 @@ def _tube(ledger, name: str = "alpha") -> dict:
 
 
 def _field_lines(lines: list[str]) -> list[str]:
-    """The key/value field block: no relation, path, event or event-section line."""
+    """The key/value field block: no relation, path, event or event-section line.
+
+    The ``* notes`` row is a field row (the stock's note), so only the
+    relation/footer ``*`` lines are left out.
+    """
     return [
         line
         for line in lines
         if line
-        and not line.startswith(("path:", "* "))
+        and not line.startswith(
+            ("path:", "* entity", "* parent stock", "* source aliquot", "* inherited from stock")
+        )
         and not line.startswith("events  ")
         and not line.startswith("  ")
     ]
@@ -83,7 +89,12 @@ def test_entity_is_a_relation_line_between_the_fields_and_the_path(
 
     entity_lines = [line for line in lines if line.startswith("* entity")]
     assert entity_lines == ["* entity          item · alpha"]
-    assert sum(line.startswith("* ") for line in lines) == 1
+    # The other ``*`` lines are the stock-note row and its footer; the related
+    # entity line is the only relation.
+    assert [line for line in lines if line.startswith("* inherited from stock")] == [
+        f"* inherited from stock {made['stock']['id']}"
+    ]
+    assert sum(line.startswith("* entity") for line in lines) == 1
 
     entity_at = lines.index(entity_lines[0])
     path_at = lines.index("path: BOX:A3")

@@ -44,5 +44,6 @@
   "status": "pending",
   "stock_id": "<stock-id>",
   "stock_kind": "lot",
+  "stock_notes": "unplaced tube: check the freezer log",
   "unit": "ul"
 }

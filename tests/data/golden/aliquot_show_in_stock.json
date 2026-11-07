@@ -44,5 +44,6 @@
   "status": "stored",
   "stock_id": "<stock-id>",
   "stock_kind": "lot",
+  "stock_notes": "plasmid prep 2026-11-07, keep at -20 C",
   "unit": "ul"
 }

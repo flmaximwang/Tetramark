@@ -184,6 +184,10 @@ _CORE_FILTERS: dict[str, frozenset[str]] = {
             "label",
             "created_at",
             "notes",
+            # The owning stock's note: an aliquot has no note of its own
+            # worth reading (it borrows the stock's), so the list and show
+            # expose it under this name and filter on it.
+            "stock_notes",
         }
     ),
 }
@@ -3934,6 +3938,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         ),
         (
             "SELECT s.`kind` AS `stock_kind`, s.`entity_id` AS `entity_id`, "
+            "s.`notes` AS `stock_notes`, "
             "e.`id` AS `entity_row_id`, e.`kind` AS `entity_kind`, "
             "e.`name` AS `entity_name` "
             f"FROM {_quote('stock')} s "
@@ -3965,6 +3970,9 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
     stock_rows = fetched[2]
     stock_kind = str(stock_rows[0]["stock_kind"]) if stock_rows else ""
     entity_id = str(stock_rows[0]["entity_id"]) if stock_rows else ""
+    # The owning stock's note: an aliquot has no note of its own worth
+    # reading, so it borrows the stock's (spec 6, Tetramark-8km.1).
+    stock_notes = stock_rows[0]["stock_notes"] if stock_rows else None
     if not stock_rows:
         related: dict[str, Any] = {"entity": None}
     elif stock_rows[0]["entity_row_id"] is not None:
@@ -3996,6 +4004,7 @@ def show_aliquot(ledger: Ledger, ref: str) -> dict[str, Any]:
         "unit": row["unit"],
         "label": row["label"],
         "notes": row["notes"],
+        "stock_notes": stock_notes,
         "created_at": row["created_at"],
         "aliases": [str(alias["alias"]) for alias in fetched[1]],
         "stock_kind": stock_kind,
@@ -4315,9 +4324,14 @@ def list_aliquots(
     # The shared builder owns the operator SQL, the NULL/empty and the
     # complement rules; the adapter above supplies the typed ordered values and
     # the raw ``=``/``!=`` text this list has always bound.
+    # Every allowed column lives on the aliquot row except ``stock_notes``,
+    # which is the owning stock's note (the list joins the stock anyway).
     expressions = {
-        field: f"a.{_quote(field)}" for field in _CORE_FILTERS["aliquot"]
+        field: f"a.{_quote(field)}"
+        for field in _CORE_FILTERS["aliquot"]
+        if field != "stock_notes"
     }
+    expressions["stock_notes"] = f"s.{_quote('notes')}"
     where_conditions, where_params = build_conditions(
         filters,
         expressions=expressions,
@@ -4362,6 +4376,7 @@ def list_aliquots(
         f"a.{_quote('created_at')}, a.{_quote('notes')}, "
         f"s.{_quote('kind')} AS {_quote('stock_kind')}, "
         f"s.{_quote('entity_id')} AS {_quote('entity_id')}, "
+        f"s.{_quote('notes')} AS {_quote('stock_notes')}, "
         f"COALESCE(l.{_quote('location')}, l.{_quote('box_path')}) "
         f"AS {_quote('path')} "
         + from_sql
@@ -4433,6 +4448,7 @@ def list_aliquots(
                 "unit": row["unit"],
                 "label": row["label"],
                 "notes": row["notes"],
+                "stock_notes": row["stock_notes"],
                 "created_at": row["created_at"],
                 "aliases": aliases.get(str(row["id"]), []),
                 "stock_kind": stock_kind,

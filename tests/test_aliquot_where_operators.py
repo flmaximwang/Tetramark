@@ -49,6 +49,7 @@ RECORD_KEYS = {
     "unit",
     "label",
     "notes",
+    "stock_notes",
     "created_at",
     "aliases",
     "stock_kind",

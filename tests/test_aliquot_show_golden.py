@@ -7,11 +7,14 @@ string or ``null``) and the stable values that depend on the fixture only
 (status, quantity, label, notes, slot, path, ``in_stock``, ``object``):
 
 * ``aliquot_show_in_stock.json`` -- a tube in stock: placed in a nested box,
-  with a quantity, a unit, a label and a note;
+  with a quantity, a unit, a label, its own note and the owning stock's note;
 * ``aliquot_show_not_in_stock.json`` -- a tube that never left stock: no
   position, so ``box_id``/``slot``/``path`` are null and ``in_stock`` is false;
 * ``aliquot_show_aliased.json`` -- a tube looked up by one of its aliases: a
   non-empty, sorted ``aliases`` list.
+
+Every fixture stock carries a note, so each golden pins the full
+``stock_notes`` value the tube inherits (Tetramark-8km.1).
 
 Every fixture tube carries its own event trail in the new ``events`` key: the
 create event that made it, with its type, amount, unit, status and box name.
@@ -219,7 +222,12 @@ def _placed_tube(ledger, csv_dir: Path) -> dict[str, Any]:
     ledger.boxes.add("shelf", "Freezer-1")
     ledger.boxes.add("shelf", "Shelf-2", parent="Freezer-1")
     box = ledger.boxes.add("grid96", "Box", parent="Shelf-2")
-    stock = ledger.stocks.add("lot", entity=entity["id"], aliquots=0)
+    stock = ledger.stocks.add(
+        "lot",
+        entity=entity["id"],
+        values={"notes": "plasmid prep 2026-11-07, keep at -20 C"},
+        aliquots=0,
+    )
     path = csv_dir / "aliquots.csv"
     path.write_text(
         "id,stock,seq,status,box,slot,label,quantity,unit,notes\n"
@@ -239,7 +247,11 @@ def _unplaced_tube(ledger) -> dict[str, Any]:
     """One tube that is not in stock: a quantity but no position."""
     entity = ledger.entities.add("item", name="beta")
     stock = ledger.stocks.add(
-        "lot", entity=entity["id"], quantity="50", unit="ul"
+        "lot",
+        entity=entity["id"],
+        values={"notes": "unplaced tube: check the freezer log"},
+        quantity="50",
+        unit="ul",
     )
     return {
         "entity": entity["id"],
@@ -252,7 +264,9 @@ def _unplaced_tube(ledger) -> dict[str, Any]:
 def _aliased_tube(ledger) -> dict[str, Any]:
     """One tube with two aliases; the golden shows the sorted list."""
     entity = ledger.entities.add("item", name="gamma")
-    stock = ledger.stocks.add("lot", entity=entity["id"])
+    stock = ledger.stocks.add(
+        "lot", entity=entity["id"], values={"notes": "alias fixture stock note"}
+    )
     aliquot = stock["aliquots"][0]
     # Added out of order on purpose: show must return them sorted.
     ledger.aliases.add("aliquot", aliquot, "tube-alpha")
