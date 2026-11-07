@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.51](v0.8.51.md) | `v0.8.51.md` | `tm entity note` and `tm box note` join `tm stock note` over one shared implementation; `read_note` replaces the heavy stock pre-read |
 | [0.8.49](v0.8.49.md) | `v0.8.49.md` | `tm stock note REF [TEXT] [--append] [--clear]` writes the stock's notes in `$VISUAL`/`$EDITOR`, appends a line or clears them; one commit per call |
 | [0.8.47](v0.8.47.md) | `v0.8.47.md` | `tm aliquot list --where` takes the shared operators and `--where-any`; exact and empty-value behaviour unchanged |
 | [0.8.46](v0.8.46.md) | `v0.8.46.md` | embedded reads restore Python `int` for integer-typed columns when Dolt auto-routes through a user-run `dolt sql-server`; typed probe runs inside the long-lived session; no default-backend/dependency change |

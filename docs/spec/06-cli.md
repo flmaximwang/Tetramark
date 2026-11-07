@@ -87,6 +87,7 @@ tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] ; tm entity edit ID --set f=v
+tm entity note ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; one commit
 tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
 tm entity purge ID|ALIAS                    # hard delete, explicit only; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
@@ -113,6 +114,7 @@ tm box show NAME            # terminal grid / list; --json gives {id, box, kind,
 tm box list [--where FILTER ...] [--where-any FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rename-only; one commit; structural fields refused
+tm box note NAME|ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; box by name first; one commit
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
@@ -269,6 +271,14 @@ with `--clear` are usage errors too. `TEXT` is a **positional** argument, before
 usage error. Each successful call is one write session and one Dolt commit
 (`edit(stock): <kind> <id>`; the note text stays out of the ASCII-only summary), `--json` (also the
 global one) prints the loaded record and `--dry-run` writes nothing.
+
+`tm entity note` and `tm box note` take the same flags, resolution rules and behaviour as
+`tm stock note` above: a bare REF opens the current note, `--append TEXT` adds a line (a bare
+`--append` opens an empty buffer), `--clear` sets the notes to NULL, and an empty result without
+`--clear` is a usage error. They print their group's `edit` line instead — `Edited entity <kind>
+<id>` and `Edited box <name> (<kind>)` — and a box REF resolves by its human name first, then id or
+alias. All three commands share one CLI body and the generic `note_object` writer; each call is one
+Dolt commit (`edit(entity): <kind> <id>` and `edit(box): <kind> <id>` summaries included).
 
 `tm aliquot edit ALQ --set field=value …` corrects the recorded fields of one tube. `ALQ` is the
 full aliquot id (`<stock>.<seq>`) or one of the tube's aliases; a shortened id prefix is refused,
