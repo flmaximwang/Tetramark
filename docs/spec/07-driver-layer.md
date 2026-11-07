@@ -1,10 +1,22 @@
 # 7. Driver layer
 
 0.5.0 is **embedded by default** (P14). Every SQL statement runs through
-:class:`~tetramark.driver.embedded.EmbeddedDriver`, which executes `dolt sql -r json -q` as a
-subprocess in the ledger directory. There is no `tm server start|stop|status`, no pid/port
-management and no user-facing driver choice. A ledger needs only the `dolt` binary next to it — no
-long-lived process, no data directory, no server to start before the first command.
+:class:`~tetramark.driver.embedded.EmbeddedDriver`, which drives `dolt sql` in the ledger directory.
+There is no `tm server start|stop|status`, no pid/port management and no user-facing driver choice.
+A ledger needs only the `dolt` binary next to it — no server to start before the first command.
+
+The embedded driver keeps **one long-lived `dolt sql -r json` session per ledger** (since
+0.8.44.1). Dolt's engine startup is the dominant cost of a batch (~0.3 s per process), so the first
+batch pays it once and later batches are written to the live session's stdin and framed with a unique
+end marker — single-digit milliseconds each. The session is private to the driver object and closed
+by `Ledger.close()`. If a script fails, Dolt exits; the driver drops the session and the next call
+starts a clean one, which is exactly the state one-process-per-batch always had. JSON work uses the
+session; `-r csv` column probes stay one-shot processes (they are rare, and a second long-lived
+session would see a different snapshot). Remote statements (`DOLT_PULL`/`FETCH`/`PUSH`/`CLONE`/
+`REMOTE`) also run one-shot after closing the registry: Dolt's manifest rewrite refuses to co-exist
+with the open session. Because Dolt's manifest is writable from one process at a time, a driver
+closes other drivers' sessions on the same ledger before using its own; peers restart lazily, so the
+common single-driver case keeps the warm session.
 
 **Opt-in server backend (Tetramark-0i8.8).** `driver/server.py` adds
 :class:`~tetramark.driver.server.ServerDriver`, a second `Driver` implementation that starts one
@@ -31,9 +43,9 @@ order, and a failing statement is named in the error without re-running the DDL 
 server mode is opt-in (`TETRAMARK_DRIVER=server`, above) and adds a second
 implementation without touching the core; the default remains `EmbeddedDriver`.
 
-Branch selection uses Dolt's **revision database** `` `db/branch` ``. Each `dolt sql` invocation is
-its own process, i.e. its own session, so the driver prefixes every statement batch with
-``USE `db/branch`;`` and verifies the branch exists first. That is a session-scoped checkout: it
+Branch selection uses Dolt's **revision database** `` `db/branch` ``. The driver prefixes every
+statement batch with ``USE `db/branch`;`` (the session is long-lived, so the prefix re-selects the
+branch each time) and verifies the branch exists first. That is a session-scoped checkout: it
 never moves the branch the repository has checked out, so other sessions (and a user-run server)
 keep seeing the original branch, while this command's reads, writes, transactions and `DOLT_COMMIT`
 all target the branch tip. A missing branch raises a usage error in the driver constructor; it is
@@ -46,8 +58,9 @@ Dolt's CLI auto-routes `dolt sql` through it. That is Dolt's behaviour, not some
 detects, requires or manages: 0.5.0 neither starts nor stops a server, and running one is not a
 supported multi-writer mode (below).
 
-**One writer per ledger** (P11). The embedded driver's reads are separate `dolt sql` processes, so
-Dolt's own noms/LOCK does not close the read → validate → write race between two commands.
+**One writer per ledger** (P11). A ledger is writable from one process at a time: Dolt's manifest
+is opened read-only in every other process while a session lives, and the embedded driver's session
+(nor a second command) does not close the read → validate → write race between two commands.
 `core/writelock.py` adds that with `fcntl.flock` on `<ledger>/.dolt/tetramark.lock`:
 
 - a CLI write command takes the lock **before** opening the ledger (config, schema, `ledger_meta`)

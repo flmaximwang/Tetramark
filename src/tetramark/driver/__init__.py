@@ -1,6 +1,6 @@
 """Database drivers: the embedded default, the opt-in server backend, resolution.
 
-The embedded driver (one ``dolt sql`` subprocess per batch) is the only
+The embedded driver (one long-lived ``dolt sql`` session per ledger) is the only
 backend a normal invocation uses.  The ``dolt sql-server`` backend is opt-in:
 :func:`driver_for` selects it only when the *effective* environment -- the
 ``env=`` mapping handed to ``init``/``adopt``/``open`` when there is one, else
