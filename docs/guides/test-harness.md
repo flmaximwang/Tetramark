@@ -67,15 +67,14 @@ The limits are enforced by the suite itself, not by a wrapper:
   run.
 
 Measured after Tetramark-aut (reference machine, 10-core macOS, `-n auto --dist worksteal`, idle,
-change tree based on `87958e9`, 2026-11-07): the full suite took **274.99 s internal (275 s wall)
-with 1994 passed, 2 skipped, 660 `dolt sql-server` starts and 0 leftover servers**, and the fast lane
-took **7.79 s internal (8 s wall) with 1008 passed**. Idle wall time was already inside the budget
-and stays within noise (clean base: 273.68 s internal / 275 s wall). What changed is the duplicate
-build work: fixture-setup/build counts fell **13 → 6** (source 3→1, exported 3→1, template 3→1,
-read_ledger 2→1; `rebuilt_molbio_v1` and `rebuilt_spec4_boxes` were already 1→1), with exactly one
-real shared build per key per session. These are pre-commit measurements: the only failure was the
-expected `test_since_reports_an_unchanged_version` while the 0.8.43 bump was uncommitted. The final
-sequential gates on the committed SHA are recorded in the ticket and PR.
+2026-11-07, committed SHA `e09f5e1`): the full suite took **272.44 s internal (273 s wall) with
+1995 passed, 2 skipped, 660 `dolt sql-server` starts, 0 leftover servers and a slowest test call of
+29.06 s**, and the fast lane took **7.66 s internal with 1009 passed** — both inside their unchanged
+30 s / 300 s / 60 s limits. Idle wall time was already inside the budget and stays within noise
+(clean base `87958e9`: 273.68 s internal / 275 s wall, 1987 passed, 2 skipped; server starts 660
+before and 660 after). What changed is the duplicate build work: fixture-setup/build counts fell
+**13 → 6** (source 3→1, exported 3→1, template 3→1, read_ledger 2→1; `rebuilt_molbio_v1` and
+`rebuilt_spec4_boxes` were already 1→1), with exactly one real shared build per key per session.
 
 ## 3. Server lifecycle
 
