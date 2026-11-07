@@ -281,17 +281,29 @@ def list_aliquots_command(
         [],
         "--where",
         "-w",
-        help="Filter as field=value; repeat to AND; FIELD= matches empty. "
-        "Filter status with --status.",
+        help="Filter FIELD<op>VALUE with = ~ != !~ < <= > >=; repeat to AND; "
+        "FIELD= matches empty. Filter status with --status.",
+    ),
+    where_any: list[str] = typer.Option(
+        [],
+        "--where-any",
+        help="One OR group: a tube must match one of these filters, ANDed "
+        "with every --where. Same syntax and operators as --where; a field "
+        "may repeat here, e.g. 'label~^cl' or 'label~^ctl'. Filter status "
+        "with --status.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
     """List the tubes an experiment can use (in stock by default).
 
     Add `--all` for every status and `--not-in-stock` for the tubes that left
-    stock.  The table prints id, stock kind, status, quantity, unit, label and
-    path; `--json` prints the same record `tm aliquot show` prints, without
-    the events: a list never reads a tube's event trail.
+    stock.  `--where` accepts every shared operator (`=`, `~`, `!=`, `!~`, `<`,
+    `<=`, `>`, `>=`) and `--where-any` is one OR group ANDed with them.
+    Ordered comparisons are typed: `seq` numeric, `quantity` decimal,
+    `created_at` ISO date/datetime, other columns in collation order; `=` and
+    `!=` compare the raw text.  The table prints id, stock kind, status,
+    quantity, unit, label and path; `--json` prints the same record `tm aliquot
+    show` prints, without the events: a list never reads a tube's event trail.
     """
     ledger = resolve_ledger(ctx)
     try:
@@ -303,6 +315,7 @@ def list_aliquots_command(
             in_stock=False if not_in_stock else None,
             all_statuses=all_statuses,
             where=where,
+            where_any=where_any,
         )
         emit_read(
             rows,
