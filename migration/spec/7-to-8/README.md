@@ -39,9 +39,11 @@ That is what lets `tm schema apply` record spec 8 after the manual `ALTER`.
 1. **Back up the ledger directory** (a copy of the Dolt database directory; the
    Dolt history alone is not enough because this step drops a column).
 
-2. **Export any non-empty aliquot notes.** Do it with a **spec-7 tool
-   (0.8.48–0.8.51 at the time of writing)**; the `dolt` dump also works after
-   an upgrade because it reads the column directly, so it is listed first:
+2. **Export any non-empty aliquot notes.** The `dolt` dump below works with
+   any tool version, at any time **before the `ALTER` in step 3** (it reads the
+   column directly, so it is listed first). The `tm` command needs a **spec-7
+   tool (0.8.48–0.8.51 at the time of writing)**, because 0.8.52 no longer
+   exposes the tube's own note:
 
    ```sh
    dolt --data-dir LEDGER sql -r csv \
