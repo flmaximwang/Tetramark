@@ -251,6 +251,7 @@ tm entity add KIND [--name NAME] [--set FIELD=VALUE ...] [--alias ALIAS ...] \
   [--id EXPLICIT_ID] [--json]
 tm entity show ID|ALIAS [--json]
 tm entity edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
+tm entity note ID|ALIAS [TEXT] [--append] [--clear] [--json]
 tm entity rename ID|ALIAS NEW_NAME [--json]
 tm entity purge ID|ALIAS [--json]
 tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
@@ -264,6 +265,9 @@ tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 commit, so scripts and notes that use the old name still resolve. It refuses when the old name is
 already another entity's alias.
 `show` includes the entity's aliases (sorted `aliases` list; an `aliases` row in table output).
+`entity note ID|ALIAS [TEXT] [--append] [--clear]` writes the core `notes` column with the same
+editor/append/clear rules as `stock note` above; REF resolves like `entity edit` (full id, alias,
+unique id prefix), each success is one commit and the line is `Edited entity <kind> <id>`.
 `purge` hard-deletes an entity added by mistake in one commit (`purge(entity): …`): its kind row, its
 alias rows and the entity row. It refuses (exit 1, nothing written) while a stock or a kind `ref`
 field still points at the entity, naming the referents (capped) and `tm stock purge REF` (or the edit
@@ -498,11 +502,15 @@ optional message and has no `note` argument (`note=` raises `TypeError`).
 tm box add KIND NAME [--in PARENT [--slot S]] [--notes TEXT] [--set f=v ...] [--json]
 tm box show NAME|ID|ALIAS [--json]
 tm box list [--kind KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm box note NAME|ID|ALIAS [TEXT] [--append] [--clear] [--json]
 tm box move NAME --in PARENT [--slot S] [--json]
 tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 tm box purge NAME|ID|ALIAS [--json]
 ```
 
+`box note NAME|ID|ALIAS [TEXT] [--append] [--clear]` writes the core `notes` column with the same
+editor/append/clear rules as `stock note`; NAME resolves by human name first, then id, alias or
+unique id prefix, each success is one commit and the line is `Edited box <name> (<kind>)`.
 `box list` prints `id name kind path occupied capacity notes` (the trailing `notes` preview is
 described with `entity list` above). The first column shows a unique short UUID
 prefix (at least eight characters) in the table; CSV and JSON keep the full UUID. `occupied` counts

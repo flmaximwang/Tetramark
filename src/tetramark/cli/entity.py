@@ -6,6 +6,12 @@ import typer
 
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import entity_add_message
+from tetramark.cli.notes import (
+    APPEND_HELP,
+    CLEAR_HELP,
+    TEXT_HELP,
+    run_note_command,
+)
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_read, output_format
@@ -142,6 +148,37 @@ def edit_entity_command(
         )
     finally:
         ledger.close()
+
+
+@entity_app.command("note")
+@write_command
+def note_entity_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Entity id or alias."),
+    text: str | None = typer.Argument(None, help=TEXT_HELP),
+    append: bool = typer.Option(False, "--append", help=APPEND_HELP),
+    clear: bool = typer.Option(False, "--clear", help=CLEAR_HELP),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the changed object as JSON."
+    ),
+) -> None:
+    """Edit one entity's notes in $VISUAL/$EDITOR, append to them, or clear them.
+
+    `tm entity note REF [TEXT] [--append] [--clear]`: a bare REF opens the
+    current note in the editor, `--append TEXT` appends TEXT, a bare
+    `--append` opens an empty buffer and appends its result, and `--clear`
+    sets the notes to NULL. TEXT is positional because this typer release
+    cannot express an option with an optional value.
+    """
+    run_note_command(
+        ctx,
+        object_type="entity",
+        ref=ref,
+        text=text,
+        append=append,
+        clear=clear,
+        as_json=as_json,
+    )
 
 
 @entity_app.command("rename")
