@@ -55,10 +55,27 @@ The limits are enforced by the suite itself, not by a wrapper:
 - **No skips to save time.** The 88 `embedded_driver` budget tests are not skipped under the server
   default: they run with the embedded driver in the same session. The only allowed skip is an
   optional external artifact (currently the 0.4.2 lab-ledger snapshot when it is absent).
+- **Failure investigation.** A budget breach (fast lane > 30 s, full suite > 300 s) or a 60 s
+  per-test timeout is a failed gate, not an exemption — a loaded machine never turns it into a pass.
+  Read the slowest-25 report the session prints (test, setup/call/teardown, module) and count
+  `dolt sql-server` processes before and after the run (`pgrep -f 'dolt sql-server'`) so the logs
+  show whether the time went to code, to a leaked/extra server, or to contention. Separate a code
+  defect from demonstrated resource contention; then fix the defect or manage only your own test
+  workload (do not overlap expensive suites, use the supported concurrency controls without
+  weakening the gate, or retry once resources are free). Never raise a budget or the global
+  timeout, add `xfail`, skip or deselect required tests, or shrink the suite to manufacture a green
+  run.
 
-Measured after Tetramark-0i8 (reference machine, 10-core macOS, `-n auto --dist worksteal`):
-**212 s, 1351 passed, 1 skipped, 0 leftover `dolt sql-server`** after the PR #15 review; the increase comes from `embedded`-marked tests (e.g. `test_form_dolt.py`) now correctly running on the embedded driver. The fast lane is ~4 s.
-The fast lane is ~2.5 s (729 passed).
+Measured after Tetramark-aut (reference machine, 10-core macOS, `-n auto --dist worksteal`, idle,
+change tree based on `87958e9`, 2026-11-07): the full suite took **274.99 s internal (275 s wall)
+with 1994 passed, 2 skipped, 660 `dolt sql-server` starts and 0 leftover servers**, and the fast lane
+took **7.79 s internal (8 s wall) with 1008 passed**. Idle wall time was already inside the budget
+and stays within noise (clean base: 273.68 s internal / 275 s wall). What changed is the duplicate
+build work: fixture-setup/build counts fell **13 → 6** (source 3→1, exported 3→1, template 3→1,
+read_ledger 2→1; `rebuilt_molbio_v1` and `rebuilt_spec4_boxes` were already 1→1), with exactly one
+real shared build per key per session. These are pre-commit measurements: the only failure was the
+expected `test_since_reports_an_unchanged_version` while the 0.8.43 bump was uncommitted. The final
+sequential gates on the committed SHA are recorded in the ticket and PR.
 
 ## 3. Server lifecycle
 
@@ -67,6 +84,11 @@ The fast lane is ~2.5 s (729 passed).
 - `driver.close()` closes the connection but keeps the server in a small **LRU cache keyed by the
   ledger's resolved path** (`$TETRAMARK_SERVER_CACHE`, default 6; `0` disables reuse and kills the
   server on close). Without the cache every `tm` command in a doc test would pay the 0.3 s start;
+- **the cache is an idle-reuse policy, not a bound on live servers.** `_enforce_cache_cap` evicts
+  idle entries, but active references may overrun the cap, `_release` does not shrink them, a
+  server created with `cache=0` is never cached, and legacy fixture builders start independent
+  servers outside the `ServerDriver` cache. Count actual `dolt sql-server` processes when
+  investigating load — never reason from "workers × cache";
 - the cache validates the directory's `(st_dev, st_ino)` and Tetramark's own
   `<ledger>/.dolt/tetramark-server.json` sidecar (path + inode), so a copied or replaced directory
   never reuses another path's server. Dolt's own `.dolt/sql-server.info` stays in place so a plain
@@ -74,15 +96,17 @@ The fast lane is ~2.5 s (729 passed).
   subprocess helpers (raw `dolt sql`, CLI subprocesses) working;
 - a subprocess (CLI, migration script) **borrows** the parent's server through that sidecar instead
   of failing to start a second one (a database directory allows only one `dolt sql-server`);
-- every owned server is killed on eviction, on `pytest_sessionfinish`/`pytest_unconfigure`, and at
-  interpreter exit. A green run leaves **zero** `dolt sql-server` children;
+- **ownership is per session.** A session stops only the servers it started: every owned server is
+  killed on eviction, on `pytest_sessionfinish`/`pytest_unconfigure`, and at interpreter exit. A
+  green run leaves **zero** `dolt sql-server` children;
 - a run that is *killed* (SIGKILL, a cancelled agent command, a crashed worker) cannot clean up, and
   its servers are reparented to pid 1. Each new session therefore starts with
-  `tetramark.driver.server.reap_orphaned_servers()`: a reparented `dolt sql-server` in Tetramark's
-  exact argv shape is stopped when its ledger lies under pytest's per-user temp root or its sidecar
-  names an owner pid that has exited. A server whose owner is alive is never a candidate, whoever
-  owns it. Left alone, leaked servers starved later runs into timeouts that leaked more servers
-  (issue #68: 100 live servers, 641 s).
+  `tetramark.driver.server.reap_orphaned_servers()`, which touches only those reparented servers: a
+  server in Tetramark's exact argv shape is stopped when its ledger lies under pytest's per-user
+  temp root or its own sidecar names an owner pid that has exited. A server whose owner is alive is
+  never a candidate, whoever owns it — the reaper never stops another live session's work. Left
+  alone, leaked servers starved later runs into timeouts that leaked more servers (issue #68: 100
+  live servers, 641 s).
 
 ## 4. Fixtures and layout
 
@@ -91,6 +115,7 @@ tests/conftest.py
   dolt_binary / dolt_env / dolt_run / dolt_conf   isolated real-Dolt environment
   isolated_env(root, home)                        DOLT_ROOT_PATH, HOME, XDG_*, GIT_*
   template_ledgers                                session LedgerTemplates (per worker)
+  shared_builds / SharedBuilds                    expensive fixture builds once per session
   embedded_ledger_factory / ledger_factory        copy a session template (or real init)
   make_ledger / dolt_repo                         bare Dolt databases for adopt/raw tests
   autouse _backend_for_test                       server by default, embedded for embedded_driver
@@ -109,11 +134,24 @@ tests/test_server_driver.py                       server-backend contract, cache
   closes the `Ledger` `init_ledger` returns and (with the server backend) stops its cached server before
   publishing the path, so `install()` always copies a **closed** directory: no server is mutating
   it and no discovery file points at a live port.
+- **Expensive module fixtures are built once per session, then copied per worker.** `SharedBuilds`
+  uses the template protocol for any directory-shaped fixture under
+  `<session basetemp>/shared-builds/`: the first caller takes an exclusive `flock`, builds into a
+  temporary sibling, publishes the complete directory with one atomic `os.rename`, and only then
+  writes `<key>.ready`; an interrupted publisher leaves no marker and the next caller rebuilds. The
+  published directory is **closed** (no cached server, no discovery file pointing at a live port)
+  and carries its original IDs and expected-value metadata as JSON *inside* the same directory, so
+  payload and metadata always come from one build. Each worker `shutil.copytree`s the closed
+  directory and reopens its own copy. The migration builders (`rebuilt_molbio_v1`,
+  `rebuilt_spec4_boxes`) still run their pinned legacy code and original checks inside the session
+  clock, and their original `pytest.skip` behaviour is preserved: every caller skips with the same
+  message, and a skip is never cached.
 - **Budget tests may build their fixture data through the server and then reopen the same ledger
   embedded.** Building rows is setup, not the read under test; the process counts are cleared after
   setup. `tests/test_list_round_trips.py`, `test_csv_round_trips.py` and
-  `test_lineage_round_trips.py` follow this pattern: one populated ledger per worker, reopened with
-  the embedded driver, read-only tests share it.
+  `test_lineage_round_trips.py` follow this pattern: **one populated ledger per session** (not one
+  per worker), published closed (the builder stops its cached server) and copied per worker, then
+  reopened embedded for the read-only tests to share.
 - Use `dolt_repo` / `make_ledger` when the test is about a bare database or `tm adopt`.
 - Isolated Dolt config: `DOLT_ROOT_PATH`, `HOME`, `XDG_CONFIG_HOME` and the `GIT_CONFIG_*`
   variables point into `tmp_path`, so the developer's global Dolt/Git configuration is never read or
@@ -158,24 +196,36 @@ number of `dolt sql-server` processes the workers started, and fails if one surv
 1. **Keep the fast lane fast.** New pure-Python tests are marked fast; a test that needs Dolt is not.
 2. **Reuse the session templates.** A test that just needs a ledger uses `ledger_factory`; only a
    test about init/adopt/preset generation pays for a real init (`real_init=True`).
-3. **Justify real-Dolt cost.** One end-to-end flow per behaviour is enough; extend an existing flow
+3. **Share expensive builds.** A module- or session-scoped fixture that costs more than ~5 s uses
+   the `shared_builds` helper, which builds once per session and copies per worker. A plain
+   module-scoped fixture is rebuilt once per xdist worker, and under `--dist worksteal` one module's
+   tests can be spread over several workers.
+4. **Justify real-Dolt cost.** One end-to-end flow per behaviour is enough; extend an existing flow
    instead of adding a second ledger. Share populated fixtures across read-only tests.
-4. **Docs are executable.** `tests/test_docs_commands.py` runs the flows documented in the README,
+5. **Docs are executable.** `tests/test_docs_commands.py` runs the flows documented in the README,
    the command reference, the migration recipe and the schema skill; when a doc example changes, that
    test changes with it.
-5. **Never weaken a test to make a lane green.** Adapt paths/flags (e.g. `-l PATH` instead of
-   `--workspace`) and fixture names; keep the assertion. Do not re-add skips or widen budgets.
-6. **Never mock Dolt** and never hand-fake a database directory; copy a template, a fixture or run a
+6. **Investigate before changing code.** Reproduce a failure from the actual logs and the
+   slowest-25 report; distinguish a code defect from demonstrated resource contention before editing
+   anything. **Never weaken a test to make a lane green:** adapt paths/flags (e.g. `-l PATH` instead
+   of `--workspace`) and fixture names, keep the assertion, and do not re-add skips, add `xfail` or
+   widen budgets/timeouts.
+7. **Do not rely on `xdist_group`.** `pytest-xdist` ignores it under the configured
+   `--dist worksteal` (only `loadgroup` understands grouping), so it claims an isolation that does
+   not happen. Use the shared-build helper or an explicit fixture dependency instead.
+8. **Never mock Dolt** and never hand-fake a database directory; copy a template, a fixture or run a
    real init. The server default still starts the real `dolt sql-server` — no MySQL mock, no faked
    rows.
-7. **Database tests never manage a server by hand.** They use the driver (embedded or server, chosen
-   by the marker/environment). The only server lifecycle code is `tetramark/driver/server.py`; tests
-   assert its cleanup through `tests/test_server_driver.py`.
-8. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard
-   test greps for it. Resolution tests use stub directories and belong to the fast lane.
-9. **Isolate the environment.** Use the fixtures; never rely on the developer's Dolt/Git config or on
-   `~/Documents/Lab`.
-10. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes
+9. **Database tests never manage a server by hand.** They use the driver (embedded or server, chosen
+   by the marker/environment), never start or stop a `dolt sql-server` themselves, and never touch a
+   server they do not own. A fixture that publishes a build publishes a **closed** directory only.
+   The only server lifecycle code is `tetramark/driver/server.py`; tests assert its cleanup through
+   `tests/test_server_driver.py`.
+10. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard
+    test greps for it. Resolution tests use stub directories and belong to the fast lane.
+11. **Isolate the environment.** Use the fixtures; never rely on the developer's Dolt/Git config or on
+    `~/Documents/Lab`.
+12. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes
     survive a green run. The pytest hooks kill cached servers; `scripts/test-lanes.sh` checks for
     leftovers.
 
@@ -183,8 +233,8 @@ number of `dolt sql-server` processes the workers started, and fails if one surv
 
 Before a release run and record:
 
-- `uv run pytest` — green, **inside the 300 s guard** (reference: ~212 s, 1351 passed, 1 optional
-  skip), no leftover `dolt sql-server`;
+- `uv run pytest` — green, **inside the 300 s guard** (reference: the idle measurement in section 2),
+  no leftover `dolt sql-server`;
 - `uv run pytest -q -m fast` — green, inside the 30 s guard;
 - `TETRAMARK_DRIVER=embedded uv run pytest` — green (the product's default backend, ~12 min);
 - the heavy migration/lab subset is part of the full run; the 0.4.2 snapshot test skips cleanly when

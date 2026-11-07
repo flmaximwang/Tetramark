@@ -17,6 +17,8 @@ JSON payloads and text.  Real Dolt, never a mock, like the rest of the suite.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,7 +26,7 @@ from typing import Any, Iterator
 import pytest
 import yaml
 
-from conftest import isolated_env
+from conftest import SharedBuilds, isolated_env
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
 from tetramark.driver.server import discard_server
@@ -92,13 +94,15 @@ PRESET: dict[str, Any] = {
 
 @pytest.fixture(scope="module")
 def template(
-    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+    tmp_path_factory: pytest.TempPathFactory,
+    dolt_binary: str,
+    shared_builds: SharedBuilds,
 ) -> Iterator[tuple[Ledger, dict[str, str]]]:
     """One real ledger of the template schema with the chain the tests read.
 
-    It is created once per module (a real ``init_ledger``, no mocks): the tests
-    only read it, so they can share it and stay cheap.  The rows are the
-    fixture's descent chain:
+    It is created once per session (a real ``init_ledger``, no mocks), published
+    closed and copied for this worker: the tests only read it, so they can
+    share it and stay cheap.  The rows are the fixture's descent chain:
 
         design D0 ← variant V1 (lineage ref)
         design D0 ← culture C1 (box B1, one aliquot) ← culture C2
@@ -107,41 +111,63 @@ def template(
     """
     del dolt_binary  # the fixture only skips the module when dolt is missing
     root = tmp_path_factory.mktemp("lineage-batch")
-    env = isolated_env(root / "dolt-root", root / "home")
+    copy, ids = shared_builds.build(
+        "lineage-round-trips", build_template, root / "copy"
+    )
     # This module pins the embedded driver's process budget.  Module-scoped
     # fixtures are set up before the per-test backend fixture can run, so the
-    # backend is forced here instead of inheriting the session default.  The
-    # fixture rows are setup, not the read under test: build them through the
-    # server backend, then reopen the same ledger embedded.
-    preset_path = root / "lineage-batch.yaml"
-    preset_path.write_text(
-        yaml.safe_dump(PRESET, sort_keys=False), encoding="utf-8"
-    )
-    ledger = init_ledger(
-        root / "template",
-        "lineage-batch",
-        [preset_path],
-        id_prefix="77",
-        author="Batch Tests <batch@tetramark.invalid>",
-        env={**env, "TETRAMARK_DRIVER": "server"},
-    )
-    ids = build_rows(ledger)
-    ledger.close()
-    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
-    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
-    # the server reports integers as strings (``'1'``), so the fixture stops it
-    # before the embedded reopen.
-    discard_server(root / "template")
-    assert not (root / "template" / ".dolt" / "sql-server.info").exists(), (
-        "a cached sql-server would route the fixture's embedded reads through it"
-    )
+    # backend is forced here instead of inheriting the session default.
+    env = isolated_env(root / "dolt-root", root / "home")
     ledger = open_ledger(
-        root / "template", env={**env, "TETRAMARK_DRIVER": "embedded"}
+        copy / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"}
     )
     try:
         yield ledger, ids
     finally:
         ledger.close()
+
+
+def build_template(directory: Path) -> dict[str, str]:
+    """Build the template ledger at ``directory``/ledger and return its ids.
+
+    The custom preset and the builder environment (Dolt/Git config) live in a
+    build-time temp directory outside ``directory``: the whole directory is
+    published to every worker, so only the closed ledger belongs inside it.
+    The ids are returned as the metadata the fixture hands to the tests, so
+    every worker reads the ids of the one real build.
+    """
+    work = Path(tempfile.mkdtemp(prefix="tetramark-lineage-batch-"))
+    try:
+        env = isolated_env(work / "dolt-root", work / "home")
+        preset_path = work / "lineage-batch.yaml"
+        preset_path.write_text(
+            yaml.safe_dump(PRESET, sort_keys=False), encoding="utf-8"
+        )
+        # The fixture rows are setup, not the read under test: build them
+        # through the server backend, then publish the closed ledger.
+        ledger = init_ledger(
+            directory / "ledger",
+            "lineage-batch",
+            [preset_path],
+            id_prefix="77",
+            author="Batch Tests <batch@tetramark.invalid>",
+            env={**env, "TETRAMARK_DRIVER": "server"},
+        )
+        try:
+            ids = build_rows(ledger)
+        finally:
+            ledger.close()
+        # Closing a server-backed ledger leaves the ``dolt sql-server`` cached
+        # and alive, and Dolt then routes the embedded ``dolt sql`` reads
+        # through it: the server reports integers as strings (``'1'``), so the
+        # builder stops it before the closed directory is published.
+        discard_server(directory / "ledger")
+        assert not (directory / "ledger" / ".dolt" / "sql-server.info").exists(), (
+            "a cached sql-server would route the fixture's embedded reads through it"
+        )
+        return ids
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def build_rows(ledger: Ledger) -> dict[str, str]:

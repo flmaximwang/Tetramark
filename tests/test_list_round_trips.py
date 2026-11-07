@@ -16,13 +16,16 @@ compare the batched rows with the same operation run through per-statement
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from conftest import FACTORY_AUTHOR, PRESETS, SharedBuilds, isolated_env
 from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver.embedded import EmbeddedDriver
@@ -42,41 +45,66 @@ MANY_KINDS = [str(PRESETS / "full")]
 
 @pytest.fixture(scope="module")
 def read_ledger(
-    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+    tmp_path_factory: pytest.TempPathFactory,
+    dolt_binary: str,
+    shared_builds: SharedBuilds,
 ) -> Iterator[tuple[Ledger, dict[str, Any]]]:
-    """A many-kind ledger with its rows, built once per worker.
+    """A many-kind ledger with its rows, built once per session.
 
     The rows are fixture setup, not the read budget under test: they are built
-    through the server backend (cheap) and the ledger is then reopened with the
-    embedded driver the tests count.  Sharing it across the module is safe:
-    every test here only reads.
+    once per session through the server backend, published closed and copied
+    for this worker, and the copy is then reopened with the embedded driver the
+    tests count.  Sharing it across the module is safe: every test here only
+    reads.
     """
     del dolt_binary  # the fixture only skips the module when dolt is missing
     root = tmp_path_factory.mktemp("list-batch")
+    copy, built = shared_builds.build(
+        "list-round-trips", build_read_ledger, root / "copy"
+    )
     env = isolated_env(root / "dolt-root", root / "home")
-    ledger = init_ledger(
-        root / "ledger",
-        "list-batch",
-        MANY_KINDS,
-        id_prefix="77",
-        author=FACTORY_AUTHOR,
-        env={**env, "TETRAMARK_DRIVER": "server"},
-    )
-    built = build_rows(ledger)
-    ledger.close()
-    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
-    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
-    # the server reports integers as strings (``'1'``), so the fixture stops it
-    # before the embedded reopen.
-    discard_server(root / "ledger")
-    assert not (root / "ledger" / ".dolt" / "sql-server.info").exists(), (
-        "a cached sql-server would route the fixture's embedded reads through it"
-    )
-    ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
+    ledger = open_ledger(copy / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
     try:
         yield ledger, built
     finally:
         ledger.close()
+
+
+def build_read_ledger(directory: Path) -> dict[str, Any]:
+    """Build the many-kind ledger at ``directory``/ledger and return its rows.
+
+    The builder environment (Dolt/Git config) lives outside ``directory``: the
+    whole directory is published to every worker, so only the closed ledger
+    belongs inside it.  The rows are returned as the metadata the fixture
+    hands to the tests, so every worker asserts on the ids of the one real
+    build rather than on ids minted by a second build.
+    """
+    work = Path(tempfile.mkdtemp(prefix="tetramark-list-batch-"))
+    try:
+        env = isolated_env(work / "dolt-root", work / "home")
+        ledger = init_ledger(
+            directory / "ledger",
+            "list-batch",
+            MANY_KINDS,
+            id_prefix="77",
+            author=FACTORY_AUTHOR,
+            env={**env, "TETRAMARK_DRIVER": "server"},
+        )
+        try:
+            built = build_rows(ledger)
+        finally:
+            ledger.close()
+        # Closing a server-backed ledger leaves the ``dolt sql-server`` cached
+        # and alive, and Dolt then routes the embedded ``dolt sql`` reads
+        # through it: the server reports integers as strings (``'1'``), so the
+        # builder stops it before the closed directory is published.
+        discard_server(directory / "ledger")
+        assert not (directory / "ledger" / ".dolt" / "sql-server.info").exists(), (
+            "a cached sql-server would route the fixture's embedded reads through it"
+        )
+        return built
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 @pytest.fixture
