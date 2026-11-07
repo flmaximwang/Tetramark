@@ -18,6 +18,9 @@ automating away.
 | Version | Notes | What changed |
 |---|---|---|
 | [0.8.47](v0.8.47.md) | `v0.8.47.md` | `tm aliquot list --where` takes the shared operators and `--where-any`; exact and empty-value behaviour unchanged |
+| [0.8.46](v0.8.46.md) | `v0.8.46.md` | embedded reads restore Python `int` for integer-typed columns when Dolt auto-routes through a user-run `dolt sql-server`; typed probe runs inside the long-lived session; no default-backend/dependency change |
+| [0.8.44.1](v0.8.44.1.md) | `v0.8.44.1.md` | embedded driver keeps one long-lived `dolt sql` session per ledger (repeated batches ~1 ms instead of ~0.3 s), shared closed fixture builds, installed-wheel build once per session, concurrent per-statement oracle walks; budgets, tests and assertions unchanged |
+| [0.8.44](v0.8.44.md) | `v0.8.44.md` | the suite-budget regression is deterministic: the guard's clock is an injected `tests/conftest.py::_suite_clock` (default `time.monotonic`), the test asserts the exact `5.0s > 3s` banner without a real sleep, and a `hookwrapper` negative control pins the `trylast` ordering; budgets 30/300/60 and the product are unchanged |
 | [0.8.42](v0.8.42.md) | `v0.8.42.md` | `tm stock show` / `tm aliquot show` print related-object `*` lines and add JSON `related`; CSV and `spec_version` unchanged |
 | [0.8.41.1](v0.8.41.1.md) | `v0.8.41.1.md` | `tm aliquot edit` corrects a tube's `quantity`, `unit`, `notes` or `created_at` without rewriting history: one edit event, one Dolt commit |
 | [0.8.41](v0.8.41.md) | `v0.8.41.md` | `tm stock list` and `ledger.stocks.ls()` default to active stocks; `--all` / `all_statuses=True` restore every status |

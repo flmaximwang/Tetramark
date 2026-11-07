@@ -21,6 +21,8 @@ import csv
 import hashlib
 import io
 import json
+import shutil
+import tempfile
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from conftest import FACTORY_AUTHOR, PRESETS, isolated_env
+from conftest import FACTORY_AUTHOR, PRESETS, SharedBuilds, isolated_env
 from support.read_asserts import assert_single_read_process
 from tetramark.core.ledger import Ledger, init_ledger, open as open_ledger
 from tetramark.driver import EmbeddedDriver
@@ -87,40 +89,64 @@ def write_boundary(
 
 @pytest.fixture(scope="module")
 def source(
-    tmp_path_factory: pytest.TempPathFactory, dolt_binary: str
+    tmp_path_factory: pytest.TempPathFactory,
+    dolt_binary: str,
+    shared_builds: SharedBuilds,
 ) -> Iterator[Ledger]:
-    """The one populated ledger these tests read, built once per worker.
+    """The one populated ledger these tests read, built once per session.
 
     Building the rows is fixture setup, not the export/import budget under
-    test: it runs through the server backend and the ledger is reopened with
-    the embedded driver the tests count.  No test mutates the source.
+    test: it runs once per session through the server backend, is published
+    closed and copied for this worker, and the copy is reopened with the
+    embedded driver the tests count.  No test mutates the source.
     """
     del dolt_binary  # the fixture only skips the module when dolt is missing
     root = tmp_path_factory.mktemp("csv-source")
+    copy, _ = shared_builds.build(
+        "csv-round-trips", build_source, root / "copy"
+    )
     env = isolated_env(root / "dolt-root", root / "home")
-    ledger = init_ledger(
-        root / "ledger",
-        "csv-source",
-        FULL,
-        id_prefix="77",
-        author=FACTORY_AUTHOR,
-        env={**env, "TETRAMARK_DRIVER": "server"},
-    )
-    make_source(ledger)
-    ledger.close()
-    # Closing a server-backed ledger leaves the ``dolt sql-server`` cached and
-    # alive, and Dolt then routes the embedded ``dolt sql`` reads through it:
-    # the server reports integers as strings (``'1'``), so the fixture stops it
-    # before the embedded reopen.
-    discard_server(root / "ledger")
-    assert not (root / "ledger" / ".dolt" / "sql-server.info").exists(), (
-        "a cached sql-server would route the fixture's embedded reads through it"
-    )
-    ledger = open_ledger(root / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
+    ledger = open_ledger(copy / "ledger", env={**env, "TETRAMARK_DRIVER": "embedded"})
     try:
         yield ledger
     finally:
         ledger.close()
+
+
+def build_source(directory: Path) -> dict[str, Any]:
+    """Build the populated CSV source ledger at ``directory``/ledger.
+
+    The builder environment (Dolt/Git config) lives outside ``directory``: the
+    whole directory is published to every worker, so only the closed ledger
+    belongs inside it.  The source carries no ids the tests assert on, so the
+    metadata is empty.
+    """
+    work = Path(tempfile.mkdtemp(prefix="tetramark-csv-source-"))
+    try:
+        env = isolated_env(work / "dolt-root", work / "home")
+        ledger = init_ledger(
+            directory / "ledger",
+            "csv-source",
+            FULL,
+            id_prefix="77",
+            author=FACTORY_AUTHOR,
+            env={**env, "TETRAMARK_DRIVER": "server"},
+        )
+        try:
+            make_source(ledger)
+        finally:
+            ledger.close()
+        # Closing a server-backed ledger leaves the ``dolt sql-server`` cached
+        # and alive, and Dolt then routes the embedded ``dolt sql`` reads
+        # through it: the server reports integers as strings (``'1'``), so the
+        # builder stops it before the closed directory is published.
+        discard_server(directory / "ledger")
+        assert not (directory / "ledger" / ".dolt" / "sql-server.info").exists(), (
+            "a cached sql-server would route the fixture's embedded reads through it"
+        )
+        return {}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")

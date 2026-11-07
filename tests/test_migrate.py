@@ -57,7 +57,7 @@ from tetramark.schema.loader import load_ledger_schema, load_schema
 
 import tetramark.schema.model as model
 
-from conftest import PRESETS, REPO_PRESETS, isolated_env
+from conftest import PRESETS, REPO_PRESETS, SharedBuilds, isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATE_SCRIPT = ROOT / "migration" / "spec" / "1-to-2" / "migrate.py"
@@ -1611,13 +1611,15 @@ def _load_build_fixtures():
     return module
 
 
-@pytest.fixture(scope="module")
-def rebuilt_molbio_v1(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Rebuild the molbio-1 fixture once per module; skip when impossible.
+def _build_rebuilt_molbio_v1(out: Path) -> dict[str, Any]:
+    """Build the molbio-1 fixture under ``out``; once per pytest session.
 
     The build needs ``git``, ``uv`` and ``dolt``, the legacy commit in this
     clone, and either network or a warm uv cache.  A machine that cannot
     materialise the legacy checkout skips the drift guard instead of failing.
+    These checks run for every caller attempt, so a skip is never published
+    and every worker skips with the same message.  The builder writes to a
+    path that does not exist yet, as it always did.
     """
     builder = _load_build_fixtures()
     missing = [name for name in ("git", "uv", "dolt") if shutil.which(name) is None]
@@ -1639,9 +1641,8 @@ def rebuilt_molbio_v1(tmp_path_factory: pytest.TempPathFactory) -> Path:
         pytest.skip(
             f"the legacy commit {builder.LEGACY_COMMIT[:12]} is not in this clone"
         )
-    target = tmp_path_factory.mktemp("molbio-v1-rebuilt") / "molbio-v1"
     result = subprocess.run(
-        [sys.executable, str(BUILD_FIXTURES), "--out", str(target)],
+        [sys.executable, str(BUILD_FIXTURES), "--out", str(out / "molbio-v1")],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -1649,7 +1650,23 @@ def rebuilt_molbio_v1(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if result.returncode != 0:
         output = (result.stdout + result.stderr).strip()
         pytest.skip(f"cannot rebuild the molbio-1 fixture here:\n{output[-1200:]}")
-    return target
+    return {}
+
+
+@pytest.fixture(scope="module")
+def rebuilt_molbio_v1(
+    shared_builds: SharedBuilds, tmp_path_factory: pytest.TempPathFactory
+) -> Path:
+    """Rebuild the molbio-1 fixture once per session; skip when impossible.
+
+    The pinned legacy build executes inside the session clock the first time
+    any worker needs it, then is published closed and copied for this worker.
+    """
+    destination = tmp_path_factory.mktemp("molbio-v1-rebuilt") / "copy"
+    rebuilt, _metadata = shared_builds.build(
+        "rebuilt-molbio-v1", _build_rebuilt_molbio_v1, destination
+    )
+    return rebuilt / "molbio-v1"
 
 
 def test_molbio_v1_fixture_matches_its_builder(
@@ -4593,14 +4610,16 @@ def _load_build_spec4_fixture():
     return module
 
 
-@pytest.fixture(scope="module")
-def rebuilt_spec4_boxes(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Rebuild the spec-4 fixture once per module; skip when impossible.
+def _build_rebuilt_spec4_boxes(out: Path) -> dict[str, Any]:
+    """Build the spec-4 fixture under ``out``; once per pytest session.
 
     The build needs ``git``, ``uv`` and ``dolt``, the legacy commit in this
     clone, and either network or a warm uv cache.  A machine that cannot
     materialise the legacy checkout skips the drift guard instead of failing;
-    the migration tests still run from the checked-in copy.
+    the migration tests still run from the checked-in copy.  These checks run
+    for every caller attempt, so a skip is never published and every worker
+    skips with the same message.  The builder writes to a path that does not
+    exist yet, as it always did.
     """
     builder = _load_build_spec4_fixture()
     missing = [name for name in ("git", "uv", "dolt") if shutil.which(name) is None]
@@ -4622,9 +4641,8 @@ def rebuilt_spec4_boxes(tmp_path_factory: pytest.TempPathFactory) -> Path:
         pytest.skip(
             f"the legacy commit {builder.LEGACY_COMMIT[:12]} is not in this clone"
         )
-    target = tmp_path_factory.mktemp("spec4-boxes-rebuilt") / "spec4-boxes"
     result = subprocess.run(
-        [sys.executable, str(BUILD_SPEC4_FIXTURE), "--out", str(target)],
+        [sys.executable, str(BUILD_SPEC4_FIXTURE), "--out", str(out / "spec4-boxes")],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -4632,7 +4650,23 @@ def rebuilt_spec4_boxes(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if result.returncode != 0:
         output = (result.stdout + result.stderr).strip()
         pytest.skip(f"cannot rebuild the spec-4 fixture here:\n{output[-1200:]}")
-    return target
+    return {}
+
+
+@pytest.fixture(scope="module")
+def rebuilt_spec4_boxes(
+    shared_builds: SharedBuilds, tmp_path_factory: pytest.TempPathFactory
+) -> Path:
+    """Rebuild the spec-4 fixture once per session; skip when impossible.
+
+    The pinned legacy build executes inside the session clock the first time
+    any worker needs it, then is published closed and copied for this worker.
+    """
+    destination = tmp_path_factory.mktemp("spec4-boxes-rebuilt") / "copy"
+    rebuilt, _metadata = shared_builds.build(
+        "rebuilt-spec4-boxes", _build_rebuilt_spec4_boxes, destination
+    )
+    return rebuilt / "spec4-boxes"
 
 
 def test_spec4_boxes_fixture_matches_its_builder(

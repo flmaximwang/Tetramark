@@ -3,7 +3,7 @@ name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
 version: "0.8.47"
 spec: "06-cli"
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 > Tetramark 0.8.47 skill — if `tm --version` differs, use the copy at `tm skill path`.
@@ -22,7 +22,7 @@ one Dolt commit; every read is a normal `tm` command.
 3. Prefer an alias/ID from `find` over a guessed ID.
 4. Global flags (`-l/--ledger PATH`, `-b/--branch`, `--dry-run`, `--no-commit`, `--json`,
    `--format`) go before the command: `tm -l ~/lab/lab101 --json entity list plasmid`.
-5. Every command uses the embedded driver (one `dolt sql` process per statement); there is no server
+5. Every command uses the embedded driver (one long-lived `dolt sql` session per ledger); there is no server
    to start or stop. Writes are serialized by a per-ledger lock (`$TETRAMARK_LOCK_TIMEOUT` changes the
    ~10 s wait); reads never lock, but never run two writers on one ledger.
 6. Presets ship with tetramark (wheel `tetramark/presets/`) and live in the repo's `presets/`; a bare

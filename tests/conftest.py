@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import fcntl
 import itertools
+import json
 import os
 import re
 import shutil
@@ -40,6 +41,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -201,6 +203,15 @@ _SLOW_TESTS: list[tuple[float, str]] = []
 _SUITE_STARTED: float | None = None
 
 
+#: The clock the budget guard measures with.  It is a plain module attribute so
+#: a test can replace *this* callable -- never ``time.monotonic`` itself --
+#: to make a timing assertion deterministic.  Patching the global clock would
+#: reach pytest, xdist, PyMySQL and the Dolt supervision code, which all read
+#: real time.  The default is the real monotonic clock: production behaviour,
+#: the 30/300/60 s budgets and the env override are unchanged.
+_suite_clock: Callable[[], float] = time.monotonic
+
+
 def _scratch_root(config: pytest.Config) -> Path:
     """The temporary tree this harness owns (pytest's per-user base temp root)."""
     basetemp = config.getoption("basetemp", default=None)
@@ -225,7 +236,7 @@ def pytest_configure(config: pytest.Config) -> None:
     global _SUITE_STARTED
     if hasattr(config, "workerinput"):
         return
-    _SUITE_STARTED = time.monotonic()
+    _SUITE_STARTED = _suite_clock()
     try:
         from tetramark.driver.server import reap_orphaned_servers
     except Exception:  # pragma: no cover - PyMySQL absent
@@ -293,7 +304,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     if _SUITE_STARTED is None:  # pragma: no cover - configure always ran
         return
-    elapsed = time.monotonic() - _SUITE_STARTED
+    elapsed = _suite_clock() - _SUITE_STARTED
     budget = _suite_budget_seconds(session.config)
     if budget is None or elapsed <= budget:
         return
@@ -632,6 +643,151 @@ def template_ledgers(tmp_path_factory: pytest.TempPathFactory) -> LedgerTemplate
     root = base / "ledger-templates"
     root.mkdir(exist_ok=True)
     return LedgerTemplates(root)
+
+
+# ---------------------------------------------------------------------------
+# Expensive fixture builds shared by every xdist worker of one session
+# ---------------------------------------------------------------------------
+
+#: The file a published shared build carries beside its payload.  It holds the
+#: JSON metadata the builder produced (the original ids a test asserts on, and
+#: anything else derived while building).  It is written inside the temporary
+#: build directory, so the metadata and the payload it describes are published
+#: by the same atomic rename and can never come from different builds.
+SHARED_BUILD_METADATA = ".shared-build.json"
+
+#: Keys name files under the shared root, so they stay boring on purpose.
+SHARED_BUILD_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+
+
+def _record_shared_build(key: str) -> None:
+    """Append one build event when ``TETRAMARK_SHARED_BUILD_STATS`` is set.
+
+    Every xdist worker appends its own line; summing/counting the lines is the
+    evidence that a fixture was built once per session instead of once per
+    worker.  The append is a single small ``write(2)`` on an ``O_APPEND`` file,
+    so concurrent workers cannot interleave or tear a line.
+    """
+    path = os.environ.get("TETRAMARK_SHARED_BUILD_STATS")
+    if not path:
+        return
+    line = f"tetramark-shared-build-stats: key={key} builds=1\n"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:  # pragma: no cover - unusable stats path
+        print(line, end="", file=sys.stderr, flush=True)
+        return
+    try:
+        os.write(descriptor, line.encode("utf-8"))
+    finally:
+        os.close(descriptor)
+
+
+class SharedBuilds:
+    """Build an expensive fixture once per pytest session, then copy it.
+
+    A module-scoped fixture is rebuilt once *per xdist worker*, and under
+    ``--dist worksteal`` one module's tests can be spread over several workers,
+    so a 20–25 s build is paid again per worker.  This helper applies the
+    :class:`LedgerTemplates` protocol to any directory-shaped fixture:
+
+    * the root is shared by every worker of the session (the parent of the
+      per-worker base temp);
+    * the first caller takes an exclusive ``flock`` on ``<key>.lock``, builds
+      into a temporary sibling directory, then publishes it with one atomic
+      ``os.rename`` and only afterwards writes ``<key>.ready``;
+    * the builder writes into that temporary directory and returns the JSON
+      metadata the tests need (the original ids and expected values).  The
+      helper writes it as :data:`SHARED_BUILD_METADATA` *inside* the temporary
+      directory, so payload and metadata are published together;
+    * an interrupted publisher is recovered: a missing ``.ready`` marker (even
+      when the rename already happened) makes the next caller discard the
+      half-published directory and rebuild.  A caller that dies while holding
+      the lock releases it with the process;
+    * a builder skip (``pytest.skip``) propagates to that caller, publishes
+      nothing, and the next caller runs the same builder and skips with the
+      same message — a skip is never cached;
+    * every caller gets its own ``shutil.copytree`` of the published directory,
+      so the published build is immutable and no live ``Ledger`` object or
+      server is shared across workers.  The builder must publish a **closed**
+      directory (no cached ``dolt sql-server``, no discovery file pointing at a
+      live port) exactly like the ledger templates do.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._root.mkdir(parents=True, exist_ok=True)
+
+    def _is_complete(self, ready: Path, published: Path) -> bool:
+        return (
+            ready.exists()
+            and published.is_dir()
+            and (published / SHARED_BUILD_METADATA).is_file()
+        )
+
+    def build(
+        self,
+        key: str,
+        build_fn: Callable[[Path], Mapping[str, Any]],
+        destination: Path,
+    ) -> tuple[Path, dict[str, Any]]:
+        """Ensure ``key`` is built, then return a private copy and its metadata.
+
+        ``build_fn`` receives an empty temporary directory and must fill it; it
+        returns the metadata mapping to publish beside the payload.  It may
+        raise :class:`pytest.skip.Exception` (or any other exception) to abort
+        without publishing.  ``destination`` is the directory to create for
+        *this* caller; it must not exist yet and its parent must.
+        """
+        if not SHARED_BUILD_KEY_RE.match(key):
+            raise ValueError(f"invalid shared-build key {key!r}")
+        published = self._root / f"{key}-build"
+        ready = self._root / f"{key}.ready"
+        with open(self._root / f"{key}.lock", "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not self._is_complete(ready, published):
+                # Recover from any interrupted publisher.  That includes the
+                # crash window where os.rename succeeded but <key>.ready was
+                # never written: the marker is what makes a build public, so a
+                # directory without one is not trusted and is rebuilt.
+                shutil.rmtree(published, ignore_errors=True)
+                if ready.exists():
+                    ready.unlink()
+                for stale in self._root.glob(f"{key}-tmp-*"):
+                    shutil.rmtree(stale, ignore_errors=True)
+                temporary = Path(
+                    tempfile.mkdtemp(prefix=f"{key}-tmp-", dir=self._root)
+                )
+                try:
+                    metadata = build_fn(temporary)
+                    (temporary / SHARED_BUILD_METADATA).write_text(
+                        json.dumps(dict(metadata), sort_keys=True), encoding="utf-8"
+                    )
+                    os.rename(temporary, published)
+                    ready.touch()
+                except BaseException:
+                    shutil.rmtree(temporary, ignore_errors=True)
+                    raise
+                _record_shared_build(key)
+        shutil.copytree(published, destination)
+        metadata = json.loads(
+            (destination / SHARED_BUILD_METADATA).read_text(encoding="utf-8")
+        )
+        return destination, metadata
+
+
+@pytest.fixture(scope="session")
+def shared_builds(tmp_path_factory: pytest.TempPathFactory) -> SharedBuilds:
+    """Session-wide shared expensive builds (one root per pytest session).
+
+    Like :func:`template_ledgers`, the root is the parent of every worker's base
+    temp under xdist, which is the one directory all workers of *this* session
+    share and no other session sees.
+    """
+    base = tmp_path_factory.getbasetemp()
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        base = base.parent
+    return SharedBuilds(base / "shared-builds")
 
 
 @pytest.fixture
