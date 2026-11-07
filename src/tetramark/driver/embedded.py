@@ -20,11 +20,20 @@ Two Dolt quirks are handled here:
 * Dolt exits 1 for most errors but not all of them, so success is decided from
   the output as well as the exit code: any non-JSON line, or an error-looking
   line on stdout/stderr, is a :class:`LedgerError`.
-* JSON result rows omit columns whose value is ``NULL``.  A second run with
-  ``-r csv`` supplies the column list (the CSV header is printed even for zero
-  rows), so ``query`` always returns dictionaries with every column present.
-  A caller that proved every selected column is ``NOT NULL`` can pass
-  ``fill_columns=False`` to skip that second run: one ``dolt sql`` process less.
+* JSON result rows omit columns whose value is ``NULL``.  A probe inside the
+  driver's long-lived JSON session (``CREATE TEMPORARY TABLE .. AS SELECT ..
+  LIMIT 0`` + ``SHOW COLUMNS``) supplies the column list, so ``query`` returns
+  dictionaries with every column present.  A caller that proved every selected
+  column is ``NOT NULL`` can pass ``fill_columns=False`` to skip the NULL
+  filling (the probe still runs for types; it is the same session, never a
+  second process).
+* When a user-run ``dolt sql-server`` is alive on the ledger directory, Dolt
+  auto-routes ``dolt sql`` through it and its JSON result sets render integer
+  columns as strings (``"1"`` instead of ``1``).  The probe's ``SHOW COLUMNS``
+  ``Type`` is the authoritative SQL type of the same session, so integer-family
+  columns are restored to Python ``int``; DECIMAL and textual values are never
+  coerced.  See ``docs/spec/07-driver-layer.md`` for the exact read contract and
+  the measured float/double-derived boundary.
 """
 
 from __future__ import annotations
@@ -106,6 +115,21 @@ def _close_all_sessions() -> None:
 #: of that marker tells a failed batch how far Dolt got (see ``execute_many``).
 _MARKER_SQL = "SELECT '{prefix}{index}' AS `marker`"
 _MARKER_PREFIX = "TM_STMT_"
+#: The probe prints these markers around its ``SHOW COLUMNS`` output.  The
+#: routed server emits an extra ``{}`` result line for ``CREATE TEMPORARY
+#: TABLE`` (the local engine emits none) and separates result lines with blank
+#: lines, so the probe parser locates result sets by marker instead of offset.
+_TYPE_MARKER_PREFIX = "TM_TYPES_"
+#: ``SHOW COLUMNS`` ``Type`` values that hold integers: the SQL integer family,
+#: optional display width and unsigned.  Nothing else is ever coerced.
+_INTEGER_TYPE = re.compile(
+    r"\A(?:tinyint|smallint|mediumint|int|integer|bigint)"
+    r"(?:\(\d+\))?(?: unsigned)?\Z",
+    re.IGNORECASE,
+)
+#: A routed integer cell: ASCII signed digits only.  Numeric-looking TEXT or
+#: DECIMAL values may match too, which is why the column's SQL type decides.
+_INTEGER_TEXT = re.compile(r"\A-?[0-9]+\Z", re.ASCII)
 _MARKER_LINE = re.compile(
     r'^\s*\{\s*"rows"\s*:\s*\[\s*\{\s*"marker"\s*:\s*"TM_STMT_(\d+)"\s*\}\s*\]\s*\}\s*$'
 )
@@ -196,26 +220,42 @@ class EmbeddedDriver(Driver):
     ) -> list[dict[str, Any]]:
         """Run one read in one ``dolt sql`` process.
 
-        A ``SELECT``/``WITH`` read gets its column names from the same process
-        (:meth:`_query_probed`), so a ``NULL`` column is present as ``None``.
-        Other reads, and any probe Dolt rejects, fall back to a second
-        ``-r csv`` header run.  ``fill_columns=False`` skips the column names:
-        the caller must have proved every selected column is ``NOT NULL``,
-        because a ``NULL`` column is then simply absent from the row.
+        A ``SELECT``/``WITH`` read gets its column names *and* SQL types from the
+        same process (:meth:`_query_probed`), so a ``NULL`` column is present as
+        ``None`` and integer-family columns are Python ``int`` even when a
+        user-run server makes Dolt route the read (its JSON then renders them as
+        strings).  Other reads, and any probe Dolt rejects, fall back to a
+        second ``-r csv`` header run and leave values exactly as Dolt reports
+        them (the documented residual).  ``fill_columns=False`` still runs the
+        same-process probe for types but skips the NULL filling: the caller must
+        have proved every selected column is ``NOT NULL``, because a ``NULL``
+        column is then simply absent from the row.
         """
         rendered = render_sql(sql, params)
         if self._pending:
             # There is no session to query *inside* the pending transaction, so
             # replay the buffer in a transaction that is rolled back and read
             # the state from there.  The buffer itself stays pending, ready for
-            # the real commit when the context manager exits.
+            # the real commit when the context manager exits.  The type probe is
+            # appended after the ROLLBACK: it only needs the committed schema.
             batch = ";\n".join(["START TRANSACTION", *self._pending, rendered, "ROLLBACK"])
+            probed = None
+            if _probeable(rendered):
+                probed = self._query_probed(
+                    [rendered],
+                    prefix=["START TRANSACTION", *self._pending],
+                    between=["ROLLBACK"],
+                    fill_columns=fill_columns,
+                )
+            if probed is not None:
+                return probed[0]
             rows = self._query_json(batch)
         else:
-            if fill_columns and _probeable(rendered):
-                probed = self._query_probed([rendered])
-                if probed is not None:
-                    return probed[0]
+            probed = None
+            if _probeable(rendered):
+                probed = self._query_probed([rendered], fill_columns=fill_columns)
+            if probed is not None:
+                return probed[0]
             rows = self._query_json(rendered)
         if not fill_columns:
             return rows
@@ -232,17 +272,21 @@ class EmbeddedDriver(Driver):
         ``-r json`` emits one line per statement (``{}`` when a statement has no
         rows), so the batch stays aligned.  JSON omits a column whose value is
         ``NULL``; for a batch of ``SELECT``/``WITH`` reads the same process also
-        prints every statement's column list (:meth:`_query_probed`).  Any
-        other batch, or a probe Dolt rejects, uses the historical second
-        ``-r csv`` run (CSV prints one header even for zero rows) and the
-        columns are filled in exactly as :meth:`_with_columns` does.  If the two runs cannot
-        be aligned (an unexpected Dolt output shape), the statements fall back to
-        individual :meth:`query` calls: the batching only changes speed, never
-        the result.
+        prints every statement's column list and SQL type
+        (:meth:`_query_probed`), which restores integer-family columns to
+        Python ``int`` even when Dolt routes the batch through a user-run
+        server.  Any other batch, or a probe Dolt rejects, uses the historical
+        second ``-r csv`` run (CSV prints one header even for zero rows) and the
+        columns are filled in exactly as :meth:`_with_columns` does; values are
+        then left as Dolt reports them (the documented residual).  If the two
+        runs cannot be aligned (an unexpected Dolt output shape), the statements
+        fall back to individual :meth:`query` calls: the batching only changes
+        speed, never the result.
 
         ``fill_columns=False`` is the explicit opt-out for a batch whose every
-        selected column is ``NOT NULL``: the CSV run is skipped, so the batch is
-        a single ``dolt sql`` process and a ``NULL`` column is not restored.
+        selected column is ``NOT NULL``: NULL columns are not restored, but the
+        same-process probe still runs for types, so integer parity holds.  The
+        batch is still a single ``dolt sql`` process.
         """
         ordered = list(statements)
         if not ordered:
@@ -255,8 +299,8 @@ class EmbeddedDriver(Driver):
                 for sql, params in ordered
             ]
         rendered = [render_sql(sql, params) for sql, params in ordered]
-        if fill_columns and all(_probeable(sql) for sql in rendered):
-            probed = self._query_probed(rendered)
+        if all(_probeable(sql) for sql in rendered):
+            probed = self._query_probed(rendered, fill_columns=fill_columns)
             if probed is not None:
                 return probed
         # A newline before the separator keeps a query that ends in a
@@ -414,17 +458,34 @@ class EmbeddedDriver(Driver):
 
     # -- plumbing ---------------------------------------------------------
     def _query_probed(
-        self, statements: Sequence[str]
+        self,
+        statements: Sequence[str],
+        *,
+        prefix: Sequence[str] = (),
+        between: Sequence[str] = (),
+        fill_columns: bool = True,
     ) -> list[list[dict[str, Any]]] | None:
-        """Rows *and* every column name of ``SELECT`` reads in ONE ``dolt sql`` run.
+        """Rows, column names and SQL types of ``SELECT`` reads in ONE run.
 
         ``-r json`` omits a column whose value is ``NULL``, so the column list
         used to need a second, ``-r csv`` process.  Here the same script also
         materialises each statement's shape as an empty temporary table
         (``CREATE TEMPORARY TABLE .. AS SELECT * FROM (<query>) .. LIMIT 0``)
-        and prints ``SHOW COLUMNS`` for it: the output is the N result sets
-        followed by N column lists.  Temporary tables live in the session only
-        and never touch the working set.
+        and prints ``SHOW COLUMNS`` for it.  Temporary tables live in the
+        session only and never touch the working set.
+
+        The ``Type`` column is the SQL type Dolt itself assigned to the same
+        result, so integer-family columns are restored to Python ``int`` even
+        when a live server makes Dolt route the run and render them as strings.
+        Only integer-family cells holding ASCII signed digits are converted;
+        DECIMAL, TEXT and every other type is returned exactly as Dolt reports
+        it (see ``docs/spec/07-driver-layer.md``).
+
+        ``prefix``/``between`` place the probe after the caller's own
+        statements (the pending-transaction preview appends it after its
+        ``ROLLBACK``).  Markers delimit the query result and the column list:
+        a routed session prints an extra ``{}`` line for ``CREATE TEMPORARY
+        TABLE``, so a fixed offset cannot be used.
 
         ``None`` means "use the two-process path": a probe Dolt rejects (for
         example duplicate column names), any error -- the old path then raises
@@ -432,38 +493,65 @@ class EmbeddedDriver(Driver):
         """
         # The JSON session is long-lived, so each call needs its own temporary
         # table names (a repeated CREATE TEMPORARY TABLE would fail) and drops
-        # them again; DDL prints no result line, so the 2N alignment below is
-        # unchanged.
+        # them again.  Markers frame each query result and each column list,
+        # because a routed session prints an extra ``{}`` line for the DDL.
         self._probe_sequence += 1
         sequence = self._probe_sequence
-        probes: list[str] = []
+        parts: list[str] = [*prefix]
         for index, sql in enumerate(statements):
             table = f"`tm_columns_{sequence}_{index}`"
             body = sql.rstrip().rstrip(";")
-            probes.append(
+            parts.append(sql)
+            parts.append(_type_marker_sql("Q", index))
+            if index == len(statements) - 1:
+                parts.extend(between)
+            parts.append(
                 f"CREATE TEMPORARY TABLE {table} AS SELECT * FROM (\n{body}\n) "
                 f"AS `tm_probe` LIMIT 0"
             )
-            probes.append(f"SHOW COLUMNS FROM {table}")
-            probes.append(f"DROP TEMPORARY TABLE IF EXISTS {table}")
-        script = "\n;\n".join([*statements, *probes])
+            parts.append(_type_marker_sql("C", index))
+            parts.append(f"SHOW COLUMNS FROM {table}")
+            parts.append(f"DROP TEMPORARY TABLE IF EXISTS {table}")
         try:
             result_sets = _parse_result_sets(
-                self._invoke(script, "json"), keep_empty=True
+                self._invoke("\n;\n".join(parts), "json"), keep_empty=True
             )
-        except LedgerError:
+        except LedgerError as error:
+            if self._branch is not None and _missing_revision_database(
+                str(error), self.database, self._branch
+            ):
+                # Every run starts with ``USE `db/branch`;``.  If that revision
+                # database is missing, an un-probed run fails with the same
+                # error, so re-running it would only repeat the failure and burn
+                # a second ``dolt sql`` process (the budget test for a missing
+                # branch pins at most two).
+                raise
             return None
-        count = len(statements)
-        if len(result_sets) != 2 * count:
-            return None
-        for rows, shape in zip(result_sets[:count], result_sets[count:]):
-            names = [str(column.get("Field")) for column in shape]
-            if not names or "None" in names:
+        rows_by_statement: list[list[dict[str, Any]]] = []
+        shapes: list[list[dict[str, Any]]] = []
+        cursor = 0
+        for index in range(len(statements)):
+            query_marker = _find_marker(result_sets, "Q", index, cursor)
+            if query_marker is None or query_marker == 0:
                 return None
-            for row in rows:
-                for name in names:
-                    row.setdefault(name, None)
-        return result_sets[:count]
+            shape_marker = _find_marker(result_sets, "C", index, query_marker + 1)
+            if shape_marker is None or shape_marker + 1 >= len(result_sets):
+                return None
+            rows_by_statement.append(result_sets[query_marker - 1])
+            shapes.append(result_sets[shape_marker + 1])
+            cursor = shape_marker + 1
+        for rows, shape in zip(rows_by_statement, shapes):
+            columns = [
+                (str(column.get("Field")), column.get("Type")) for column in shape
+            ]
+            if not columns or any(name == "None" for name, _type in columns):
+                return None
+            _normalise_integers(rows, columns)
+            if fill_columns:
+                for row in rows:
+                    for name, _type in columns:
+                        row.setdefault(name, None)
+        return rows_by_statement
 
     def _query_json(self, sql: str) -> list[dict[str, Any]]:
         result_sets = self._run(sql)
@@ -729,6 +817,70 @@ def _commit_hash(result_sets: Sequence[Sequence[dict[str, Any]]]) -> str | None:
             if "hash" in row:
                 return str(row["hash"])
     return None
+
+
+def _type_marker_sql(kind: str, index: int) -> str:
+    """A one-row marker delimiting a probe result set (``kind`` is Q or C)."""
+    return f"SELECT '{_TYPE_MARKER_PREFIX}{kind}{index}' AS `marker`"
+
+
+def _find_marker(
+    result_sets: Sequence[Sequence[dict[str, Any]]],
+    kind: str,
+    index: int,
+    start: int,
+) -> int | None:
+    """The first marker set for ``kind``/``index`` at or after ``start``."""
+    wanted = [{"marker": f"{_TYPE_MARKER_PREFIX}{kind}{index}"}]
+    for position in range(start, len(result_sets)):
+        if result_sets[position] == wanted:
+            return position
+    return None
+
+
+def _missing_revision_database(message: str, database: str, branch: str) -> bool:
+    """Whether Dolt failed to select this session's ``db/branch`` database.
+
+    The failure is checked by Dolt's own error text because the probe's extra
+    statements cannot be told apart structurally: a missing revision database
+    fails before any statement runs, and Dolt 2.6.1 reports
+    ``database not found: db/branch``.  The check is narrow (this session's
+    revision name and Dolt's phrase); any other probe error still falls back to
+    the un-probed run.
+    """
+    return (
+        "database not found" in message
+        and f"{database}/{branch}" in message
+    )
+
+
+def _is_integer_type(sql_type: Any) -> bool:
+    """Whether a ``SHOW COLUMNS`` ``Type`` is in the SQL integer family."""
+    return isinstance(sql_type, str) and _INTEGER_TYPE.match(sql_type) is not None
+
+
+def _normalise_integers(
+    rows: list[dict[str, Any]],
+    columns: Sequence[tuple[str, Any]],
+) -> None:
+    """Restore Python ``int`` cells of integer-typed columns, in place.
+
+    Dolt's local JSON engine already returns them as integers, so the pass is
+    idempotent there.  A routed server returns ``"1"`` for the same column;
+    only a string of ASCII signed digits in a column whose probed SQL type is
+    an integer family member is converted.  ``NULL`` (absent/None), booleans,
+    floats and every non-integer column are untouched.
+    """
+    integer_names = [
+        name for name, sql_type in columns if _is_integer_type(sql_type)
+    ]
+    if not integer_names:
+        return
+    for row in rows:
+        for name in integer_names:
+            value = row.get(name)
+            if isinstance(value, str) and _INTEGER_TEXT.match(value):
+                row[name] = int(value)
 
 
 def _check_output(

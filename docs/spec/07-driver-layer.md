@@ -55,8 +55,52 @@ process.)
 
 **User-run `dolt sql-server`.** If a `dolt sql-server` happens to be running on the ledger directory,
 Dolt's CLI auto-routes `dolt sql` through it. That is Dolt's behaviour, not something Tetramark
-detects, requires or manages: 0.5.0 neither starts nor stops a server, and running one is not a
-supported multi-writer mode (below).
+detects, requires or manages: it neither starts, stops nor detects a server, running one is still not
+a supported multi-writer mode (below), and no optional dependency (PyMySQL) is needed for the routed
+read path. What Tetramark does own is the *result contract*: a routed read must return the same
+Python types as the local engine (Tetramark-2gz).
+
+Dolt has no flag that disables the routing, and its routed JSON result sets render columns
+differently: integer columns come back as strings (`"1"` instead of `1`), while DECIMAL is a string
+in both modes and CSV output is identical. `EmbeddedDriver.query` / `query_many` therefore read the
+`Type` column of the `SHOW COLUMNS` probe that already runs inside the driver's long-lived JSON
+session (a per-call, uniquely named temporary table that is dropped again after the probe) and
+restore Python `int` for cells whose probed type is in the SQL integer family
+(`tinyint`, `smallint`, `mediumint`, `int`, `integer`, `bigint`; optional display width and
+`unsigned`) and whose value is a string of ASCII signed digits. Nothing else is coerced: a
+`TEXT`/`VARCHAR` value `"123"` stays a string, DECIMAL and date/time values keep the shape the local
+engine gives them, `NULL` stays `None`, booleans and floats are untouched, and an unsigned `BIGINT`
+above `2**63` becomes an exact Python `int`. The local engine already returns integers, so the pass
+is idempotent there. The probe's result sets are located by generated marker rows, not by a fixed
+offset: a routed server prints an extra `{}` result line for the temporary-table DDL and blank-line
+separators, so offset alignment cannot work under routing. Because the session is long-lived, every
+probe uses fresh temporary-table names and drops them at the end of the call.
+
+The read contract, in full:
+
+- `query()` (default `fill_columns=True`) and every all-`SELECT`/`WITH` `query_many()` batch run in
+  the driver's one long-lived `dolt sql -r json` session; the same-session probe supplies both column
+  names and types, so NULL columns stay `None` and no second process is started per read.
+- `fill_columns=False` still runs that same-session probe for types (so integers stay integers) but
+  skips the NULL filling: a `NULL` column is absent, exactly as before.
+- A pending transaction preview (`Driver.transaction()` + `query`) appends the same temp-table probe
+  *after* its `ROLLBACK`, in the same live session and against the same committed schema, so
+  previewed integer columns are typed too; the buffer stays pending and its previewed insert stays
+  rolled back.
+- Branch sessions run the probe inside the same revision-database session, so a branch read has the
+  same types as the checked-out read.
+- **Residual:** reads with no type metadata are returned exactly as Dolt reports them, with no
+  heuristic coercion — non-`SELECT` statements (`SHOW`, `DESCRIBE`, `CALL`, `EXPLAIN`) and statements
+  the probe rejects (for example duplicate output column names). A routed `SHOW`/probe-rejected read
+  can therefore still show a numeric-looking text value; this is deliberate and tested, because
+  guessing from the value would corrupt real text columns.
+- **Measured boundary:** the probe's temp-table `Type` is authoritative for base columns and
+  integer-typed expressions, but lossy for float/double-derived expressions, where the local engine's
+  JSON shape depends on the underlying expression type (a `SUM` over an integer column probes as
+  `double` yet the local engine renders an integer JSON number, while a `SUM` over a `DECIMAL`
+  probes as `double` yet renders a decimal string). Those columns are left exactly as Dolt reports
+  them; Tetramark's schema never creates float/double/bit/json/time columns, and the product's
+  `SUM`-derived count columns cast to `int` in Python where they are reported.
 
 **One writer per ledger** (P11). A ledger is writable from one process at a time: Dolt's manifest
 is opened read-only in every other process while a session lives, and the embedded driver's session
