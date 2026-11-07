@@ -1,12 +1,12 @@
 ---
 name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
-version: "0.8.46"
+version: "0.8.47"
 spec: "06-cli"
 updated: 2026-11-07
 ---
 
-> Tetramark 0.8.46 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.47 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Tetramark operating manual
 
@@ -58,7 +58,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Fix a legacy / hand-made stock id | `tm stock renumber REF --id NEW` or `--auto` (old ids stay findable as aliases) |
 | See what is in a box, or move the box itself | `tm box show NAME` (grid) or `--json`; `tm box move NAME --in PARENT [--slot S]` |
 | Rename an entity or box, or edit an entity, stock or box | `tm entity\|box rename REF NEW_NAME` (old name stays findable as an alias); `tm entity\|stock\|box edit REF --set f=v` (notes + kind fields; a name is rename-only — `--set name=…` is refused) |
-| Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance!=amp'` (`=` exact, `!=` inequality, `~`/`!~` case-sensitive regex `(?i)`, ordered comparisons; `field=` empty, `field!=` filled in; `--where-any` is one OR group, e.g. `tm find --where-any 'resistance=kan' --where-any 'resistance=amp'`) |
+| Find anywhere / filter by column | `tm find -E '^pZET'` (ICU regex: ids, aliases, names, kind text) or `tm entity list --where 'name~(?i)^pzet'` / `tm find --where 'resistance!=amp'` (`=` exact, `!=` inequality, `~`/`!~` case-sensitive regex `(?i)`, ordered comparisons; `field=` empty, `field!=` filled in; `--where-any` is one OR group, e.g. `tm find --where-any 'resistance=kan' --where-any 'resistance=amp'`; the same operators serve `tm aliquot list`, e.g. `tm aliquot list --where 'quantity>=100' --where-any 'label~^cl'`) |
 | What happened to an object | `tm history ID\|ALIAS\|BOX` |
 | Register an organism line and its colony, or record a cross / pedigree link | `tm entity add mouse_strain --name N` then `tm stock add mouse_cohort --entity N --box CAGE --quantity 1 --unit mouse`; `tm stock add fly_culture … --set dam=ALQ --set sire=ALQ` (refs to aliquots, `lineage: true`) |
 | Where material came from / what derives from it | `tm lineage ID [--up \| --down] [--depth N]` |

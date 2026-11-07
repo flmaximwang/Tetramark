@@ -653,3 +653,150 @@ def test_the_help_documents_the_or_group(command: list[str]) -> None:
     # The examples are single-quoted: the shell would read <, > and !.
     assert "'resistance=kan'" in result.output
     assert "'resistance=amp'" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The ordered-value adapter (Tetramark-d0x.3: the aliquot list)
+# ---------------------------------------------------------------------------
+
+
+def test_an_ordered_adapter_receives_the_whole_filter_and_only_orders() -> None:
+    """``ordered_coerce`` sees every field/operator, and only for < <= > >=."""
+    seen: list[Filter] = []
+
+    def adapter(item: Filter) -> str:
+        seen.append(item)
+        return f"<{item.value}>"
+
+    conditions, params = build_conditions(
+        parse_filters(
+            [
+                "name=a",
+                "kind!=b",
+                "note~p",
+                "code!~q",
+                "count>=10",
+                "size<5",
+            ]
+        ),
+        expressions={
+            "name": "`name`",
+            "kind": "`kind`",
+            "note": "`note`",
+            "code": "`code`",
+            "count": "`count`",
+            "size": "`size`",
+        },
+        ordered_coerce=adapter,
+    )
+
+    # ``=``, ``!=`` and the patterns keep the shared handling (raw text here)
+    assert conditions == [
+        "`name` = %s",
+        "(`kind` IS NULL OR `kind` <> %s)",
+        "`note` REGEXP %s",
+        "(`code` IS NULL OR NOT (`code` REGEXP %s))",
+        "`count` >= %s",
+        "`size` < %s",
+    ]
+    assert params == ["a", "b", "p", "q", "<10>", "<5>"]
+    # The full parsed filters arrive, in order, once each.
+    assert [item.text for item in seen] == ["count>=10", "size<5"]
+
+
+def test_created_at_keeps_its_iso_rule_with_an_ordered_adapter() -> None:
+    """The core datetime column is compared chronologically before the adapter."""
+    seen: list[Filter] = []
+
+    def adapter(item: Filter) -> str:
+        seen.append(item)
+        return f"<{item.value}>"
+
+    conditions, params = build_conditions(
+        parse_filters(["created_at>2024-01-01", "created_at<2024-01-31T12:30:00"]),
+        expressions={"created_at": "`created_at`"},
+        ordered_coerce=adapter,
+    )
+
+    assert conditions == ["`created_at` > %s", "`created_at` < %s"]
+    # A date means its midnight; the adapter never sees created_at.
+    assert params == [datetime(2024, 1, 1), datetime(2024, 1, 31, 12, 30)]
+    assert seen == []
+
+
+def test_omitting_the_ordered_adapter_keeps_the_shared_coercion() -> None:
+    """No adapter means byte-identical SQL and params, with or without a kind."""
+    kind = _kind_with(count=Field(type=FieldType.int))
+    filters = parse_filters(
+        ["count>=10", "count<20", "name=a", "created_at>2024-01-01"]
+    )
+    expressions = {
+        "count": "`count`",
+        "name": "`name`",
+        "created_at": "`created_at`",
+    }
+
+    def coerce(field: str, raw: str) -> str:
+        return f"coerced:{raw}"
+
+    without_kind = build_conditions(
+        filters, expressions=expressions, coerce=coerce
+    )
+    explicit_none = build_conditions(
+        filters, expressions=expressions, coerce=coerce, ordered_coerce=None
+    )
+    assert explicit_none == without_kind
+
+    with_kind = build_conditions(
+        filters, expressions=expressions, coerce=coerce, kind=kind
+    )
+    explicit_none = build_conditions(
+        filters,
+        expressions=expressions,
+        coerce=coerce,
+        kind=kind,
+        ordered_coerce=None,
+    )
+    assert explicit_none == with_kind
+
+
+def test_the_or_group_forwards_the_ordered_adapter() -> None:
+    """Every alternative of the OR group is typed by the same adapter."""
+    seen: list[Filter] = []
+
+    def adapter(item: Filter) -> str:
+        seen.append(item)
+        return f"<{item.value}>"
+
+    condition, params = build_any_condition(
+        parse_filters(
+            ["count>=10", "count<20", "name=a"],
+            option="--where-any",
+            allow_repeats=True,
+        ),
+        expressions={"count": "`count`", "name": "`name`"},
+        ordered_coerce=adapter,
+    )
+
+    assert condition == "(`count` >= %s OR `count` < %s OR `name` = %s)"
+    assert params == ["<10>", "<20>", "a"]
+    assert [item.text for item in seen] == ["count>=10", "count<20"]
+    # The option the adapter is handed stays the group's own.
+    condition, _ = build_any_condition(
+        parse_filters(["count>=10"], option="--where-any"),
+        expressions={"count": "`count`"},
+        ordered_coerce=lambda item: (item.text, item.value),
+    )
+    assert condition == "(`count` >= %s)"
+
+
+def test_the_aliquot_where_help_names_every_operator_and_the_or_group() -> None:
+    """``tm aliquot list`` advertises the shared operators and --where-any."""
+    result = CliRunner().invoke(app, ["aliquot", "list", "--help"])
+
+    assert result.exit_code == 0, result.output
+    for token in ("FIELD<op>VALUE", "--where-any", "OR group", "Filter status"):
+        assert token in result.output
+    # The examples are single-quoted: the shell would read <, > and !.
+    assert "'label~^cl'" in result.output
+    assert "'label~^ctl'" in result.output

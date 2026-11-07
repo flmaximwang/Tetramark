@@ -1,9 +1,13 @@
 """Shared ``--where`` and ``--where-any`` filters: the same eight operators.
 
-One filter backend serves the entity/stock/box listings (spec §6): the
-``--where`` and ``--where-any`` options of ``tm entity list``, ``tm stock
-list`` and ``tm box list`` and the ``where=`` / ``where_any=`` arguments of
-their Python API facades.  A filter is written as
+One filter backend serves the entity/stock/box/aliquot listings and
+``tm find`` (spec §6): the ``--where`` and ``--where-any`` options of ``tm
+entity list``, ``tm stock list``, ``tm box list`` and ``tm aliquot list``, the
+``where=`` / ``where_any=`` arguments of their Python API facades and the
+``tm find`` filters.  The aliquot list is the fifth user: it reuses the parser
+and the SQL builder with its own adapter (raw ``=``/``!=`` values, typed
+ordered comparisons, its empty-value rule), so no listing has a second
+spelling of an operator.  A filter is written as
 
 * ``field=value`` -- the column equals the value: a kind field is coerced by
   its schema (an enum is checked, a ref is resolved to the id it stores), a
@@ -305,6 +309,7 @@ def build_conditions(
     empty: Callable[[str, str], str] | None = None,
     kind: Kind | None = None,
     option: str = "--where",
+    ordered_coerce: Callable[[Filter], Any] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """The SQL conditions and parameters of one kind's filters.
 
@@ -333,6 +338,14 @@ def build_conditions(
 
     ``kind`` tells an ordered comparison how the field compares; without it
     every field compares as text.
+
+    ``ordered_coerce`` is the escape hatch for a caller whose ordered values
+    need a type the schema does not express (the aliquot list: ``seq`` is an
+    ``int`` and ``quantity`` a ``decimal``, but its fields have no kind).  It
+    receives the whole :class:`Filter` and supplies the value of an ordered
+    comparison only -- never of ``=``, ``!=``, ``~`` or ``!~`` -- and it is
+    consulted after the core ``created_at`` datetime rule, so an ISO date keeps
+    its meaning.  A caller that omits it keeps the coercion above unchanged.
     """
     conditions: list[str] = []
     params: list[Any] = []
@@ -373,6 +386,7 @@ def build_conditions(
                     order=order,
                     coerce=coerce,
                     option=option,
+                    ordered_coerce=ordered_coerce,
                 )
             )
     return conditions, params
@@ -386,6 +400,7 @@ def build_any_condition(
     empty: Callable[[str, str], str] | None = None,
     kind: Kind | None = None,
     option: str = "--where-any",
+    ordered_coerce: Callable[[Filter], Any] | None = None,
 ) -> tuple[str | None, list[Any]]:
     """The one OR condition of a kind's ``--where-any`` group, or ``None``.
 
@@ -398,6 +413,10 @@ def build_any_condition(
 
     Returns ``(None, [])`` when nothing survives: the kind contributes no rows
     (an OR of no alternatives is false).
+
+    ``ordered_coerce`` is passed to :func:`build_conditions` for every
+    alternative, so the OR group types its ordered values exactly like the AND
+    group (the option it is called with is this group's ``option``).
     """
     alternatives: list[str] = []
     params: list[Any] = []
@@ -411,6 +430,7 @@ def build_any_condition(
             empty=empty,
             kind=kind,
             option=option,
+            ordered_coerce=ordered_coerce,
         )
         alternatives.extend(conditions)
         params.extend(conditions_params)
@@ -651,6 +671,7 @@ def _ordered_value(
     order: str,
     coerce: Callable[[str, str], Any] | None,
     option: str,
+    ordered_coerce: Callable[[Filter], Any] | None = None,
 ) -> Any:
     """The value an ordered comparison compares with.
 
@@ -659,9 +680,15 @@ def _ordered_value(
     A core column takes the text as it is; ``created_at`` is a datetime, so
     its value must be an ISO date or datetime and is compared as a datetime
     (a date means its midnight), never as an arbitrary string.
+
+    ``ordered_coerce`` (a caller's own adapter, e.g. the aliquot list) wins over
+    the plain coercion, but only after the core ``created_at`` rule: a caller
+    that types other fields still compares a datetime column chronologically.
     """
     if order == DATETIME_ORDER and (kind is None or item.field not in kind.fields):
         return _iso_datetime(item, option=option)
+    if ordered_coerce is not None:
+        return ordered_coerce(item)
     if coerce is None:
         return item.value
     return coerce(item.field, item.value)

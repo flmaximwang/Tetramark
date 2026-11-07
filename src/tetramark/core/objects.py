@@ -36,7 +36,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +47,7 @@ from tetramark.core.events import (
     require_spec7_event_columns,
 )
 from tetramark.core.filters import (
+    Filter,
     build_any_condition,
     build_conditions,
     check_fields,
@@ -4106,6 +4107,71 @@ def _resolve_stock_filter(ledger: Ledger, ref: str) -> Mapping[str, Any]:
         raise LedgerError(f"{error}{hint}") from error
 
 
+#: Aliquot columns whose empty ``=`` filter means ``NULL`` only: ``seq``,
+#: ``quantity`` and ``created_at`` never store ``''``, so a stored ``0`` must
+#: not look empty (Tetramark-0ez.2).  Every other column matches ``NULL`` or
+#: ``''``.
+_ALIQUOT_NULL_ONLY_FIELDS = frozenset({"seq", "quantity", "created_at"})
+
+#: The aliquot columns whose ordered comparison is numeric, with the converter
+#: of their value: ``seq`` is an integer and ``quantity`` a decimal, so a text
+#: comparison (``10 < 9``) never decides the order.  Every other column
+#: compares in the database's collation order, like the shared core columns.
+_ALIQUOT_NUMERIC_ORDERED: dict[str, Callable[[str], Any]] = {
+    "seq": int,
+    "quantity": Decimal,
+}
+
+
+def _aliquot_empty_condition(field: str, expression: str) -> str:
+    """The SQL of an empty ``=`` filter on one aliquot column.
+
+    ``seq``/``quantity``/``created_at`` are non-text columns, where the empty
+    string is not a stored value, so only ``NULL`` matches; the text columns
+    can hold both ``NULL`` and ``''``.  This is the rule ``tm aliquot list``
+    has always used, and it stays its own (the kind-field rule of
+    :func:`empty_condition` needs a kind).
+    """
+    if field in _ALIQUOT_NULL_ONLY_FIELDS:
+        return f"{expression} IS NULL"
+    return f"({expression} IS NULL OR {expression} = '')"
+
+
+def _aliquot_ordered_coerce(*, option: str) -> Callable[[Filter], Any]:
+    """The ordered-comparison adapter of ``list_aliquots``.
+
+    ``=`` and ``!=`` keep binding the raw text (the ``--where`` behaviour this
+    command has always had), but an ordered comparison is typed: ``seq`` compares
+    as an integer and ``quantity`` as a decimal, and every other column compares
+    as the text the user wrote (the database's collation order).  The whole
+    parsed :class:`Filter` arrives here, so the error of a numeric field names
+    the filter and the option it came from without searching the group again --
+    which matters inside ``--where-any``, where one field may be repeated.
+    ``created_at`` never reaches this adapter: the shared builder compares it
+    chronologically first (an ISO date or datetime).
+    """
+    def ordered(item: Filter) -> Any:
+        convert = _ALIQUOT_NUMERIC_ORDERED.get(item.field)
+        if convert is None:
+            return item.value
+        try:
+            value = convert(item.value)
+        except (ValueError, InvalidOperation):
+            value = None
+        # ``Decimal`` also accepts the non-finite spellings (NaN, sNaN, inf):
+        # they are not an amount of anything, so they are not a number here.
+        if value is None or (
+            isinstance(value, Decimal) and not value.is_finite()
+        ):
+            raise UsageError(
+                f"invalid {option} {item.text!r}: the value {item.value!r} is "
+                "not a number"
+            )
+        return value
+
+    return ordered
+
+
 def list_aliquots(
     ledger: Ledger,
     stock: str | None = None,
@@ -4116,6 +4182,7 @@ def list_aliquots(
     in_stock: bool | None = None,
     all_statuses: bool = False,
     where: Iterable[str] | Mapping[str, Any] | None = (),
+    where_any: Iterable[str] | Mapping[str, Any] | None = (),
 ) -> list[dict[str, Any]]:
     """List tubes; by default only the ones that are physically in stock.
 
@@ -4131,8 +4198,18 @@ def list_aliquots(
     * ``box``: a box name/id/alias plus every box nested inside it;
     * ``statuses``: the exact statuses to keep (an empty sequence leaves the
       default in-stock scope in charge);
-    * ``where``: exact matches on the aliquot core columns except ``status``
-      (that is what ``statuses`` is for).
+    * ``where``: the shared filter syntax on the aliquot core columns except
+      ``status`` (that is what ``statuses`` is for) -- every operator of
+      :mod:`tetramark.core.filters`, ANDed;
+    * ``where_any``: the one OR group, ANDed with ``where``; repeating a field
+      is the way to spell alternatives (``["label~^cl", "label~^ctl"]``).
+
+    ``=`` and ``!=`` compare the raw text, exactly as this list always has (an
+    empty value means "the field is empty": ``NULL``, or ``NULL``/``''`` on a
+    text column).  An ordered comparison is typed: ``seq`` numeric, ``quantity``
+    decimal, ``created_at`` ISO date/datetime and every other column in
+    collation order.  A mapping is equality only, and a mapping value ``None``
+    or ``""`` means "is empty".
 
     The records have the same shape as :func:`show_aliquot` - the same keys,
     including the sorted ``aliases`` and the derived ``in_stock`` - so a list
@@ -4164,25 +4241,17 @@ def list_aliquots(
     if any(not status for status in normalised):
         raise UsageError("a --status value must not be empty")
 
-    if isinstance(where, Mapping):
-        # A missing value means "empty" here too.  ``_parse_pairs`` would
-        # otherwise spell ``None`` as the literal text "None" and match it.
-        where = {
-            field: "" if value is None else value for field, value in where.items()
-        }
-    filters = _parse_pairs(where, option="--where")
-    if "status" in filters:
+    filters = parse_filters(where, option="--where")
+    any_filters = parse_filters(
+        where_any, option="--where-any", allow_repeats=True
+    )
+    if "status" in filter_fields(filters) or "status" in filter_fields(any_filters):
         raise UsageError(
             "filter the status with --status, not --where (the default scope "
             "is in stock)"
         )
-    unknown = sorted(set(filters) - _CORE_FILTERS["aliquot"])
-    if unknown:
-        raise UsageError(
-            f"unknown field(s) {', '.join(repr(name) for name in unknown)} in "
-            "--where; valid fields: "
-            + ", ".join(sorted(_CORE_FILTERS["aliquot"]))
-        )
+    check_fields(filters, _CORE_FILTERS["aliquot"], option="--where")
+    check_fields(any_filters, _CORE_FILTERS["aliquot"], option="--where-any")
 
     if kind_name is not None:
         _kind_for(ledger, "stock", kind_name)
@@ -4243,21 +4312,35 @@ def list_aliquots(
         status_slots = ", ".join(["%s"] * len(normalised))
         conditions.append(f"a.{_quote('status')} IN ({status_slots})")
         params.extend(normalised)
-    # An empty value means "this field is empty" and carries no parameter.
-    # ``seq``/``quantity``/``created_at`` are non-text columns, where the empty
-    # string is not a stored value, so only NULL matches; the text columns can
-    # hold both NULL and ``''``.
-    null_only = frozenset({"seq", "quantity", "created_at"})
-    for field, value in filters.items():
-        column = f"a.{_quote(field)}"
-        if value == "":
-            if field in null_only:
-                conditions.append(f"{column} IS NULL")
-            else:
-                conditions.append(f"({column} IS NULL OR {column} = '')")
-            continue
-        conditions.append(f"{column} = %s")
-        params.append(value)
+    # The shared builder owns the operator SQL, the NULL/empty and the
+    # complement rules; the adapter above supplies the typed ordered values and
+    # the raw ``=``/``!=`` text this list has always bound.
+    expressions = {
+        field: f"a.{_quote(field)}" for field in _CORE_FILTERS["aliquot"]
+    }
+    where_conditions, where_params = build_conditions(
+        filters,
+        expressions=expressions,
+        coerce=None,
+        empty=_aliquot_empty_condition,
+        kind=None,
+        option="--where",
+        ordered_coerce=_aliquot_ordered_coerce(option="--where"),
+    )
+    conditions.extend(where_conditions)
+    params.extend(where_params)
+    any_condition, any_params = build_any_condition(
+        any_filters,
+        expressions=expressions,
+        coerce=None,
+        empty=_aliquot_empty_condition,
+        kind=None,
+        option="--where-any",
+        ordered_coerce=_aliquot_ordered_coerce(option="--where-any"),
+    )
+    if any_condition is not None:
+        conditions.append(any_condition)
+        params.extend(any_params)
     if scope is not None:
         scope_sql, scope_params = _in_stock_scope_sql(ledger)
         if scope == "not_in_stock":
@@ -4299,9 +4382,24 @@ def list_aliquots(
         + where_sql
         + f") ORDER BY al.{_quote('object_id')}, al.{_quote('alias')}"
     )
-    fetched = ledger.driver.query_many(
-        [(main_sql, tuple(params)), (alias_sql, tuple(params))]
-    )
+    try:
+        fetched = ledger.driver.query_many(
+            [(main_sql, tuple(params)), (alias_sql, tuple(params))]
+        )
+    except LedgerError as error:
+        # The database compiles a pattern, so only a failed read knows that one
+        # is invalid; the shared backend names the offending filter and option
+        # (a failure that is not about a pattern is raised unchanged).
+        usage = regex_usage_error(
+            ledger.driver,
+            filters,
+            error,
+            any_filters=any_filters,
+            option="--where",
+        )
+        if usage is None:
+            raise
+        raise usage from error
     rows, alias_rows = fetched[0], fetched[1]
 
     if not rows:
@@ -5337,6 +5435,7 @@ class AliquotOps:
         in_stock: bool | None = None,
         all_statuses: bool = False,
         where: Iterable[str] | Mapping[str, Any] | None = (),
+        where_any: Iterable[str] | Mapping[str, Any] | None = (),
     ) -> list[dict[str, Any]]:
         return list_aliquots(
             self.ledger,
@@ -5347,6 +5446,7 @@ class AliquotOps:
             in_stock=in_stock,
             all_statuses=all_statuses,
             where=where,
+            where_any=where_any,
         )
 
     def edit(
