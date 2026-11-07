@@ -4,7 +4,7 @@
 |---|---|---|
 | **entity** | The abstract thing (a plasmid design, a protein construct, a book title, a chemical). | UUID v4 |
 | **stock** | A logical batch / preparation event of exactly one entity (a glycerol stock, a culture's pellet, a protein prep, a purchase lot). Carries lineage. | Configurable; default date code |
-| **aliquot** | One equal physical portion of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. A **generic** tube: location, quantity, unit, status, label, notes — it has no kind. | `<stock_id>.<n>`, n = 1, 2, … |
+| **aliquot** | One equal physical portion of a stock (a tube, a vial, a copy). The only thing that occupies a box slot. A **generic** tube: location, quantity, unit, status, label — it has no kind (its notes are the stock's; spec 8). | `<stock_id>.<n>`, n = 1, 2, … |
 | **box** | A container with a geometry. Boxes nest (rack in a freezer shelf). | UUID internally + unique human `name` (e.g. `WFL-08-01`) |
 
 Rules:

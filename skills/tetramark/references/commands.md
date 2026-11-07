@@ -232,7 +232,7 @@ dialect; the ledger's `find.rewrites` rules are Python `re` and do not share it 
 search, history** below).
 
 `tm aliquot list` takes the same two groups on its own allowlist (`id`, `stock_id`, `seq`, `box_id`,
-`slot`, `quantity`, `unit`, `label`, `created_at`, `notes`, `stock_notes` — the owning stock's note);
+`slot`, `quantity`, `unit`, `label`, `created_at`, `stock_notes` — the owning stock's note);
 `status` is still `--status` only. Its
 `=`/`!=` compare the raw text, and its ordered comparisons are typed: `seq` numeric, `quantity`
 decimal, `created_at` an ISO date/datetime (a date means its midnight) and every other column in
@@ -382,7 +382,7 @@ tm aliquot purge ALQ [--json]
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
   plus every box nested inside it. `--where` and `--where-any` take the shared syntax of
   **Filters** above on the aliquot columns; `FIELD=` (an empty value) means the column is empty —
-  `NULL` or `''` for `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`/`stock_notes`, `NULL`
+  `NULL` or `''` for `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`stock_notes`, `NULL`
   only for `seq`/`quantity`/`created_at` — while `!=`, `~`, `!~` and the ordered comparisons are the
   shared ones (`seq` numeric, `quantity` decimal, `created_at` ISO). `stock_notes` filters the
   owning stock's note (`--where 'stock_notes~keep'`). Filter status with `--status`, never
@@ -418,8 +418,9 @@ tm aliquot purge ALQ [--json]
   and `list STOCK` is the rich per-stock tube listing.
 - `edit` corrects the recorded fields of one tube (full `<stock>.<seq>` id or alias; an id prefix
   is refused) and keeps the history intact: it changes the current value, never the create/use/move
-  events, and never recomputes what remains from past use. Only `quantity`, `unit`, `notes` and
-  `created_at` are editable; a column not listed is not editable — `id`/`stock_id`/`seq` are
+  events, and never recomputes what remains from past use. Only `quantity`, `unit` and
+  `created_at` are editable (the tube's own `notes` column is gone in spec 8: it borrows its
+  stock's note, printed by `show`/`list`); a column not listed is not editable — `id`/`stock_id`/`seq` are
   identity data (no substitute), `label` is `tm aliquot label ALQ LABEL --replace`, `status` is
   `tm aliquot status ALQ NEW [--force -m MSG]`, and placement (`box_id`/`slot`) is
   `tm aliquot move ALQ --box NAME [--slot S] -m MSG`; the refusal names that command. Each edit
@@ -428,7 +429,7 @@ tm aliquot purge ALQ [--json]
   and the exact diff stays in Dolt history (one commit). Validation applies to the final record:
   `quantity` must be finite and greater than zero (`0` points at `tm aliquot use`);
   `quantity`/`unit` must end up both set or both empty; `unit` is non-empty and at most 32
-  characters; `--set notes=` clears the notes; `created_at` takes a naive ISO datetime (no time
+  characters; `created_at` takes a naive ISO datetime (no time
   zone) and cannot be cleared. The whole `--set` set is validated once, so a failure writes
   nothing, and a no-op edit is refused. `--json` prints the loaded record with the corrected
   values; `--dry-run` prints the planned SQL and writes nothing.
