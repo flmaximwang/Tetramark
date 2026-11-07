@@ -55,6 +55,22 @@ The limits are enforced by the suite itself, not by a wrapper:
 - **No skips to save time.** The 88 `embedded_driver` budget tests are not skipped under the server
   default: they run with the embedded driver in the same session. The only allowed skip is an
   optional external artifact (currently the 0.4.2 lab-ledger snapshot when it is absent).
+- **The budget guard is tested with an injected clock, never with a real sleep.** The guard reads
+  the module attribute `tests/conftest.py::_suite_clock`, which defaults to `time.monotonic`; a test
+  replaces **that attribute only** (never the global `time.monotonic`/`time.sleep`, which pytest,
+  xdist, PyMySQL and the Dolt supervision code read). The regression in
+  `tests/test_suite_budget.py` therefore installs a fake clock in the inner session and asserts the
+  exact banner `SUITE TIME BUDGET EXCEEDED: 5.0s > 3s`: the elapsed time is the fake clock's, so a
+  loaded machine cannot turn the test red. Real time still decides the production behaviour: the
+  real clock and the 30 s / 300 s / 60 s budgets are unchanged, and the inner session's own
+  subprocess ceilings (110 s / 120 s) stay as they are.
+- **Whole-session-finish coverage is proved from both sides.** The guard is `trylast`, so it runs
+  after every other `sessionfinish` — xdist's worker teardown and pytest's tmp_path cleanup
+  included. The positive regression advances the fake clock in a plain plugin hook (which pluggy
+  calls before the `trylast` guard) and expects the run to fail; the ordering negative control
+  advances it in a `hookwrapper`, whose post-yield code runs after the guard has measured, and
+  expects the run to stay green. Dropping `trylast` from the guard turns the first test red and
+  leaves the second green — the pair discriminates the ordering instead of asserting a constant.
 
 Measured after Tetramark-0i8 (reference machine, 10-core macOS, `-n auto --dist worksteal`):
 **212 s, 1351 passed, 1 skipped, 0 leftover `dolt sql-server`** after the PR #15 review; the increase comes from `embedded`-marked tests (e.g. `test_form_dolt.py`) now correctly running on the embedded driver. The fast lane is ~4 s.
@@ -178,6 +194,18 @@ number of `dolt sql-server` processes the workers started, and fails if one surv
 10. **Clean up.** Every opened `Ledger` is closed (the factory does it); no `dolt` child processes
     survive a green run. The pytest hooks kill cached servers; `scripts/test-lanes.sh` checks for
     leftovers.
+11. **Test time-dependent harness behaviour through the isolated test clock.** The harness exposes
+    one seam for that: `tests/conftest.py::_suite_clock`, a module attribute defaulting to
+    `time.monotonic`. Replace **that attribute**, never the global `time.monotonic` or `time.sleep`
+    — patching the globals reaches pytest, xdist, PyMySQL and the Dolt supervision code, which all
+    read real time, and it turns a timing test into a race.
+12. **Ship an ordering assertion with a meaningful negative control.** Every assertion about *when* a
+    hook runs needs a counterpart that goes the other way (the clock moves before the guard → the
+    run fails; after the guard → the run stays green). Without it a test can be red for a reason
+    that has nothing to do with the behaviour it names.
+13. **Do not use real sleeps for ordering assertions.** A `time.sleep(5)` in a session-finish hook
+    makes the test cost five seconds of wall clock and lets a loaded machine turn it red; it also
+    says nothing about ordering that an injected clock does not say better.
 
 ## 7. Release acceptance
 
