@@ -49,27 +49,35 @@ def editor_command(env: Mapping[str, str] | None = None) -> list[str]:
     return ["vi"]
 
 
-def editor_text(value: str, step: Step) -> str:
-    """The temp file: the value, then the scissors line and its metadata."""
-    lines = [value.rstrip("\n"), "", SCISSORS, f"# field: {step.key}"]
-    if step.description:
-        lines.append(f"# description: {step.description}")
-    if step.pattern:
-        lines.append(f"# pattern: {step.pattern}")
-    return "\n".join(lines) + "\n"
-
-
 def plain_editor_text(
     value: str,
     *,
     field: str = "notes",
     description: str | None = None,
+    pattern: str | None = None,
 ) -> str:
-    """The temp file of a free-text edit: the value, then scissors + metadata."""
+    """The temp file of one edit: the value, then scissors + metadata.
+
+    Free text (``tm <object> note``) passes no ``pattern``; a form field's
+    call site adds its pattern through :func:`editor_text`, so the layout lives
+    here once.
+    """
     lines = [value.rstrip("\n"), "", SCISSORS, f"# field: {field}"]
     if description:
         lines.append(f"# description: {description}")
+    if pattern:
+        lines.append(f"# pattern: {pattern}")
     return "\n".join(lines) + "\n"
+
+
+def editor_text(value: str, step: Step) -> str:
+    """The temp file of a form field: its value, key, description and pattern."""
+    return plain_editor_text(
+        value,
+        field=step.key,
+        description=step.description,
+        pattern=step.pattern,
+    )
 
 
 def strip_editor_text(text: str) -> str:
