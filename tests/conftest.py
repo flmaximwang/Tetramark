@@ -201,6 +201,15 @@ _SLOW_TESTS: list[tuple[float, str]] = []
 _SUITE_STARTED: float | None = None
 
 
+#: The clock the budget guard measures with.  It is a plain module attribute so
+#: a test can replace *this* callable -- never ``time.monotonic`` itself --
+#: to make a timing assertion deterministic.  Patching the global clock would
+#: reach pytest, xdist, PyMySQL and the Dolt supervision code, which all read
+#: real time.  The default is the real monotonic clock: production behaviour,
+#: the 30/300/60 s budgets and the env override are unchanged.
+_suite_clock: Callable[[], float] = time.monotonic
+
+
 def _scratch_root(config: pytest.Config) -> Path:
     """The temporary tree this harness owns (pytest's per-user base temp root)."""
     basetemp = config.getoption("basetemp", default=None)
@@ -225,7 +234,7 @@ def pytest_configure(config: pytest.Config) -> None:
     global _SUITE_STARTED
     if hasattr(config, "workerinput"):
         return
-    _SUITE_STARTED = time.monotonic()
+    _SUITE_STARTED = _suite_clock()
     try:
         from tetramark.driver.server import reap_orphaned_servers
     except Exception:  # pragma: no cover - PyMySQL absent
@@ -293,7 +302,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     if _SUITE_STARTED is None:  # pragma: no cover - configure always ran
         return
-    elapsed = time.monotonic() - _SUITE_STARTED
+    elapsed = _suite_clock() - _SUITE_STARTED
     budget = _suite_budget_seconds(session.config)
     if budget is None or elapsed <= budget:
         return
