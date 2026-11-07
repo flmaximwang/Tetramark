@@ -108,6 +108,7 @@ __all__ = [
     "list_stocks",
     "move_aliquot",
     "move_box",
+    "note_object",
     "plain_decimal",
     "purge_aliquot",
     "purge_box",
@@ -2221,6 +2222,79 @@ def edit_stock(
     to it: a stock kind may even declare a field called ``name``.
     """
     return _edit_object(ledger, "stock", ref, values=values)
+
+
+def _append_note(current: Any, addition: str) -> str:
+    """Append ``addition`` to a note with a ``"\\n"`` only after a non-empty one."""
+    if current is None or str(current) == "":
+        return addition
+    return f"{current}\n{addition}"
+
+
+def note_object(
+    ledger: Ledger,
+    object_type: str,
+    ref: str,
+    *,
+    text: str | None = None,
+    append: str | None = None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    """Write the ``notes`` of one entity, stock or box in one commit.
+
+    Exactly one mode applies: ``text`` replaces the note (the editor's
+    result), ``append`` adds a line to the current note (a ``"\\n"`` separator
+    only when the current note is non-empty) and ``clear`` sets the column to
+    ``NULL``.  An empty result is a usage error naming ``clear``, so a stray
+    empty editor buffer can never wipe a note by accident.
+
+    The reference resolves exactly as :func:`_edit_object` resolves it: a box
+    by its human name first, then the shared full-id/alias/unique-id-prefix
+    rule (an ambiguous prefix is a usage error).  An append reads the current
+    note inside the one write session that also writes it, so the call is one
+    read-modify-write and one Dolt commit (``edit(<object>): <kind> <id>``;
+    the note text stays out of the ASCII-only summary).  A dry run buffers the
+    ``UPDATE``, writes nothing and still reports the new value.
+    """
+    if object_type not in _CORE_EDITABLE:
+        raise UsageError(
+            f"cannot write the notes of {object_type!r}: only entity, stock "
+            "and box have editable notes"
+        )
+    if sum((text is not None, append is not None, bool(clear))) != 1:
+        raise UsageError(
+            "pass exactly one of text, append or clear to write a note"
+        )
+    if object_type == "box":
+        # A box resolves by its human name first, then id or alias.
+        existing = _resolve_box(ledger.driver, ref)
+    else:
+        existing = _resolve_core(ledger.driver, object_type, ref)
+    object_id = str(existing["id"])
+    kind_name = str(existing["kind"])
+
+    with ledger.write(
+        f"{kind_name} {object_id}", verb="edit", object=object_type
+    ) as session:
+        if append is not None:
+            current = _fetch_core(session, object_type, object_id)
+            value: str | None = _append_note(
+                None if current is None else current.get("notes"), append
+            )
+        elif clear:
+            value = None
+        else:
+            value = text
+        if value is not None and not value.strip():
+            raise UsageError(
+                "the note would be empty; pass clear=True (CLI: --clear) to "
+                "remove the notes instead"
+            )
+        _update(session, object_type, {"id": object_id}, {"notes": value})
+        record = _load_record(session, ledger, object_type, object_id)
+    # A dry run buffers the UPDATE without executing it; report the new value.
+    record["notes"] = value
+    return record
 
 
 def show_stock(ledger: Ledger, ref: str) -> dict[str, Any]:
@@ -5374,6 +5448,18 @@ class StockOps:
         self, ref: str, *, values: Iterable[str] | Mapping[str, Any] | None = ()
     ) -> dict[str, Any]:
         return edit_stock(self.ledger, ref, values=values)
+
+    def note(
+        self,
+        ref: str,
+        *,
+        text: str | None = None,
+        append: str | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return note_object(
+            self.ledger, "stock", ref, text=text, append=append, clear=clear
+        )
 
     def show(self, ref: str) -> dict[str, Any]:
         return show_stock(self.ledger, ref)
