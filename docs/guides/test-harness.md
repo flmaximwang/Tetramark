@@ -8,9 +8,11 @@ defaults to the embedded driver.
 
 ## 1. Cost model
 
-* **Embedded driver (default in the product).** A batch of SQL is one `dolt sql` subprocess in the
-  ledger directory: roughly **60–100 ms per process** on an idle machine, 0.2–0.4 s under
-  ten-worker load. Tetramark-0i8.x removed every avoidable process (init 3, schema plan 2,
+* **Embedded driver (default in the product).** Dolt engine startup dominates a batch (~0.3 s per
+  `dolt sql` process), so since 0.8.44.1 the driver keeps **one long-lived `dolt sql -r json`
+  session per ledger**: the first batch pays the startup once, later batches are written to the live
+  session and take **single-digit milliseconds** (measured: first 0.3 s, subsequent ~1 ms). CSV
+  column probes stay one-shot processes. Tetramark-0i8.x removed every avoidable process (init 3, schema plan 2,
   list 2, show 2 batches, a write session 2, open 1, …), which brought the suite from 1643 s to ~13 min. That
   is the floor of this backend: the suite still executes thousands of processes and this machine
   tops out at 17–23 `dolt sql` starts/s. Since Tetramark-aut a `SELECT`/`WITH` read (or batch) is

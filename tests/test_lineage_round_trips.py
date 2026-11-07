@@ -342,14 +342,22 @@ def test_history_output_matches_per_statement_reads(
     expected = {ref: history(ledger, ref) for ref in refs}
 
     per_statement(monkeypatch)
+    # The five refs are independent read-only walks.  The per-statement oracle
+    # spawns one ``dolt sql`` process per statement, so running them one after
+    # another made this single test spend ~30 s serially (and cross the 60 s
+    # timeout under load); the same five walks run concurrently here, exactly
+    # like ``per_statement`` already runs one operation's statements.
+    with ThreadPoolExecutor(max_workers=len(refs)) as pool:
+        actual = dict(zip(refs, pool.map(lambda ref: history(ledger, ref), refs)))
     for ref in refs:
-        actual = history(ledger, ref)
-        assert actual == expected[ref], ref
-        assert json.dumps(actual, sort_keys=True) == json.dumps(
+        assert actual[ref] == expected[ref], ref
+        assert json.dumps(actual[ref], sort_keys=True) == json.dumps(
             expected[ref], sort_keys=True
         ), ref
-        assert history_rows(actual) == history_rows(expected[ref]), ref
-        assert render_history_text(actual) == render_history_text(expected[ref]), ref
+        assert history_rows(actual[ref]) == history_rows(expected[ref]), ref
+        assert render_history_text(actual[ref]) == render_history_text(
+            expected[ref]
+        ), ref
 
 
 def test_resolution_errors_match_per_statement_reads(
