@@ -28,10 +28,11 @@ by the tool after this release:
   filter), `show_aliquot`/`list_aliquots` records, and the aliquot CSV columns
   (import and export).
 
-The counter is in the schema fingerprint (`EffectiveSchema.normalised()`), so a
-ledger at spec 7 reports its `ledger_meta` as stale under the spec-8 tool even
-when its Kinds already match. That is what lets `tm schema apply` record spec 8
-after the manual `ALTER`.
+The schema plan compares the stored counter with the tool's (the counter is
+also in the schema fingerprint, so a ledger last written by a spec-7 tool
+carries a different fingerprint too), so a ledger at spec 7 reports its
+`ledger_meta` as stale under the spec-8 tool even when its Kinds already match.
+That is what lets `tm schema apply` record spec 8 after the manual `ALTER`.
 
 ## Before upgrading (do this first)
 
