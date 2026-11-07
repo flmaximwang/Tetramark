@@ -22,7 +22,7 @@ enough to prove names print in full, the two counts and the notes preview.
 ``stocks_available`` counts the entity's stocks whose derived status is
 ``active``; depleted and empty stocks are not counted.  ``aliquots_in_stock``
 sums the in-stock tubes of all the entity's stocks, so an entity with no
-stocks prints ``0``.
+stocks prints ``0 0``.
 
 ``tests/data/golden/box_list.table`` pins the default table of ``tm box list``:
 the column set and order (``id name kind path occupied capacity notes``), the
