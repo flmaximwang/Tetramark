@@ -84,6 +84,30 @@ The fast lane is ~2.5 s (729 passed).
   owns it. Left alone, leaked servers starved later runs into timeouts that leaked more servers
   (issue #68: 100 live servers, 641 s).
 
+### Routed-parity regression (Tetramark-2gz)
+
+`tests/test_driver_routed_parity.py` is the one test module that deliberately runs a **user-run
+`dolt sql-server`** while it reads through the *embedded* driver. It proves the spec 7 read contract
+against the real binary: a routed `dolt sql` JSON result set renders integer columns as strings, and
+the embedded driver must still return the same Python types as the local engine.
+
+- The fixture starts the server through the product's `ServerDriver` (the only server lifecycle
+  code) on a free loopback port; it is stopped via `ServerDriver.discard()`, and the session hook
+  still runs `shutdown_all_servers()` as a backstop. It is not a hand-managed `dolt sql-server`
+  process, so rule 7 below still holds.
+- Routing is **asserted, never assumed**: a raw `dolt sql -r json` run of an INTEGER column must
+  return a string, otherwise the test fails (a skip is not allowed — it would hide a broken
+  fixture). While the server is still starting, Dolt silently falls back to the local engine, so the
+  guard is polled.
+- Every case runs twice on the same data: before the server exists (local engine) and while routed,
+  and the test compares values *and* Python types; after the fixture exits the server is gone and
+  the reads are compared once more. Cases cover INT/BIGINT/`BIGINT UNSIGNED > 2**63`/tinyint/negative
+  integers, numeric-looking TEXT, DECIMAL, `NULL` filling, empty results, `COUNT` aggregates,
+  aliased expressions, `query_many`, `fill_columns=False`, pending-transaction previews, a branch
+  session, the documented non-`SELECT`/probe-rejected residual, and the one-process invariant.
+- Because the fixture owns the server and tears it down, a green run still leaves **zero** `dolt
+  sql-server` children; the module is part of the ordinary full suite (no extra marker or lane).
+
 ## 4. Fixtures and layout
 
 ```
@@ -170,7 +194,10 @@ number of `dolt sql-server` processes the workers started, and fails if one surv
    rows.
 7. **Database tests never manage a server by hand.** They use the driver (embedded or server, chosen
    by the marker/environment). The only server lifecycle code is `tetramark/driver/server.py`; tests
-   assert its cleanup through `tests/test_server_driver.py`.
+   assert its cleanup through `tests/test_server_driver.py`. The one exception is the routed-parity
+   fixture described in §3: it needs a server that the *embedded* driver is not talking to, so it
+   starts one through `ServerDriver` and stops it with `discard()` — still the product's lifecycle
+   code, never a hand-spawned process.
 8. **No workspace markers.** A test must not create `workspace.yaml`; the standalone-ledger guard
    test greps for it. Resolution tests use stub directories and belong to the fast lane.
 9. **Isolate the environment.** Use the fixtures; never rely on the developer's Dolt/Git config or on
