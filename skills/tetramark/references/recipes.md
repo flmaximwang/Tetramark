@@ -168,9 +168,15 @@ such as `'od600>=2'` compares numbers, dates and text in order. `field!=` (no va
 "this field is filled in"; `field!=x` does not — it also matches the rows where the field is empty.
 `--where-any` is the one OR group: a row must match one of its alternatives AND every `--where`, and
 a field may repeat there (`--where-any 'resistance=kan' --where-any 'resistance=amp'`). The same
-filters work on `tm entity|stock|box list`; `tm find --where` and `tm find --where-any` span every
-object type and exclude aliquots. `tm stock list` shows active stocks by default — add `--all` for
-every status. The aliquot list's own `--where` is exact-only and does not take the new operators.
+filters work on `tm entity|stock|box|aliquot list`; `tm find --where` and `tm find --where-any` span
+every object type and exclude aliquots. `tm stock list` shows active stocks by default — add `--all`
+for every status. On `tm aliquot list` the ordered comparisons are typed (`seq` numeric, `quantity`
+decimal, `created_at` ISO date/datetime) while `=`/`!=` keep comparing the raw text:
+
+```sh
+tm aliquot list --where 'quantity>=100' --where 'created_at>=2026-01-01' \
+  --where-any 'label~^cl' --where-any 'label~^ctl'
+```
 
 A ledger can declare `find.rewrites` rules in `ledger.yaml` (Python `re`): a literal query with no
 hits falls back to the first rule that hits (a stderr line names the rule), and `--with-rewrite` adds

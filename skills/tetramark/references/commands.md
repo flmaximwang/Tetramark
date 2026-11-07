@@ -139,13 +139,16 @@ vial is `stored` in the freezer, and `missing` or `consumed` after it leaves.
 
 ## Filters (`--where`, `--where-any`, `tm find`)
 
-`tm entity list`, `tm stock list`, `tm box list` and `tm find` share one filter syntax; the Python
-`where=` / `where_any=` arguments are the same code.
+`tm entity list`, `tm stock list`, `tm box list`, `tm aliquot list` and `tm find` share one filter
+syntax; the Python `where=` / `where_any=` arguments are the same code. The aliquot list has no kind
+fields, so it filters its own core columns and types its ordered values itself (below).
 
 ```sh
 tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm box list [--where FILTER ...] [--where-any FILTER ...] [--json]
+tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock] \
+  [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite] [--json]
 ```
 
@@ -228,8 +231,17 @@ error with no literal fallback. The `--where` patterns (`~` and `!~`) and `-E` u
 dialect; the ledger's `find.rewrites` rules are Python `re` and do not share it (see **Aliases,
 search, history** below).
 
-`tm aliquot list --where` is its own exact-only `FIELD=VALUE` filter, not this syntax; it does not
-take the new operators in this release.
+`tm aliquot list` takes the same two groups on its own allowlist (`id`, `stock_id`, `seq`, `box_id`,
+`slot`, `quantity`, `unit`, `label`, `created_at`, `notes`); `status` is still `--status` only. Its
+`=`/`!=` compare the raw text, and its ordered comparisons are typed: `seq` numeric, `quantity`
+decimal, `created_at` an ISO date/datetime (a date means its midnight) and every other column in
+collation order. An empty value means `NULL` or `''` for the text columns and `NULL` only for
+`seq`/`quantity`/`created_at`.
+
+```sh
+tm aliquot list --where 'quantity>=100' --where 'created_at>=2026-01-01' \
+  --where-any 'label~^cl' --where-any 'label~^ctl'
+```
 
 ## Entities
 
@@ -361,11 +373,11 @@ tm aliquot purge ALQ [--json]
   and turns the default scope off, so `--status missing` works; `--all` with it is redundant but
   legal, `--not-in-stock` with it intersects. `STOCK` limits
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
-  plus every box nested inside it. `--where` matches aliquot core columns exactly and ANDs with the
-  rest; `FIELD=` (an empty value) means the column is empty — `NULL` or `''` for
-  `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`, `NULL` only for
-  `seq`/`quantity`/`created_at`. It is the aliquot's own exact-only `FIELD=VALUE` filter, not the
-  shared `field~pattern` syntax of **Filters** above. Filter status with `--status`, never
+  plus every box nested inside it. `--where` and `--where-any` take the shared syntax of
+  **Filters** above on the aliquot columns; `FIELD=` (an empty value) means the column is empty —
+  `NULL` or `''` for `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`, `NULL` only for
+  `seq`/`quantity`/`created_at` — while `!=`, `~`, `!~` and the ordered comparisons are the shared
+  ones (`seq` numeric, `quantity` decimal, `created_at` ISO). Filter status with `--status`, never
   `--where status=…`. The table and CSV print
   `id stock_kind status quantity unit label path` (path is empty when not in stock); `--json` prints
   the same record `show` prints without `events` (a list never reads a tube's event trail), one per

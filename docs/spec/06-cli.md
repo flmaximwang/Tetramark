@@ -101,7 +101,7 @@ tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quant
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path, events
 tm aliquot edit ALQ --set field=value ... [-m MSG]   # correct quantity/unit/notes/created_at; one edit event, one commit
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
-                [--where FIELD=VALUE ...]    # in-stock shelf view; --all/--status widen
+                [--where FILTER ...] [--where-any FILTER ...]   # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
 tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
 tm aliquot status ALQ NEW [--force] [-m MSG]   # NEW: pending|stored|missing|consumed (§1.1); MSG required with --force
@@ -327,12 +327,21 @@ missing/consumed audit). An explicit `--status S` (repeatable, OR) is already a 
 choice, so it turns the implicit in-stock scope off; combined with `--not-in-stock` it intersects.
 `STOCK` (one stock id or alias; the incomplete-id rule applies) limits the listing to one stock and
 never follows child stocks; `--kind` limits it to a stock kind; `--box` takes a box name/id/alias
-and includes the box plus every box nested inside it; `--where FIELD=VALUE` (repeatable, AND) matches
-aliquot core columns exactly, except `status` (`--where status=…` is a usage error pointing at
-`--status`). An empty value (`FIELD=`) means the column is empty: `NULL` or `''` for `id`, `stock_id`,
-`box_id`, `slot`, `unit`, `label` and `notes`, and `NULL` only for `seq`, `quantity` and `created_at`.
-This is the aliquot's own exact-only `--where`; the shared filter syntax of §6.4 (the `=`/`~`/`!=`/
-`!~` operators and the ordered comparisons) applies to the entity/stock/box lists and `tm find`.
+and includes the box plus every box nested inside it. `--where FILTER` (repeatable, AND) and
+`--where-any FILTER` (repeatable, one OR group ANDed with the `--where` filters) take the shared
+filter syntax of §6.4 with all eight operators — `=`, `~`, `!=`, `!~`, `<`, `<=`, `>`, `>=` — on the
+aliquot core columns `id`, `stock_id`, `seq`, `box_id`, `slot`, `quantity`, `unit`, `label`,
+`created_at` and `notes`; an aliquot has no kind row, so there are no kind fields, and `status` stays
+the `--status` filter (`--where status=…` is a usage error pointing at `--status`, in either group).
+`=` and `!=` compare the raw text as they always have, so an empty value (`FIELD=`) means the column
+is empty: `NULL` or `''` for `id`, `stock_id`, `box_id`, `slot`, `unit`, `label` and `notes`, and
+`NULL` only for `seq`, `quantity` and `created_at` (a stored `0` never looks empty). An ordered
+comparison is typed: `seq` is numeric, `quantity` is a decimal, `created_at` is an ISO date or
+datetime (a date means its midnight) and the other columns compare in the database's collation
+order; a non-numeric ordered value for `seq`/`quantity` is a usage error naming the filter. The
+Python API takes the same two groups as `where=` / `where_any=` (a mapping is equality only, with
+`None`/`''` meaning "is empty"; a list of strings takes every operator). The groups only narrow the
+rows: `--all`/`--not-in-stock`/`--status`/`--kind`/`--box` decide the scope and apply unchanged.
 The table and CSV print the narrow rows `id stock_kind status quantity unit label path`
 (`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
 prints without `events`, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only
@@ -646,17 +655,17 @@ rejects the entry, the error is shown and the form goes back to the field that f
 
 ### 6.4 `--where` filters and `tm find`
 
-`tm entity list`, `tm stock list`, `tm box list`, `tm find` and their Python `where=` / `where_any=`
-arguments take one filter syntax with eight operators: `field=value` (exact), `field~pattern`
-(regular expression), `field!=value`, `field!~pattern`, and the ordered comparisons `field<value`,
-`field<=value`, `field>value` and `field>=value`. The operator is the one that follows the field
-name, so a value may contain `=`, `~`, `!`, `<` and `>`; the field name before it must be an
+`tm entity list`, `tm stock list`, `tm box list`, `tm aliquot list`, `tm find` and their Python
+`where=` / `where_any=` arguments take one filter syntax with eight operators: `field=value` (exact),
+`field~pattern` (regular expression), `field!=value`, `field!~pattern`, and the ordered comparisons
+`field<value`, `field<=value`, `field>value` and `field>=value`. The operator is the one that
+follows the field name, so a value may contain `=`, `~`, `!`, `<` and `>`; the field name before it must be an
 identifier (a letter or `_`, then letters, digits or `_`), and it is case-sensitive. Whitespace
 before the field name and between the name and the operator is skipped; the value is everything
 after the operator, verbatim. A filter with no operator, or with a field name that is not an
-identifier, is a usage error (exit 2). `tm aliquot list` keeps its own exact-only `--where
-FIELD=VALUE` (above), which does not take these operators in this release: this section is about the
-shared syntax used by the three lists and by `tm find`.
+identifier, is a usage error (exit 2). The same syntax serves the four lists (entity, stock, box and
+aliquot) and `tm find`; the aliquot list differs only in its field set and its typed ordered values
+(below).
 
 `field=value` compares the column exactly. On a kind field the value is coerced by the field's schema
 the way `--set` coerces it: an `enum` must be one of its values, a `ref` may be an id or an alias and
@@ -712,7 +721,10 @@ an ISO date or a datetime — a date means its midnight — so anything else is 
 them is a usage error (exit 2), and the declaration order of an `enum` is never used. A `NULL` never
 matches an ordered comparison. On a listing or a `tm find` that spans kinds, the field's type in each
 kind decides, so a kind that declares the field without an order makes the filter a usage error
-rather than skipping that kind.
+rather than skipping that kind. `tm aliquot list` has no kind fields, so it types them itself: `seq`
+compares as an integer, `quantity` as a decimal, `created_at` keeps the ISO date/datetime rule above
+and every other column compares as text; its `=`/`!=` keep the raw text, so an input that was
+accepted before is never rejected.
 
 The negated operators complement their positive ones, but the empty value makes `field!=` a
 different question from `field!=x`:
@@ -746,6 +758,9 @@ The rules are the same everywhere (the two repetition rules are `--where`'s alon
 The valid fields are the core filter columns of the object type plus the fields of the kinds in scope:
 `id`, `kind`, `name` (entity, box), `created_at` and `notes` for all three, `entity_id`,
 `parent_stock_id` and `source_aliquot_id` for stocks, and `parent_box_id` and `parent_slot` for boxes.
+`tm aliquot list` has no kind rows, so its valid set is the fixed core allowlist `id`, `stock_id`,
+`seq`, `box_id`, `slot`, `quantity`, `unit`, `label`, `created_at` and `notes`: nothing is dropped per
+kind, no view-derived column is filterable and `status` is refused (`--status` owns it).
 A computed kind column is accepted by `~` and `!~` as described above; view-derived columns (`path`,
 `capacity`, `occupied`, `status`, the counts) are not filterable. A field that no kind in scope has is
 the unknown-field usage error above. When a field is declared by only some of the kinds being listed,
@@ -756,11 +771,13 @@ for every status). On `tm find` the valid set is wider — the core columns of e
 stock and box and the fields of every entity/stock/box kind — and a filtered field that only some
 kinds have simply excludes the other kinds from the result.
 
-`--where-any FILTER` (no short flag; the same four commands and Python `where_any=`) is the one **OR
-group** of an invocation: a row must satisfy every `--where` filter **and** at least one
+`--where-any FILTER` (no short flag; the four lists, `tm find` and Python `where_any=`) is the one
+**OR group** of an invocation: a row must satisfy every `--where` filter **and** at least one
 `--where-any` filter, as in
 `tm stock list --where 'kind=plasmid_prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`
-(which reads as `kind=plasmid_prep AND (resistance=kan OR resistance=amp)`).
+(which reads as `kind=plasmid_prep AND (resistance=kan OR resistance=amp)`) or
+`tm aliquot list --where 'quantity>=100' --where 'created_at>=2026-01-01' --where-any 'label~^cl'
+--where-any 'label~^ctl'`.
 Without `--where-any` nothing changes. The group takes the same syntax, operators, coercion, type
 rules and empty-value rules as `--where`, and the rules above apply to it with one exception: the
 per-field repetition rules do not, because repeating a field is how an alternative is written (the

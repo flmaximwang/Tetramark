@@ -163,6 +163,8 @@ tm find pZET035                      # id → alias → name/text, case-insensit
 tm find -E '^pZET'                   # -E: case-insensitive ICU regex over the same places
 tm entity list --where 'name~(?i)^pzet'   # --where: exact, regex, inequality, ordered comparison
 tm find --where-any 'resistance=kan' --where-any 'resistance=amp'   # one OR group
+tm aliquot list --where 'quantity>=100' --where 'created_at>=2026-01-01' \
+  --where-any 'label~^cl' --where-any 'label~^ctl'   # the same operators on tubes
 tm check
 ```
 
@@ -177,13 +179,16 @@ the `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes a
 (in stock by default; `--all` includes consumed, missing and other history), `box show` prints the
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
 (exit 0 when no non-info test fails). `find -E` searches with the database's ICU regex dialect, and
-`--where` filters the entity/stock/box lists or `tm find` with `field=value` (exact),
+`--where` filters the entity/stock/box/aliquot lists and `tm find` with `field=value` (exact),
 `field~pattern` (ICU regex), `field!=value`, `field!~pattern` or an ordered comparison such as
 `--where 'created_at>=2026-01-01'`; write the filter in single quotes, because `<`, `>` and `!` are
 special in the shell. `--where-any` adds the one OR group: a row matches one of its alternatives AND
 every `--where`, and a field may repeat there
 (`tm stock list --where 'kind=prep' --where-any 'resistance=kan' --where-any 'resistance=amp'`); see
-[`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find).
+[`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find). `tm aliquot list`
+takes the same operators, and types its ordered values: `seq` numeric, `quantity` decimal,
+`created_at` ISO date/datetime, other columns in collation order (`tm aliquot list --where 'seq>2'
+--where 'quantity<10'`); `=` and `!=` keep comparing the raw text.
 Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.
