@@ -55,6 +55,14 @@ The limits are enforced by the suite itself, not by a wrapper:
 - **No skips to save time.** The 88 `embedded_driver` budget tests are not skipped under the server
   default: they run with the embedded driver in the same session. The only allowed skip is an
   optional external artifact (currently the 0.4.2 lab-ledger snapshot when it is absent).
+- **Concurrency — 16 xdist workers.** The suite's time goes to waiting on `dolt sql` subprocesses
+  and `dolt sql-server` round trips rather than to Python CPU: ten workers (`-n auto` on the
+  10-core reference host) left only ~2.4 cores busy and the full suite stayed around 274 s.
+  Sixteen workers keep the same 1997 tests and every budget, but overlap more of those waits:
+  measured **253 s** idle (273.7 s at 10 workers, 265 s at 14). Twenty workers reached ~250 s but
+  starved the pinned migration drift-guard test past its unchanged 60 s timeout, so 16 is the
+  settled value; a host with a different core count may pass its own `-n`. This is a scheduling
+  control only — it changes no test, assertion, marker or timeout.
 - **Failure investigation.** A budget breach (fast lane > 30 s, full suite > 300 s) or a 60 s
   per-test timeout is a failed gate, not an exemption — a loaded machine never turns it into a pass.
   Read the slowest-25 report the session prints (test, setup/call/teardown, module) and count
@@ -66,15 +74,17 @@ The limits are enforced by the suite itself, not by a wrapper:
   timeout, add `xfail`, skip or deselect required tests, or shrink the suite to manufacture a green
   run.
 
-Measured after Tetramark-aut (reference machine, 10-core macOS, `-n auto --dist worksteal`, idle,
-2026-11-07, committed SHA `e09f5e1`): the full suite took **272.44 s internal (273 s wall) with
-1995 passed, 2 skipped, 660 `dolt sql-server` starts, 0 leftover servers and a slowest test call of
-29.06 s**, and the fast lane took **7.66 s internal with 1009 passed** — both inside their unchanged
-30 s / 300 s / 60 s limits. Idle wall time was already inside the budget and stays within noise
-(clean base `87958e9`: 273.68 s internal / 275 s wall, 1987 passed, 2 skipped; server starts 660
-before and 660 after). What changed is the duplicate build work: fixture-setup/build counts fell
-**13 → 6** (source 3→1, exported 3→1, template 3→1, read_ledger 2→1; `rebuilt_molbio_v1` and
+Measured after Tetramark-aut (reference machine, 10-core macOS, `-n 16 --dist worksteal`, idle,
+2026-11-07): the full suite took **253.05 s internal (253 s wall) with 1995 passed, 2 skipped,
+660 `dolt sql-server` starts, 0 leftover servers and a slowest test call of ~30 s**, and the fast
+lane takes **12.8 s with 1009 passed** — both inside their unchanged 30 s / 300 s / 60 s limits.
+Idle wall time at ten workers was already inside the budget (273.68 s on clean base `87958e9`,
+272.44 s on the change tree) and the concurrency change lowers it further (265 s at 14 workers).
+What also changed is the duplicate build work: fixture-setup/build counts fell **13 → 6**
+(source 3→1, exported 3→1, template 3→1, read_ledger 2→1; `rebuilt_molbio_v1` and
 `rebuilt_spec4_boxes` were already 1→1), with exactly one real shared build per key per session.
+A budget breach is still a failed gate: the concurrency value is a measured scheduling control,
+not an exemption.
 
 ## 3. Server lifecycle
 
@@ -170,7 +180,7 @@ tests/test_server_driver.py                       server-backend contract, cache
   `test_driver_query_many.py`, `test_driver_contract.py`). The autouse fixture switches the backend
   to `embedded` for the test, so those counts are real even though the rest of the session uses the
   server driver. Never replace the marker with a skip.
-- Default addopts: `-ra -n auto --dist worksteal`.
+- Default addopts: `-ra -n 16 --dist worksteal`.
 
 Common commands:
 
