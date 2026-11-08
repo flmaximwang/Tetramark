@@ -114,6 +114,7 @@ __all__ = [
     "purge_box",
     "purge_entity",
     "purge_stock",
+    "read_note",
     "read_rename_map",
     "remove_alias",
     "renumber_stocks",
@@ -2231,6 +2232,42 @@ def _append_note(current: Any, addition: str) -> str:
     return f"{current}\n{addition}"
 
 
+def _check_note_object(object_type: str) -> None:
+    """Refuse a note target outside entity/stock/box (aliquots have none)."""
+    if object_type not in _CORE_EDITABLE:
+        raise UsageError(
+            f"{object_type!r} has no editable notes: only entity, stock and "
+            "box do"
+        )
+
+
+def _resolve_note_target(
+    ledger: Ledger, object_type: str, ref: str
+) -> dict[str, Any]:
+    """Resolve a note reference exactly as ``edit`` resolves it.
+
+    A box is looked up by its human name first, then id or alias; every other
+    type follows the shared full-id/alias/unique-id-prefix rule.
+    """
+    if object_type == "box":
+        return _resolve_box(ledger.driver, ref)
+    return _resolve_core(ledger.driver, object_type, ref)
+
+
+def read_note(ledger: Ledger, object_type: str, ref: str) -> str | None:
+    """The current ``notes`` of one entity, stock or box.
+
+    The reference resolves exactly as :func:`note_object`/``edit`` resolves it
+    (a box by its human name first).  Resolution already reads the whole core
+    row, so this is the same one round trip as ``edit``: it never loads a
+    stock's aliquots just to read one text field.  The caller gets ``None``
+    for a note that was never written.
+    """
+    _check_note_object(object_type)
+    record = _resolve_note_target(ledger, object_type, ref)
+    return record.get("notes")
+
+
 def note_object(
     ledger: Ledger,
     object_type: str,
@@ -2256,20 +2293,12 @@ def note_object(
     the note text stays out of the ASCII-only summary).  A dry run buffers the
     ``UPDATE``, writes nothing and still reports the new value.
     """
-    if object_type not in _CORE_EDITABLE:
-        raise UsageError(
-            f"cannot write the notes of {object_type!r}: only entity, stock "
-            "and box have editable notes"
-        )
+    _check_note_object(object_type)
     if sum((text is not None, append is not None, bool(clear))) != 1:
         raise UsageError(
             "pass exactly one of text, append or clear to write a note"
         )
-    if object_type == "box":
-        # A box resolves by its human name first, then id or alias.
-        existing = _resolve_box(ledger.driver, ref)
-    else:
-        existing = _resolve_core(ledger.driver, object_type, ref)
+    existing = _resolve_note_target(ledger, object_type, ref)
     object_id = str(existing["id"])
     kind_name = str(existing["kind"])
 
@@ -5385,6 +5414,18 @@ class EntityOps:
     ) -> dict[str, Any]:
         return edit_entity(self.ledger, ref, values=values)
 
+    def note(
+        self,
+        ref: str,
+        *,
+        text: str | None = None,
+        append: str | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return note_object(
+            self.ledger, "entity", ref, text=text, append=append, clear=clear
+        )
+
     def rename(self, ref: str, new_name: str) -> dict[str, Any]:
         return rename_entity(self.ledger, ref, new_name)
 
@@ -5632,6 +5673,18 @@ class BoxOps:
         self, ref: str, *, values: Iterable[str] | Mapping[str, Any] | None = ()
     ) -> dict[str, Any]:
         return edit_box(self.ledger, ref, values=values)
+
+    def note(
+        self,
+        ref: str,
+        *,
+        text: str | None = None,
+        append: str | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return note_object(
+            self.ledger, "box", ref, text=text, append=append, clear=clear
+        )
 
     def move(self, ref: str, *, parent: str, slot: str | None = None) -> dict[str, Any]:
         return move_box(self.ledger, ref, parent=parent, slot=slot)

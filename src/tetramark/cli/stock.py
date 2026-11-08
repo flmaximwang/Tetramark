@@ -11,6 +11,12 @@ from rich.console import Console
 from tetramark.cli.aliquot import run_add_aliquots
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import stock_add_message
+from tetramark.cli.notes import (
+    APPEND_HELP,
+    CLEAR_HELP,
+    TEXT_HELP,
+    run_note_command,
+)
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import (
     echo_dry_run_sql,
@@ -21,9 +27,6 @@ from tetramark.cli.options import (
 )
 from tetramark.cli.output import emit_read, output_format
 from tetramark.cli.related import related_lines, without_related
-from tetramark.core.ledger import Ledger
-from tetramark.errors import UsageError
-from tetramark.form.editor import edit_plain_text
 from tetramark.ops.render import render_stock_aliquots
 
 stock_app = group("Stocks: logical batches/preparations of one entity.")
@@ -277,48 +280,14 @@ def edit_stock_command(
         ledger.close()
 
 
-def _note_editor(ledger: Ledger, ref: str, *, append: bool) -> str | None:
-    """The editor result for ``tm stock note``; ``None`` means unchanged.
-
-    A plain edit starts from the current note; a bare ``--append`` starts from
-    an empty buffer, because its result is the text to add, not the whole
-    note.  An unchanged buffer is detected against exactly the text the editor
-    was handed, so whitespace the stored note already carried never counts as
-    an edit.
-    """
-    if append:
-        edited = edit_plain_text(
-            "", description="text to append to the stock's notes"
-        )
-        return edited if edited.strip() else None
-    current = str(ledger.stocks.show(ref).get("notes") or "")
-    edited = edit_plain_text(
-        current,
-        description="the stock's notes; an empty result needs --clear",
-    )
-    return edited if edited != current.rstrip("\n") else None
-
-
 @stock_app.command("note")
 @write_command
 def note_stock_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Stock id or alias."),
-    text: str | None = typer.Argument(
-        None,
-        help=(
-            "Text to append; requires --append. Positional because this CLI "
-            "cannot express an option with an optional value."
-        ),
-    ),
-    append: bool = typer.Option(
-        False,
-        "--append",
-        help="Append TEXT, or the editor's result when TEXT is omitted.",
-    ),
-    clear: bool = typer.Option(
-        False, "--clear", help="Remove the notes (set the notes column to NULL)."
-    ),
+    text: str | None = typer.Argument(None, help=TEXT_HELP),
+    append: bool = typer.Option(False, "--append", help=APPEND_HELP),
+    clear: bool = typer.Option(False, "--clear", help=CLEAR_HELP),
     as_json: bool = typer.Option(
         False, "--json", help="Print the changed object as JSON."
     ),
@@ -331,36 +300,15 @@ def note_stock_command(
     sets the notes to NULL. TEXT is positional because this typer release
     cannot express an option with an optional value.
     """
-    if clear and (append or text is not None):
-        raise UsageError("--clear cannot be combined with --append or TEXT")
-    if text is not None and not append:
-        raise UsageError(
-            "TEXT needs --append; run `tm stock note REF` to edit the note"
-        )
-    ledger = resolve_ledger(ctx)
-    try:
-        if clear:
-            result = ledger.stocks.note(ref, clear=True)
-        elif append and text is not None:
-            result = ledger.stocks.note(ref, append=text)
-        else:
-            edited = _note_editor(ledger, ref, append=append)
-            if edited is None:
-                typer.echo("no changes")
-                return
-            result = (
-                ledger.stocks.note(ref, append=edited)
-                if append
-                else ledger.stocks.note(ref, text=edited)
-            )
-        emit_write(
-            ledger,
-            result,
-            f"Edited stock {result['kind']} {result['id']}",
-            as_json=json_output(ctx, as_json),
-        )
-    finally:
-        ledger.close()
+    run_note_command(
+        ctx,
+        object_type="stock",
+        ref=ref,
+        text=text,
+        append=append,
+        clear=clear,
+        as_json=as_json,
+    )
 
 
 def _echo_renumber_plan(result: dict[str, Any]) -> None:
