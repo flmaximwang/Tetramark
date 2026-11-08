@@ -20,7 +20,11 @@
 **README-only** (a **manual** step: the operator follows its README, because the change touches the
 ledger's files — its preset copies, its local kinds — as much as its rows).
 
-**Spec 6 (ticket Tetramark-epn) is the current format**: every aliquot has one fixed, hardcoded
+**Spec 8 is the current format**: it drops the unused `aliquot.notes` column through the
+README-only `migration/spec/7-to-8/README.md` (an aliquot borrows its stock's note, which
+`tm aliquot list` and `tm aliquot show` print). Spec 7 renamed `aliquot_event.note` to `message`
+and dropped the unused `purpose` column (scripted, `migration/spec/6-to-7/`). **Spec 6 (ticket
+Tetramark-epn)** is where the fixed status set landed: every aliquot has one fixed, hardcoded
 status set — `pending`, `stored`, `missing`, `consumed` — that every stock kind shares (§1.1). No
 preset declares a vocabulary any more (`status_sets:`/`statuses:` are a load error),
 `aliquot.status` carries a real DB `CHECK`, and the stock views count an aliquot in stock exactly

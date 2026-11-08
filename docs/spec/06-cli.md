@@ -327,8 +327,8 @@ expose the same data as `alias_list` / `occupant_alias_list` (§3).
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
-`notes`, `created_at`), the owning stock's `notes` as `stock_notes` (the tube has no notes of its
-own in spec 8: it borrows the stock's), the sorted `aliases`, the owning stock's `kind`
+`created_at`), the owning stock's `notes` as `stock_notes` (the tube has no notes of its own in
+spec 8: it borrows the stock's), the sorted `aliases`, the owning stock's `kind`
 and `entity_id`, the owning entity as `related.entity` (below), the tube's `box_id` and `slot`, the `path` read from
 `v_aliquot_location` (§3, `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly
 when the status is `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the

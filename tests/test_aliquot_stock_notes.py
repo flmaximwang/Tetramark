@@ -264,3 +264,61 @@ def test_the_tubes_own_notes_column_is_gone(noted_ledger) -> None:
 
     stock = _json(ledger, "aliquot", "list", "--where", "stock_notes~miniprep", "--json")
     assert aliquot in {row["id"] for row in stock}
+
+
+def test_the_inherited_footer_names_the_stock_with_the_tables_short_id(
+    cli_env: dict[str, str], ledger_factory, tmp_path
+) -> None:
+    """The footer id is the ``stock_id`` row's value, not a second shortening.
+
+    ``short_uuid_ids`` lengthens a prefix only when two ids of the *same*
+    shortening set collide: the show table shortens ``stock_id`` together with
+    ``entity_id`` and ``box_id``, so a robust ledger (a uuid stock-id strategy)
+    whose stock uuid shares its first eight hex characters with the owning
+    entity's uuid prints a longer prefix there.  The footer must repeat that
+    exact prefix instead of shortening the stock id on its own (which would
+    print an ambiguous eight characters).
+
+    The default ledger's stock ids are datecodes, so the strategy is switched
+    to ``uuid`` in ``ledger.yaml`` before the first object is created.
+    """
+    from tetramark.core.ledger import open as open_ledger
+
+    ledger = ledger_factory([BASE], name="aliquot-footer-prefix", id_prefix="77")
+    config_path = ledger.path / "ledger.yaml"
+    config = config_path.read_text(encoding="utf-8")
+    assert '"strategy": "datecode"' in config or "strategy: datecode" in config
+    config_path.write_text(
+        config.replace("datecode", "uuid"), encoding="utf-8"
+    )
+    ledger.close()
+    ledger = open_ledger(ledger.path, env=cli_env)
+
+    entity = ledger.entities.add(
+        "item", name="alpha", id="aaaaaaaa-1111-4111-8111-111111111111"
+    )
+    stock = ledger.stocks.add(
+        "lot",
+        entity=entity["id"],
+        id="aaaaaaaa-2222-4222-8222-222222222222",
+        aliquots=1,
+    )
+    aliquot = stock["aliquots"][0]
+
+    result = invoke(ledger, "aliquot", "show", aliquot)
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    footer = next(line for line in lines if line.startswith("* inherited from stock "))
+    stock_row = next(line for line in lines if line.startswith("stock_id "))
+    table_id = stock_row.split()[-1]
+
+    # The collision makes the table's prefix longer than the eight-character
+    # minimum, and the footer repeats it exactly instead of the ambiguous
+    # eight characters a separate shortening of the stock id would print.
+    assert len(table_id) > 8
+    assert table_id != stock["id"][:8]
+    assert footer == f"* inherited from stock {table_id}"
+    assert stock["id"] not in footer
+    # The entity's own id is the other half of the collision, shown separately.
+    entity_row = next(line for line in lines if line.startswith("entity_id "))
+    assert entity_row.split()[-1] != table_id

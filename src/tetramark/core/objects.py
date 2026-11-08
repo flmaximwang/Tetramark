@@ -3202,10 +3202,9 @@ def _aliquot_edit_values(
         elif field == "created_at":
             values[field] = _parse_aliquot_created_at(text)
         else:
-            # The default for an editable text column (the design note on
-            # ``_ALIQUOT_COLUMNS``): arbitrary text, and an exactly empty value
-            # clears the nullable column to NULL.  A whitespace-only value is
-            # not empty and is kept as given.
+            # The default for an editable text column: arbitrary text, and
+            # an exactly empty value clears the nullable column to NULL.  A
+            # whitespace-only value is not empty and is kept as given.
             values[field] = None if text == "" else text
     return values
 

@@ -108,20 +108,22 @@ def _echo_events(events: list[dict[str, Any]]) -> None:
         typer.echo(f"  {event_line(event)}")
 
 
-def _inherited_line(record: dict[str, Any]) -> str:
+def _inherited_line(text_record: dict[str, Any]) -> str:
     """The line that names where the tube's note comes from.
 
     An aliquot has no note of its own worth reading: it borrows the owning
     stock's.  The ``* notes`` row of the key/value table carries that value,
     and this line says which stock it belongs to -- the same ``*`` convention
     the related lines use for a value that is not the object's own property.
-    The id is the one the table shows (a uuid id as its short prefix).
+
+    ``text_record`` is the already-shortened :func:`_text_record` output, so
+    the id is exactly the ``stock_id`` the table prints (a uuid id as the same
+    unique short prefix, never a second, independently shortened one).
 
     It prints after the related ``*`` lines, so every ``*`` line of the show
     output sits together between the field block and the ``path:`` line.
     """
-    stock_id = short_uuid_ids([record.get("stock_id")])[0]
-    return f"* inherited from stock {stock_id}"
+    return f"* inherited from stock {text_record.get('stock_id')}"
 
 
 def _use_line(result: dict[str, Any]) -> str:
@@ -273,10 +275,11 @@ def show_aliquot_command(
         if fmt == "csv":
             emit_read(_csv_record(record), fmt=fmt)
             return
-        emit_read(_text_record(record), fmt="table")
+        text_record = _text_record(record)
+        emit_read(text_record, fmt="table")
         for line in related_lines(record.get("related")):
             typer.echo(line)
-        typer.echo(_inherited_line(record))
+        typer.echo(_inherited_line(text_record))
         if record.get("path"):
             typer.echo(f"path: {record['path']}")
         _echo_events(list(record.get("events") or []))
