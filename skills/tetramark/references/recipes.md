@@ -172,7 +172,8 @@ a field may repeat there (`--where-any 'resistance=kan' --where-any 'resistance=
 filters work on `tm entity|stock|box|aliquot list`; `tm find --where` and `tm find --where-any` span
 every object type and exclude aliquots. `tm stock list` shows active stocks by default — add `--all`
 for every status. On `tm aliquot list` the ordered comparisons are typed (`seq` numeric, `quantity`
-decimal, `created_at` ISO date/datetime) while `=`/`!=` keep comparing the raw text:
+decimal, `created_at` ISO date/datetime) while `=`/`!=` keep comparing the raw text, and
+`stock_notes` filters the owning stock's note:
 
 ```sh
 tm aliquot list --where 'quantity>=100' --where 'created_at>=2026-01-01' \
@@ -440,9 +441,11 @@ tm aliquot show 1226FP01.1 --json
 
 `ALQ` is the full `<stock>.<seq>` id or one of the tube's aliases (an alias added with `tm alias add
 aliquot …`, or an old id left by `tm stock renumber`). The table holds the aliquot row (`status`,
-`quantity`, `unit`, `label`, `notes`, `created_at`), the sorted `aliases`, the owning stock's
-`stock_kind` and `entity_id`, the `box_id`/`slot` and the derived `in_stock`; the `path` down the
-box nesting (`Freezer-1/Shelf-2/Box:A3`) prints on its own line under the table. Below it,
+`quantity`, `unit`, `label`, `notes`, `created_at`), the owning stock's note as the `* notes` row
+(full text, marked `*` because it is not the tube's own value), the sorted `aliases`, the owning
+stock's `stock_kind` and `entity_id`, the `box_id`/`slot` and the derived `in_stock`; the `path`
+down the box nesting (`Freezer-1/Shelf-2/Box:A3`) prints on its own line under the table, after the
+`* entity` and `* inherited from stock <id>` lines. Below it,
 `events  N` and one line per event list the tube's own trail, oldest first — creation, moves, use,
 status changes — so the tube's event story no longer needs a second command. A tube that is not in
 stock has no position, so `box_id`, `slot` and `path` are empty (`null` in JSON) and `in_stock` is

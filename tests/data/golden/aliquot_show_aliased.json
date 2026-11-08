@@ -47,5 +47,6 @@
   "status": "pending",
   "stock_id": "<stock-id>",
   "stock_kind": "lot",
+  "stock_notes": "alias fixture stock note",
   "unit": null
 }

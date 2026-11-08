@@ -232,7 +232,8 @@ dialect; the ledger's `find.rewrites` rules are Python `re` and do not share it 
 search, history** below).
 
 `tm aliquot list` takes the same two groups on its own allowlist (`id`, `stock_id`, `seq`, `box_id`,
-`slot`, `quantity`, `unit`, `label`, `created_at`, `notes`); `status` is still `--status` only. Its
+`slot`, `quantity`, `unit`, `label`, `created_at`, `notes`, `stock_notes` — the owning stock's note);
+`status` is still `--status` only. Its
 `=`/`!=` compare the raw text, and its ordered comparisons are typed: `seq` numeric, `quantity`
 decimal, `created_at` an ISO date/datetime (a date means its midnight) and every other column in
 collation order. An empty value means `NULL` or `''` for the text columns and `NULL` only for
@@ -391,11 +392,15 @@ tm aliquot purge ALQ [--json]
   the listing to one stock (not its child stocks), `--kind` to a stock kind, and `--box` to a box
   plus every box nested inside it. `--where` and `--where-any` take the shared syntax of
   **Filters** above on the aliquot columns; `FIELD=` (an empty value) means the column is empty —
-  `NULL` or `''` for `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`, `NULL` only for
-  `seq`/`quantity`/`created_at` — while `!=`, `~`, `!~` and the ordered comparisons are the shared
-  ones (`seq` numeric, `quantity` decimal, `created_at` ISO). Filter status with `--status`, never
+  `NULL` or `''` for `id`/`stock_id`/`box_id`/`slot`/`unit`/`label`/`notes`/`stock_notes`, `NULL`
+  only for `seq`/`quantity`/`created_at` — while `!=`, `~`, `!~` and the ordered comparisons are the
+  shared ones (`seq` numeric, `quantity` decimal, `created_at` ISO). `stock_notes` filters the
+  owning stock's note (`--where 'stock_notes~keep'`). Filter status with `--status`, never
   `--where status=…`. The table and CSV print
-  `id stock_kind status quantity unit label path` (path is empty when not in stock); `--json` prints
+  `id stock_kind status quantity unit label path stock_notes` (path is empty when not in stock);
+  the table header for the last column is `*notes` (a `*` marks a value that is not the tube's own
+  property) and its cell is the shared notes preview — every row repeats its stock's note — while
+  CSV keeps the clean name and the full text. `--json` prints
   the same record `show` prints without `events` (a list never reads a tube's event trail), one per
   tube, ordered by stock id and numeric seq.
 - `show` prints one tube: the aliquot row, its sorted `aliases`, the owning stock's `stock_kind` and
@@ -408,11 +413,15 @@ tm aliquot purge ALQ [--json]
   no live box row prints as `[unresolved box <full id>]`, never a cause. It also prints one related
   `* entity` line after the field block (before `path:`), e.g. `* entity          plasmid · pUC19`;
   an unnamed entity reads `kind · <short id> (unnamed)`, a missing one `<short id> (missing)`, and
-  JSON adds `related.entity {id,kind,name}` (deleted `{id,missing:true}`). Then the text output
-  ends with `events  N` and one line per event rendered by the same `event_line` helper `history`
-  uses; `--json` prints the whole record with the full ids, related and events included,
-  `--format csv` keeps the flat single row and drops `related` and `events` (unchanged columns;
-  event rows are `tm history ALQ --format csv`). `ALQ` is the
+  JSON adds `related.entity {id,kind,name}` (deleted `{id,missing:true}`). The stock's note is the
+  `* notes` field row (the `*` marks a value that is not the tube's own property) and prints in
+  full, never the list preview; after the related `* entity` line comes the
+  `* inherited from stock <id>` line that names the stock it belongs to, before `path:`. Then the
+  text output ends with `events  N` and one line per event rendered by the same `event_line` helper
+  `history` uses; `--json` prints the whole record with the full ids (`stock_notes` included, clean
+  name), related and events included, `--format csv` keeps the flat single row and drops `related`
+  and `events` (its columns gain the full `stock_notes`; event rows are `tm history ALQ --format
+  csv`). `ALQ` is the
   full `<stock>.<seq>` id or one of the tube's aliases, including the old ids `tm stock renumber`
   keeps. A tube that is not in stock has no position (`box_id`, `slot` and `path` are empty; `null`
   in JSON). The Dolt commits are in `tm history`; the stock kind's own fields are in `tm stock show`,

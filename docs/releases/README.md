@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.50](v0.8.50.md) | `v0.8.50.md` | `tm aliquot list` ends with the owning stock's note as `*notes` (shared 40-cell preview, every row repeats it) and `tm aliquot show` gains a `* notes` row plus a `* inherited from stock <id>` line; `--where stock_notes~…`; JSON/CSV keep the full `stock_notes` |
 | [0.8.49](v0.8.49.md) | `v0.8.49.md` | `tm stock note REF [TEXT] [--append] [--clear]` writes the stock's notes in `$VISUAL`/`$EDITOR`, appends a line or clears them; one commit per call |
 | [0.8.48](v0.8.48.md) | `v0.8.48.md` | `tm stock list`, `tm entity list` and `tm box list` end with a `notes` column: first non-empty line, 40 terminal cells, `(+N lines)`; JSON/CSV and `show` keep the full note |
 | [0.8.47](v0.8.47.md) | `v0.8.47.md` | `tm aliquot list --where` takes the shared operators and `--where-any`; exact and empty-value behaviour unchanged |

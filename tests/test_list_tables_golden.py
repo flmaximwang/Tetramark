@@ -1,4 +1,4 @@
-"""Golden tables for ``tm stock list``, ``tm entity list`` and ``tm box list``.
+"""Golden tables for ``tm stock``, ``tm entity``, ``tm box`` and ``tm aliquot`` lists.
 
 ``tests/data/golden/stock_list.table`` pins the default table of ``tm stock
 list``: the column set and order (``id kind entity_id entity_name
@@ -23,6 +23,13 @@ enough to prove names print in full, the two counts and the notes preview.
 ``active``; depleted and empty stocks are not counted.  ``aliquots_in_stock``
 sums the in-stock tubes of all the entity's stocks, so an entity with no
 stocks prints ``0 0``.
+
+``tests/data/golden/aliquot_list.table`` pins the default table of ``tm aliquot
+list``: the column set and order (``id stock_kind status quantity unit label
+path *notes``), the nested ``path`` and the ``*notes`` preview of the owning
+stock's note.  Every row repeats its stock's note; the three fixture notes are
+the same two-line, wider-than-40-cell and CJK/Greek shapes the stock list pins,
+and the rows are ordered by stock id then sequence.
 
 ``tests/data/golden/box_list.table`` pins the default table of ``tm box list``:
 the column set and order (``id name kind path occupied capacity notes``), the
@@ -167,6 +174,43 @@ def _build_stocks(ledger) -> None:
     ledger.aliquots.move(active["aliquots"][0], box="G-1", slot="A1", message="moved")
 
 
+def _build_aliquots(ledger) -> None:
+    """Three stocks with three tube shapes, each stock's note a different shape."""
+    alpha = ledger.entities.add("item", id=ALPHA, name="alpha")
+    ledger.boxes.add("grid8x12", "G-1")
+
+    two_lines = ledger.stocks.add(
+        "lot",
+        id="7701AB01",
+        entity=alpha["id"],
+        values={"supplier": "acme", "notes": NOTE_TWO_LINES},
+        aliquots=2,
+        box="G-1",
+        slots=["A1", "A2"],
+    )
+    wide = ledger.stocks.add(
+        "lot",
+        id="7701AB02",
+        entity=alpha["id"],
+        values={"supplier": "acme", "notes": NOTE_LONG},
+        aliquots=1,
+        box="G-1",
+        slots=["B1"],
+    )
+    unicode = ledger.stocks.add(
+        "lot",
+        id="7701AB03",
+        entity=alpha["id"],
+        values={"supplier": "acme", "notes": NOTE_UNICODE},
+        aliquots=1,
+        box="G-1",
+        slots=["C1"],
+    )
+    # The two-line note is repeated on both tubes of the first stock.
+    assert len(two_lines["aliquots"]) == 2
+    assert wide["aliquots"] and unicode["aliquots"]
+
+
 def _build_entities(ledger) -> None:
     """One entity with an active lot, one with only depleted/empty lots."""
     alpha = ledger.entities.add(
@@ -240,6 +284,16 @@ def test_entity_list_golden_table(cli_env: None, ledger_factory) -> None:
     _build_entities(ledger)
 
     _assert_golden(_table(ledger, "entity", "list"), "entity_list.table")
+
+
+def test_aliquot_list_golden_table(cli_env: None, ledger_factory) -> None:
+    """The default table: columns, nested path and the stock-note preview."""
+    ledger = ledger_factory(
+        [REPO_PRESETS / "base.yaml"], name="golden-aliquot-list", id_prefix="77"
+    )
+    _build_aliquots(ledger)
+
+    _assert_golden(_table(ledger, "aliquot", "list"), "aliquot_list.table")
 
 
 def test_box_list_golden_table(cli_env: None, ledger_factory) -> None:

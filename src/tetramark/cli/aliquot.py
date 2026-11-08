@@ -34,6 +34,11 @@ _TEXT_UUID_KEYS: tuple[str, ...] = ("stock_id", "entity_id", "box_id")
 #: keeps the full :func:`~tetramark.core.objects.show_aliquot` record.  The
 #: aliquot id is never shortened (spec §6), and the set holds no uuid-only
 #: column, so there is nothing else for the list to abbreviate.
+#:
+#: ``stock_notes`` is the owning **stock's** note: an aliquot has no note of
+#: its own worth reading (it borrows the stock's), so every row repeats it.
+#: The human table shows it as ``*notes`` (no space, so the column keeps its
+#: width); the CSV and JSON keep the plain field name.
 ALIQUOT_LIST_COLUMNS: tuple[str, ...] = (
     "id",
     "stock_kind",
@@ -42,7 +47,17 @@ ALIQUOT_LIST_COLUMNS: tuple[str, ...] = (
     "unit",
     "label",
     "path",
+    "stock_notes",
 )
+
+#: The human table headers that differ from the record's field name.  A ``*``
+#: marks a value that does not come from the object's own properties (the
+#: same convention the ``* entity`` related lines use).
+ALIQUOT_LIST_HEADERS: dict[str, str] = {"stock_notes": "*notes"}
+
+#: The key/value label the human ``tm aliquot show`` table prints for the
+#: stock's note: ``* notes`` (with a space) marks it as the stock's value.
+_SHOW_NOTES_LABEL = "* notes"
 
 
 def _text_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -53,9 +68,15 @@ def _text_record(record: dict[str, Any]) -> dict[str, Any]:
     line after the table, ``related`` because it prints as the ``*`` lines
     between them, ``events`` because it prints as its own section below them,
     and ``object`` is dropped as human noise.
+
+    The stock's note is labelled ``* notes`` rather than ``stock_notes``: the
+    ``*`` marks a value that is not the tube's own property, the way the
+    ``* entity`` related line does.
     """
     rows = {
-        key: value for key, value in record.items() if key not in _TEXT_ONLY_KV_KEYS
+        (_SHOW_NOTES_LABEL if key == "stock_notes" else key): value
+        for key, value in record.items()
+        if key not in _TEXT_ONLY_KV_KEYS
     }
     shortened = short_uuid_ids([rows.get(key) for key in _TEXT_UUID_KEYS])
     for key, value in zip(_TEXT_UUID_KEYS, shortened, strict=True):
@@ -85,6 +106,22 @@ def _echo_events(events: list[dict[str, Any]]) -> None:
     typer.echo(f"events  {len(events)}")
     for event in events:
         typer.echo(f"  {event_line(event)}")
+
+
+def _inherited_line(record: dict[str, Any]) -> str:
+    """The line that names where the tube's note comes from.
+
+    An aliquot has no note of its own worth reading: it borrows the owning
+    stock's.  The ``* notes`` row of the key/value table carries that value,
+    and this line says which stock it belongs to -- the same ``*`` convention
+    the related lines use for a value that is not the object's own property.
+    The id is the one the table shows (a uuid id as its short prefix).
+
+    It prints after the related ``*`` lines, so every ``*`` line of the show
+    output sits together between the field block and the ``path:`` line.
+    """
+    stock_id = short_uuid_ids([record.get("stock_id")])[0]
+    return f"* inherited from stock {stock_id}"
 
 
 def _use_line(result: dict[str, Any]) -> str:
@@ -214,15 +251,17 @@ def show_aliquot_command(
     """Show one tube: its status, quantity, stock, box path and events.
 
     The record covers the aliquot row, its sorted aliases, the owning stock's
-    kind and entity, the box/slot, the path read from the box nesting and the
-    tube's own events, oldest first.  The table prints the fields, then the
-    `* entity` line of the owning stock's entity (its JSON `related` object),
-    the path and one line per event; `--json` prints the whole record, events
-    and `related` included, and `--format csv` the flat record without the
-    events (they are rows, not a cell: `tm history ALQ --format csv` prints
-    them) and without `related`.  The stock kind's own fields are in
-    `tm stock show`, and the Dolt commits are in `tm history`.  The rich
-    per-stock listing is `tm aliquot list STOCK`.
+    kind, entity and note, the box/slot, the path read from the box nesting
+    and the tube's own events, oldest first.  The table prints the fields, then
+    the `*` lines -- the `* entity` line of the owning stock's entity (its JSON
+    `related` object) and the `* inherited from stock <id>` line that names the
+    stock the `* notes` row belongs to -- then the path and one line per
+    event; `--json` prints the whole record, events and `related` included, and
+    `--format csv` the flat record without the events (they are rows, not a
+    cell: `tm history ALQ --format csv` prints them) and without `related`.
+    The stock kind's own fields are in `tm stock show`, and the Dolt commits
+    are in `tm history`.  The rich per-stock listing is `tm aliquot list
+    STOCK`.
     """
     ledger = resolve_ledger(ctx)
     try:
@@ -237,6 +276,7 @@ def show_aliquot_command(
         emit_read(_text_record(record), fmt="table")
         for line in related_lines(record.get("related")):
             typer.echo(line)
+        typer.echo(_inherited_line(record))
         if record.get("path"):
             typer.echo(f"path: {record['path']}")
         _echo_events(list(record.get("events") or []))
@@ -301,9 +341,11 @@ def list_aliquots_command(
     `<=`, `>`, `>=`) and `--where-any` is one OR group ANDed with them.
     Ordered comparisons are typed: `seq` numeric, `quantity` decimal,
     `created_at` ISO date/datetime, other columns in collation order; `=` and
-    `!=` compare the raw text.  The table prints id, stock kind, status,
-    quantity, unit, label and path; `--json` prints the same record `tm aliquot
-    show` prints, without the events: a list never reads a tube's event trail.
+    `!=` compare the raw text.  `stock_notes` filters on the owning stock's
+    note (the tube borrows it).  The table prints id, stock kind, status,
+    quantity, unit, label, path and the stock's note as `*notes`; `--json`
+    prints the same record `tm aliquot show` prints, without the events: a
+    list never reads a tube's event trail.
     """
     ledger = resolve_ledger(ctx)
     try:
@@ -321,6 +363,7 @@ def list_aliquots_command(
             rows,
             fmt=output_format(ctx, as_json),
             columns=list(ALIQUOT_LIST_COLUMNS),
+            headers=ALIQUOT_LIST_HEADERS,
         )
     finally:
         ledger.close()
