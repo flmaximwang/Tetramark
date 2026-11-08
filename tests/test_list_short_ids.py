@@ -175,7 +175,7 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
 
     listed_csv = invoke(ledger, "--format", "csv", "entity", "list")
     assert listed_csv.exit_code == 0, listed_csv.output
-    assert f"{entity_id},item,alpha,0,0" in listed_csv.output.splitlines()
+    assert f"{entity_id},item,alpha,0,0," in listed_csv.output.splitlines()
 
     stock = json.loads(
         invoke(
@@ -198,7 +198,7 @@ def test_list_tables_shorten_uuid_ids_but_show_and_machine_formats_keep_them(
 
     stock_csv = invoke(ledger, "--format", "csv", "stock", "list", "--all")
     assert stock_csv.exit_code == 0, stock_csv.output
-    assert f"{stock_id},lot,{entity_id},alpha,0,depleted" in (
+    assert f"{stock_id},lot,{entity_id},alpha,0,depleted," in (
         stock_csv.output.splitlines()
     )
 
@@ -228,6 +228,7 @@ def test_box_ids_in_table_csv_json_and_show(cli_env: None, ledger_factory) -> No
         "path",
         "occupied",
         "capacity",
+        "notes",
     ]
     for name, box_id in ids.items():
         assert is_uuid4(box_id)
@@ -240,7 +241,15 @@ def test_box_ids_in_table_csv_json_and_show(cli_env: None, ledger_factory) -> No
     listed_csv = invoke(ledger, "--format", "csv", "box", "list")
     assert listed_csv.exit_code == 0, listed_csv.output
     reader = csv.DictReader(io.StringIO(listed_csv.output))
-    assert reader.fieldnames == ["id", "name", "kind", "path", "occupied", "capacity"]
+    assert reader.fieldnames == [
+        "id",
+        "name",
+        "kind",
+        "path",
+        "occupied",
+        "capacity",
+        "notes",
+    ]
     assert {row["id"] for row in reader} == set(ids.values())
 
     shown = invoke(ledger, "box", "show", "solo", "--json")

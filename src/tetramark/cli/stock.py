@@ -242,6 +242,7 @@ def list_stocks_command(
                 "entity_name",
                 "aliquots_in_stock",
                 "status",
+                "notes",
             ],
             short_uuid_columns=("id", "entity_id"),
         )

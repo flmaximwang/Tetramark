@@ -271,9 +271,14 @@ that clears the ref); the rows stay in Dolt history. `--json` adds the `aliases`
 The default **list tables** abbreviate a UUID id to the shortest prefix that is unique in that table
 (at least 8 characters, git style; colliding ids grow together). `show`, `--json` and `--format csv`
 always print the full 36-character id, and datecode/sequence/aliquot ids are never shortened.
-`entity list` prints `id kind name stocks_available aliquots_in_stock`: the number of the entity's
-stocks whose derived status is `active`, and the in-stock aliquots summed over its stocks. Both are
-`0` for an entity without stocks; depleted and empty stocks are not counted.
+`entity list` prints `id kind name stocks_available aliquots_in_stock notes`: the number of the
+entity's stocks whose derived status is `active`, and the in-stock aliquots summed over its stocks.
+Both are `0` for an entity without stocks; depleted and empty stocks are not counted.
+
+Every list table ends with a `notes` column, always shown, as a one-line preview: the first
+non-empty line, whitespace-stripped, cut at 40 terminal cells with `…` when longer (CJK/Greek text is
+measured by display width), followed by ` (+N lines)` when N further non-empty lines follow; an empty
+note is blank. `show`, `--json` and `--format csv` keep the full note.
 
 ## Stocks
 
@@ -303,12 +308,13 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
   `add(aliquot): <stock_id> x<N>` commit and the exit codes are the same as `aliquot add` (see
   **Aliquots** below).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
-- `stock list` prints `id kind entity_id entity_name aliquots_in_stock status`; `entity_name` is the
-  owning design's name, printed in full. By default it lists only the `active` stocks (at least one
-  aliquot in stock); `--all` adds the `empty` and `depleted` ones, with the same columns. `status` is
-  derived from the aliquots: `empty` (none), `active` (at least one in stock) or `depleted` (it has
-  aliquots, but none in stock — an unplaced tube is not in stock either); it is a derived column, not
-  a `--where` field. `--where` takes the shared filters and `--where-any` OR group (see
+- `stock list` prints `id kind entity_id entity_name aliquots_in_stock status notes`;
+  `entity_name` is the owning design's name, printed in full. By default it lists only the
+  `active` stocks (at least one aliquot in stock); `--all` adds the `empty` and `depleted` ones,
+  with the same columns. `status` is derived from the aliquots: `empty` (none), `active` (at least
+  one in stock) or `depleted` (it has aliquots, but none in stock — an unplaced tube is not in
+  stock either); it is a derived column, not a `--where` field. `--where` takes the shared filters
+  and `--where-any` OR group (see
   **Filters** above).
 - `stock show` prints the stock's fields, its sorted aliases and its tubes: each tube's JSON row
   carries `id`, `seq`, `status`, `quantity`, `unit`, `label`, `box_id`, `slot`, the slot-inclusive
@@ -478,7 +484,8 @@ tm box rename NAME|ID|ALIAS NEW_NAME [--json]
 tm box purge NAME|ID|ALIAS [--json]
 ```
 
-`box list` prints `id name kind path occupied capacity`. The first column shows a unique short UUID
+`box list` prints `id name kind path occupied capacity notes` (the trailing `notes` preview is
+described with `entity list` above). The first column shows a unique short UUID
 prefix (at least eight characters) in the table; CSV and JSON keep the full UUID. `occupied` counts
 the aliquots and the immediate child boxes directly in the box (items, not slots; nested contents do
 not roll up), and `capacity` is slots × `slot_capacity` for `grid`/`named` geometry, the declared

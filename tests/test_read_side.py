@@ -578,8 +578,8 @@ def test_cli_format_applies_to_list_and_show(cli_env: None, ledger_factory) -> N
     csv_result = invoke(ledger, "--format", "csv", "entity", "list")
     assert csv_result.exit_code == 0, csv_result.output
     lines = csv_result.output.splitlines()
-    assert lines[0] == "id,kind,name,stocks_available,aliquots_in_stock"
-    assert f"{first['id']},item,csvitem,0,0" in lines
+    assert lines[0] == "id,kind,name,stocks_available,aliquots_in_stock,notes"
+    assert f"{first['id']},item,csvitem,0,0," in lines
 
     show_result = invoke(ledger, "--format", "csv", "entity", "show", first["id"])
     assert show_result.exit_code == 0, show_result.output
