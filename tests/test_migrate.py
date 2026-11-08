@@ -5401,9 +5401,16 @@ def test_spec_6_to_7_matrix_refusals_write_nothing(
 def test_spec_6_to_7_refuses_a_spec_7_ledger_by_the_counter(
     ledger_factory, script_env: dict[str, str]
 ) -> None:
-    """The (d) case: a fresh, already spec-7 ledger is not stepped twice."""
+    """The (d) case: an already spec-7 ledger is not stepped twice."""
     ledger = ledger_factory([PRESETS / "base"], name="already-spec7", id_prefix="77")
     ledger.entities.add("item", name="alpha")
+    # A fresh ledger is at the current spec; this case is about the (d) row, so
+    # stamp the spec-7 counter the 6 -> 7 step itself would have written.
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '7' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-7 ledger")
+    ledger.read_meta()
     head_before = head(ledger)
     commits_before = commit_count(ledger)
 
@@ -5421,9 +5428,10 @@ def test_spec_6_to_7_refuses_a_spec_7_ledger_by_the_counter(
 
 
 def spec6_guard_message(ledger: Ledger) -> str:
-    """The exact LedgerError text the three spec-7 paths must raise."""
+    """The exact LedgerError text the three event paths must raise for spec 6."""
     return (
-        "ledger is spec 6, tm is spec 7: aliquot_event still has the spec-6 "
+        "ledger is spec 6, tm is spec "
+        f"{model.SPEC_VERSION}: aliquot_event still has the spec-6 "
         "columns (note, purpose). Upgrade it with:\n"
         f"uv run migration/spec/6-to-7/migrate.py --ledger {ledger.path} --apply\n"
         "(dry run without --apply; see migration/spec/6-to-7/README.md)"
@@ -5495,6 +5503,38 @@ def test_the_spec7_event_guard_refuses_every_event_write(
         "SELECT `quantity`, `status`, `box_id`, `slot` FROM `aliquot` WHERE `id` = %s",
         (alq,),
     ) == quantity_before
+
+
+def test_a_spec_7_ledger_passes_the_event_guard(ledger_factory) -> None:
+    """The guard refuses the spec-6 shape only: a spec-7 ledger is accepted.
+
+    Spec 7 introduced ``aliquot_event.message``; a later ``SPEC_VERSION``
+    (spec 8 dropped ``aliquot.notes``) must not make the guard refuse a spec-7
+    ledger with the spec-6 message.
+    """
+    ledger = ledger_factory([PRESETS / "base"], name="spec7-guard", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, quantity=10, unit="ul"
+    )
+    alq = stock["aliquots"][0]
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '7' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-7 ledger")
+    ledger.read_meta()
+    before = commit_count(ledger)
+
+    # The two read paths work...
+    shown = ledger.aliquots.show(alq)
+    assert shown["id"] == alq
+    assert [event["event"] for event in ledger.history(alq)["events"]] == [
+        "create"
+    ]
+    # ...and an event write commits normally.
+    ledger.aliquots.edit(alq, values={"unit": "ml"})
+    assert commit_count(ledger) == before + 1
+    assert ledger.meta["spec_version"] == "7"
 
 
 def test_a_spec_6_ledger_keeps_the_warn_only_commands(

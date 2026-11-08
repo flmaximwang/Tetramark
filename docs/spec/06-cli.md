@@ -101,7 +101,7 @@ tm stock purge ID|ALIAS                     # hard delete, explicit only; one co
 tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S ...]   # = tm aliquot add --quantity AMOUNT --unit UNIT.
 tm aliquot add STOCK [--count N] [--status S] [--box NAME --slot S ...] [--quantity Q --unit U]
 tm aliquot show ALQ                          # one tube: status, quantity, stock, box path, events
-tm aliquot edit ALQ --set field=value ... [-m MSG]   # correct quantity/unit/notes/created_at; one edit event, one commit
+tm aliquot edit ALQ --set field=value ... [-m MSG]   # correct quantity/unit/created_at; one edit event, one commit
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
                 [--where FILTER ...] [--where-any FILTER ...]   # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
@@ -282,8 +282,9 @@ Dolt commit (`edit(entity): <kind> <id>` and `edit(box): <kind> <id>` summaries 
 
 `tm aliquot edit ALQ --set field=value …` corrects the recorded fields of one tube. `ALQ` is the
 full aliquot id (`<stock>.<seq>`) or one of the tube's aliases; a shortened id prefix is refused,
-as on `tm aliquot show`. Exactly four columns are editable: `quantity`, `unit`, `notes` and
-`created_at`. A column not listed is not editable through `edit` by default: `id`, `stock_id` and
+as on `tm aliquot show`. Exactly three columns are editable: `quantity`, `unit` and `created_at`
+(the tube's own `notes` column is gone in spec 8: an aliquot borrows its stock's note, which
+`tm aliquot list`/`show` print). A column not listed is not editable through `edit` by default: `id`, `stock_id` and
 `seq` are identity data (an aliquot id *is* `<stock_id>.<seq>`) and have no substitute command;
 `label` changes through `tm aliquot label ALQ LABEL [--replace]`; `status` through
 `tm aliquot status ALQ NEW [--force -m MSG]`; and the position, `box_id`/`slot`, through
@@ -306,8 +307,7 @@ refused with a hint to `tm aliquot use`; negative, non-numeric and infinite valu
 `quantity` and `unit` must end up both present or both empty: changing just one is allowed while
 the final pair stays valid, clearing either means clearing both, and adding one to a tube that has
 neither must be done in the same edit. `unit` must not be empty and is at most 32 characters;
-`--set notes=` clears the notes; `created_at` takes a naive ISO datetime (no time zone) and cannot
-be cleared. The whole `--set` set is validated as one change, so one invalid field leaves no
+`created_at` takes a naive ISO datetime (no time zone) and cannot be cleared. The whole `--set` set is validated as one change, so one invalid field leaves no
 partial update, event or commit, and an edit with no actual change is refused. `--dry-run` prints
 the planned SQL and writes nothing; `--json` returns the loaded tube record with the corrected
 values overlaid.
@@ -327,8 +327,8 @@ expose the same data as `alias_list` / `occupant_alias_list` (§3).
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
-`notes`, `created_at`), the owning stock's `notes` as `stock_notes` (the tube borrows the stock's
-note; its own `notes` column still exists for now), the sorted `aliases`, the owning stock's `kind`
+`notes`, `created_at`), the owning stock's `notes` as `stock_notes` (the tube has no notes of its
+own in spec 8: it borrows the stock's), the sorted `aliases`, the owning stock's `kind`
 and `entity_id`, the owning entity as `related.entity` (below), the tube's `box_id` and `slot`, the `path` read from
 `v_aliquot_location` (§3, `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly
 when the status is `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the
@@ -361,11 +361,11 @@ and includes the box plus every box nested inside it. `--where FILTER` (repeatab
 `--where-any FILTER` (repeatable, one OR group ANDed with the `--where` filters) take the shared
 filter syntax of §6.4 with all eight operators — `=`, `~`, `!=`, `!~`, `<`, `<=`, `>`, `>=` — on the
 aliquot core columns `id`, `stock_id`, `seq`, `box_id`, `slot`, `quantity`, `unit`, `label`,
-`created_at`, `notes` and `stock_notes` (the owning stock's note, read from the joined `stock`
+`created_at` and `stock_notes` (the owning stock's note, read from the joined `stock`
 row); an aliquot has no kind row, so there are no kind fields, and `status` stays
 the `--status` filter (`--where status=…` is a usage error pointing at `--status`, in either group).
 `=` and `!=` compare the raw text as they always have, so an empty value (`FIELD=`) means the column
-is empty: `NULL` or `''` for `id`, `stock_id`, `box_id`, `slot`, `unit`, `label`, `notes` and
+is empty: `NULL` or `''` for `id`, `stock_id`, `box_id`, `slot`, `unit`, `label` and
 `stock_notes`, and `NULL` only for `seq`, `quantity` and `created_at` (a stored `0` never looks
 empty). An ordered
 comparison is typed: `seq` is numeric, `quantity` is a decimal, `created_at` is an ISO date or
@@ -804,7 +804,7 @@ The valid fields are the core filter columns of the object type plus the fields 
 `id`, `kind`, `name` (entity, box), `created_at` and `notes` for all three, `entity_id`,
 `parent_stock_id` and `source_aliquot_id` for stocks, and `parent_box_id` and `parent_slot` for boxes.
 `tm aliquot list` has no kind rows, so its valid set is the fixed allowlist `id`, `stock_id`,
-`seq`, `box_id`, `slot`, `quantity`, `unit`, `label`, `created_at`, `notes` and `stock_notes`:
+`seq`, `box_id`, `slot`, `quantity`, `unit`, `label`, `created_at` and `stock_notes`:
 nothing is dropped per kind, no view-derived column is filterable and `status` is refused
 (`--status` owns it).
 A computed kind column is accepted by `~` and `!~` as described above; view-derived columns (`path`,

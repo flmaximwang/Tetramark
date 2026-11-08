@@ -301,6 +301,126 @@ def test_plan_is_stale_when_tetramark_version_is_missing(ledger: Ledger) -> None
     assert current.to_dict()["fingerprint"]["stale"] is True
 
 
+def test_a_stale_spec_version_alone_is_a_meta_refresh(
+    ledger: Ledger, cli_isolated: None
+) -> None:
+    """A manual step (7 -> 8) leaves the DDL matching but the counter behind.
+
+    ``tm schema plan`` cannot diff the dropped ``aliquot.notes`` column, so the
+    operator does the ALTER by hand and then needs ``tm schema apply`` to write
+    the new counter.  That only works if the plan sees the stored
+    ``spec_version`` drift; a ledger whose recorded fingerprint came from an
+    older tool (or from the 6 -> 7 step run by this tool) must not hide it.
+    """
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '7' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-7 ledger")
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "7"
+    before = commit_count(ledger)
+
+    current = plan(ledger)
+    assert current.is_empty
+    assert current.meta_stale
+    payload = current.to_dict()
+    # The fingerprint and the tool version match; only the counter drifted.
+    assert payload["fingerprint"]["live"] == payload["fingerprint"]["expected"]
+    assert payload["spec_version"] == {
+        "live": "7",
+        "expected": str(model.SPEC_VERSION),
+        "stale": True,
+    }
+
+    # The CLI offers the refresh, and apply performs exactly one commit.
+    hinted = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), "schema", "plan"]
+    )
+    assert hinted.exit_code == 0, hinted.output
+    assert "schema is up to date" in hinted.output
+    assert "ledger_meta is stale" in hinted.output
+
+    applied = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), "schema", "apply"]
+    )
+    assert applied.exit_code == 0, applied.output
+    assert latest_commit(ledger)["message"] == "apply(schema): refresh ledger_meta"
+    assert commit_count(ledger) == before + 1
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == str(model.SPEC_VERSION)
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert_clean(ledger)
+
+
+def test_the_documented_manual_7_to_8_upgrade(
+    ledger_factory, cli_isolated: None
+) -> None:
+    """The migration/spec/7-to-8 README path, end to end.
+
+    Simulate a spec-7 ledger (the dropped ``aliquot.notes`` column is back and
+    the counter is 7), export a non-empty note, run the documented ``ALTER``,
+    then ``tm schema apply`` must commit the column drop plus the spec-8
+    ``ledger_meta`` and leave a clean ledger.
+    """
+    ledger = ledger_factory([PRESETS / "base"], name="manual-7-to-8", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1)
+    alq = stock["aliquots"][0]
+
+    # 1. The old format: the column exists and the counter is 7.
+    ledger.driver.execute(
+        "ALTER TABLE `aliquot` ADD COLUMN `notes` MEDIUMTEXT"
+    )
+    ledger.driver.execute(
+        "UPDATE `aliquot` SET `notes` = 'tube note to keep' WHERE `id` = %s",
+        (alq,),
+    )
+    ledger.driver.execute(
+        "UPDATE `ledger_meta` SET `value` = '7' WHERE `key` = 'spec_version'"
+    )
+    ledger.driver.commit("test: simulate a spec-7 ledger")
+    ledger.read_meta()
+
+    # 2. The documented export still finds the note.
+    assert ledger.driver.query(
+        "SELECT `id`, `notes` FROM `aliquot` "
+        "WHERE `notes` IS NOT NULL AND TRIM(`notes`) <> ''"
+    ) == [{"id": alq, "notes": "tube note to keep"}]
+
+    # 3. The plan cannot see the column, but it sees the counter drift.
+    current = plan(ledger)
+    assert current.is_empty
+    assert current.meta_stale
+    hinted = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), "schema", "plan"]
+    )
+    assert hinted.exit_code == 0, hinted.output
+    assert "schema is up to date" in hinted.output
+    assert "ledger_meta is stale" in hinted.output
+
+    # 4. The manual ALTER, then the one meta-refresh commit.
+    ledger.driver.execute("ALTER TABLE `aliquot` DROP COLUMN `notes`")
+    before = commit_count(ledger)
+    applied = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), "schema", "apply"]
+    )
+    assert applied.exit_code == 0, applied.output
+    assert "Applied 0 step(s)" in applied.output
+    assert latest_commit(ledger)["message"] == "apply(schema): refresh ledger_meta"
+    assert commit_count(ledger) == before + 1
+
+    # 5. Verification from the README.
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == str(model.SPEC_VERSION)
+    assert "notes" not in column_names(ledger, "aliquot")
+    assert_clean(ledger)
+    checked = CliRunner().invoke(
+        app, ["--ledger", str(ledger.path), "check", "--json"]
+    )
+    assert checked.exit_code == 0, checked.output
+    assert json.loads(checked.output)["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # Format upgrade: spec v1 views -> v2 (alias columns)
 # ---------------------------------------------------------------------------

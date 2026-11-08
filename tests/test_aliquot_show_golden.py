@@ -4,10 +4,11 @@ The three files under ``tests/data/golden/`` pin the *shape* of the record the
 CLI prints for one tube: the field set, the value types (``quantity`` is a
 decimal rendered as a string, ``aliases`` a sorted list, the path a single
 string or ``null``) and the stable values that depend on the fixture only
-(status, quantity, label, notes, slot, path, ``in_stock``, ``object``):
+(status, quantity, label, slot, path, ``in_stock``, ``object``):
 
 * ``aliquot_show_in_stock.json`` -- a tube in stock: placed in a nested box,
-  with a quantity, a unit, a label, its own note and the owning stock's note;
+  with a quantity, a unit, a label and the owning stock's note (the tube has no
+  note of its own any more: spec 8 dropped ``aliquot.notes``);
 * ``aliquot_show_not_in_stock.json`` -- a tube that never left stock: no
   position, so ``box_id``/``slot``/``path`` are null and ``in_stock`` is false;
 * ``aliquot_show_aliased.json`` -- a tube looked up by one of its aliases: a
@@ -230,8 +231,8 @@ def _placed_tube(ledger, csv_dir: Path) -> dict[str, Any]:
     )
     path = csv_dir / "aliquots.csv"
     path.write_text(
-        "id,stock,seq,status,box,slot,label,quantity,unit,notes\n"
-        f"{stock['id']}.1,{stock['id']},1,stored,Box,A3,alpha-1,100,ul,tube one\n",
+        "id,stock,seq,status,box,slot,label,quantity,unit\n"
+        f"{stock['id']}.1,{stock['id']},1,stored,Box,A3,alpha-1,100,ul\n",
         encoding="utf-8",
     )
     import_csv(ledger, "aliquot", path, object_type="aliquot")
@@ -282,7 +283,7 @@ def _aliased_tube(ledger) -> dict[str, Any]:
 def test_aliquot_show_golden_in_stock(
     cli_env: None, ledger_factory, tmp_path: Path
 ) -> None:
-    """A placed tube: row values, nested path, in_stock true, label and notes."""
+    """A placed tube: row values, nested path, in_stock true, label and stock note."""
     ledger = ledger_factory([BASE], name="golden-aliquot-show-stock", id_prefix="77")
     made = _placed_tube(ledger, tmp_path)
 
