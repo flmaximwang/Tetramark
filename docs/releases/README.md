@@ -18,6 +18,7 @@ automating away.
 | Version | Notes | What changed |
 |---|---|---|
 | [0.8.49](v0.8.49.md) | `v0.8.49.md` | `tm stock note REF [TEXT] [--append] [--clear]` writes the stock's notes in `$VISUAL`/`$EDITOR`, appends a line or clears them; one commit per call |
+| [0.8.48](v0.8.48.md) | `v0.8.48.md` | `tm stock list`, `tm entity list` and `tm box list` end with a `notes` column: first non-empty line, 40 terminal cells, `(+N lines)`; JSON/CSV and `show` keep the full note |
 | [0.8.47](v0.8.47.md) | `v0.8.47.md` | `tm aliquot list --where` takes the shared operators and `--where-any`; exact and empty-value behaviour unchanged |
 | [0.8.46](v0.8.46.md) | `v0.8.46.md` | embedded reads restore Python `int` for integer-typed columns when Dolt auto-routes through a user-run `dolt sql-server`; typed probe runs inside the long-lived session; no default-backend/dependency change |
 | [0.8.44.1](v0.8.44.1.md) | `v0.8.44.1.md` | embedded driver keeps one long-lived `dolt sql` session per ledger (repeated batches ~1 ms instead of ~0.3 s), shared closed fixture builds, installed-wheel build once per session, concurrent per-statement oracle walks; budgets, tests and assertions unchanged |

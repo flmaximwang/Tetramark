@@ -92,7 +92,8 @@ tm aliquot show 1226FP01.2
 ```
 
 `box list` starts with an `id` column: unique short UUID prefixes in the table, full UUIDs in
-CSV and JSON. `box show` includes a short id in its header and the full `id` in JSON. Choose a
+CSV and JSON; its last column previews the box notes (first line, 40 cells, `(+N lines)`).
+`box show` includes a short id in its header and the full `id` in JSON. Choose a
 free slot from the destination view; omit `--slot` for a slotless box. `--box` accepts the box
 name, full id, alias or unique id prefix. Placement changes use `move`, quantity changes use
 `use`, and status changes use `status`.

@@ -525,25 +525,33 @@ cross-command identifier, and datecode/sequence ids (`0826FP01`, `S00042`) and a
 
 **List table columns.** A list command's default table and its `--format csv` output print the same
 fixed, readable subset of the record; `--json` keeps the full record. The leading columns identify
-the row and the rest hold the values a person decides on, with long values (an entity name) printed
-in full, never truncated.
+the row and the rest hold the values a person decides on, with long identifying values (an entity
+name) printed in full, never truncated. The trailing `notes` column is the one deliberate table-only
+shortening; `tm <object> show`, `--json` and `--format csv` keep the full note.
 
-- `tm entity list` prints `id kind name stocks_available aliquots_in_stock`. `stocks_available` is
-  the number of the entity's stocks whose derived status is `active` (at least one aliquot in stock);
-  depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots of all the
-  entity's stocks. Both are `0` for an entity without stocks.
-- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. By default it
-  lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
+`notes` is the last column of all three list tables and is always shown. A note prints its first
+non-empty line, whitespace-stripped (leading blank lines are skipped), cut at 40 terminal cells when
+longer — measured with `rich.cells.cell_len`, so CJK and Greek text aligns, and never splitting a
+wide character or combining sequence — with `…` appended when cut. When N further non-empty lines
+follow, ` (+N lines)` is appended; blank lines are not counted. A `None`, empty or all-blank note
+prints an empty cell.
+
+- `tm entity list` prints `id kind name stocks_available aliquots_in_stock notes`. `stocks_available`
+  is the number of the entity's stocks whose derived status is `active` (at least one aliquot in
+  stock); depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots
+  of all the entity's stocks. Both are `0` for an entity without stocks.
+- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status notes`. By default
+  it lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
   `depleted` rows, with the same columns. `entity_name` is the owning design's name. `status` is
   derived from the aliquots: `empty` when the stock has none, `active` when at least one aliquot is
   in stock, and `depleted` when it has aliquots but none of them is in stock (a tube that was never
   placed in a box is not in stock either).
-- `tm box list` prints `id name kind path occupied capacity`. The table shortens `id` to a unique
-  prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
+- `tm box list` prints `id name kind path occupied capacity notes`. The table shortens `id` to a
+  unique prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
   `occupied` counts the aliquots and the immediate child boxes directly in the box, counting items
-  rather than slots; the contents of nested boxes do not roll up into the parent. `capacity` is the number of slots times the kind's
-  `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, and blank
-  (`null` in JSON) when a slotless box is unlimited.
+  rather than slots; the contents of nested boxes do not roll up into the parent. `capacity` is the
+  number of slots times the kind's `slot_capacity` for `grid`/`named` geometry, the declared
+  capacity for slotless geometry, and blank (`null` in JSON) when a slotless box is unlimited.
 
 `tm box show` starts with `<name>  <kind>  id: <short>  path: ...`, where `<short>` is the
 first eight characters of the box UUID. JSON includes `id` as the full UUID; CSV keeps its

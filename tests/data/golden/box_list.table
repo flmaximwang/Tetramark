@@ -1,8 +1,8 @@
-id        name  kind       path     occupied  capacity
-<box-id>  D-1   drawer     I-1/D-1  0
+id        name  kind       path     occupied  capacity  notes
+<box-id>  D-1   drawer     I-1/D-1  0                   a long note that is definitely wider tha…
 <box-id>  F-1   freezer    F-1      0
-<box-id>  G-1   grid8x12   G-1      2         96
+<box-id>  G-1   grid8x12   G-1      2         96        αβγ 抗体 prep
 <box-id>  G-2   grid9x9    G-2      0         81
-<box-id>  I-1   incubator  I-1      1
+<box-id>  I-1   incubator  I-1      1                   first line of the note (+1 lines)
 <box-id>  R-1   rack       R-1      2         10
 <box-id>  S-1   shelf      S-1      0
