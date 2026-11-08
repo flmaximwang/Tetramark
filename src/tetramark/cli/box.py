@@ -7,6 +7,12 @@ from rich.console import Console
 
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import box_add_message
+from tetramark.cli.notes import (
+    APPEND_HELP,
+    CLEAR_HELP,
+    TEXT_HELP,
+    run_note_command,
+)
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import group, json_output, resolve_ledger, write_command
 from tetramark.cli.output import emit_payload, emit_read, output_format
@@ -156,6 +162,37 @@ def edit_box_command(
         )
     finally:
         ledger.close()
+
+
+@box_app.command("note")
+@write_command
+def note_box_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Box name, id or alias."),
+    text: str | None = typer.Argument(None, help=TEXT_HELP),
+    append: bool = typer.Option(False, "--append", help=APPEND_HELP),
+    clear: bool = typer.Option(False, "--clear", help=CLEAR_HELP),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the changed box as JSON."
+    ),
+) -> None:
+    """Edit one box's notes in $VISUAL/$EDITOR, append to them, or clear them.
+
+    `tm box note REF [TEXT] [--append] [--clear]`: a bare REF opens the
+    current note in the editor, `--append TEXT` appends TEXT, a bare
+    `--append` opens an empty buffer and appends its result, and `--clear`
+    sets the notes to NULL. TEXT is positional because this typer release
+    cannot express an option with an optional value.
+    """
+    run_note_command(
+        ctx,
+        object_type="box",
+        ref=ref,
+        text=text,
+        append=append,
+        clear=clear,
+        as_json=as_json,
+    )
 
 
 @box_app.command("move")

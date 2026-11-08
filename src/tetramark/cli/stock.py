@@ -11,6 +11,12 @@ from rich.console import Console
 from tetramark.cli.aliquot import run_add_aliquots
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import stock_add_message
+from tetramark.cli.notes import (
+    APPEND_HELP,
+    CLEAR_HELP,
+    TEXT_HELP,
+    run_note_command,
+)
 from tetramark.cli.objects_common import emit_write
 from tetramark.cli.options import (
     echo_dry_run_sql,
@@ -272,6 +278,37 @@ def edit_stock_command(
         )
     finally:
         ledger.close()
+
+
+@stock_app.command("note")
+@write_command
+def note_stock_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Stock id or alias."),
+    text: str | None = typer.Argument(None, help=TEXT_HELP),
+    append: bool = typer.Option(False, "--append", help=APPEND_HELP),
+    clear: bool = typer.Option(False, "--clear", help=CLEAR_HELP),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the changed object as JSON."
+    ),
+) -> None:
+    """Edit one stock's notes in $VISUAL/$EDITOR, append to them, or clear them.
+
+    `tm stock note REF [TEXT] [--append] [--clear]`: a bare REF opens the
+    current note in the editor, `--append TEXT` appends TEXT, a bare
+    `--append` opens an empty buffer and appends its result, and `--clear`
+    sets the notes to NULL. TEXT is positional because this typer release
+    cannot express an option with an optional value.
+    """
+    run_note_command(
+        ctx,
+        object_type="stock",
+        ref=ref,
+        text=text,
+        append=append,
+        clear=clear,
+        as_json=as_json,
+    )
 
 
 def _echo_renumber_plan(result: dict[str, Any]) -> None:

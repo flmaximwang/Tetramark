@@ -87,12 +87,14 @@ tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (
 # Inventory: entity, stock, aliquot, box
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] ; tm entity edit ID --set f=v
+tm entity note ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; one commit
 tm entity rename ID|ALIAS NEW_NAME          # old name kept as an alias; one commit
 tm entity purge ID|ALIAS                    # hard delete, explicit only; one commit
 tm stock add KIND --entity ID|ALIAS --set f=v [--parent STOCK] [--source-aliquot ALQ]
                  [--aliquots N] [--status S] [--box NAME --slot A1 [--slot A2 ...]]
                  [--quantity 500 --unit ml]
 tm stock show|list|edit ...                 # list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...]
+tm stock note REF [TEXT] [--append] [--clear]   # notes in $VISUAL/$EDITOR; TEXT only with --append; one commit
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
                  # legacy id → strategy-shaped id(s); old ids stay as aliases; one commit
 tm stock purge ID|ALIAS                     # hard delete, explicit only; one commit
@@ -112,6 +114,7 @@ tm box show NAME            # terminal grid / list; --json gives {id, box, kind,
 tm box list [--where FILTER ...] [--where-any FILTER ...] ; tm box move NAME --in PARENT [--slot S]   # never into a grid box
 tm box rename NAME NEW_NAME   # old name kept as an alias; v_box_<old> → v_box_<new>; one commit
 tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rename-only; one commit; structural fields refused
+tm box note NAME|ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; box by name first; one commit
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
 
@@ -252,6 +255,30 @@ rebuilds a box's view) and a plain column update cannot. Structural fields are r
 exactly empty) clears an optional column to NULL, a required field cannot be cleared, and a
 whitespace-only value is not empty: it is coerced like any other value, never cleared. One edit is
 one Dolt commit, `--json` returns the loaded record and `--dry-run` writes nothing.
+
+`tm stock note REF [TEXT] [--append] [--clear]` writes a stock's core `notes` column without shell
+quoting. A bare `REF` opens the current note in `$VISUAL`, then `$EDITOR`, then `vi`; the temp file
+carries the value above a git-style scissors line whose metadata is stripped on the way back, and
+lines starting with `#` are part of the note. An unchanged buffer prints exactly `no changes`, exits
+0 and writes nothing. `--append TEXT` adds a line to the note: the separator is one `"\n"` and it is
+omitted when the note is empty. A bare `--append` opens an **empty** buffer and appends its result;
+`--clear` sets the notes to `NULL`. An empty result without `--clear` is a usage error (exit 2), so
+a stray `:wq` cannot wipe a note by accident, and `TEXT` without `--append` as well as `--append`
+with `--clear` are usage errors too. `TEXT` is a **positional** argument, before or after
+`--append`, because this typer release cannot express an option with an optional value
+(`tm stock note REF --append "text"` still appends that text). REF resolves exactly as
+`tm stock edit` resolves it — full id, exact alias or unique id prefix; an ambiguous prefix is a
+usage error. Each successful call is one write session and one Dolt commit
+(`edit(stock): <kind> <id>`; the note text stays out of the ASCII-only summary), `--json` (also the
+global one) prints the loaded record and `--dry-run` writes nothing.
+
+`tm entity note` and `tm box note` take the same flags, resolution rules and behaviour as
+`tm stock note` above: a bare REF opens the current note, `--append TEXT` adds a line (a bare
+`--append` opens an empty buffer), `--clear` sets the notes to NULL, and an empty result without
+`--clear` is a usage error. They print their group's `edit` line instead — `Edited entity <kind>
+<id>` and `Edited box <name> (<kind>)` — and a box REF resolves by its human name first, then id or
+alias. All three commands share one CLI body and the generic `note_object` writer; each call is one
+Dolt commit (`edit(entity): <kind> <id>` and `edit(box): <kind> <id>` summaries included).
 
 `tm aliquot edit ALQ --set field=value …` corrects the recorded fields of one tube. `ALQ` is the
 full aliquot id (`<stock>.<seq>`) or one of the tube's aliases; a shortened id prefix is refused,
