@@ -327,8 +327,9 @@ expose the same data as `alias_list` / `occupant_alias_list` (§3).
 `tm aliquot show ALQ` shows one tube. `ALQ` is the full aliquot id (`<stock>.<seq>` — never a
 shortened prefix) or one of the tube's aliases (including the old ids `tm stock renumber` keeps).
 The record holds the aliquot row (`id`, `stock_id`, `seq`, `status`, `quantity`, `unit`, `label`,
-`notes`, `created_at`), the sorted `aliases`, the owning stock's `kind` and `entity_id`, the owning
-entity as `related.entity` (below), the tube's `box_id` and `slot`, the `path` read from
+`notes`, `created_at`), the owning stock's `notes` as `stock_notes` (the tube borrows the stock's
+note; its own `notes` column still exists for now), the sorted `aliases`, the owning stock's `kind`
+and `entity_id`, the owning entity as `related.entity` (below), the tube's `box_id` and `slot`, the `path` read from
 `v_aliquot_location` (§3, `Freezer-1/Shelf-2/Box:A3`), the derived `in_stock` flag (true exactly
 when the status is `stored`, §1.1), and finally the tube's `events`, oldest first (`[]` when the
 tube has none). Each event carries `id`, `event`, `at`, `amount`, `unit`, `from_box_id`, `from_box`,
@@ -336,13 +337,15 @@ tube has none). Each event carries `id`, `event`, `at`, `amount`, `unit`, `from_
 `old_status`, `new_status`, `forced` (a bool), `actor` and `message`; `from_box`/`to_box` are the
 live box name, else the stored id, and `from_box_resolved`/`to_box_resolved` say which (`true` for
 a live box row, `false` otherwise, `null` when the side has no box id). Event lines follow §6.6.
-`events` is not a key/value row: text output prints the field block, then the `* entity` related
-line, then the `path:` line (when the tube has a position), then `events  N` (two spaces before the
-count) and one line per event, oldest first, rendered by the same `event_line` helper `tm history`
-uses. `related.entity` holds `{id, kind, name}`, or `{id, missing: true}` when the entity row is
+`events` is not a key/value row: text output prints the field block, then the `*` lines — the
+`* entity` related line, then the `* inherited from stock <id>` line that names the stock the note
+comes from — then the `path:` line (when the tube has a position), then `events  N` (two spaces
+before the count) and one line per event, oldest first, rendered by the same `event_line` helper
+`tm history` uses. In the field block the stock's note is the `* notes` row (the `*` marks a value
+that is not the tube's own property) and it prints the **full** note, never the list preview. `related.entity` holds `{id, kind, name}`, or `{id, missing: true}` when the entity row is
 gone. `--json` prints the whole record, related and events included; `--format csv` stays the flat
-single-row record and drops `related` and `events`, keeping exactly its previous columns (event
-rows are `tm history ALQ --format csv`). The Dolt commits stay in `tm history`:
+single-row record and drops `related` and `events` (event rows are `tm history ALQ --format csv`),
+adding `stock_notes` to its columns (clean field name, full text). The Dolt commits stay in `tm history`:
 show carries events only. A tube that is not in stock has `box_id`, `slot` and `path` NULL. The
 stock kind's own fields stay in `tm stock show`. The command is read-only and changes no ledger
 format — `spec_version` is untouched.
@@ -358,20 +361,27 @@ and includes the box plus every box nested inside it. `--where FILTER` (repeatab
 `--where-any FILTER` (repeatable, one OR group ANDed with the `--where` filters) take the shared
 filter syntax of §6.4 with all eight operators — `=`, `~`, `!=`, `!~`, `<`, `<=`, `>`, `>=` — on the
 aliquot core columns `id`, `stock_id`, `seq`, `box_id`, `slot`, `quantity`, `unit`, `label`,
-`created_at` and `notes`; an aliquot has no kind row, so there are no kind fields, and `status` stays
+`created_at`, `notes` and `stock_notes` (the owning stock's note, read from the joined `stock`
+row); an aliquot has no kind row, so there are no kind fields, and `status` stays
 the `--status` filter (`--where status=…` is a usage error pointing at `--status`, in either group).
 `=` and `!=` compare the raw text as they always have, so an empty value (`FIELD=`) means the column
-is empty: `NULL` or `''` for `id`, `stock_id`, `box_id`, `slot`, `unit`, `label` and `notes`, and
-`NULL` only for `seq`, `quantity` and `created_at` (a stored `0` never looks empty). An ordered
+is empty: `NULL` or `''` for `id`, `stock_id`, `box_id`, `slot`, `unit`, `label`, `notes` and
+`stock_notes`, and `NULL` only for `seq`, `quantity` and `created_at` (a stored `0` never looks
+empty). An ordered
 comparison is typed: `seq` is numeric, `quantity` is a decimal, `created_at` is an ISO date or
 datetime (a date means its midnight) and the other columns compare in the database's collation
 order; a non-numeric ordered value for `seq`/`quantity` is a usage error naming the filter. The
 Python API takes the same two groups as `where=` / `where_any=` (a mapping is equality only, with
 `None`/`''` meaning "is empty"; a list of strings takes every operator). The groups only narrow the
 rows: `--all`/`--not-in-stock`/`--status`/`--kind`/`--box` decide the scope and apply unchanged.
-The table and CSV print the narrow rows `id stock_kind status quantity unit label path`
-(`path` is empty when the tube is not in stock); `--json` prints the same record `tm aliquot show`
-prints without `events`, one per tube, in `stock_id`/numeric-`seq` order. The command is read-only
+The table and CSV print the narrow rows `id stock_kind status quantity unit label path
+stock_notes` (`path` is empty when the tube is not in stock). The table header for the last column
+is `*notes` (no space, so the column keeps its width) and the cell is the shared notes preview —
+the first non-empty line, whitespace-stripped, cut at 40 terminal cells with `…` when longer, plus
+` (+N lines)` when N further non-empty lines follow (see **List table columns**); every row repeats
+its stock's note. CSV keeps the clean name `stock_notes` and the full text, and so does `--json`,
+which prints the same record `tm aliquot show` prints without `events`, one per tube, in
+`stock_id`/numeric-`seq` order. The command is read-only
 and changes no ledger format — `spec_version` is untouched.
 
 `tm stock show` embeds the stock's tubes. Each row carries `id`, `seq`, `status`, `quantity`, `unit`,
@@ -535,25 +545,33 @@ cross-command identifier, and datecode/sequence ids (`0826FP01`, `S00042`) and a
 
 **List table columns.** A list command's default table and its `--format csv` output print the same
 fixed, readable subset of the record; `--json` keeps the full record. The leading columns identify
-the row and the rest hold the values a person decides on, with long values (an entity name) printed
-in full, never truncated.
+the row and the rest hold the values a person decides on, with long identifying values (an entity
+name) printed in full, never truncated. The trailing `notes` column is the one deliberate table-only
+shortening; `tm <object> show`, `--json` and `--format csv` keep the full note.
 
-- `tm entity list` prints `id kind name stocks_available aliquots_in_stock`. `stocks_available` is
-  the number of the entity's stocks whose derived status is `active` (at least one aliquot in stock);
-  depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots of all the
-  entity's stocks. Both are `0` for an entity without stocks.
-- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status`. By default it
-  lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
+`notes` is the last column of all three list tables and is always shown. A note prints its first
+non-empty line, whitespace-stripped (leading blank lines are skipped), cut at 40 terminal cells when
+longer — measured with `rich.cells.cell_len`, so CJK and Greek text aligns, and never splitting a
+wide character or combining sequence — with `…` appended when cut. When N further non-empty lines
+follow, ` (+N lines)` is appended; blank lines are not counted. A `None`, empty or all-blank note
+prints an empty cell.
+
+- `tm entity list` prints `id kind name stocks_available aliquots_in_stock notes`. `stocks_available`
+  is the number of the entity's stocks whose derived status is `active` (at least one aliquot in
+  stock); depleted and empty stocks are not counted. `aliquots_in_stock` sums the in-stock aliquots
+  of all the entity's stocks. Both are `0` for an entity without stocks.
+- `tm stock list` prints `id kind entity_id entity_name aliquots_in_stock status notes`. By default
+  it lists only the `active` rows (at least one aliquot in stock); `--all` adds the `empty` and
   `depleted` rows, with the same columns. `entity_name` is the owning design's name. `status` is
   derived from the aliquots: `empty` when the stock has none, `active` when at least one aliquot is
   in stock, and `depleted` when it has aliquots but none of them is in stock (a tube that was never
   placed in a box is not in stock either).
-- `tm box list` prints `id name kind path occupied capacity`. The table shortens `id` to a unique
-  prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
+- `tm box list` prints `id name kind path occupied capacity notes`. The table shortens `id` to a
+  unique prefix of at least eight characters among the listed rows; CSV and JSON keep the full UUID.
   `occupied` counts the aliquots and the immediate child boxes directly in the box, counting items
-  rather than slots; the contents of nested boxes do not roll up into the parent. `capacity` is the number of slots times the kind's
-  `slot_capacity` for `grid`/`named` geometry, the declared capacity for slotless geometry, and blank
-  (`null` in JSON) when a slotless box is unlimited.
+  rather than slots; the contents of nested boxes do not roll up into the parent. `capacity` is the
+  number of slots times the kind's `slot_capacity` for `grid`/`named` geometry, the declared
+  capacity for slotless geometry, and blank (`null` in JSON) when a slotless box is unlimited.
 
 `tm box show` starts with `<name>  <kind>  id: <short>  path: ...`, where `<short>` is the
 first eight characters of the box UUID. JSON includes `id` as the full UUID; CSV keeps its
@@ -785,9 +803,10 @@ The rules are the same everywhere (the two repetition rules are `--where`'s alon
 The valid fields are the core filter columns of the object type plus the fields of the kinds in scope:
 `id`, `kind`, `name` (entity, box), `created_at` and `notes` for all three, `entity_id`,
 `parent_stock_id` and `source_aliquot_id` for stocks, and `parent_box_id` and `parent_slot` for boxes.
-`tm aliquot list` has no kind rows, so its valid set is the fixed core allowlist `id`, `stock_id`,
-`seq`, `box_id`, `slot`, `quantity`, `unit`, `label`, `created_at` and `notes`: nothing is dropped per
-kind, no view-derived column is filterable and `status` is refused (`--status` owns it).
+`tm aliquot list` has no kind rows, so its valid set is the fixed allowlist `id`, `stock_id`,
+`seq`, `box_id`, `slot`, `quantity`, `unit`, `label`, `created_at`, `notes` and `stock_notes`:
+nothing is dropped per kind, no view-derived column is filterable and `status` is refused
+(`--status` owns it).
 A computed kind column is accepted by `~` and `!~` as described above; view-derived columns (`path`,
 `capacity`, `occupied`, `status`, the counts) are not filterable. A field that no kind in scope has is
 the unknown-field usage error above. When a field is declared by only some of the kinds being listed,

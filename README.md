@@ -174,7 +174,8 @@ From anywhere else, point at the directory explicitly:
 tm --ledger ~/lab/lab101 find pZET035      # -l ~/lab/lab101 works too
 ```
 
-`aliquot show` prints one tube's status, quantity, aliases, box path and event timeline (the id is
+`aliquot show` prints one tube's status, quantity, the owning stock's note (the `* notes` row and
+its `* inherited from stock <id>` line), aliases, box path and event timeline (the id is
 the `<stock>.<seq>` that `stock add` printed), `aliquot list` prints the tubes an experiment can use
 (in stock by default; `--all` includes consumed, missing and other history), `box show` prints the
 grid, `find` resolves the alias and its box location, and `check` runs the generated Dolt tests
@@ -188,7 +189,8 @@ every `--where`, and a field may repeat there
 [`docs/spec/06-cli.md` §6.4](docs/spec/06-cli.md#64---where-filters-and-tm-find). `tm aliquot list`
 takes the same operators, and types its ordered values: `seq` numeric, `quantity` decimal,
 `created_at` ISO date/datetime, other columns in collation order (`tm aliquot list --where 'seq>2'
---where 'quantity<10'`); `=` and `!=` keep comparing the raw text.
+--where 'quantity<10'`); `=` and `!=` keep comparing the raw text, and `stock_notes` filters the
+owning stock's note.
 Writes to one ledger are serialized by a per-ledger lock: a
 second writer waits briefly, then exits with a typed `ledger busy` error instead of interleaving
 (`$TETRAMARK_LOCK_TIMEOUT` changes the wait). Reads never lock.

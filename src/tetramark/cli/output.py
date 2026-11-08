@@ -16,11 +16,12 @@ import csv
 import datetime as dt
 import io
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
 import typer
+from rich.cells import cell_len, chop_cells
 from rich.console import Console
 from rich.table import Table
 
@@ -30,11 +31,13 @@ from tetramark.errors import UsageError
 
 __all__ = [
     "FORMATS",
+    "NOTES_COLUMNS",
     "emit_payload",
     "emit_read",
     "emit_write",
     "is_uuid4",
     "json_default",
+    "notes_cell",
     "output_format",
     "short_uuid_ids",
 ]
@@ -47,6 +50,15 @@ _UUID_IDS = UuidIds()
 
 #: Shortest uuid prefix shown by :func:`short_uuid_ids` (git-style short hash).
 SHORT_UUID_LENGTH = 8
+
+#: Table columns that hold free-form notes and are shortened by
+#: :func:`notes_cell`.  Other commands can add a notes-like column to this set
+#: instead of writing a second formatter: the aliquot list's ``stock_notes``
+#: (the owning stock's note) is one.
+NOTES_COLUMNS: frozenset[str] = frozenset({"notes", "stock_notes"})
+
+#: Width, in terminal cells, of the notes preview before the ellipsis.
+NOTES_CELL_LENGTH = 40
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +167,50 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def notes_cell(value: Any) -> str:
+    """The one-line preview of a notes value used by list tables.
+
+    The algorithm is:
+
+    * ``None``, an empty string and a string of only blank lines all yield an
+      empty cell.
+    * The first non-empty line is taken (leading blank lines are skipped) and
+      whitespace-stripped, so a note that starts with indentation still reads
+      naturally.
+    * That line is measured in terminal cells with :func:`rich.cells.cell_len`
+      so CJK and Greek glyphs count their real width.  A line of exactly
+      :data:`NOTES_CELL_LENGTH` cells is not cut; a longer one keeps the first
+      :data:`NOTES_CELL_LENGTH` cells (never splitting a wide character or a
+      combining sequence: :func:`rich.cells.chop_cells` does the cut) and gets
+      a trailing ``…``.
+    * If further non-empty lines follow, ``" (+N lines)"`` is appended, where
+      ``N`` counts those further non-empty lines (blank lines do not count).
+
+    Only the human table path uses this; ``--json`` and ``--format csv`` keep
+    the full note.
+    """
+    if value is None:
+        return ""
+    lines = [line.strip() for line in str(value).splitlines()]
+    non_empty = [line for line in lines if line]
+    if not non_empty:
+        return ""
+    first = non_empty[0]
+    if cell_len(first) > NOTES_CELL_LENGTH:
+        first = chop_cells(first, NOTES_CELL_LENGTH)[0] + "…"
+    extra_lines = len(non_empty) - 1
+    if extra_lines:
+        return f"{first} (+{extra_lines} lines)"
+    return first
+
+
+def _table_cell(name: str, value: Any) -> str:
+    """Format one table cell: notes columns get the shared short preview."""
+    if name in NOTES_COLUMNS:
+        return notes_cell(value)
+    return _cell(value)
+
+
 def _dump(payload: Any) -> None:
     typer.echo(
         json.dumps(
@@ -187,12 +243,18 @@ def emit_read(
     columns: list[str] | None = None,
     empty: str = "(none)",
     short_uuid_columns: Sequence[str] = (),
+    headers: Mapping[str, str] | None = None,
 ) -> None:
     """Print one record or a list of records in the requested format.
 
     ``short_uuid_columns`` names list-table columns whose uuid ids are shown as
     unique short prefixes; JSON and CSV always keep the full ids (they are the
     machine formats, like git plumbing).
+
+    ``headers`` renames a column in the human table only (``{column: header}``):
+    the aliquot list shows its ``stock_notes`` column as ``*notes``, while the
+    CSV and JSON keep the plain field name.  The column *value* is always read
+    from the record under the column's own name.
     """
     if fmt == "json":
         _dump(data)
@@ -207,7 +269,7 @@ def emit_read(
         typer.echo(_csv(rows, columns=columns))
         return
     _shorten_uuid_columns(rows, short_uuid_columns)
-    typer.echo(_table(rows, columns=columns, empty=empty))
+    typer.echo(_table(rows, columns=columns, empty=empty, headers=headers))
 
 
 def emit_write(
@@ -256,16 +318,20 @@ def _emit_dict(data: dict[str, Any], *, fmt: str) -> None:
 
 
 def _table(
-    rows: list[dict[str, Any]], *, columns: list[str] | None, empty: str
+    rows: list[dict[str, Any]],
+    *,
+    columns: list[str] | None,
+    empty: str,
+    headers: Mapping[str, str] | None = None,
 ) -> str:
     if not rows:
         return empty
     names = list(columns) if columns is not None else list(rows[0])
     table = Table(box=None, show_header=True, header_style="bold", pad_edge=False)
     for name in names:
-        table.add_column(str(name))
+        table.add_column((headers or {}).get(name, str(name)))
     for row in rows:
-        table.add_row(*(_cell(row.get(name)) for name in names))
+        table.add_row(*(_table_cell(name, row.get(name)) for name in names))
     buffer = io.StringIO()
     console = Console(
         file=buffer,

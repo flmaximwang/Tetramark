@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from decimal import Decimal
 
@@ -1220,6 +1221,7 @@ ALIQUOT_SHOW_ROWS = [
     "unit",
     "label",
     "notes",
+    "* notes",
     "created_at",
     "aliases",
     "stock_kind",
@@ -1228,6 +1230,22 @@ ALIQUOT_SHOW_ROWS = [
     "slot",
     "in_stock",
 ]
+
+#: The show lines that are not key/value rows: the path line, the ``*``
+#: related lines and the ``* inherited from stock`` footer.  The ``* notes``
+#: row is a field row, so it is not filtered out.
+ALIQUOT_SHOW_NON_ROW_PREFIXES = (
+    "path:",
+    "* entity",
+    "* parent stock",
+    "* source aliquot",
+    "* inherited from stock",
+)
+
+
+def _show_label(line: str) -> str:
+    """The field label of one key/value row (the column is padded to width)."""
+    return re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
 
 
 def make_placed_tube(ledger) -> dict:
@@ -1289,12 +1307,13 @@ def test_cli_aliquot_show_prints_rows_and_the_path_on_its_own_line(
     # One row per record field, in the record's order: no ``path`` row (it
     # prints on its own line), no ``* entity`` relation line (Tetramark-obv:
     # related is not a key/value row) and no ``object`` row (human noise).
+    # ``* notes`` is the owning stock's note and *is* a row.
     rows = [
         line
         for line in field_lines
-        if line and not line.startswith(("path:", "* "))
+        if line and not line.startswith(ALIQUOT_SHOW_NON_ROW_PREFIXES)
     ]
-    assert [row.split()[0] for row in rows] == ALIQUOT_SHOW_ROWS
+    assert [_show_label(row) for row in rows] == ALIQUOT_SHOW_ROWS
 
     # The path closes the field block as its own line, in its human shape.
     assert "path: Freezer-1/Shelf-2/Box:A3" in field_lines
@@ -1331,6 +1350,7 @@ def test_cli_aliquot_show_json_is_the_core_record(
         "unit",
         "label",
         "notes",
+        "stock_notes",
         "created_at",
         "aliases",
         "stock_kind",
@@ -1960,13 +1980,17 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
         "unit",
         "label",
         "path",
+        "*notes",
     ]
     assert "SH-1/BOX:A1" in table.output
 
     csv_rows = read(ledger, "--format", "csv", "aliquot", "list").output.splitlines()
-    assert csv_rows[0] == "id,stock_kind,status,quantity,unit,label,path"
+    assert csv_rows[0] == (
+        "id,stock_kind,status,quantity,unit,label,path,stock_notes"
+    )
     assert csv_rows[1].startswith(f"{first},lot,stored,")
-    assert csv_rows[1].endswith("SH-1/BOX:A1")
+    # Path then the clean stock_notes field (empty: the stock has no note).
+    assert csv_rows[1].endswith("SH-1/BOX:A1,")
 
     every = json.loads(read(ledger, "aliquot", "list", "--all", "--json").output)
     assert [row["id"] for row in every] == [first, second]
@@ -2004,7 +2028,7 @@ def test_cli_aliquot_list_scopes_filters_and_formats(
         ledger, "--format", "csv", "aliquot", "list", "--status", "consumed"
     )
     assert empty_csv.output.splitlines() == [
-        "id,stock_kind,status,quantity,unit,label,path"
+        "id,stock_kind,status,quantity,unit,label,path,stock_notes"
     ]
 
     not_found = invoke(ledger, "aliquot", "list", "NOPE")

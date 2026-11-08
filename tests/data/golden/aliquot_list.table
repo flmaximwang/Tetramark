@@ -1,0 +1,5 @@
+id          stock_kind  status  quantity  unit  label  path    *notes
+7701AB01.1  lot         stored                         G-1:A1  first line of the note (+1 lines)
+7701AB01.2  lot         stored                         G-1:A2  first line of the note (+1 lines)
+7701AB02.1  lot         stored                         G-1:B1  a long note that is definitely wider tha…
+7701AB03.1  lot         stored                         G-1:C1  αβγ 抗体 prep

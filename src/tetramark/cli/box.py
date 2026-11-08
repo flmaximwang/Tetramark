@@ -121,7 +121,15 @@ def list_boxes_command(
         emit_read(
             rows,
             fmt=output_format(ctx, as_json),
-            columns=["id", "name", "kind", "path", "occupied", "capacity"],
+            columns=[
+                "id",
+                "name",
+                "kind",
+                "path",
+                "occupied",
+                "capacity",
+                "notes",
+            ],
             short_uuid_columns=("id",),
         )
     finally:

@@ -1,4 +1,4 @@
-id        kind  entity_id  entity_name                                  aliquots_in_stock  status
-7701AB01  lot   11111111   alpha                                        0                  empty
-7701AB02  lot   11111111   alpha                                        0                  depleted
-7701AB03  lot   22222222   a-rather-long-design-name-for-full-printing  1                  active
+id        kind  entity_id  entity_name                                  aliquots_in_stock  status    notes
+7701AB01  lot   11111111   alpha                                        0                  empty     first line of the note (+1 lines)
+7701AB02  lot   11111111   alpha                                        0                  depleted  a long note that is definitely wider tha…
+7701AB03  lot   22222222   a-rather-long-design-name-for-full-printing  1                  active    αβγ 抗体 prep
