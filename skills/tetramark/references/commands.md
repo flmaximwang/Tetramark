@@ -290,6 +290,7 @@ tm stock add KIND --entity ID|ALIAS \
   [--quantity Q --unit U] [--id EXPLICIT_ID] [--json]
 tm stock show ID|ALIAS [--json]
 tm stock edit ID|ALIAS [--set FIELD=VALUE ...] [--json]
+tm stock note REF [TEXT] [--append] [--clear] [--json]
 tm stock list [KIND] [--all] [--where FILTER ...] [--where-any FILTER ...] [--json]
 tm stock renumber [--id NEW | --auto | --map PATH] [--json] [REF ...]
 tm stock purge ID|ALIAS [--json]
@@ -308,6 +309,15 @@ tm stock aliquot STOCK AMOUNT UNIT [--count N] [--status S] [--box NAME --slot S
   `add(aliquot): <stock_id> x<N>` commit and the exit codes are the same as `aliquot add` (see
   **Aliquots** below).
 - `--parent` records lineage to another stock; `--source-aliquot` records which tube was used.
+- `stock note REF [TEXT] [--append] [--clear]` writes the core `notes` column without shell
+  quoting. A bare REF opens the current note in `$VISUAL`/`$EDITOR` (then `vi`); an unchanged
+  buffer prints `no changes`, exits 0 and writes nothing. `--append TEXT` adds a line — no
+  separator when the note is empty — and a bare `--append` opens an **empty** buffer and appends
+  its result. `--clear` sets the notes to `NULL`; an empty result without `--clear` is a usage
+  error, and so are TEXT without `--append` and `--append` with `--clear`. TEXT is a positional
+  argument (before or after `--append`, because this typer release has no optional-value
+  options). Each successful call is one write session and one Dolt commit and prints
+  `Edited stock <kind> <id>`; REF resolves like `stock edit` (full id, alias, unique id prefix).
 - `stock list` prints `id kind entity_id entity_name aliquots_in_stock status notes`;
   `entity_name` is the owning design's name, printed in full. By default it lists only the
   `active` stocks (at least one aliquot in stock); `--all` adds the `empty` and `depleted` ones,
