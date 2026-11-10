@@ -261,6 +261,27 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         row["id"] == stock_id for row in run_json("stock", "list")
     )
 
+    # tm parent / tm child (spec 6.7): read A's parents, set B as A's parent
+    # through both command forms, report the pair, then clear it again.
+    second_prep = run_json(
+        "stock", "add", "protein_prep", "--entity", "c1", "--aliquots", "0"
+    )
+    parent_id = second_prep["id"]
+    parent_set = run_json("parent", stock_id, parent_id, "--set")
+    assert parent_set["via"] == "parent_stock"
+    assert parent_set["previous"] is None
+    assert run_json("parent", stock_id)["relations"][0]["parent"]["id"] == parent_id
+    assert run_json("child", parent_id)["relations"][0]["child"]["id"] == stock_id
+    assert (
+        run_json("parent", stock_id, parent_id)["relations"][0]["via"]
+        == "parent_stock"
+    )
+    child_set = run_json("child", parent_id, stock_id, "--set")
+    assert child_set["action"] == "set"
+    cleared = run_json("parent", stock_id, "--clear")
+    assert cleared["previous"]["id"] == parent_id
+    assert run_json("parent", stock_id)["relations"] == []
+
     # Aliquot add/move/use/status/purge and per-tube events.
     added = run_json(
         "aliquot", "add", stock_id, "--count", "2",

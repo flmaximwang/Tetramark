@@ -17,6 +17,7 @@ automating away.
 
 | Version | Notes | What changed |
 |---|---|---|
+| [0.8.55](v0.8.55.md) | `v0.8.55.md` | `tm parent`/`tm child` read, set (`--set`) and clear (`--clear`) the relation between two objects over the existing reference columns (`--via FIELD` selects the field, `--slot` for boxes), cycle-checked, one commit per write; `ledger.relations`; no schema change |
 | [0.8.53](v0.8.53.md) | `v0.8.53.md` | max-depth review of the notes epic (docs only, plus two small fixes): the CLI spec stops listing the gone `aliquot.notes`, the skills/spec name spec 8 and the 7 → 8 step as current and drop `notes` from `tm aliquot edit`'s field list, `* inherited from stock <id>` reuses the `stock_id` the table prints, and the editor temp-file layout lives in one helper |
 | [0.8.52](v0.8.52.md) | `v0.8.52.md` | spec 8 drops the unused `aliquot.notes` column (manual 7 → 8 step: export notes, `ALTER TABLE`, `tm schema apply` bumps the counter); `tm aliquot edit`/list filters/CSV lose `notes`, `stock_notes` stays; the spec-6 event guard no longer refuses a spec-7 ledger; `SchemaPlan.meta_stale` sees a stored `spec_version` drift |
 | [0.8.51](v0.8.51.md) | `v0.8.51.md` | `tm entity note` and `tm box note` join `tm stock note` over one shared implementation; `read_note` replaces the heavy stock pre-read |

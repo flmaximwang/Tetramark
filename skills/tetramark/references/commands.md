@@ -550,6 +550,33 @@ the slots removed; `--json` adds the `slots` and `aliases` counts.
 boxes too (it lists child boxes). The text header is `<name>  <kind>  id: <short>  path: ...`,
 using the first eight UUID characters. `--format csv` prints one row per slot.
 
+## Parent and child relations
+
+```sh
+tm parent REF_A [REF_B] [--set] [--clear] [--via FIELD] [--slot S] [--json]
+tm child REF_B [REF_A] [--set] [--via FIELD] [--slot S] [--json]
+```
+
+`tm parent A B` reads "the parent of A is B"; `tm child B A` names the same pair inversely, and
+`tm child B A --set` is the same write as `tm parent A B --set`. A bare call reads: one ref lists
+that object's parent relations (or, on `tm child`, its child relations); two refs report the
+relation between the two objects and exit 1 when there is none. Writes are explicit: `--set` makes
+B the parent of A, and `tm parent A --clear` removes A's parent relation (there is no
+`tm child --clear`). Refs resolve by full id, exact alias, box name or unique id prefix; an
+ambiguous ref is a usage error naming the candidates, never a silent pick.
+
+The edge is one existing reference column: `stock.parent_stock_id`, `stock.source_aliquot_id`,
+`box.parent_box_id` (+ `box.parent_slot` via `--slot`) or a kind's `type: ref` field. One legal
+field for the pair is inferred; when a pair offers several (e.g. `mouse_cohort` → `aliquot` has
+`dam`, `sire` and `source_aliquot`) `--via FIELD` selects the bare field name (`parent_stock`,
+`source_aliquot`, `parent_box`, `dam`, `sire`, `parental`, …), and it is the only path to a `ref`
+field without `lineage: true`. `--slot S` is valid only for a `parent_box` relation with `--set`.
+Cycles (box nesting, the stock graph over `parent_stock` plus `source_aliquot`, a kind ref field)
+are refused; overwriting is silent and the output reports the previous and the new parent; each
+write is one Dolt commit. For these two commands only, `--dry-run` and `--no-commit` both preview
+the SQL and write nothing. Python API: `ledger.relations.get_parent`, `get_children`,
+`get_relation`, `set_parent`, `clear_parent`, `clear_relation`. Full contract: spec §6.7.
+
 ## The interactive form (for people)
 
 ```sh

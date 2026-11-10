@@ -38,7 +38,7 @@ pytestmark = pytest.mark.fast
 #: order they are shown.
 EXPECTED_PANELS: dict[str, tuple[str, ...]] = {
     "Setup": ("presets", "init", "adopt", "schema", "config", "status", "skill"),
-    "Inventory": ("entity", "stock", "aliquot", "box"),
+    "Inventory": ("entity", "stock", "aliquot", "box", "parent", "child"),
     "Lookup": ("find", "alias", "history", "lineage"),
     "Data": ("import", "export", "check"),
     "Versioning": ("branch", "remote", "backup"),

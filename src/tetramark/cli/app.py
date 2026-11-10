@@ -38,6 +38,7 @@ from tetramark.cli.options import (
     GlobalOptions,
     help_on_no_command,
 )
+from tetramark.cli.relations import child_command, parent_command
 from tetramark.cli.remote import backup_command, remote_app
 from tetramark.cli.schema import schema_app
 from tetramark.cli.skill import skill_app
@@ -79,6 +80,8 @@ ROOT_COMMAND_ORDER: tuple[str, ...] = (
     "stock",
     "aliquot",
     "box",
+    "parent",
+    "child",
     # Lookup
     "find",
     "alias",
@@ -249,6 +252,8 @@ app.add_typer(entity_app, name="entity", rich_help_panel=PANEL_INVENTORY)
 app.add_typer(stock_app, name="stock", rich_help_panel=PANEL_INVENTORY)
 app.add_typer(aliquot_app, name="aliquot", rich_help_panel=PANEL_INVENTORY)
 app.add_typer(box_app, name="box", rich_help_panel=PANEL_INVENTORY)
+app.command("parent", rich_help_panel=PANEL_INVENTORY)(parent_command)
+app.command("child", rich_help_panel=PANEL_INVENTORY)(child_command)
 
 # -- Lookup ------------------------------------------------------------------
 app.command("find", rich_help_panel=PANEL_LOOKUP)(find_command)
