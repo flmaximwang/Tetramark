@@ -84,7 +84,7 @@ tm status [--json]                        # one ledger at a glance (6.1)
 tm skill path [NAME] [--json]             # where the skill copy lives (6.5)
 tm skill version [NAME] [--file PATH] [--json]   # skill stamp vs tm --version (6.5)
 
-# Inventory: entity, stock, aliquot, box
+# Inventory: entity, stock, aliquot, box, parent, child
 tm entity add KIND --set field=value ... [--name N] [--alias A]
 tm entity show ID|ALIAS ; tm entity list [KIND] [--where FILTER ...] [--where-any FILTER ...] ; tm entity edit ID --set f=v
 tm entity note ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; one commit
@@ -117,6 +117,8 @@ tm box edit NAME [--set f=v ...]   # notes + the box kind's fields; name is rena
 tm box note NAME|ID|ALIAS [TEXT] [--append] [--clear]   # same as tm stock note; box by name first; one commit
 tm box purge NAME|ID|ALIAS    # hard delete, explicit only; drops v_box_<name>; one commit
 tm entity|stock|aliquot|box add-form      # interactive form for people (§6.3)
+tm parent REF_A [REF_B] [--set] [--clear] [--via FIELD] [--slot S]   # read A's parents or the A-B relation; --set: parent of A is B; --clear removes it; one commit per write (§6.7)
+tm child REF_B [REF_A] [--set] [--via FIELD] [--slot S]              # read B's children or the same relation; --set: the same write stated inversely (§6.7)
 
 # Lookup: find, alias, history, lineage
 tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--with-rewrite]   # §6.4: id → alias → name/text; regex; filters; rewrites
@@ -194,6 +196,9 @@ former purpose and note options are removed outright — no aliases; `tm aliquot
 `-m/--message` (optional, required with `--force`); its former note option is removed outright since
 0.8.37 — no alias. `move` never had either flag.
 
+An aliquot's box position is not a parent/child relation: `tm parent`/`tm child` (§6.7) never move
+a tube, and `tm aliquot move` stays the only command that changes `box_id`/`slot`.
+
 `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
 the amount may not exceed what remains. Passing neither means "use everything left": the event records
@@ -251,7 +256,10 @@ at add time. A **name changes only through `tm <object> rename`** — `--set nam
 an error that names the rename command, because a rename keeps the old name as an alias (and
 rebuilds a box's view) and a plain column update cannot. Structural fields are refused as well:
 `id`, `kind` and `created_at` are identity and creation data, and a box's `parent_box_id` and
-`parent_slot` change through `tm box move REF --in PARENT [--slot S]`. `--set field=` (the value
+`parent_slot` change through `tm box move REF --in PARENT [--slot S]`. The parent/child reference
+columns — `stock.parent_stock_id`, `stock.source_aliquot_id`, a box's `parent_box_id`/`parent_slot`
+and a kind's ref fields — can also be read, set and cleared with `tm parent`/`tm child` (§6.7), which
+add the cycle checks an `edit` does not make. `--set field=` (the value
 exactly empty) clears an optional column to NULL, a required field cannot be cleared, and a
 whitespace-only value is not empty: it is coerced like any other value, never cleared. One edit is
 one Dolt commit, `--json` returns the loaded record and `--dry-run` writes nothing.
@@ -447,8 +455,9 @@ ancestors, `--down` descendants, `--depth N` stops after N edges (0 = the root a
 second time prints `<id> (see above)` with no subtree, and is listed once in the JSON. `--format dot`
 prints a Graphviz digraph whose edge labels are the `via`; `--json` prints
 `{"root": <id>, "nodes": [{id, object, kind, label, counts?}], "edges": [{from, to, via}]}` with
-`via` ∈ `entity | parent_stock | source_aliquot | <kind>.<field>`. `tm lineage` respects `--branch`,
-writes nothing and never commits.
+`via` ∈ `entity | parent_stock | source_aliquot | <kind>.<field>`. Its `parent_stock`,
+`source_aliquot` and lineage-ref edges are the ones `tm parent --set`/`--clear` write (§6.7).
+`tm lineage` respects `--branch`, writes nothing and never commits.
 
 `tm stock renumber` is the audited way to repair ids that do not follow the ledger's stock id strategy
 (legacy imports, hand-made ids). It renumbers one stock (`REF --id NEW`), many (`REF ... --auto`), or a
@@ -463,8 +472,8 @@ key rename runs with `SET FOREIGN_KEY_CHECKS=0` and the checks are restored in t
 the commit; `--dry-run` prints the mapping table and the SQL and writes nothing.
 
 Python API mirrors the CLI (`tetramark.open(path=None, branch=None)` → `Ledger` with `.path`,
-`.name`, `.entities`, `.stocks`, `.aliquots`, `.boxes`, `.find()`, `.check()`); the CLI is a thin
-layer over it. `tetramark.init_ledger(path, name=None, presets=...)` and
+`.name`, `.entities`, `.stocks`, `.aliquots`, `.boxes`, `.relations`, `.find()`, `.check()`); the
+CLI is a thin layer over it. `tetramark.init_ledger(path, name=None, presets=...)` and
 `tetramark.adopt_ledger(path, name=None, presets=...)` are the lifecycle functions behind
 `tm init`/`tm adopt`.
 
@@ -1037,4 +1046,206 @@ columns. `tm aliquot show --format csv` still drops `events` entirely.
 The `move` line is the `tm history` form, which carries the tube id; `tm aliquot show` prints the
 same event without the `aliquot_id` token. The last line keeps a newline plus CJK text inside one
 physical line by escaping the newline as `\n`.
+
+### 6.7 tm parent/tm child — the relation between two objects
+
+`tm parent` and `tm child` read, set and clear one parent/child edge between two objects through
+reference columns that already exist. They are the general read/write path for relations that
+previously could only be set at creation (`tm stock add --parent`/`--source-aliquot`), changed
+through `tm box move`, or not changed at all. No table or column is added: the commands are a CLI
+contract over the existing schema, so `docs/spec/02-schema-language.md` and
+`docs/spec/03-physical-model.md` are untouched.
+
+**(a) Command surface and orientation.**
+
+```
+tm parent REF_A [REF_B] [--set] [--clear] [--via FIELD] [--slot S]
+tm child  REF_B [REF_A] [--set] [--via FIELD] [--slot S]
+```
+
+`tm parent A B` reads "the parent of A is B": the first positional of `tm parent` is always the
+**child** and the second the **parent**. `tm child B A` names the same pair inversely: the first
+positional of `tm child` is always the **parent** and the second the **child**, and
+`tm child B A --set` is the same write as `tm parent A B --set`.
+
+| Form | Effect |
+|---|---|
+| one ref, no flag | Read: list every relation in which that object is the child (`tm parent A`) or the parent (`tm child B`), one line per `(field, object)`. Never writes. |
+| two refs, no flag | Read: report the relation(s) between the two objects, field name included; none is `no relation between <child id> and <parent id>` and exit 1. Never writes. |
+| two refs + `--set` | Write: the parent form sets "parent of A is B"; the child form has the same effect stated inversely. One write lock, one Dolt commit. |
+| `tm parent A --clear` | Write: remove A's parent relation (with `REF_B`: only when B is the current parent). |
+| `tm child … --clear` | Usage error: removal is `tm parent <CHILD> --clear`; there is no ambiguous "clear all children". |
+| `--set` + `--clear` | Usage error. |
+| `--set` with one ref | Usage error: `--set` needs the child and the parent. |
+
+**(b) Reference resolution.** Every ref resolves by the `_resolve_core` rules across object kinds:
+(1) a full id in any object type (`entity`, `stock`, `aliquot`, `box`, in that order), (2) a box
+name or an exact alias, (3) a unique id prefix. A lower tier is consulted only when the higher one
+has no hit. A deciding tier with more than one hit is a usage error (exit 2) that names the
+candidates with their object types and never picks one, e.g.
+`object reference '77' is ambiguous: it matches aliquot 7726LB01.1, stock 7726LB01 (lot); use the full id`.
+A per-type ambiguous prefix keeps the `_resolve_core` wording:
+`stock id '77' is ambiguous: it prefixes 2 objects (…); use a longer prefix or the full id`.
+No hit is a business error (exit 1): `unknown object '<ref>'`. `--via` narrows the child search to
+the object type(s) that declare that field.
+
+**(c) Scope matrix (the documented whitelist).**
+
+| Child | Parent | Field (`--via`) | Stored in |
+|---|---|---|---|
+| `stock` | `stock` | `parent_stock` | `stock.parent_stock_id` |
+| `stock` | `aliquot` | `source_aliquot` | `stock.source_aliquot_id` |
+| `box` | `box` | `parent_box` | `box.parent_box_id` (+ `box.parent_slot` via `--slot`) |
+| any kind | the kind or core object named by the field's `to:` | the field's bare name (e.g. `dam`, `sire`, `parental`, `construct`) | that field's column in the kind's own table; `type: ref` fields only |
+
+Every edge is one existing column: no new table, no schema change, and no ad-hoc overload of an
+unrelated column.
+
+**(d) Field selection.** Without `--via`, the candidates for a `(child, parent)` pair are the child
+object's core reference fields of the matrix plus every `type: ref` field of the child's kind that
+is declared `lineage: true` and whose `to:` accepts the parent (a core object name equal to the
+parent's object type, or a kind name equal to the parent's kind). Exactly one candidate is inferred.
+More than one is a usage error (exit 2) that lists the candidates sorted and requires `--via`; the
+shipped text is
+
+```
+mouse_cohort -> aliquot has more than one relation field: dam, sire, source_aliquot; pass --via FIELD
+```
+
+(the `mouse_cohort` stock kind declares `dam` and `sire` to `aliquot` with `lineage: true`, next to
+`source_aliquot`). Zero candidates is a business error (exit 1):
+`no relation field connects <child label> to <parent label>; pass --via FIELD (see docs/spec/06-cli.md 6.7 for the matrix)`.
+
+`--via FIELD` is always accepted, even when the pair is unique. It takes the bare lineage-style
+field name (`parent_stock`, `source_aliquot`, `parent_box`, `dam`, `sire`, `parental`, …), never a
+table-qualified one: `stock.parent_stock` is refused with a usage error that shows `--via
+parent_stock`. A field outside the child's legal set is a usage error that lists the legal fields:
+`object stock <id> (lot) has no relation field 'nope'; choose from: parent_stock, source_aliquot`.
+A `type: ref` field without `lineage: true` is reachable only through an explicit `--via`. `--slot`
+is valid only for a `parent_box` field with `--set`; anywhere else it is a usage error.
+
+**(e) Reading.** `tm parent A` lists every in-scope relation in which A is the child: the non-NULL
+core columns of A plus every non-NULL `type: ref` field of A's kind (the `lineage:` flag is
+irrelevant for listing), one line per `(field, parent)`. `tm child B` lists every relation in which
+B is the parent: stocks whose `parent_stock_id` is B, stocks whose `source_aliquot_id` is B, boxes
+whose `parent_box_id` is B, and rows of every kind whose `type: ref` field targets B's object/kind
+and holds B's id. The one-ref line shape is
+
+```
+<field>  <object> <kind> <id>[ slot <S>]
+```
+
+e.g. `parent_stock  stock lot 7726LB01`, `parent_box  box rack 5f4c… slot top`,
+`dam  aliquot mouse_cohort 7726LB02.1`. `<kind>` is `-` when no kind is known. A box relation
+whose `parent_slot` is set ends with ` slot <S>`. Nothing set prints `no parent relations` /
+`no child relations` and exits 0. The two-ref read prints the same lines, limited to the relation(s)
+between the two objects: the parent form prints the parent-side lines, the child form the
+child-side lines; none exits 1 with `no relation between <child id> and <parent id>`.
+
+`--json` prints `{"relations": [{"via": "<field>", "child": {"object", "kind", "id"},
+"parent": {"object", "kind", "id"}, "slot": <S-or-null>}]}`; `slot` is present only for a
+`parent_box` relation, and an object with nothing set prints `{"relations": []}`. Reads take no
+write lock, open no write session, create no commit and write no row. `--via` is accepted on a read
+as a filter (on the child form it must name a field that can point at that parent); `--slot` on a
+read is a usage error.
+
+**(f) Writing.** `--set` requires exactly two refs: `field F of A becomes B`, where F is the
+selected relation field. A write replaces an existing value silently, like `tm box move` does today;
+there is no `--replace` flag, and Dolt history is the audit trail. A `--set` whose target is already
+the current parent still writes and commits (the same no-op rule as `tm box move` to the same
+parent). The text and `--json` output report the previous and the new parent:
+
+```
+Set parent_stock of stock 7726LB01 to stock 7726LB02 (was unset)
+Set parent_stock of stock 7726LB01 to stock 7726LB03 (was stock 7726LB02)
+Set parent_box of box FR-2 to box RACK-1 slot top (was unset)
+Cleared parent_stock of stock 7726LB01 (was stock 7726LB03)
+Cleared parent_box of box FR-2 (was box RACK-1 slot top)
+```
+
+The write `--json` shape is `{"action": "set"|"clear", "via": "<field>", "child": {"object",
+"kind", "id"}, "parent": {"object", "kind", "id"} or null, "previous": {"object", "kind", "id"} or
+null}` plus `"slot"`/`"previous_slot"` for a `parent_box` relation. A clear with nothing set is a
+read-only no-op: exit 0 with `no parent relations` (JSON `{"action": "clear", "via": null,
+"child": …, "parent": null, "previous": null}`) and no session or commit. `tm parent A --clear`
+removes A's single currently set in-scope field; when several are set it is a usage error requiring
+`--via` (the candidate list is the same one `--set` uses). With two refs, `--clear` is allowed only
+when B is the current parent in the selected field, otherwise `no relation between …` and exit 1.
+`--slot S` is validated exactly as `tm box move --slot`: a slotted parent requires it, a slotless
+parent forbids it, and an occupied slot or a grid box parent is refused. Re-parenting keeps the
+object's id and its aliases; it needs no purge plus re-add. A required kind field cannot be cleared
+(`field 'x' is required and cannot be cleared`, exit 1, nothing written).
+
+**(g) Validation and errors.** Usage errors (exit 2, nothing written, no commit):
+
+| Error | Text |
+|---|---|
+| `--set` with `--clear` | `--set and --clear cannot be combined` |
+| `--clear` on the child form | `tm child does not clear a parent relation: use tm parent <CHILD> --clear` |
+| `--set` with one ref | `--set requires two refs: tm parent CHILD PARENT --set` |
+| more than one candidate field | `<child> -> <parent> has more than one relation field: <fields>; pass --via FIELD` |
+| unknown/qualified `--via` | `object … has no relation field 'X'; choose from: …` / `--via takes a bare field name, not 'stock.parent_stock'; use --via parent_stock` |
+| `--slot` outside `parent_box`/`--set` | `--slot is only valid for a parent_box relation with --set` |
+| ambiguous ref | `object reference '<ref>' is ambiguous: it matches …; use the full id` |
+| several set fields on `--clear` | `object … has more than one parent relation set: …; pass --via FIELD` |
+
+Business errors (exit 1, nothing written, no commit): `unknown object '<ref>'`; `no relation
+between <A> and <B>`; `no relation field connects <child> to <parent>`; the `--via` field does not
+match the parent (`--via 'parent_stock' points at stock, but the parent is item: the field and the
+parent do not match`); a grid box as parent (`box 'X' is a grid box: grid boxes hold tubes only, so a
+box cannot be nested in it`); a missing, forbidden or occupied slot; clearing a required field; a
+cycle.
+
+Cycle rules are mandatory. A box containment edge reuses `_check_acyclic`: a box never nests in
+itself or a descendant. A stock edge is checked over **both** `parent_stock_id` and
+`source_aliquot_id` together — the edges `tm lineage` walks, child stock → aliquot → owning stock —
+and a self-parent is included; the walk is bounded by a seen-set, so a corrupted pre-existing cycle
+ends the walk politely. A kind ref field is checked along that same field and kind table only. Every
+rejection is a `LedgerError` naming the offending ids, raises before the UPDATE, and leaves the
+commit count unchanged, e.g.
+`cannot set parent_stock of stock 'A' to stock 'B': it would create a cycle in the parent_stock/source_aliquot graph`.
+
+**(h) Deferred rules.** No same-entity rule is enforced: a stock's parent may belong to another
+entity, exactly as `tm stock add --parent` already allowed. The ledger-local rules **L02** and
+**L03** (`rules/legacy.yaml`, pellet <-> glycerol) are not enforced at write time and no `tm check`
+runs after a write — run `tm check` yourself. Both deferrals are recorded as `TODO(Tetramark-ka8)` in
+the code (at the validation site) and here; there is no post-write check and no rollback.
+
+**(i) Flags and the write contract.** A write takes the ledger's one-writer lock (P11) and makes
+exactly one Dolt commit through the same write session as every other command; the message is
+ASCII and built from ids and the field only: `parent(<object>): <child> <field> -> <parent>` for a
+set, `parent(<object>): <child> <field> cleared` for a clear. A read never locks and never commits.
+`-b/--branch` is respected like everywhere else. **For these two commands only**, `--dry-run` and
+`--no-commit` both *preview* the intended SQL and write nothing, for `--set` and for `--clear` alike:
+no row changes, the working set stays clean, no Dolt commit is made and no write lock is taken. The
+text output is the intended SQL (with `-- target branch: …`); with `--json` the preview is
+`{"dry_run": true, "branch": "…", "sql": "…", "result": <the same result object a real write
+reports>}`. This is command-specific and differs from the global options table: on every other
+command `--no-commit` executes the write and leaves it uncommitted, and that behaviour is
+unchanged. All validation (ref resolution, field selection, structural checks, cycle checks) still
+runs under either flag, so an invalid call fails with the same error and exit code.
+
+**(j) Python API.** The CLI is a thin layer over `ledger.relations`:
+
+- `get_parent(ref, *, via=None)` → `{"relations": [...]}` — every relation in which `ref` is the
+  child (the one-ref `tm parent` shape).
+- `get_children(ref, *, via=None)` → `{"relations": [...]}` — every relation in which `ref` is the
+  parent (the one-ref `tm child` shape).
+- `get_relation(child, parent, *, via=None)` → `{"relations": [...]}`, or a `LedgerError` naming
+  both ids when there is none (the two-ref read).
+- `set_parent(child, parent, *, via=None, slot=None)` → the write result object above.
+- `clear_parent(child, *, via=None)` → the write result object above; the no-op clear returns
+  `via: null`.
+- `clear_relation(child, parent, *, via=None)` → the two-ref clear result.
+
+The return objects are the same ones the CLI prints with `--json`.
+
+**(k) Out of scope.**
+
+| Edge | Owning command | Reason |
+|---|---|---|
+| aliquot → box placement | `tm aliquot move` | irreversible physical action, requires `-m`, writes an event row |
+| stock → entity binding (`stock.entity_id`) | none yet (separate ticket) | identity binding, not a parent/child edge; re-pointing can invalidate `entity_kinds` and orphan lineage |
+| aliquot/box identity columns, scalar (non-ref) fields, box name | `tm <object> edit`, `tm <object> rename` | `rename` keeps the old name as an alias |
+| any edge with no existing column | none | it would get a dedicated relation table, never an overload of an unrelated column |
 

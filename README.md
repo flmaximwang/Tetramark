@@ -267,7 +267,7 @@ stay as they are — see
 | Panel | Commands |
 |---|---|
 | **Setup** | `presets`, `init`, `adopt`, `schema`, `config`, `status` |
-| **Inventory** | `entity`, `stock`, `aliquot`, `box` |
+| **Inventory** | `entity`, `stock`, `aliquot`, `box`, `parent`, `child` |
 | **Lookup** | `find`, `alias`, `history`, `lineage` |
 | **Data** | `import`, `export`, `check` |
 | **Versioning** | `branch`, `remote`, `backup` |
