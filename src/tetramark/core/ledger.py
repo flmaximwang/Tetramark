@@ -67,6 +67,7 @@ from tetramark.core.objects import (
     EntityOps,
     StockOps,
 )
+from tetramark.core.relations import RelationOps
 from tetramark.core.writelock import (
     LockHolder,
     WriteLock,
@@ -1430,12 +1431,13 @@ class Ledger:
         #: :meth:`read_meta`.
         self.meta: dict[str, str] = dict(meta) if meta is not None else {}
         #: Object-operation facades (spec §6): entities, stocks, aliquots,
-        #: boxes and aliases.  The CLI is a thin layer over these.
+        #: boxes, aliases and relations.  The CLI is a thin layer over these.
         self.entities = EntityOps(self)
         self.stocks = StockOps(self)
         self.aliquots = AliquotOps(self)
         self.boxes = BoxOps(self)
         self.aliases = AliasOps(self)
+        self.relations = RelationOps(self)
         #: The write session of the most recent command, so a CLI ``--dry-run``
         #: can print the SQL the command would have run.
         self.last_write: WriteSession | None = None
