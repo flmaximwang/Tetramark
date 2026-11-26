@@ -119,9 +119,9 @@ def require_spec7_event_columns(ledger: Any) -> None:
     A spec-6 ledger still has the old ``note``/``purpose`` columns, so an event
     INSERT or a read that names ``message`` would fail with a raw database
     error.  The guard is deliberately **targeted**: only ``record_event``,
-    ``show_aliquot`` and the event half of ``tm history`` call it, while every
-    other command (``tm status``, ``tm schema plan``, the list commands) keeps
-    the warn-only spec notice from
+    ``show_aliquot``, the event half of ``tm history``, and the query path of
+    ``tm find`` call it, while every other command (``tm status``,
+    ``tm schema plan``, the list commands) keeps the warn-only spec notice from
     :meth:`tetramark.core.ledger.Ledger.check_spec_version`.
 
     A missing or unparseable counter is not guarded, exactly like

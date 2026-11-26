@@ -829,8 +829,10 @@ only those kinds are read: a kind without **every** filtered field contributes n
 ignoring the filter (`tm stock list --where 'induction=iptg'` reads the stock kinds that declare
 `induction` and not the others; like every `tm stock list`, it shows active stocks, so add `--all`
 for every status). On `tm find` the valid set is wider — the core columns of entity,
-stock and box and the fields of every entity/stock/box kind — and a filtered field that only some
-kinds have simply excludes the other kinds from the result.
+stock and box, the fields of every entity/stock/box kind and the aliquot allowlist above plus
+`status` — and a filtered field that only some kinds or the aliquots have simply excludes the others
+from the result (`kind` therefore leaves aliquots out, and `seq` leaves out every kind that does not
+declare it).
 
 `--where-any FILTER` (no short flag; the four lists, `tm find` and Python `where_any=`) is the one
 **OR group** of an invocation: a row must satisfy every `--where` filter **and** at least one
@@ -864,22 +866,34 @@ is a literal search: ids are matched exactly and case-sensitively, while aliases
 `string`/`text` kind fields are matched case-insensitively by exact, prefix and substring text, with
 `%` and `_` as ordinary characters. The tiers are exact id, exact alias, exact name, name prefix,
 alias prefix, name substring, alias substring, exact field and field substring. Its places are the
-ids of all four object types, aliases, names and the `string`/`text` fields of every kind. With
-`-E`/`--regex`, `QUERY` is a case-insensitive database regex over the same places (`(?i)` is added to
-the pattern): a regex has no exact/prefix/substring sub-tiers, so the ranks collapse to id > alias >
-name > field, with prefix and substring matches merged; ties are broken by object type, kind and id.
+ids of all four object types, aliases, names, the `string`/`text` fields of every kind and the
+`message` of every `aliquot_event` row — the spec-7 column `aliquot_event.message`: its stored raw
+text, not its rendered `message="…"` event line. An event message is a `field`-tier place, never a
+name: exact or substring text, case-insensitively, with no prefix sub-tier. With `-E`/`--regex`,
+`QUERY` is a case-insensitive database regex over the same places, event messages included (`(?i)`
+is added to the pattern): a regex has no exact/prefix/substring sub-tiers, so the ranks collapse to
+id > alias > name > field, with prefix and substring matches merged; ties are broken by object type,
+kind and id.
 An invalid `-E` pattern is a usage error (`invalid regex '[': the pattern is not a valid regular
 expression`) with no literal fallback — a pattern that does not compile never matches as if it were
 text.
 
 Both filter groups apply to every hit after the search — every `--where` filter (AND) and at least
-one `--where-any` filter (OR) — so even an id or alias hit must satisfy them. Aliquots are excluded
-whenever either group is given (they have no kind row to filter); `tm find 1226L401.1 --where
-'id~^12'` therefore reports no match. `--where` takes the same eight operators here, so a core
-timestamp narrows every object type (`tm find --where 'created_at>=2026-01-01'`). `QUERY` is optional
-with a filter: `tm find --where 'resistance=kan'` and `tm find --where-any 'resistance=kan'
---where-any 'resistance=amp'` list every matching object with `match` = `filter`, sorted by object
-type (entity, stock, box), kind and id. Passing neither a `QUERY` nor a filter is a usage error
+one `--where-any` filter (OR) — so even an id or alias hit must satisfy them. Aliquots take part
+like the entity/stock/box kinds: an aliquot is read when every `--where` field is one of its
+filterable fields — `id`, `stock_id`, `seq`, `box_id`, `slot`, `status`, `quantity`, `unit`,
+`label`, `created_at` and `stock_notes` (the owning stock's note, as on `tm aliquot list`; `status`
+is accepted here because `tm find` has no `--status` option, while `tm aliquot list` refuses it) —
+and, once `--where-any` is given, when at least one alternative names one of those fields; the
+alternatives naming a field it lacks are dropped for it. A `--where` field outside that list
+excludes the tube just as it excludes a kind without the field: `kind`, `batch`, `resistance` and
+the other entity/stock/box fields leave aliquots out, so `tm find 1226L401.1 --where 'id~^12'`
+matches the tube while `tm find 1226L401.1 --where 'kind~.'` reports no match. `--where` takes the
+same eight operators here, so a core timestamp narrows every object type (`tm find --where
+'created_at>=2026-01-01'`). `QUERY` is optional with a filter: `tm find --where 'resistance=kan'`
+and `tm find --where-any 'resistance=kan' --where-any 'resistance=amp'` list every matching object
+with `match` = `filter`, sorted by object type (entity, stock, aliquot, box), kind and id. Passing
+neither a `QUERY` nor a filter is a usage error
 (`the search query must not be empty; pass a QUERY or at least one --where or --where-any filter`). A
 search that finds nothing exits 1: `no match for '<QUERY>'`, or — when only filters were given —
 `no objects match the --where filters` for a `--where`-only invocation and `no objects match the

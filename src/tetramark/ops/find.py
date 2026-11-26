@@ -4,7 +4,10 @@ Search precedence follows the zsqlab ``find_entity.sh`` reference:
 
 1. an exact core id (entity, stock, aliquot or box);
 2. an alias (per object type, so one alias text may hit several);
-3. a name or a ``string``/``text`` field of a kind table, case-insensitively.
+3. a name or a ``string``/``text`` field of a kind table, case-insensitively;
+4. an ``aliquot_event.message`` (spec >= 7): the free-text note of a ``create``,
+   ``move``, ``use``, ``status`` or ``edit`` event.  A matched event reports its
+   aliquot, once however many of its events match, and ranks in the field tier.
 
 Every hit carries the object type, kind, id, a human summary, its location
 (``Freezer/Shelf/Box:A1`` for aliquots and everything above them) and the way
@@ -28,11 +31,11 @@ pattern is a usage error; there is no literal fallback.
 ``--where`` and ``--where-any`` reuse the shared filter backend of
 :mod:`tetramark.core.filters` (``field=value`` / ``field~pattern``, the same
 operators).  A hit must satisfy every ``--where`` filter (AND) and at least one
-``--where-any`` filter (the one OR group); only entity/stock/box kinds that have
-*every* ``--where`` field take part, a kind drops the ``--where-any``
-alternatives whose field it lacks, and aliquots never take part.  With no
-query, the filters alone list the matching objects (``match`` is ``"filter"``),
-sorted by object type, kind and id.
+``--where-any`` filter (the one OR group); only entity/stock/box kinds and
+aliquots that have *every* ``--where`` field take part, and a kind or aliquot
+drops the ``--where-any`` alternatives whose field it lacks.  With no query,
+the filters alone list the matching objects (``match`` is ``"filter"``), sorted
+by object type, kind and id.
 
 The statements are built first and fetched by a single
 :meth:`Driver.query_many`; only an invalid pattern (error-path probes) or an
@@ -60,6 +63,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from tetramark.core.events import require_spec7_event_columns
 from tetramark.core.filters import (
     Filter,
     build_any_condition,
@@ -76,6 +80,8 @@ from tetramark.core.filters import (
 from tetramark.core.objects import (
     OBJECT_TYPES,
     _CORE_FILTERS,
+    _aliquot_empty_condition,
+    _aliquot_ordered_coerce,
     _box_paths,
     box_kind_columns,
     box_kind_from,
@@ -137,6 +143,10 @@ _NAME_MARKER = "__tm_name_match"
 
 #: The ``where=`` argument of the Python API and the CLI option values.
 Where = Iterable[str] | Mapping[str, Any] | None
+
+#: Core aliquot columns available to ``--where`` / ``--where-any`` in ``tm find``.
+#: Includes ``status`` because ``tm find`` has no dedicated ``--status`` option.
+_FIND_ALIQUOT_FIELDS: frozenset[str] = _CORE_FILTERS["aliquot"] | {"status"}
 
 
 def _quote(name: str) -> str:
@@ -481,6 +491,33 @@ def _add_search_statements(
                 f"{prefix}scan:{object_type}:{kind_name}", sql, tuple(params)
             )
             scans.append((object_type, name_columns, text_columns, index))
+
+    # 4. Aliquot event messages (spec >= 7).
+    if regex:
+        msg_sql = (
+            f"SELECT a.{_quote('id')} AS {_quote('id')}, "
+            f"s.{_quote('kind')} AS {_quote('kind')}, "
+            f"e.{_quote('message')} AS {_quote('message')} "
+            f"FROM {_quote('aliquot_event')} e "
+            f"JOIN {_quote('aliquot')} a ON a.{_quote('id')} = e.{_quote('aliquot_id')} "
+            f"JOIN {_quote('stock')} s ON s.{_quote('id')} = a.{_quote('stock_id')} "
+            f"WHERE e.{_quote('message')} REGEXP %s"
+        )
+        msg_params: tuple[Any, ...] = (pattern,)
+    else:
+        msg_sql = (
+            f"SELECT a.{_quote('id')} AS {_quote('id')}, "
+            f"s.{_quote('kind')} AS {_quote('kind')}, "
+            f"e.{_quote('message')} AS {_quote('message')} "
+            f"FROM {_quote('aliquot_event')} e "
+            f"JOIN {_quote('aliquot')} a ON a.{_quote('id')} = e.{_quote('aliquot_id')} "
+            f"JOIN {_quote('stock')} s ON s.{_quote('id')} = a.{_quote('stock_id')} "
+            f"WHERE e.{_quote('message')} IS NOT NULL "
+            f"AND LOCATE(LOWER(%s), LOWER(e.{_quote('message')})) > 0"
+        )
+        msg_params = (needle,)
+    msg_index = batch.add(f"{prefix}scan:aliquot_event", msg_sql, msg_params)
+    scans.append(("aliquot", [], ["message"], msg_index))
     return scans
 
 
@@ -490,14 +527,13 @@ def _add_filter_statements(
     filters: tuple[Filter, ...],
     where_any: tuple[Filter, ...] = (),
 ) -> None:
-    """Append one id query per kind that can express the filters.
+    """Append one id query per kind (and aliquot) that can express the filters.
 
-    A kind that lacks any ``--where`` field contributes nothing (a listing must
-    never ignore a filter for a kind that cannot express it), and so does a
-    kind that was given ``--where-any`` but declares none of its alternatives;
-    aliquots have no kind row and are never searched when either group is
-    given.  The surviving ``--where-any`` alternatives become one OR condition
-    appended to the kind's AND conditions.
+    A kind or aliquot that lacks any ``--where`` field contributes nothing (a
+    listing must never ignore a filter for a type that cannot express it), and
+    so does a kind or aliquot that was given ``--where-any`` but declares none
+    of its alternatives.  The surviving ``--where-any`` alternatives become one
+    OR condition appended to the AND conditions.
     """
     if not filters and not where_any:
         return
@@ -560,6 +596,46 @@ def _add_filter_statements(
                 f"where:{object_type}:{kind_name}", sql, tuple(params)
             )
             batch.filter_groups.append((object_type, kind_name, index))
+
+    if fields.issubset(_FIND_ALIQUOT_FIELDS):
+        expressions = {
+            field: f"a.{_quote(field)}"
+            for field in _FIND_ALIQUOT_FIELDS
+            if field != "stock_notes"
+        }
+        expressions["stock_notes"] = f"s.{_quote('notes')}"
+        conditions, params = build_conditions(
+            filters,
+            expressions=expressions,
+            coerce=None,
+            empty=_aliquot_empty_condition,
+            kind=None,
+            option="--where",
+            ordered_coerce=_aliquot_ordered_coerce(option="--where"),
+        )
+        any_condition, any_params = build_any_condition(
+            where_any,
+            expressions=expressions,
+            coerce=None,
+            empty=_aliquot_empty_condition,
+            kind=None,
+            option="--where-any",
+            ordered_coerce=_aliquot_ordered_coerce(option="--where-any"),
+        )
+        if any_condition is not None or not where_any:
+            if any_condition is not None:
+                conditions.append(any_condition)
+                params.extend(any_params)
+            sql = (
+                f"SELECT a.{_quote('id')} AS {_quote('id')}, "
+                f"s.{_quote('kind')} AS {_quote('kind')} "
+                f"FROM {_quote('aliquot')} a "
+                f"JOIN {_quote('stock')} s ON s.{_quote('id')} = a.{_quote('stock_id')}"
+            )
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            index = batch.add("where:aliquot", sql, tuple(params))
+            batch.filter_groups.append(("aliquot", "", index))
 
 
 def _fetch(
@@ -624,7 +700,13 @@ def search(
     ``filters`` / ``any_filters`` are their already-parsed forms, which
     :func:`find` passes so each group is parsed once (the two are alternatives
     -- the parsed form wins when both are given).
+
+    The pass always scans ``aliquot_event.message``, so a ledger still on the
+    spec-6 event table (``note``/``purpose``) is refused up front by
+    :func:`tetramark.core.events.require_spec7_event_columns` with the migration
+    hint instead of a raw database error about the missing column.
     """
+    require_spec7_event_columns(ledger)
     parsed = (
         parse_filters(where, option="--where") if filters is None else filters
     )
@@ -657,11 +739,13 @@ def find(
     ``query`` is literal unless ``regex`` is true, in which case it is a
     database (ICU) regular expression matched case-insensitively.  ``where``
     and ``where_any`` take the same ``field=value`` / ``field~pattern`` filters
-    as the entity/stock/box listings and apply to every hit: a hit must satisfy
-    every ``where`` filter AND at least one ``where_any`` filter.  Aliquots are
-    excluded whenever either group is given.  With filters and no query, every
-    matching object is listed with ``match == "filter"``, sorted by object
-    type, kind and id.  Passing neither a query nor a filter is a usage error.
+    as the entity/stock/box/aliquot listings and apply to every hit: a hit must
+    satisfy every ``where`` filter AND at least one ``where_any`` filter.  Only
+    entity/stock/box kinds and aliquots that declare all ``where`` fields (and
+    at least one ``where_any`` alternative) participate.  With filters and no
+    query, every matching object is listed with ``match == "filter"``, sorted by
+    object type, kind and id.  Passing neither a query nor a filter is a usage
+    error.
 
     ``find.rewrites`` rules (``ledger.yaml``) rewrite a literal query only.
     By default they are a fallback for a query with zero hits: every rule is
@@ -703,7 +787,10 @@ def find(
     if with_rewrite:
         # The original query and every rewrite in one batch.  Original hits
         # first, then each rule's tier-sorted hits in rule order; a duplicate
-        # object keeps the entry it already has.
+        # object keeps the entry it already has.  This path builds its batch
+        # directly, so the spec guard of :func:`search` must run here too (the
+        # batch always scans ``aliquot_event.message``).
+        require_spec7_event_columns(ledger)
         groups = _search_many(
             ledger,
             [text, *(rewrite.query for rewrite in rewrites)],
@@ -992,9 +1079,14 @@ def _filter_pass(
     for object_type, kind_name, index in batch.filter_groups:
         for row in fetched[index]:
             object_id = str(row["id"])
+            # The aliquot group carries no kind name (an aliquot has no kind
+            # row); its query selects the owning stock's kind instead.
+            row_kind = (
+                str(row["kind"]) if object_type == "aliquot" else kind_name
+            )
             candidates[(object_type, object_id)] = {
                 "object": object_type,
-                "kind": kind_name,
+                "kind": row_kind,
                 "id": object_id,
                 "name": None,
                 "score": FILTER_SCORE,
@@ -1009,28 +1101,39 @@ def _allowed_ids(
     fetched: list[list[dict[str, Any]]],
     groups: Iterable[tuple[str, str, int]],
 ) -> set[tuple[str, str, str]]:
-    """The ``(object_type, kind, id)`` triples the filters let through."""
+    """The ``(object_type, kind, id)`` triples the filters let through.
+
+    An aliquot has no kind row, so its group carries an empty kind name and the
+    query selects the owning stock's ``kind`` instead -- the same value
+    :meth:`_IdentityMaps.identity` reports for an aliquot, which is what the
+    candidates are keyed by.
+    """
     allowed: set[tuple[str, str, str]] = set()
     for object_type, kind_name, index in groups:
         for row in fetched[index]:
-            allowed.add((object_type, kind_name, str(row["id"])))
+            row_kind = (
+                str(row["kind"]) if object_type == "aliquot" else kind_name
+            )
+            allowed.add((object_type, row_kind, str(row["id"])))
     return allowed
 
 
 def _check_where_fields(
     ledger: Ledger, filters: tuple[Filter, ...], *, option: str = "--where"
 ) -> None:
-    """Refuse a filter on a field no entity/stock/box kind can address.
+    """Refuse a filter on a field no participating type can address.
 
-    The valid set is the union of the core filter columns of entity, stock and
-    box and every field of every entity/stock/box kind; a *kind* that lacks one
-    of the filtered fields still contributes nothing (see
-    :func:`_add_filter_statements`).  ``option`` names the group in the error
+    The valid set is the union of the core filter columns of entity, stock, box
+    and aliquot and every field of every entity/stock/box kind; a *kind* that
+    lacks one of the filtered fields still contributes nothing (see
+    :func:`_add_filter_statements`), and so does an aliquot -- but a filter that
+    *no* participating type can express is a usage error here instead of a
+    silently empty result.  ``option`` names the group in the error
     (``--where`` or ``--where-any``).
     """
     if not filters:
         return
-    valid: set[str] = set()
+    valid: set[str] = set(_FIND_ALIQUOT_FIELDS)
     for object_type in ("entity", "stock", "box"):
         valid |= set(_CORE_FILTERS[object_type])
         for kind in ledger.schema.kinds_for(object_type).values():

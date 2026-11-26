@@ -1,15 +1,18 @@
-"""``tm find -E`` regex queries and ``--where`` filters (Tetramark-6ms.2).
+"""``tm find`` literal and ``-E`` queries, aliquot event messages, and filters.
 
-Two features on top of the literal search, both backed by the shared filter
+The search features sit on top of the literal search and share the filter
 module (Tetramark-6ms.1):
 
-* ``-E``/``--regex`` makes the query a SQL (ICU) regular expression matched
-  case-insensitively over ids, aliases, names and kind ``string``/``text``
-  fields, with the flat tiers id > alias > name > field;
+* the literal search and ``-E``/``--regex`` match ids, aliases, names, kind
+  ``string``/``text`` fields and aliquot event messages, case-insensitively,
+  with the tiers id > alias > name > field (``-E`` has one score per tier, the
+  literal search splits name and field into exact/prefix/contains);
 * ``--where``/``-w`` applies the listing filters to every hit; with no query it
-  lists every matching object (``match == "filter"``).  Aliquots are excluded
-  whenever a filter is given, and only kinds having every filtered field
-  contribute.
+  lists every matching object (``match == "filter"``).  Entity/stock/box kinds
+  and aliquots take part, and each type must have every filtered field: a kind
+  that lacks one contributes nothing, and so does an aliquot, whose own core
+  columns (id, status, box_id, slot, quantity, created_at, stock_notes, ...)
+  are the fields it can express.
 
 Everything runs against the real ``dolt`` binary, like the rest of the suite.
 """
@@ -157,6 +160,134 @@ def test_the_literal_search_is_unchanged(regex_ledger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Aliquot event messages
+# ---------------------------------------------------------------------------
+
+
+def seed_message_tubes(ledger) -> dict[str, str]:
+    """Three tubes of one stock that pin the event-message rules.
+
+    ``talkative`` carries two matching event messages (a ``move`` and a
+    ``use``), so a matched tube is deduplicated; ``unrelated`` has an edit
+    message the tests search for on its own; ``silent`` keeps only its
+    ``create`` event, whose ``message`` is NULL.  The stock's note is
+    ``fragile cold stock`` so a ``stock_notes`` filter has a value.
+    """
+    host = ledger.entities.add("item", name="host")
+    box = ledger.boxes.add("grid96", "GRID")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=host["id"],
+        aliquots=3,
+        quantity=50,
+        unit="ul",
+        values={"notes": "fragile cold stock"},
+    )
+    talkative, unrelated, silent = stock["aliquots"]
+    ledger.aliquots.move(
+        talkative, box="GRID", slot="A1", message="cold shelf prep"
+    )
+    ledger.aliquots.use(talkative, "10", "ul", message="cold shelf top-up")
+    ledger.aliquots.edit(unrelated, values=["quantity=5"], message="bench recount")
+    return {
+        "entity": host["id"],
+        "box": box["id"],
+        "stock": stock["id"],
+        "talkative": talkative,
+        "unrelated": unrelated,
+        "silent": silent,
+    }
+
+
+def test_the_literal_search_covers_aliquot_event_messages(where_ledger) -> None:
+    """An event message is one more field: substring, case-insensitive."""
+    ledger = where_ledger
+    rows = seed_message_tubes(ledger)
+
+    hits = ledger.find("cold shelf")
+
+    # Two matching events on the one tube are still one hit.
+    assert [row["object"] for row in hits] == ["aliquot"]
+    assert [row["id"] for row in hits] == [rows["talkative"]]
+    assert [row["match"] for row in hits] == ["field"]
+    assert [row["score"] for row in hits] == [400]
+
+    # Case is folded, and an exact message is the field's exact tier.
+    assert [row["id"] for row in ledger.find("COLD SHELF")] == [rows["talkative"]]
+    exact = ledger.find("cold shelf top-up")
+    assert [row["id"] for row in exact] == [rows["talkative"]]
+    assert [row["score"] for row in exact] == [500]
+
+    # The scan reads ``message``, not the event name: the silent tube's
+    # ``create`` events never match, and its NULL message is not ``''``.
+    assert [row["id"] for row in ledger.find("bench recount")] == [
+        rows["unrelated"]
+    ]
+    assert ledger.find("create") == []
+
+
+def test_aliquot_message_hits_rank_in_the_field_tier(regex_ledger) -> None:
+    """Below id, alias and name: an event message is a field, not a name."""
+    ledger = regex_ledger
+    host = ledger.entities.add("item", name="host")
+    stock = ledger.stocks.add(
+        "lot", entity=host["id"], aliquots=1, quantity=1, unit="ml"
+    )
+    tube = stock["aliquots"][0]
+    ledger.aliquots.use(tube, message="cold prep tube")
+    by_alias = ledger.entities.add("item", name="alias holder")
+    ledger.aliases.add("entity", by_alias["id"], "cold-tag")
+    by_name = ledger.entities.add("item", name="cold vector")
+
+    hits = ledger.find(r"^cold", regex=True)
+
+    # The message tier is the field tier: alias and name outrank it.
+    assert [row["match"] for row in hits] == ["alias", "name", "field"]
+    assert [row["score"] for row in hits] == [900, 800, 500]
+    assert [row["object"] for row in hits] == ["entity", "entity", "aliquot"]
+    assert [row["id"] for row in hits] == [by_alias["id"], by_name["id"], tube]
+
+    # An id hit still tops the ladder at 1000, above the message's 500.
+    by_id = ledger.find(stock["id"])
+    assert [row["match"] for row in by_id] == ["id"]
+    assert [row["score"] for row in by_id] == [1000]
+    assert by_id[0]["score"] > hits[0]["score"]
+
+    # The literal tiers keep the same order: name prefix, alias prefix, field.
+    literal = ledger.find("cold")
+    assert [row["match"] for row in literal] == ["name", "alias", "field"]
+    assert [row["score"] for row in literal] == [700, 690, 400]
+    assert literal[-1]["id"] == tube
+
+
+def test_regex_search_covers_aliquot_event_messages(regex_ledger) -> None:
+    """``-E`` matches event messages too, with the one flat field tier."""
+    ledger = regex_ledger
+    rows = seed_message_tubes(ledger)
+
+    hits = ledger.find(r"cold\s+shelf", regex=True)
+
+    assert [row["id"] for row in hits] == [rows["talkative"]]
+    assert hits[0]["match"] == "field"
+    assert hits[0]["score"] == 500
+    assert [
+        row["id"] for row in ledger.find(r"COLD\s+SHELF", regex=True)
+    ] == [rows["talkative"]]
+
+    # A regex has no exact/prefix/contains sub-tiers: one field score each.
+    # (An edit message is stored prefixed with the change text, so the
+    # alternation here is unanchored on purpose.)
+    both = ledger.find(r"cold|bench", regex=True)
+    assert [row["id"] for row in both] == [rows["talkative"], rows["unrelated"]]
+    assert [row["match"] for row in both] == ["field", "field"]
+    assert [row["score"] for row in both] == [500, 500]
+
+    # A NULL message is not an empty string: an empty-match regex finds no
+    # tube, so the silent tube's NULL messages stay out.
+    assert ledger.find(r"^$", regex=True) == []
+
+
+# ---------------------------------------------------------------------------
 # --where
 # ---------------------------------------------------------------------------
 
@@ -250,19 +381,160 @@ def test_where_alone_lists_every_matching_object(where_ledger) -> None:
     assert hits[2]["name"] == "pUC-box"
 
 
-def test_where_excludes_aliquots(where_ledger) -> None:
+def test_where_keeps_aliquots_by_their_own_fields(where_ledger) -> None:
+    """An aliquot takes part when it has every --where field, and not otherwise."""
     ledger = where_ledger
     item = ledger.entities.add("item", name="host")
-    stock = ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
+    box = ledger.boxes.add("grid96", "BOX")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=1,
+        quantity=25,
+        unit="ul",
+        values={"notes": "cold stock note"},
+        box="BOX",
+        slots=("A1",),
+    )
     aliquot = stock["aliquots"][0]
     ledger.aliases.add("aliquot", aliquot, "pUC-tube")
 
     # Without a filter the aliquot resolves by id and by alias ...
     assert ledger.find(aliquot)[0]["object"] == "aliquot"
     assert ledger.find("pUC-tube")[0]["object"] == "aliquot"
-    # ... but --where only ever considers entity/stock/box objects.
+
+    # ... and a filter every entity/stock/box kind has but no aliquot column
+    # does (``kind``) still excludes it -- with a query and alone.
     assert ledger.find(aliquot, where=["kind~."]) == []
     assert ledger.find("pUC-tube", where=["kind~."]) == []
+    assert {row["object"] for row in ledger.find(where=["kind~."])} == {
+        "entity",
+        "stock",
+        "box",
+    }
+
+    # An aliquot column, on the other hand, keeps a hit -- with a query ...
+    assert [
+        row["id"] for row in ledger.find(aliquot, where=["status=stored"])
+    ] == [aliquot]
+    assert [
+        row["id"] for row in ledger.find("pUC-tube", where=["status=stored"])
+    ] == [aliquot]
+    assert ledger.find(aliquot, where=["status=pending"]) == []
+    # ``active`` is a derived *stock* status, not one of the fixed aliquot
+    # statuses: it matches no tube.
+    assert ledger.find("pUC-tube", where=["status=active"]) == []
+    for where in (
+        [f"box_id={box['id']}"],
+        ["slot=A1"],
+        ["quantity>1"],
+        ["created_at>=2000-01-01"],
+        ["stock_notes~cold"],
+        [r"id~\.1$"],
+    ):
+        assert [row["id"] for row in ledger.find("pUC-tube", where=where)] == [
+            aliquot
+        ], where
+
+    # ... and in filter-only mode, where the hit is a plain filter hit.
+    for where in (
+        ["status=stored"],
+        [f"box_id={box['id']}"],
+        ["slot=A1"],
+        ["quantity>1"],
+        ["stock_notes~cold"],
+        [r"id~\.1$"],
+    ):
+        hits = ledger.find(where=where)
+        assert [row["id"] for row in hits] == [aliquot], where
+        assert [row["match"] for row in hits] == ["filter"], where
+        assert [row["score"] for row in hits] == [0], where
+
+    # ``created_at`` is a core column of every participating type, so the
+    # filter-only listing keeps the whole family -- the tube included.
+    created = ledger.find(where=["created_at>=2000-01-01"])
+    assert {row["object"] for row in created} == {
+        "entity",
+        "stock",
+        "aliquot",
+        "box",
+    }
+    assert aliquot in {row["id"] for row in created}
+
+
+def test_where_narrows_aliquot_message_hits(where_ledger) -> None:
+    """A message hit is filtered by the same aliquot columns as any other."""
+    ledger = where_ledger
+    rows = seed_message_tubes(ledger)
+
+    # The one matching tube stays for each of its own columns ...
+    assert [
+        row["id"]
+        for row in ledger.find("cold shelf", where=["status=stored"])
+    ] == [rows["talkative"]]
+    assert [
+        row["id"]
+        for row in ledger.find("cold shelf", where=[f"box_id={rows['box']}"])
+    ] == [rows["talkative"]]
+    assert [
+        row["id"]
+        for row in ledger.find("cold shelf", where=["slot=A1"])
+    ] == [rows["talkative"]]
+    assert [
+        row["id"]
+        for row in ledger.find("cold shelf", where=["quantity>10"])
+    ] == [rows["talkative"]]
+    assert [
+        row["id"]
+        for row in ledger.find("cold shelf", where=["stock_notes~fragile"])
+    ] == [rows["talkative"]]
+    # ... and goes when the column does not match, or when the filter is one
+    # no aliquot column can express.
+    assert ledger.find("cold shelf", where=["status=pending"]) == []
+    assert ledger.find("cold shelf", where=["kind~."]) == []
+
+    # --where-any keeps the message hit through one matching alternative.
+    assert [
+        row["id"]
+        for row in ledger.find(
+            "cold shelf", where_any=[f"box_id={rows['box']}", "kind=item"]
+        )
+    ] == [rows["talkative"]]
+    assert ledger.find("cold shelf", where_any=["status=pending"]) == []
+
+    # A regex message hit is filtered the same way.
+    assert [
+        row["id"]
+        for row in ledger.find(
+            r"cold\s+shelf", regex=True, where=["status=stored"]
+        )
+    ] == [rows["talkative"]]
+
+    # Filter-only mode lists the tubes by their columns, whether their event
+    # messages are unrelated or NULL.
+    assert [
+        row["id"] for row in ledger.find(where=["status=stored"])
+    ] == [rows["talkative"]]
+    assert {row["id"] for row in ledger.find(where=["status=pending"])} == {
+        rows["unrelated"],
+        rows["silent"],
+    }
+    assert [
+        row["id"]
+        for row in ledger.find(where=[f"box_id={rows['box']}"])
+    ] == [rows["talkative"]]
+    assert {row["id"] for row in ledger.find(where=["quantity>10"])} == {
+        rows["talkative"],
+        rows["silent"],
+    }
+    assert {row["id"] for row in ledger.find(where=["stock_notes~fragile"])} == {
+        rows["talkative"],
+        rows["unrelated"],
+        rows["silent"],
+    }
+    assert [row["match"] for row in ledger.find(where=["status=stored"])] == [
+        "filter"
+    ]
 
 
 def test_a_where_field_no_kind_has_contributes_nothing(where_ledger) -> None:
@@ -291,9 +563,28 @@ def test_an_unknown_where_field_lists_the_valid_ones(where_ledger) -> None:
     message = str(error.value)
     assert "unknown field(s) 'bogus'" in message
     assert "valid fields" in message
-    # Core columns and fields of every entity/stock/box kind are listed.
+    # Core columns and fields of every entity/stock/box kind are listed ...
     for name in ("name", "kind", "entity_id", "sequence", "supplier", "batch"):
         assert name in message
+    # ... and the aliquot's own columns are too.
+    for name in (
+        "status",
+        "stock_id",
+        "seq",
+        "box_id",
+        "slot",
+        "quantity",
+        "unit",
+        "label",
+        "created_at",
+        "stock_notes",
+    ):
+        assert name in message
+
+    # The OR group reports the same set.
+    with pytest.raises(UsageError) as error:
+        ledger.find(where_any=["bogus~x"])
+    assert "stock_notes" in str(error.value)
 
 
 def test_where_uses_the_shared_filter_syntax_and_errors(where_ledger) -> None:
@@ -387,19 +678,66 @@ def test_where_any_alone_lists_every_matching_object(where_ledger) -> None:
     assert hits[2]["name"] == "pUC-box"
 
 
-def test_where_any_excludes_aliquots(where_ledger) -> None:
+def test_where_any_keeps_aliquots_by_their_own_fields(where_ledger) -> None:
+    """One matching OR alternative is enough -- for aliquots too."""
     ledger = where_ledger
     item = ledger.entities.add("item", name="host")
-    stock = ledger.stocks.add("lot", entity=item["id"], values={"supplier": "acme"})
+    box = ledger.boxes.add("grid96", "BOX")
+    stock = ledger.stocks.add(
+        "lot",
+        entity=item["id"],
+        aliquots=1,
+        quantity=25,
+        unit="ul",
+        values={"notes": "cold stock note"},
+        box="BOX",
+        slots=("A1",),
+    )
     aliquot = stock["aliquots"][0]
     ledger.aliases.add("aliquot", aliquot, "pUC-tube")
 
     # Without a filter the aliquot resolves by id and by alias ...
     assert ledger.find(aliquot)[0]["object"] == "aliquot"
     assert ledger.find("pUC-tube")[0]["object"] == "aliquot"
-    # ... but either filter group only ever considers entity/stock/box objects.
+
+    # ... and an alternative no aliquot can satisfy (``kind``) excludes it --
+    # with a query and alone.
     assert ledger.find(aliquot, where_any=["kind~."]) == []
     assert ledger.find("pUC-tube", where_any=["kind~."]) == []
+    assert {row["object"] for row in ledger.find(where_any=["kind~."])} == {
+        "entity",
+        "stock",
+        "box",
+    }
+
+    # An aliquot column keeps a hit, even when every other alternative misses.
+    assert [
+        row["id"]
+        for row in ledger.find(
+            "pUC-tube", where_any=["status=stored", "kind=item"]
+        )
+    ] == [aliquot]
+    assert ledger.find(
+        "pUC-tube", where_any=["status=pending", "kind=item"]
+    ) == []
+    assert [
+        row["id"] for row in ledger.find("pUC-tube", where_any=["slot=A1"])
+    ] == [aliquot]
+    assert [row["id"] for row in ledger.find("pUC-tube", where_any=[r"id~\.1$"])] == [
+        aliquot
+    ]
+
+    # Filter-only mode lists it for the same columns.
+    for where_any in (
+        ["status=stored"],
+        [f"box_id={box['id']}"],
+        ["slot=A1"],
+        ["quantity>1"],
+        ["stock_notes~cold"],
+    ):
+        hits = ledger.find(where_any=where_any)
+        assert [row["id"] for row in hits] == [aliquot], where_any
+        assert [row["match"] for row in hits] == ["filter"], where_any
 
 
 def test_where_any_errors_name_the_option(where_ledger) -> None:
@@ -548,9 +886,9 @@ def test_where_filters_with_the_negated_and_ordered_operators(where_ledger) -> N
         error.value
     )
 
-    # Aliquots stay excluded whenever a filter is given, even with the new
-    # operators: the filter-only listing keeps the one matching stock and
-    # never lists its tube; without a filter the id and alias still resolve.
+    # Aliquots lack ``batch`` (only the prep stock kind declares it), so they
+    # stay out: the filter-only listing keeps the one matching stock and never
+    # lists its tube; without a filter the id and alias still resolve.
     listed = ledger.find(where=["batch!=zzz"])
     assert [row["object"] for row in listed] == ["stock"]
     assert [row["id"] for row in listed] == [rows["stock"]]
@@ -558,6 +896,28 @@ def test_where_filters_with_the_negated_and_ordered_operators(where_ledger) -> N
     assert ledger.find("pUC-tube", where=["batch!=zzz"]) == []
     assert ledger.find(rows["aliquot"])[0]["object"] == "aliquot"
     assert ledger.find("pUC-tube")[0]["object"] == "aliquot"
+
+    # The operators do work on aliquot columns: a pending tube is kept by
+    # ``!=``, an ordered comparison and a negated pattern.
+    assert [
+        row["id"] for row in ledger.find(where=["status!=stored"])
+    ] == [rows["aliquot"]]
+    assert [
+        row["id"]
+        for row in ledger.find(rows["aliquot"], where=["status!=stored"])
+    ] == [rows["aliquot"]]
+    assert [
+        row["id"] for row in ledger.find("pUC-tube", where=["unit!=ml"])
+    ] == [rows["aliquot"]]
+    assert [
+        row["id"]
+        for row in ledger.find("pUC-tube", where=["created_at>=2000-01-01"])
+    ] == [rows["aliquot"]]
+    assert [
+        row["id"] for row in ledger.find("pUC-tube", where=["unit!~^ml"])
+    ] == [rows["aliquot"]]
+    # A ``kind`` filter is the field no aliquot has: it still excludes it.
+    assert ledger.find("pUC-tube", where=["kind!=entity"]) == []
 
 
 def test_cli_where_with_the_negated_and_ordered_operators(
@@ -595,12 +955,31 @@ def test_cli_where_with_the_negated_and_ordered_operators(
     assert [row["object"] for row in batches_payload] == ["stock"]
     assert [row["id"] for row in batches_payload] == [rows["stock"]]
 
-    # A filter still excludes the aliquot: its id and alias match the query,
-    # but no entity/stock/box object does, so the CLI reports a miss.
+    # ``batch`` is a prep-stock field and no aliquot column: its id and alias
+    # match the query, but no entity/stock/box object does, so the CLI reports
+    # a miss.  An aliquot column keeps the hit instead.
     for query in (rows["aliquot"], "pUC-tube"):
         excluded = run_cli(ledger, "find", query, "--where", "batch!=zzz")
         assert isinstance(excluded.exception, LedgerError)
         assert "no match" in str(excluded.exception)
+
+    kept = run_cli(
+        ledger, "find", "pUC-tube", "--where", "status!=stored", "--json"
+    )
+    assert kept.exit_code == 0, kept.output
+    kept_payload = json.loads(kept.output)
+    assert [row["id"] for row in kept_payload] == [rows["aliquot"]]
+    assert kept_payload[0]["match"] == "alias"
+
+    # Filter-only mode lists the tube for an aliquot column as well.
+    listed_tubes = run_cli(
+        ledger, "find", "--where", "status!=stored", "--json"
+    )
+    assert listed_tubes.exit_code == 0, listed_tubes.output
+    listed_payload = json.loads(listed_tubes.output)
+    assert [row["id"] for row in listed_payload] == [rows["aliquot"]]
+    assert listed_payload[0]["match"] == "filter"
+    assert listed_payload[0]["score"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +1117,58 @@ def test_cli_where_with_and_without_a_query(cli_env: None, where_ledger) -> None
     assert [row["rank"] for row in payload] == [1, 2]
 
 
+def test_cli_find_matches_aliquot_event_messages(
+    cli_env: None, where_ledger
+) -> None:
+    """The CLI surfaces message hits and composes them with the filters."""
+    ledger = where_ledger
+    rows = seed_message_tubes(ledger)
+
+    literal = run_cli(ledger, "find", "cold shelf", "--json")
+    assert literal.exit_code == 0, literal.output
+    literal_payload = json.loads(literal.output)
+    assert [row["id"] for row in literal_payload] == [rows["talkative"]]
+    assert literal_payload[0]["object"] == "aliquot"
+    assert literal_payload[0]["match"] == "field"
+    assert literal_payload[0]["score"] == 400
+
+    regex = run_cli(ledger, "find", "-E", r"cold\s+shelf", "--json")
+    assert regex.exit_code == 0, regex.output
+    regex_payload = json.loads(regex.output)
+    assert [row["id"] for row in regex_payload] == [rows["talkative"]]
+    assert regex_payload[0]["match"] == "field"
+    assert regex_payload[0]["score"] == 500
+
+    # The message hit composes with both filter groups.
+    for option in ("--where", "--where-any"):
+        kept = run_cli(
+            ledger, "find", "cold shelf", option, "status=stored", "--json"
+        )
+        assert kept.exit_code == 0, kept.output
+        assert [row["id"] for row in json.loads(kept.output)] == [
+            rows["talkative"]
+        ]
+
+    # A filter that contradicts the tube, or that it cannot express, misses.
+    for where in ("status=pending", "kind~."):
+        dropped = run_cli(ledger, "find", "cold shelf", "--where", where)
+        assert isinstance(dropped.exception, LedgerError)
+        assert "no match for 'cold shelf'" in str(dropped.exception)
+
+    # Filter-only mode lists the tube with a filter hit.
+    listed = run_cli(ledger, "find", "--where", "status=stored", "--json")
+    assert listed.exit_code == 0, listed.output
+    listed_payload = json.loads(listed.output)
+    assert [row["id"] for row in listed_payload] == [rows["talkative"]]
+    assert listed_payload[0]["match"] == "filter"
+    assert listed_payload[0]["score"] == 0
+
+    # The table output names the matched tube too.
+    table = run_cli(ledger, "find", "cold shelf")
+    assert table.exit_code == 0, table.output
+    assert rows["talkative"] in table.output
+
+
 def test_cli_empty_query_and_short_where_are_filter_mode(
     cli_env: None, where_ledger
 ) -> None:
@@ -820,10 +1251,28 @@ def test_cli_where_any_messages_and_aliquots(cli_env: None, where_ledger) -> Non
     aliquot = stock["aliquots"][0]
     ledger.aliases.add("aliquot", aliquot, "pUC-tube")
 
-    # The alias hits an aliquot, and the OR group excludes aliquots: no match.
+    # The alias hits an aliquot, but ``kind`` is no aliquot column: no match.
     miss = run_cli(ledger, "find", "pUC-tube", "--where-any", "kind~.")
     assert isinstance(miss.exception, LedgerError)
     assert "no match for 'pUC-tube'" in str(miss.exception)
+
+    # An aliquot column in the OR group keeps the alias hit instead.
+    kept = run_cli(
+        ledger, "find", "pUC-tube", "--where-any", "status=pending", "--json"
+    )
+    assert kept.exit_code == 0, kept.output
+    kept_payload = json.loads(kept.output)
+    assert [row["id"] for row in kept_payload] == [aliquot]
+    assert kept_payload[0]["match"] == "alias"
+    assert kept_payload[0]["score"] == 900
+
+    # Filter-only mode lists the tube for the same field.
+    listed = run_cli(ledger, "find", "--where-any", "status=pending", "--json")
+    assert listed.exit_code == 0, listed.output
+    listed_payload = json.loads(listed.output)
+    assert [row["id"] for row in listed_payload] == [aliquot]
+    assert listed_payload[0]["match"] == "filter"
+    assert listed_payload[0]["score"] == 0
 
     # A filter-only miss with --where-any names both groups.
     empty = run_cli(ledger, "find", "--where-any", "name~nothing-like-this")

@@ -214,8 +214,10 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--wi
   `parent_box_id`/`parent_slot` for box) and the fields of the kinds in scope. A listing only reads
   kinds that have every `--where` field. A computed kind column works with `~` and `!~` (its text
   form) but not `=` or `!=`; derived output columns (`path`, `capacity`, `occupied`, `status`) are not
-  filterable. `tm find` accepts the union over entity/stock/box kinds, applies the filters to every
-  hit, and excludes aliquots whenever either group is given.
+  filterable. `tm find` accepts the union over entity/stock/box kinds and the aliquot filterable
+  columns (`id`, `stock_id`, `seq`, `box_id`, `slot`, `status`, `quantity`, `unit`, `label`,
+  `created_at`, `stock_notes`), applies the filters to every hit, and excludes aliquots only when a
+  filter names fields they lack (such as `kind` or kind fields).
 - With no `QUERY`, `tm find --where-any ...` (like `--where ...`) lists every match (`match` =
   `filter`) sorted by object type, kind and id; passing neither a QUERY nor a filter is a usage error
   (`the search query must not be empty; pass a QUERY or at least one --where or --where-any filter`).
@@ -229,8 +231,9 @@ tm find [QUERY] [-E|--regex] [--where FILTER ...] [--where-any FILTER ...] [--wi
   in one batch.
 
 `tm find -E` makes QUERY a case-insensitive ICU regex over the same places as the literal search (ids
-of all four object types, aliases, names, kind `string`/`text` fields); an invalid pattern is a usage
-error with no literal fallback. The `--where` patterns (`~` and `!~`) and `-E` use the database (ICU)
+of all four object types, aliases, names, kind `string`/`text` fields, and
+`aliquot_event.message`); an invalid pattern is a usage error with no literal fallback. The
+`--where` patterns (`~` and `!~`) and `-E` use the database (ICU)
 dialect; the ledger's `find.rewrites` rules are Python `re` and do not share it (see **Aliases,
 search, history** below).
 
