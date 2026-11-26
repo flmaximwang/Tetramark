@@ -1,4 +1,5 @@
-"""``tm find``: search ids, aliases, names and kind fields (spec §6)."""
+"""``tm find``: search ids, aliases, names, kind fields and aliquot event
+messages, and filter the hits with ``--where`` / ``--where-any`` (spec §6)."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ FIND_COLUMNS = ["rank", "object", "kind", "id", "summary", "location", "match"]
 def find_command(
     ctx: typer.Context,
     query: str | None = typer.Argument(
-        None, help="Object id, alias, name, or text to search for."
+        None, help="Object id, alias, name, event message, or text to search for."
     ),
     regex: bool = typer.Option(
         False,
@@ -32,17 +33,19 @@ def find_command(
         help="Filter as 'field=value' (exact), 'field~pattern' (regex), "
         "'field!=value', 'field!~pattern' or 'field<value' / '<=' / '>' / "
         "'>='; repeat to AND filters; 'FIELD=' matches empty, 'FIELD!=' "
-        "matches a value. Aliquots are excluded; with no QUERY all matching "
-        "objects are listed.",
+        "matches a value. Applies to entity/stock/box kinds and to aliquots, "
+        "which take their core columns (id, stock_id, seq, box_id, slot, "
+        "quantity, unit, label, created_at, stock_notes, status); a type that "
+        "cannot express a field is skipped. With no QUERY all matching objects "
+        "are listed.",
     ),
     where_any: list[str] = typer.Option(
         [],
         "--where-any",
         help="One OR group: a hit must match one of these filters, ANDed "
-        "with every --where. Same syntax and operators as --where; a field "
-        "may repeat here, e.g. 'resistance=kan' or 'resistance=amp'. "
-        "Aliquots are excluded; with no QUERY all matching objects are "
-        "listed.",
+        "with every --where. Same syntax, operators and participating types "
+        "as --where; a field may repeat here, e.g. 'resistance=kan' or "
+        "'resistance=amp'. With no QUERY all matching objects are listed.",
     ),
     with_rewrite: bool = typer.Option(
         False,
@@ -52,7 +55,7 @@ def find_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Find objects by id, alias, name, kind text or filter groups."""
+    """Find objects by id, alias, name, event message, kind text or filters."""
     text = "" if query is None else str(query).strip()
     ledger = resolve_ledger(ctx)
     try:
