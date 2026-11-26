@@ -1,12 +1,12 @@
 ---
 name: tetramark
 description: Use when working with a Tetramark ledger or a lab sample ledger — finding where a tube is, registering a plasmid/strain/prep, adding or moving samples and boxes, consuming part of a pellet, auditing inventory, importing/exporting CSVs. Triggers include 台账, 样品, 盒, 冻存, 库存, 管, 分装.
-version: "0.8.55"
+version: "0.8.56"
 spec: "06-cli"
-updated: 2026-11-11
+updated: 2026-11-26
 ---
 
-> Tetramark 0.8.55 skill — if `tm --version` differs, use the copy at `tm skill path`.
+> Tetramark 0.8.56 skill — if `tm --version` differs, use the copy at `tm skill path`.
 
 # Tetramark operating manual
 
@@ -51,7 +51,7 @@ one Dolt commit; every read is a normal `tm` command.
 | Add more tubes to a stock | `tm aliquot add STOCK --count N [--box NAME --slot S …]`; `tm stock aliquot STOCK AMOUNT UNIT [--count N]` when the per-tube amount is known |
 | See one tube and its events, or list the usable ones | `tm aliquot show ALQ [--json]`; `tm aliquot list [STOCK] [--box NAME] [--all]` (in stock by default) |
 | Move one tube | `tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG` (also restores a not-in-stock tube) |
-| Use part of a tube | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` (omit amount/unit = use everything left) |
+| Use part or all of a tube, or revert the latest use | `tm aliquot use ALQ [AMOUNT UNIT] -m MSG --yes`; `tm aliquot use ALQ --revert-last -m MSG` (omit amount/unit = use everything left; both preview and ask once) |
 | Mark lost / consumed / planned, or record a detailed life state | `tm aliquot status ALQ pending\|stored\|missing\|consumed` (fixed transitions); `tm stock edit STOCK --set fate=euthanized` (mouse/fish), `fate=discarded` (fly), `--set condition=starved` (worm), or an event message (`-m`) |
 | Override a transition rule | `tm aliquot status ALQ NEW --force -m "why"` (records a forced event; a wrongly consumed tube goes back in with `tm aliquot move … -m MSG`) |
 | Hard-delete an object added by mistake (rare) | `tm entity\|stock\|aliquot\|box purge REF` (refused while referenced; a box must be empty) |
