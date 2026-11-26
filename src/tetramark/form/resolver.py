@@ -133,9 +133,10 @@ class LedgerResolver:
         kind = self.schema.kinds.get(target)
         object_type = kind.object.value if kind is not None else target
         if object_type == "entity" and kind is not None:
+            table = table_name(kind.object.value, target)
             return (
                 f"SELECT e.{_quote('id')}, e.{_quote('name')}, e.{_quote('kind')} "
-                f"FROM {_quote(target)} k "
+                f"FROM {_quote(table)} k "
                 f"JOIN {_quote('entity')} e ON e.{_quote('id')} = k.{_quote('id')} "
                 f"WHERE e.{_quote('kind')} = %s ORDER BY e.{_quote('name')} "
                 f"LIMIT {LIST_LIMIT}",

@@ -990,3 +990,21 @@ def test_long_description_is_stored_in_full_but_never_shown(
     assert row.value.startswith("[pasted ")
     assert "3 lines" in row.value
     assert long_text not in row.value
+
+
+def test_resolver_lists_entity_kind_refs_from_prefixed_table(
+    ledger_factory,
+) -> None:
+    """Kind-scoped entity ref completion queries ``entity_<kind>``, not ``<kind>``."""
+    from tetramark.form.resolver import LedgerResolver
+
+    ledger = ledger_factory([BASE], name="entity-kind-ref")
+    created = ledger.entities.add("item", values={"name": "Widget Alpha"})
+
+    resolver = LedgerResolver(ledger)
+    choices = resolver.list_refs("item")
+    tokens = resolver.ref_tokens("item")
+
+    assert [choice.value for choice in choices] == [created["id"]]
+    assert created["id"] in tokens
+
