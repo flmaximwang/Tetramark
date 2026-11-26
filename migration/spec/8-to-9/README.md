@@ -107,6 +107,16 @@ uv run tm -w /path/to/workspace -l <ledger> check
   last good commit plus `dolt reset --hard <last-good-commit>`. A hard reset
   restores tracked tables; Dolt leaves *untracked* objects created by the failed
   attempt behind — check `SHOW FULL TABLES` afterwards.
+- **An interrupted migration keeps the ledger at spec 8.** `tm schema apply` reads
+  the *whole* spec-9 shape (the column, the `revert_use` ENUM value and the
+  UNIQUE/CHECK/self foreign key) before it stamps `spec_version`; a ledger with
+  only some of it keeps its stored counter, so this step still runs afterwards and
+  finishes the missing pieces. Check with
+  `SELECT value FROM ledger_meta WHERE key = 'spec_version'`: it must still read
+  `8`. If it reads `9` on a half-patched ledger, the counter was stamped by a
+  tool older than 0.8.57 — set it back (`UPDATE ledger_meta SET value = '8' WHERE
+  key = 'spec_version'`, one commit) and rerun this step; the plan adds only what
+  is missing.
 - **Rollback after success:** reset the branch to the tag
   (`dolt reset --hard pre-migrate-spec-8`) and use the older tool. Data written
   by the newer tool is the risk: a `revert_use` row does not parse against the

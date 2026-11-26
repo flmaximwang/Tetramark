@@ -51,6 +51,10 @@ from tetramark.driver.base import Driver, literal
 from tetramark.errors import LedgerError, UsageError
 from tetramark.schema.ddl import (
     CORE_TABLES,
+    REVERT_CHECK_CONSTRAINT,
+    REVERT_EVENT,
+    REVERT_FK_CONSTRAINT,
+    REVERT_UNIQUE_CONSTRAINT,
     aliquot_status_check,
     box_view_statements,
     core_statements,
@@ -144,8 +148,10 @@ class SchemaPlan:
     expected_tetramark_version: str = ""
     live_spec_version: str | None = None
     expected_spec_version: str = ""
-    #: True when the live event table already has the spec-9 reversal column.
-    #: A ledger whose shape is still spec 8 may only reach spec 9 through
+    #: True when the live event table already stores the *whole* spec-9
+    #: reversal shape: the column, the ``revert_use`` ENUM value and the
+    #: UNIQUE/CHECK/self foreign key.  A ledger whose shape is still spec 8 —
+    #: including a half-patched one — may only reach spec 9 through
     #: ``migration/spec/8-to-9``, so a generic apply must not stamp the counter
     #: (the step refuses a ledger that already claims 9).
     reversal_shape_stored: bool = True
@@ -171,10 +177,11 @@ class SchemaPlan:
 
         The counter does **not** move for a ledger whose shape is still spec 8
         (``reversal_shape_stored`` is false): the generic plan cannot add the
-        spec-9 column, and ``migration/spec/8-to-9`` refuses a ledger that
-        already records 9, so stamping the counter here would strand it.  Such a
-        ledger keeps its stored counter until the supported step runs; only the
-        fingerprint and the tool version are refreshed.
+        spec-9 column, the ``revert_use`` ENUM value or the two constraints, and
+        ``migration/spec/8-to-9`` refuses a ledger that already records 9, so
+        stamping the counter here would strand it.  Such a ledger keeps its
+        stored counter until the supported step runs; only the fingerprint and
+        the tool version are refreshed.
         """
         moved_counter = (
             self.reversal_shape_stored
@@ -2515,17 +2522,59 @@ def _install_generated_tests(ledger: "Ledger") -> None:
 
 
 def _has_reversal_column(live: _LiveState) -> bool:
-    """True when the live ``aliquot_event`` carries ``reverts_event_id``.
+    """True when the live ``aliquot_event`` carries the whole spec-9 shape.
+
+    The column alone is not the shape: an interrupted migration (or a hand
+    patch, or a failed ``dolt reset``) can leave ``reverts_event_id`` in place
+    while the ``event`` ENUM still refuses ``revert_use`` and the two
+    constraints are missing.  Stamping the counter over that shape is what
+    strands a ledger: every ``revert_use`` fails with a truncated ENUM, and
+    ``migration/spec/8-to-9`` refuses a ledger that already records 9.  So the
+    counter may only move when all four pieces are present — the column, the
+    ENUM value, and the UNIQUE/CHECK/self foreign key.
 
     A ledger without it is still spec 8 in shape, whatever its counter says, and
-    only ``migration/spec/8-to-9`` may move it: the step refuses a counter other
-    than 8, so stamping 9 here would strand the ledger.  An absent
-    ``aliquot_event`` table is the other case: the plan creates the current one,
-    column and constraints included, so the counter may move.
+    only ``migration/spec/8-to-9`` may move it.  An absent ``aliquot_event``
+    table is the other case: the plan creates the current one, column and
+    constraints included, so the counter may move.
     """
-    if "aliquot_event" not in live.columns:
+    columns = live.columns.get("aliquot_event")
+    if columns is None:
         return True
-    return "reverts_event_id" in live.columns["aliquot_event"]
+    if "reverts_event_id" not in columns:
+        return False
+    event = columns.get("event")
+    if event is None or not _enum_has_value(event.sql_type, REVERT_EVENT):
+        return False
+    if not any(
+        unique.columns == ("reverts_event_id",)
+        and unique.name == REVERT_UNIQUE_CONSTRAINT
+        for unique in live.uniques.get("aliquot_event", [])
+    ):
+        return False
+    if not any(
+        check.name == REVERT_CHECK_CONSTRAINT
+        for check in live.checks.get("aliquot_event", [])
+    ):
+        return False
+    return any(
+        key.table == "aliquot_event" and key.name == REVERT_FK_CONSTRAINT
+        for key in live.foreign_keys
+    )
+
+
+_ENUM_RE = re.compile(r"^\s*enum\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def _enum_has_value(sql_type: str, value: str) -> bool:
+    """True when ``sql_type`` is an ``ENUM`` whose values include ``value``."""
+    match = _ENUM_RE.match(sql_type or "")
+    if match is None:
+        return False
+    return any(
+        literal_match.group(1).replace("''", "'") == value
+        for literal_match in _STRING_LITERAL_RE.finditer(match.group(1))
+    )
 
 
 def _stored_spec(ledger: "Ledger") -> int | None:

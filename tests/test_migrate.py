@@ -6306,3 +6306,60 @@ def test_the_spec9_reversal_guard_refuses_only_the_reversal(
     assert ledger.driver.query(
         "SELECT COUNT(*) AS `n` FROM `aliquot_event` WHERE `event` = 'revert_use'"
     )[0]["n"] == 0
+
+
+def test_schema_apply_on_a_half_patched_ledger_keeps_the_counter_at_8(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """The column without the ENUM value is not spec 9, and must never claim it.
+
+    An interrupted ``migration/spec/8-to-9`` ("Dolt DDL is not transactional")
+    can leave ``reverts_event_id`` in place while the event ENUM still refuses
+    ``revert_use`` and the two constraints are missing.  Before this was fixed,
+    one ordinary ``tm schema apply`` stamped ``spec_version = 9`` over that
+    shape: the migration then refused the ledger forever ("is at spec_version
+    9, expected 8"), and every ``revert_use`` failed with a truncated ENUM.
+    """
+    ledger, alq, _other = spec8_ledger(
+        ledger_factory,
+        name="spec8-half-apply",
+        column=False,
+    )
+    # The half-patched shape: the column exists, the shape does not.
+    assert "reverts_event_id" in column_names(ledger, "aliquot_event")
+    assert "revert_use" not in event_column_type(ledger)
+    assert "fk_aliquot_event_reverts_event_id" not in constraint_names(
+        ledger, "aliquot_event"
+    )
+    assert ledger.meta["spec_version"] == "8"
+
+    applied = CliRunner().invoke(app, [*base_args(ledger), "schema", "apply"])
+    assert applied.exit_code == 0, applied.output
+    ledger.read_meta()
+    # The counter does not move, the shape is untouched, and the reversal rules
+    # stay uninstalled (they would read a shape the database cannot serve).
+    assert ledger.meta["spec_version"] == "8"
+    assert "revert_use" not in event_column_type(ledger)
+    installed = {
+        str(row["test_name"])
+        for row in ledger.driver.query("SELECT `test_name` FROM `dolt_tests`")
+    }
+    assert "core_revert_event_allowed" not in installed
+    assert "core_revert_event_unique" not in installed
+    assert tm_check(ledger).exit_code == 0
+
+    # The supported step still runs (the counter is still 8) and finishes the
+    # shape the interrupted migration started.
+    applied = run_python(
+        SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "9"
+    assert "revert_use" in event_column_type(ledger)
+    assert {
+        "uq_aliquot_event_reverts_event_id",
+        "ck_aliquot_event_reverts_event_id",
+        "fk_aliquot_event_reverts_event_id",
+    } <= constraint_names(ledger, "aliquot_event")
+    assert tm_check(ledger).exit_code == 0

@@ -951,3 +951,85 @@ def test_a_pre_upgrade_use_is_reversible_after_migration(
     # The original event rows are untouched: the reversal is a new row.
     assert event_rows(ledger)[: len(rows_before)] == rows_before
     assert ledger.check().passed
+
+
+# ---------------------------------------------------------------------------
+# A merged use stays reversible
+# ---------------------------------------------------------------------------
+
+
+def test_a_use_that_a_merge_records_twice_is_still_reversible(ledger_factory) -> None:
+    """A non-fast-forward merge replays the branch's ``use``; it is one change.
+
+    Dolt's diff tables compare a commit with its **first** parent, so the merge
+    commit shows the branch's insert and row change a second time.  The event
+    row exists once (``aliquot_event`` is not duplicated); only the diff trail
+    names two commits for it.  The reversal must attribute the change to the
+    commit that made it and read the merge's replay as the same step — before
+    this was fixed, the plan refused with "the Dolt history holds 2 records of
+    that event".
+    """
+    ledger, _box, _stock, (first, _second) = build(ledger_factory, name="merge-revert")
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("nf",))
+    branch = open_ledger(ledger.path, branch="nf")
+    try:
+        branch.aliquots.use(first, "50", "ml", message="branch use")
+    finally:
+        branch.close()
+    # Move ``main`` ahead so the merge cannot fast-forward (an ff merge records
+    # no merge commit, and then nothing is replayed).
+    ledger.entities.add("item", name="beta")
+    merged = ledger.driver.query("CALL DOLT_MERGE(%s)", ("nf",))
+    assert int(merged[0]["fast_forward"]) == 0, merged
+    use_id = next(
+        int(event["id"]) for event in events(ledger, first) if event["event"] == "use"
+    )
+    # The premise: one event row, two diff records naming it.
+    records = ledger.driver.query(
+        "SELECT `to_commit` AS `commit` FROM `dolt_diff_aliquot_event` "
+        "WHERE `to_id` = %s AND `to_event` = 'use' AND `diff_type` = 'added'",
+        (use_id,),
+    )
+    assert len(records) == 2, records
+    assert len([e for e in events(ledger, first) if e["event"] == "use"]) == 1
+
+    plan = plan_aliquot_use(ledger, first, message="undo merged use", revert_last=True)
+    assert plan.target_event_id == use_id
+    assert plan.quantity_before == Decimal("150.000000")
+    assert plan.quantity_after == Decimal("200.000000")
+
+    revoked = apply_aliquot_use(ledger, plan)
+    assert revoked["reverts_event_id"] == use_id
+    assert revoked["quantity"] == "200.000000"
+    assert ledger.check().passed
+
+
+def test_a_merge_does_not_excuse_a_real_later_change(ledger_factory) -> None:
+    """The merge replay is skipped; a genuine later edit still blocks the revert.
+
+    Both rows come from the same merge history, so the two are told apart only
+    by what each row's ``from`` -> ``to`` says.  A skip that was too wide would
+    let this through.
+    """
+    ledger, _box, _stock, (first, _second) = build(ledger_factory, name="merge-conflict")
+    ledger.driver.execute("CALL DOLT_BRANCH(%s)", ("nf",))
+    branch = open_ledger(ledger.path, branch="nf")
+    try:
+        branch.aliquots.use(first, "50", "ml", message="branch use")
+    finally:
+        branch.close()
+    ledger.entities.add("item", name="beta")
+    merged = ledger.driver.query("CALL DOLT_MERGE(%s)", ("nf",))
+    assert int(merged[0]["fast_forward"]) == 0, merged
+
+    # A row change no event explains: only the diff-trail walk can judge it,
+    # which is the code the merge replay is skipped in.
+    with ledger.write("recount", verb="edit", object="aliquot") as session:
+        session.execute(
+            "UPDATE `aliquot` SET `quantity` = 140 WHERE `id` = %s", (first,)
+        )
+
+    with pytest.raises(
+        LedgerError, match="changed the quantity after that use"
+    ):
+        plan_aliquot_use(ledger, first, message="undo", revert_last=True)
