@@ -199,7 +199,7 @@ former purpose and note options are removed outright — no aliases; `tm aliquot
 An aliquot's box position is not a parent/child relation: `tm parent`/`tm child` (§6.7) never move
 a tube, and `tm aliquot move` stays the only command that changes `box_id`/`slot`.
 
-`tm aliquot use ALQ [AMOUNT UNIT] -m MSG` consumes part or all of a tube. `AMOUNT` and `UNIT` come
+`tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--yes]` consumes part or all of a tube. `AMOUNT` and `UNIT` come
 together: passing only one is a usage error. With an amount, the unit must match the tube's unit and
 the amount may not exceed what remains. Passing neither means "use everything left": the event records
 the tube's remaining quantity and unit, and the result is identical to passing them explicitly. A tube
