@@ -3091,23 +3091,33 @@ def _use_evidence(
     uncommitted working set — that changed one of the five fields is a conflict
     even when it changed the value back, because the reversal would otherwise
     replay a use over a different physical history (spec 9 §2, §3).
+
+    A merge presents the same physical change twice: the branch commit that
+    made it, and the merge commit, whose diff against its **first** parent
+    shows the branch's insert and row change again.  So one use can name two
+    commits and one change two ``dolt_diff_aliquot`` rows.  The change is
+    attributed to the commit that made it (the earliest in ``commit_order``),
+    and the merge's replay of that same ``from`` -> ``to`` step is read as the
+    one change it is, not as a second one (spec 9 §2).
     """
     target_id = int(target["id"])
     commits = reader.query(
-        f"SELECT {_quote('to_commit')} AS {_quote('commit')} "
-        f"FROM {_quote('dolt_diff_aliquot_event')} "
-        f"WHERE {_quote('to_id')} = %s AND {_quote('to_event')} = 'use' "
-        f"AND {_quote('diff_type')} = 'added'",
+        f"SELECT d.{_quote('to_commit')} AS {_quote('to_commit')}, "
+        f"l.{_quote('commit_order')} AS {_quote('tm_order')} "
+        f"FROM {_quote('dolt_diff_aliquot_event')} d "
+        f"LEFT JOIN {_quote('dolt_log')} l "
+        f"ON l.{_quote('commit_hash')} = d.{_quote('to_commit')} "
+        f"WHERE d.{_quote('to_id')} = %s AND d.{_quote('to_event')} = 'use' "
+        f"AND d.{_quote('diff_type')} = 'added'",
         (target_id,),
     )
-    if len(commits) != 1:
+    if not commits:
         raise LedgerError(
             f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
-            f"Dolt history holds {len(commits)} records of that event (expected "
-            "one), so the ledger cannot establish what it changed (refusing to "
-            "guess)"
+            "Dolt history holds no record of that event, so the ledger cannot "
+            "establish what it changed (refusing to guess)"
         )
-    commit = str(commits[0]["commit"])
+    commit = str(min(commits, key=_diff_rank)["to_commit"])
     # One commit can record several events of the same tube (a command that
     # writes twice in one transaction): then its single row change cannot be
     # attributed to this use.
@@ -3168,6 +3178,12 @@ def _use_evidence(
     for row in later_rows:
         start = _state_from_row(row, "from_")
         end = _state_from_row(row, "to_")
+        if start == before and end == after:
+            # The merge commit replays the branch's own change: same ``from``
+            # and same ``to`` as the use we already attributed to its real
+            # commit.  It is that one physical change seen a second time, not a
+            # second change, so it neither conflicts nor advances the chain.
+            continue
         changed = [
             field
             for field in _USE_FIELDS
