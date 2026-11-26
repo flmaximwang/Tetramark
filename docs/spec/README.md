@@ -30,3 +30,7 @@ the old zsqlab databases (migration is manual, guided by [the migration guide](.
 References like "§3" or "§6" in tickets, commit messages and code comments map to the
 chapter with that number; each chapter file keeps its number in the title.
 
+## Planned changes
+
+- [Confirming and reverting aliquot use](aliquot-use-revert-last.md)
+

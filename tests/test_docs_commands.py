@@ -96,7 +96,7 @@ def run(*args: str, expect: int = 0):
 
 def run_json(*args: str):
     result = run(*args, "--json")
-    return json.loads(result.output)
+    return json.loads(result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +305,7 @@ def test_command_reference_object_and_read_flows(docs_env: Path) -> None:
         "-m", "moved to BOX-1",
     )
     used = run_json(
-        "aliquot", "use", f"{stock_id}.3", "20", "ul", "-m", "assay"
+        "aliquot", "use", f"{stock_id}.3", "20", "ul", "-m", "assay", "--yes"
     )
     assert used["status"] == "stored"
     assert used["used_amount"] == "20"

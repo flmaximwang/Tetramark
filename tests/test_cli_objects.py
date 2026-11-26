@@ -178,8 +178,9 @@ def test_cli_entity_stock_aliquot_box_alias_flow(
             "ul",
             "-m",
             "prep",
+            "--yes",
             "--json",
-        ).output
+        ).stdout
     )
     assert used["quantity"] == "60.000000"
     assert used["status"] == "stored"
@@ -1075,7 +1076,7 @@ def test_cli_aliquot_move_requires_message_and_records_it(
 
 
 def test_cli_aliquot_use_amount_is_optional_and_message_required(
-    cli_env: None, ledger_factory
+    cli_env: None, ledger_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """AMOUNT/UNIT come together; -m is required; the line names the amount."""
     ledger = ledger_factory([BASE], name="cli-use", id_prefix="77")
@@ -1128,12 +1129,32 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
     assert "must be given together" in str(only_amount.exception)
     assert commit_count(ledger) == before
 
+    conflicting = invoke(
+        ledger, "aliquot", "use", first, "50", "ml", "--revert-last", "-m", "undo", "--yes"
+    )
+    assert conflicting.exception.exit_code == 2
+    assert "cannot be combined" in str(conflicting.exception)
+    assert commit_count(ledger) == before
+
     # The old flags are gone outright (no aliases).
     removed = invoke(
         ledger, "aliquot", "use", first, "50", "ml", "--purpose", "prep"
     )
     assert removed.exit_code == 2
     assert "no such option" in removed.output.lower()
+
+    flags = ("aliquot", "use", first, "50", "ml", "-m", "prep", "--json")
+    refused = invoke(ledger, *flags)
+    assert refused.exit_code != 0
+    assert "--yes" in str(refused.exception)
+    preview = read(ledger, "--dry-run", *flags)
+    assert json.loads(preview.stdout)["dry_run"] is True
+    assert f"Use aliquot {first}" in preview.stderr
+    assert 'Reason: "prep"' in preview.stderr
+    assert "Quantity: 200 ml -> 150 ml" in preview.stderr
+    assert "[y/N]" not in preview.stderr
+    assert commit_count(ledger) == before
+    assert not dirty(ledger)
 
     # A partial use names the amount used and ends with the message.
     partial = json.loads(
@@ -1146,8 +1167,9 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
             "ml",
             "-m",
             "  prep  ",
+            "--yes",
             "--json",
-        ).output
+        ).stdout
     )
     assert partial["used_amount"] == "50"
     assert partial["used_unit"] == "ml"
@@ -1155,14 +1177,24 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
     assert partial["quantity"] == "150.000000"
     assert partial["status"] == "stored"
 
-    human = write(ledger, "aliquot", "use", second, "50", "ml", "-m", "prep")
-    assert human.output.strip() == (
+    before_interactive = commit_count(ledger)
+    with monkeypatch.context() as terminal:
+        terminal.setattr("tetramark.cli.aliquot._stdin_is_tty", lambda: True)
+        human = CliRunner().invoke(
+            app,
+            [*base_args(ledger), "aliquot", "use", second, "50", "ml", "-m", "prep"],
+            input="yes\n",
+        )
+    assert human.exit_code == 0, human.output
+    assert human.stderr.count("[y/N]") == 1
+    assert commit_count(ledger) == before_interactive + 1
+    assert human.stdout.strip() == (
         f"Used 50 ml from {second} (stored, 150 ml left): prep"
     )
 
     # Without an amount everything left is used: the line says "all".
-    whole = write(ledger, "aliquot", "use", third, "-m", "used it all")
-    assert whole.output.strip() == (
+    whole = write(ledger, "aliquot", "use", third, "-m", "used it all", "--yes")
+    assert whole.stdout.strip() == (
         f"Used all 200 ml from {third} (consumed): used it all"
     )
     row = ledger.driver.query(
@@ -1178,12 +1210,65 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
     assert event["old_status"] == "stored"
     assert event["new_status"] == "consumed"
 
+    # The reversal previews the old use and restores the freed position.
+    revert_flags = ("aliquot", "use", third, "--revert-last", "-m", "wrong tube", "--json")
+    before_revert = commit_count(ledger)
+    refused = invoke(ledger, *revert_flags)
+    assert refused.exit_code != 0
+    assert "--yes" in str(refused.exception)
+    assert refused.stdout == ""
+    assert "[y/N]" not in refused.stderr
+    assert commit_count(ledger) == before_revert
+    assert not dirty(ledger)
+
+    preview = read(ledger, "--dry-run", *revert_flags)
+    assert json.loads(preview.stdout)["dry_run"] is True
+    original_at = event["at"].replace("T", " ", 1)
+    assert f"Original use event {event['id']} at {original_at}" in preview.stderr
+    assert 'Original reason: "used it all"' in preview.stderr
+    assert "Quantity: 0 ml -> 200 ml" in preview.stderr
+    assert "Status: consumed -> stored" in preview.stderr
+    assert "Placement: unplaced -> BOX:A3" in preview.stderr
+    assert "[y/N]" not in preview.stderr
+    assert commit_count(ledger) == before_revert
+    assert not dirty(ledger)
+
+    with monkeypatch.context() as terminal:
+        terminal.setattr("tetramark.cli.aliquot._stdin_is_tty", lambda: True)
+        for command in (flags, revert_flags):
+            for answer in ("n\n", "\n", ""):
+                cancelled = CliRunner().invoke(app, [*base_args(ledger), *command], input=answer)
+                assert cancelled.exit_code != 0
+                assert cancelled.stderr.count("[y/N]") == 1
+                assert "Cancelled" in cancelled.stderr
+                assert cancelled.stdout == ""
+        assert commit_count(ledger) == before_revert
+        assert not dirty(ledger)
+        reverted = CliRunner().invoke(app, [*base_args(ledger), *revert_flags], input="y\n")
+    assert reverted.exit_code == 0, reverted.output
+    assert commit_count(ledger) == before_revert + 1
+    assert json.loads(reverted.stdout)["reverts_event_id"] == event["id"]
+    assert reverted.stderr.count("[y/N]") == 1
+    for command in (("history", third), ("aliquot", "show", third)):
+        events = json.loads(read(ledger, *command, "--json").stdout)["events"]
+        assert events[-2]["event"] == "use" and events[-2]["id"] == event["id"]
+        assert events[-1]["event"] == "revert_use"
+        assert events[-1]["reverts_event_id"] == event["id"]
+        text = read(ledger, *command).stdout
+        assert any(
+            " use " in line and f" id={event['id']}" in line for line in text.splitlines()
+        )
+        assert any(
+            " revert_use " in line and f"reverts_event_id={event['id']}" in line
+            for line in text.splitlines()
+        )
+
     # A tube without a quantity is used whole; the amount is unknown.
     bare = json.loads(
         write(ledger, "aliquot", "add", stock["id"], "--json").output
     )["ids"][0]
-    unknown = write(ledger, "aliquot", "use", bare, "-m", "used it all")
-    assert unknown.output.strip() == (
+    unknown = write(ledger, "aliquot", "use", bare, "-m", "used it all", "--yes")
+    assert unknown.stdout.strip() == (
         f"Used all of {bare} (consumed): used it all"
     )
     unknown_json = json.loads(
@@ -1196,13 +1281,44 @@ def test_cli_aliquot_use_amount_is_optional_and_message_required(
             )["ids"][0],
             "-m",
             "used it all",
+            "--yes",
             "--json",
-        ).output
+        ).stdout
     )
     assert unknown_json["used_amount"] is None
     assert unknown_json["used_unit"] is None
     assert unknown_json["quantity"] is None
     assert unknown_json["status"] == "consumed"
+
+    def change_previewed_quantity() -> bool:
+        assert ledger.write_lock_holder() is None
+        ledger.aliquots.edit(second, values={"quantity": "149"})
+        return True
+
+    before_conflict = commit_count(ledger)
+    with monkeypatch.context() as terminal:
+        terminal.setattr("tetramark.cli.aliquot._stdin_is_tty", change_previewed_quantity)
+        stale = CliRunner().invoke(
+            app,
+            [*base_args(ledger), "aliquot", "use", second, "1", "ml", "-m", "assay"],
+            input="y\n",
+        )
+    assert stale.exit_code != 0 and "rerun" in str(stale.exception)
+    assert stale.stderr.count("[y/N]") == 1
+    assert commit_count(ledger) == before_conflict + 1
+    assert not dirty(ledger)
+
+    no_commit_flags = (
+        "--no-commit", "aliquot", "use", first, "--revert-last", "-m", "undo", "--json"
+    )
+    before_no_commit = commit_count(ledger)
+    refused = invoke(ledger, *no_commit_flags)
+    assert "--yes" in str(refused.exception)
+    assert not dirty(ledger)
+    staged = read(ledger, *no_commit_flags, "--yes")
+    assert json.loads(staged.stdout)["quantity"] == "200.000000"
+    assert commit_count(ledger) == before_no_commit
+    assert {row["table_name"] for row in dirty(ledger)} == {"aliquot", "aliquot_event"}
 
 
 # ---------------------------------------------------------------------------
@@ -1442,7 +1558,7 @@ def test_cli_aliquot_show_json_events_are_the_tubes_trail(
     alq = made["aliquot"]
     write(ledger, "box", "add", "grid96", "BOX2")
     write(ledger, "aliquot", "move", alq, "--box", "BOX2", "--slot", "B1", "-m", "m")
-    write(ledger, "aliquot", "use", alq, "50", "ul", "-m", "assay")
+    write(ledger, "aliquot", "use", alq, "50", "ul", "-m", "assay", "--yes")
     write(ledger, "aliquot", "status", alq, "missing", "-m", "not found")
 
     record = json.loads(read(ledger, "aliquot", "show", alq, "--json").output)
@@ -1544,7 +1660,7 @@ def test_cli_event_messages_are_readable_in_show_history_and_json(
         "-m",
         move_message,
     )
-    write(ledger, "aliquot", "use", alq, "25", "ul", "-m", use_message)
+    write(ledger, "aliquot", "use", alq, "25", "ul", "-m", use_message, "--yes")
 
     shown_text = read(ledger, "aliquot", "show", alq).output
     history_text = read(ledger, "history", alq).output

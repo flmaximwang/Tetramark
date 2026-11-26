@@ -71,6 +71,11 @@ __all__ = [
     "CORE_COLUMNS",
     "CORE_TABLES",
     "CORE_VIEWS",
+    "REVERT_CHECK_CONSTRAINT",
+    "REVERT_EVENT",
+    "REVERT_FK_CONSTRAINT",
+    "REVERT_FK_ON_DELETE",
+    "REVERT_UNIQUE_CONSTRAINT",
     "STOCK_VIEW_COLUMNS",
     "Statement",
     "ALIQUOT_STATUS_CONSTRAINT",
@@ -134,7 +139,14 @@ CORE_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_EVENT_VALUES: tuple[str, ...] = ("create", "use", "move", "status", "edit")
+#: Values of the ``aliquot_event.event`` ENUM.  ``revert_use`` (spec 9) is
+#: **appended**: the ENUM's stored index of every older value must not move, or
+#: the migration would have to rewrite the column's data instead of just
+#: widening its vocabulary.
+_EVENT_VALUES: tuple[str, ...] = ("create", "use", "move", "status", "edit", "revert_use")
+
+#: The one event kind that carries ``aliquot_event.reverts_event_id`` (spec 9).
+REVERT_EVENT = "revert_use"
 
 #: Status values the derived stock status (``v_stock_status``) is defined in
 #: terms of (spec §3): a custom vocabulary may add values, but the derivation
@@ -159,7 +171,10 @@ class Statement:
     regroup statements per table without parsing SQL.  ``columns``,
     ``target`` and ``target_columns`` are filled for foreign keys so
     :mod:`tetramark.schema.diff` can compare them semantically instead of
-    re-parsing the SQL.
+    re-parsing the SQL; ``on_delete`` is the ``ON DELETE`` rule of a foreign
+    key (``CASCADE`` for the spec-9 reversal self-reference, ``None`` for the
+    default ``NO ACTION``), so a diff knows a trailing clause is part of the
+    key's definition.
     """
 
     sql: str
@@ -169,6 +184,7 @@ class Statement:
     columns: tuple[str, ...] | None = None
     target: str | None = None
     target_columns: tuple[str, ...] | None = None
+    on_delete: str | None = None
 
 
 def to_sql(statements: Iterable[Statement]) -> str:
@@ -210,6 +226,20 @@ def _ck(table: str, *columns: str) -> str:
 
 def _pk(table: str) -> str:
     return _name("pk", table)
+
+
+#: Spec 9 constraint names on ``aliquot_event``.  Named here (not only inside
+#: the table builder) because ``migration/spec/8-to-9`` adds exactly these
+#: constraints to an existing table and must spell them like the fresh DDL.
+REVERT_UNIQUE_CONSTRAINT = _uq("aliquot_event", "reverts_event_id")
+REVERT_CHECK_CONSTRAINT = _ck("aliquot_event", "reverts_event_id")
+REVERT_FK_CONSTRAINT = _fk("aliquot_event", "reverts_event_id")
+
+#: Self-reference of ``aliquot_event.reverts_event_id``.  ON DELETE CASCADE so
+#: ``aliquot purge`` (one ``DELETE`` over all of an aliquot's events) never hits
+#: the parent-before-child order problem: deleting the original ``use`` takes
+#: its reversal with it, which is exactly what the purge means.
+REVERT_FK_ON_DELETE = "CASCADE"
 
 
 def table_name(object_type: ObjectType | str, kind: str) -> str:
@@ -463,6 +493,7 @@ def _create_aliquot_event() -> Statement:
             f"  {_ident('id')} BIGINT NOT NULL AUTO_INCREMENT,\n"
             f"  {_ident('aliquot_id')} {_ID_TYPE} NOT NULL,\n"
             f"  {_ident('event')} ENUM({events}) NOT NULL,\n"
+            f"  {_ident('reverts_event_id')} BIGINT,\n"
             f"  {_ident('amount')} DECIMAL(18,6),\n"
             f"  {_ident('unit')} VARCHAR(32),\n"
             f"  {_ident('from_box_id')} {_ID_TYPE},\n"
@@ -475,7 +506,19 @@ def _create_aliquot_event() -> Statement:
             f"  {_ident('actor')} VARCHAR(255),\n"
             f"  {_ident('message')} MEDIUMTEXT,\n"
             f"  {_ident('at')} DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"
-            f"  CONSTRAINT {_ident(_pk('aliquot_event'))} PRIMARY KEY ({_ident('id')})\n"
+            f"  CONSTRAINT {_ident(_pk('aliquot_event'))} PRIMARY KEY ({_ident('id')}),\n"
+            # Spec 9: one reversal per original use.  A UNIQUE index over a
+            # nullable column admits any number of NULLs (every ordinary event)
+            # but only one ``revert_use`` per target, and it does so for
+            # concurrent writers too: the loser of a race gets a duplicate-key
+            # error instead of a second reversal.
+            f"  CONSTRAINT {_ident(REVERT_UNIQUE_CONSTRAINT)} "
+            f"UNIQUE ({_ident('reverts_event_id')}),\n"
+            # The reference is required exactly for ``revert_use``: an
+            # ordinary event must not carry one, and a reversal must.
+            f"  CONSTRAINT {_ident(REVERT_CHECK_CONSTRAINT)} "
+            f"CHECK (({_ident('event')} = {literal(REVERT_EVENT)}) = "
+            f"({_ident('reverts_event_id')} IS NOT NULL))\n"
             ")"
         ),
         object="table",
@@ -511,7 +554,19 @@ def _core_foreign_keys() -> list[Statement]:
         ("aliquot", ("box_id", "slot"), "slot", ("box_id", "label")),
         ("aliquot_event", ("aliquot_id",), "aliquot", ("id",)),
     ]
-    return [_fk_statement(*spec) for spec in specs]
+    statements = [_fk_statement(*spec) for spec in specs]
+    # Spec 9: a reversal points at the ``use`` it undoes (see
+    # :data:`REVERT_FK_ON_DELETE` for the cascade rule).
+    statements.append(
+        _fk_statement(
+            "aliquot_event",
+            ("reverts_event_id",),
+            "aliquot_event",
+            ("id",),
+            on_delete=REVERT_FK_ON_DELETE,
+        )
+    )
+    return statements
 
 
 def _fk_statement(
@@ -519,14 +574,18 @@ def _fk_statement(
     columns: Sequence[str],
     target: str,
     target_columns: Sequence[str],
+    *,
+    on_delete: str | None = None,
 ) -> Statement:
     name = _fk(table, *columns)
     column_sql = ", ".join(_ident(column) for column in columns)
     target_sql = ", ".join(_ident(column) for column in target_columns)
+    tail = f" ON DELETE {on_delete}" if on_delete else ""
     return Statement(
         sql=(
             f"ALTER TABLE {_ident(table)} ADD CONSTRAINT {_ident(name)} "
-            f"FOREIGN KEY ({column_sql}) REFERENCES {_ident(target)} ({target_sql})"
+            f"FOREIGN KEY ({column_sql}) REFERENCES {_ident(target)} "
+            f"({target_sql}){tail}"
         ),
         object="fk",
         name=name,
@@ -534,6 +593,7 @@ def _fk_statement(
         columns=tuple(columns),
         target=target,
         target_columns=tuple(target_columns),
+        on_delete=on_delete,
     )
 
 

@@ -45,6 +45,16 @@ def _event(**overrides: object) -> dict[str, object]:
     return event
 
 
+def test_use_and_reversal_print_their_audit_ids() -> None:
+    original = event_line(_event(event="use", id=12, message="sent"))
+    reversal = event_line(
+        _event(event="revert_use", id=39, reverts_event_id=12, message="wrong tube")
+    )
+    assert " id=12 " in original
+    assert " id=39 reverts_event_id=12 " in reversal
+    assert reversal.endswith(' message="wrong tube"')
+
+
 def test_message_is_the_last_token_and_empty_or_null_adds_none() -> None:
     """F1: the message is last; NULL and the empty string add no token."""
     line = event_line(_event(message="re-rack tubes"))

@@ -66,7 +66,8 @@ CREATE TABLE `aliquot` (
 CREATE TABLE `aliquot_event` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `aliquot_id` VARCHAR(64) NOT NULL,
-  `event` ENUM('create', 'use', 'move', 'status', 'edit') NOT NULL,
+  `event` ENUM('create', 'use', 'move', 'status', 'edit', 'revert_use') NOT NULL,
+  `reverts_event_id` BIGINT,
   `amount` DECIMAL(18,6),
   `unit` VARCHAR(32),
   `from_box_id` VARCHAR(64),
@@ -79,7 +80,9 @@ CREATE TABLE `aliquot_event` (
   `actor` VARCHAR(255),
   `message` MEDIUMTEXT,
   `at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT `pk_aliquot_event` PRIMARY KEY (`id`)
+  CONSTRAINT `pk_aliquot_event` PRIMARY KEY (`id`),
+  CONSTRAINT `uq_aliquot_event_reverts_event_id` UNIQUE (`reverts_event_id`),
+  CONSTRAINT `ck_aliquot_event_reverts_event_id` CHECK ((`event` = 'revert_use') = (`reverts_event_id` IS NOT NULL))
 );
 
 CREATE TABLE `alias` (
@@ -104,6 +107,8 @@ ALTER TABLE `aliquot` ADD CONSTRAINT `fk_aliquot_stock_id` FOREIGN KEY (`stock_i
 ALTER TABLE `aliquot` ADD CONSTRAINT `fk_aliquot_box_id_slot` FOREIGN KEY (`box_id`, `slot`) REFERENCES `slot` (`box_id`, `label`);
 
 ALTER TABLE `aliquot_event` ADD CONSTRAINT `fk_aliquot_event_aliquot_id` FOREIGN KEY (`aliquot_id`) REFERENCES `aliquot` (`id`);
+
+ALTER TABLE `aliquot_event` ADD CONSTRAINT `fk_aliquot_event_reverts_event_id` FOREIGN KEY (`reverts_event_id`) REFERENCES `aliquot_event` (`id`) ON DELETE CASCADE;
 
 CREATE TABLE `entity_everything` (
   `id` VARCHAR(64) NOT NULL,

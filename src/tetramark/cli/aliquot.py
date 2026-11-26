@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from typing import Any
 
 import typer
@@ -9,10 +11,21 @@ import typer
 from tetramark.cli.form_commands import run_add_form_command
 from tetramark.cli.messages import aliquots_add_message
 from tetramark.cli.objects_common import emit_write
-from tetramark.cli.options import group, json_output, resolve_ledger, write_command
+from tetramark.cli.options import (
+    GlobalOptions,
+    group,
+    json_output,
+    resolve_ledger,
+    target_branch,
+    write_command,
+)
 from tetramark.cli.output import emit_read, output_format, short_uuid_ids
 from tetramark.cli.related import related_lines, without_related
+from tetramark.core import objects
+from tetramark.core.ledger import open as open_ledger
 from tetramark.core.objects import plain_decimal
+from tetramark.core.writelock import WriteLock
+from tetramark.errors import EXIT_ERROR, LedgerError, UsageError
 from tetramark.ops.history import event_line
 
 aliquot_app = group(
@@ -467,8 +480,45 @@ def move_aliquot_command(
         ledger.close()
 
 
+def _preview_quantity(quantity: Any, unit: str | None) -> str:
+    if quantity is None:
+        return "unknown"
+    return " ".join(part for part in (plain_decimal(quantity), unit) if part)
+
+
+def _preview_place(box: str | None, slot: str | None) -> str:
+    if box is None:
+        return "unplaced"
+    return f"{box}:{slot}" if slot is not None else box
+
+
+def _preview_aliquot_use(plan: objects.AliquotUsePlan) -> None:
+    operation = "Revert use of aliquot" if plan.is_revert else "Use aliquot"
+    lines = [
+        f"{operation} {plan.id}",
+        f"Reason: {json.dumps(plan.message, ensure_ascii=False)}",
+        f"Quantity: {_preview_quantity(plan.quantity_before, plan.unit_before)}"
+        f" -> {_preview_quantity(plan.quantity_after, plan.unit_after)}",
+    ]
+    if plan.status_before != plan.status_after:
+        lines.append(f"Status: {plan.status_before} -> {plan.status_after}")
+    before_place = _preview_place(plan.box_name_before or plan.box_before, plan.slot_before)
+    after_place = _preview_place(plan.box_name_after or plan.box_after, plan.slot_after)
+    if before_place != after_place:
+        lines.append(f"Placement: {before_place} -> {after_place}")
+    if plan.target_event_id is not None:
+        lines.append(f"Original use event {plan.target_event_id} at {plan.target_event_at}")
+        if plan.target_event_message:
+            original_reason = json.dumps(plan.target_event_message, ensure_ascii=False)
+            lines.append(f"Original reason: {original_reason}")
+    typer.echo("\n".join(lines), err=True)
+
+
+def _stdin_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
 @aliquot_app.command("use")
-@write_command
 def use_aliquot_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Aliquot id or alias."),
@@ -486,30 +536,68 @@ def use_aliquot_command(
         ...,
         "--message",
         "-m",
-        help=(
-            "Why the material was used (required; trimmed and stored on the "
-            "use event)."
-        ),
+        help="Reason for the use or reversal (required and stored on the event).",
     ),
+    revert_last: bool = typer.Option(
+        False, "--revert-last", help="Reverse the latest use. Leave out AMOUNT and UNIT."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Confirm without an interactive prompt."),
     as_json: bool = typer.Option(False, "--json", help="Print the changed aliquot as JSON."),
 ) -> None:
-    """Consume part or all of an aliquot; -m/--message is required.
+    """Use part or all of an aliquot, or reverse its latest use.
 
-    AMOUNT and UNIT come together: passing only one of them is a usage
-    error.  Leaving both out uses everything left, which is the same as
-    passing the remaining quantity and its unit.  Reaching zero marks the
-    tube ``consumed`` and clears its box slot; the message is trimmed,
-    refused when empty, and recorded on the use event.
+    AMOUNT and UNIT come together. Leaving both out uses everything left
+    unless --revert-last is set. Review the preview and confirm the write,
+    or pass --yes to confirm in a script. --dry-run requires no confirmation.
     """
+    if revert_last and (amount is not None or unit is not None):
+        raise UsageError("--revert-last cannot be combined with AMOUNT or UNIT")
     ledger = resolve_ledger(ctx)
     try:
-        result = ledger.aliquots.use(ref, amount, unit, message=message)
-        emit_write(
-            ledger,
-            result,
-            _use_line(result),
-            as_json=json_output(ctx, as_json),
+        branch = target_branch(ledger)
+        if not branch:
+            raise LedgerError("Cannot determine the target branch for aliquot use")
+        plan = objects.plan_aliquot_use(
+            ledger, ref, amount, unit, message=message, revert_last=revert_last
         )
+        needs_confirmation = not ledger.dry_run and not yes
+        if needs_confirmation and not _stdin_is_tty():
+            raise UsageError(
+                "tm aliquot use requires confirmation; pass --yes in non-interactive mode"
+            )
+        _preview_aliquot_use(plan)
+        if needs_confirmation:
+            typer.echo("Confirm? [y/N] ", err=True, nl=False)
+            if sys.stdin.readline().strip().lower() not in {"y", "yes"}:
+                typer.echo("Cancelled", err=True)
+                raise typer.Exit(EXIT_ERROR)
+        if ledger.dry_run:
+            result = objects.apply_aliquot_use(ledger, plan)
+        else:
+            # Reload config and metadata after waiting for input, under the same
+            # write lock that covers revalidation and the commit.
+            options: GlobalOptions = ctx.obj
+            lock = WriteLock(ledger.path, command="tm aliquot use")
+            with lock, open_ledger(
+                ledger.path, branch=options.branch, no_commit=ledger.no_commit
+            ) as current:
+                current._adopt_write_lock(lock)
+                try:
+                    if target_branch(current) != branch:
+                        raise LedgerError(
+                            "The target branch changed after preview; rerun the command"
+                        )
+                    result = objects.apply_aliquot_use(current, plan)
+                finally:
+                    current._release_adopted_write_lock()
+        if revert_last:
+            result_line = (
+                f"Reverted use event {result['reverts_event_id']} for "
+                f"{result['id']}: {result['message']}"
+            )
+        else:
+            result_line = _use_line(result)
+        emit_write(ledger, result, result_line, as_json=json_output(ctx, as_json))
     finally:
         ledger.close()
 

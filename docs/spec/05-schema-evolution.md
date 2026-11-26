@@ -20,9 +20,11 @@
 **README-only** (a **manual** step: the operator follows its README, because the change touches the
 ledger's files — its preset copies, its local kinds — as much as its rows).
 
-**Spec 8 is the current format**: it drops the unused `aliquot.notes` column through the
-README-only `migration/spec/7-to-8/README.md` (an aliquot borrows its stock's note, which
-`tm aliquot list` and `tm aliquot show` print). Spec 7 renamed `aliquot_event.note` to `message`
+**Spec 9** adds `revert_use` and the nullable `aliquot_event.reverts_event_id` link. The scripted
+step in `migration/spec/8-to-9/` preserves existing events and IDs and installs the reversal checks.
+Spec 8 dropped the unused `aliquot.notes` column through the README-only
+`migration/spec/7-to-8/README.md`. An aliquot borrows its stock's note, which `tm aliquot list` and
+`tm aliquot show` print. Spec 7 renamed `aliquot_event.note` to `message`
 and dropped the unused `purpose` column (scripted, `migration/spec/6-to-7/`). **Spec 6 (ticket
 Tetramark-epn)** is where the fixed status set landed: every aliquot has one fixed, hardcoded
 status set — `pending`, `stored`, `missing`, `consumed` — that every stock kind shares (§1.1). No

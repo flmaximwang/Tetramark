@@ -380,7 +380,8 @@ tm aliquot edit ALQ --set FIELD=VALUE ... [-m/--message TEXT] [--json]
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] \
   [--all | --not-in-stock] [--where FIELD=VALUE ...] [--json]
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG [--json]
-tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--json]
+tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--yes] [--json]
+tm aliquot use ALQ --revert-last -m MSG [--yes] [--json]
 tm aliquot status ALQ STATUS [-m/--message TEXT] [--force] [--json]
 tm aliquot label ALQ LABEL [--replace] [--json]
 tm aliquot purge ALQ [--json]
@@ -460,7 +461,14 @@ tm aliquot purge ALQ [--json]
   position). The human line names the amount used and ends with the message, e.g.
   `Used all 200 ml from X (consumed): <msg>`; `--json` adds `used_amount`, `used_unit` and `message`
   (`used_amount` is `null` for a whole use of a tube with no quantity).
-- `move` and `use` are **irreversible physical actions**, so both require `-m/--message`: the value
+- `use --revert-last` corrects the latest use on the same tube when its previous state can be
+  recovered. It restores quantity, status and placement, adding a reversal linked to the original
+  use. A later quantity, unit, status or placement change blocks reversal, as does an occupied
+  former slot. Omit `AMOUNT` and `UNIT` when reversing.
+- Both `use` forms preview the change and ask once for confirmation (default no). Pass `--yes`
+  when scripting a write, or `--dry-run` to preview without confirming or writing. Preview and
+  prompt go to stderr, leaving stdout available for `--json`.
+- `move` and `use` both require `-m/--message`. The value
   is trimmed, a blank value is refused, and there is no length limit. It is event text, stored in
   `aliquot_event.message` (spec 7) — never the ASCII commit message. `use`'s former purpose and note
   options are removed outright (no aliases); `tm aliquot status` takes the same `-m/--message`

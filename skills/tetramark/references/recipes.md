@@ -110,21 +110,29 @@ tm stock add bacterial_pellet --entity p035 --aliquots 3 \
   --quantity 500 --unit ml \
   --set culture_volume_ml=1500 --set od600=2.4 --set induction=iptg
 
-tm aliquot use 1226KO02.1 200 ml -m "first purification"
+tm aliquot use 1226KO02.1 200 ml -m "first purification" --yes
 tm stock show 1226KO02
 ```
 
 `1226KO02.1` now has `300 ml` and stays `stored`. Using the remaining `300 ml` — or
-`tm aliquot use 1226KO02.1 -m "second elution"`, which uses everything left — sets it to `consumed`;
+`tm aliquot use 1226KO02.1 -m "second elution" --yes`, which uses everything left — sets it to `consumed`;
 `1226KO02.2`/`.3` are untouched. `-m/--message` is required on `use` and `move`: it is trimmed, may
 not be blank and is recorded on the tube's event, so say why the material left the tube. A tube
-registered without a quantity can only be used whole (`tm aliquot use ALQ -m "used it all"`); a
+registered without a quantity can only be used whole (`tm aliquot use ALQ -m "used it all" --yes`); a
 partial amount is refused. If a tube is missing rather than used:
 
 ```sh
 tm aliquot status 1226KO02.3 missing -m "not in the box on 2026-10-23"
 ```
 
+If the second elution was logged against the wrong tube, preview the correction and then confirm it.
+
+```sh
+tm --dry-run aliquot use 1226KO02.1 --revert-last -m "second elution used a different tube"
+tm aliquot use 1226KO02.1 --revert-last -m "second elution used a different tube" --yes
+```
+
+`tm history 1226KO02.1` shows the original use and the reversal that links back to it.
 Never encode consumption by editing the quantity with raw SQL: `use` writes the event and flips the
 status automatically. Use `purge` only when the object never existed in the first place; the same
 explicit hard delete exists for entities, stocks and boxes (`tm entity|stock|box purge`).
@@ -342,7 +350,7 @@ back). `tm schema show KIND` prints the same fixed set for every kind. The detai
 optional enum **stock property**, never a status: `tm stock edit FLY --set fate=discarded` (fly:
 discarded/lost), `tm stock edit MOUSE_OR_FISH --set fate=euthanized` (mouse, fish:
 euthanized/found_dead/transferred/cancelled), `tm stock edit WORM --set condition=starved` (worm:
-growing/starved/contaminated). Use `tm aliquot use ALQ [AMOUNT UNIT] -m MSG` for quantities (the
+growing/starved/contaminated). Use `tm aliquot use ALQ [AMOUNT UNIT] -m MSG --yes` for quantities (the
 message is required there; `status` needs none unless it is a forced change).
 
 ## 11. Record a cross (dam/sire are aliquots)

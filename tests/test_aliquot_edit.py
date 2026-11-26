@@ -615,7 +615,7 @@ def test_cli_aliquot_edit_after_use_corrects_the_current_quantity(
     made = make_stock(ledger, quantity="100", unit="ul")
     alq = made["aliquots"][0]
 
-    write(ledger, "aliquot", "use", alq, "30", "ul", "-m", "prep")
+    write(ledger, "aliquot", "use", alq, "30", "ul", "-m", "prep", "--yes")
     used = aliquot_row(ledger, alq)
     assert Decimal(str(used["quantity"])) == Decimal("70")
     old_events = aliquot_events(ledger, alq)
