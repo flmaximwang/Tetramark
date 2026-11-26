@@ -22,7 +22,7 @@ ledger's files — its preset copies, its local kinds — as much as its rows).
 
 **Spec 9** adds `revert_use` and the nullable `aliquot_event.reverts_event_id` link. The scripted
 step in `migration/spec/8-to-9/` preserves existing events and IDs and installs the reversal checks.
-Its shape is all four pieces or nothing — the column, the `revert_use` value in the `event` ENUM,
+Its shape is all of it or none of it — the column, the `revert_use` value in the `event` ENUM,
 and the UNIQUE/CHECK/self foreign-key constraints — and `tm schema apply` reads that whole shape, not
 the column alone, before it stamps `spec_version = 9`: an interrupted migration leaves a partial
 shape, and the step refuses a ledger that already records 9, so stamping it would strand the ledger.

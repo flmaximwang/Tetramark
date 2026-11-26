@@ -2530,8 +2530,8 @@ def _has_reversal_column(live: _LiveState) -> bool:
     constraints are missing.  Stamping the counter over that shape is what
     strands a ledger: every ``revert_use`` fails with a truncated ENUM, and
     ``migration/spec/8-to-9`` refuses a ledger that already records 9.  So the
-    counter may only move when all four pieces are present — the column, the
-    ENUM value, and the UNIQUE/CHECK/self foreign key.
+    counter may only move when the whole shape is present — the column, the
+    ENUM value, and the UNIQUE/CHECK/self foreign-key constraints.
 
     A ledger without it is still spec 8 in shape, whatever its counter says, and
     only ``migration/spec/8-to-9`` may move it.  An absent ``aliquot_event``
