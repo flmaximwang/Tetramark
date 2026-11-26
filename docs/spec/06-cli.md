@@ -105,7 +105,8 @@ tm aliquot edit ALQ --set field=value ... [-m MSG]   # correct quantity/unit/cre
 tm aliquot list [STOCK] [--kind KIND] [--box NAME] [--status S ...] [--all | --not-in-stock]
                 [--where FILTER ...] [--where-any FILTER ...]   # in-stock shelf view; --all/--status widen
 tm aliquot move ALQ --box NAME [--slot S] [--status S] -m MSG   # MSG required
-tm aliquot use ALQ [AMOUNT UNIT] -m MSG      # no amount/unit = use everything left; 0 → consumed
+tm aliquot use ALQ [AMOUNT UNIT] -m MSG [--yes]  # no amount/unit = use everything left
+tm aliquot use ALQ --revert-last -m MSG [--yes]
 tm aliquot status ALQ NEW [--force] [-m MSG]   # NEW: pending|stored|missing|consumed (§1.1); MSG required with --force
 tm aliquot label ALQ LABEL [--replace]       # set label; --replace keeps the old label as an alias
 tm aliquot purge ALQ                                  # hard delete, explicit only
@@ -188,8 +189,7 @@ changing to `stored` without a position is refused with a hint to run
 `stored` also sets it to `stored`; a move with `--status` runs the normal transition check, and the
 result must be `stored`.
 
-`tm aliquot move` and `tm aliquot use` are **irreversible physical actions**, so both require
-`-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
+`tm aliquot move` and `tm aliquot use` both require `-m/--message` (§1). The message is trimmed before it is stored and has no length limit; a missing
 option is a usage error, and a value that is empty or whitespace-only after trimming is refused. It is
 event text, stored in `aliquot_event.message` (spec 7), never the ASCII commit message. `use`'s
 former purpose and note options are removed outright — no aliases; `tm aliquot status` takes the same
@@ -210,6 +210,12 @@ and clears its box position in the same write (the old position stays on the eve
 names the amount used and ends with the message, e.g. `Used all 200 ml from X (consumed): <msg>`;
 `--json` adds `used_amount`, `used_unit` and `message` to the result (`used_amount` is NULL for a whole
 use of a tube with no quantity).
+
+`tm aliquot use ALQ --revert-last -m MSG` restores the state before the latest use when the audit
+trail supports it and the former slot is still available. The reversal adds an event linked to the
+original use. Both forms preview the change and ask once for confirmation, defaulting to no. Pass
+`--yes` to confirm in a script, or `--dry-run` to preview without confirmation or a write. The preview
+and prompt go to stderr. See the [full use and reversal specification](aliquot-use-revert-last.md).
 
 The Python API mirrors the CLI: `ledger.aliquots.use(ref, amount=None, unit=None, *, message)` and
 `ledger.aliquots.move(ref, *, box=..., slot=..., status=..., message)`; both take no event-text
@@ -968,7 +974,8 @@ contract.
 **Grammar.** Tokens, in this fixed order, joined by one space; an absent token is omitted:
 
 ```
-<at> <event> [<aliquot_id>] [amount=<amount> [<unit>]] [from=<place>] [to=<place>]
+<at> <event> [<aliquot_id>] [id=<event_id>] [reverts_event_id=<use_id>]
+[amount=<amount> [<unit>]] [from=<place>] [to=<place>]
 [(forced)] [status=<old>-><new> | status=<new> | status=<old>] [by=<actor>]
 [message="<stored text>"]
 ```
@@ -987,7 +994,9 @@ contract.
 9. `by=<actor>` — the stored actor, raw and unquoted (actor rendering is unchanged).
 10. `message="<stored text>"` — always last; see below.
 
-Tokens 1-9 render exactly as in 0.8.29, except the unresolved-place rule below.
+`id` appears on `use` and `revert_use` lines, immediately after the optional `aliquot_id`.
+The `reverts_event_id` on `revert_use` follows that ID and identifies the original `use`. Both
+commands include the link in the reversal's JSON event object.
 
 **`message`.** The token is present exactly when the stored `message` is not NULL and is not the
 empty string. Its value is the complete stored text (no trimming) encoded as a JSON string with
@@ -1040,7 +1049,7 @@ columns. `tm aliquot show --format csv` still drops `events` entirely.
 ```
 2026-10-26 11:11:44 create amount=50.000000 ml to=Rack-3:B4 status=stored by=alice
 2026-11-04 09:20:44 move 1026KR08.1 from=Rack-3:B4 to=Freezer-B:A2 status=stored by=alice message="re-rack tubes"
-2026-11-05 00:08:28 use amount=50.000000 ml from=[unresolved box 930b7cc2-6f06-4dee-aac5-161f329bfe6e]:A2 (forced) status=stored->consumed by=alice message="上样 Capto 柱\n第二轮"
+2026-11-05 00:08:28 use id=42 amount=50.000000 ml from=[unresolved box 930b7cc2-6f06-4dee-aac5-161f329bfe6e]:A2 (forced) status=stored->consumed by=alice message="上样 Capto 柱\n第二轮"
 ```
 
 The `move` line is the `tm history` form, which carries the tube id; `tm aliquot show` prints the

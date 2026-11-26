@@ -6,6 +6,11 @@ An aliquot is a physical tube, so anything that happens to it is appended to
 edited.  The table is append-only except for :func:`purge_events`, which the
 explicit ``aliquot purge`` command needs because of the foreign key.
 
+Spec 9 added the ``revert_use`` kind: a ``use`` can be undone, and the undo is
+its own row that points at the exact original with ``reverts_event_id``.  The
+original row is never touched; it stays the record of what happened, and the
+reversal is the record of what was restored.
+
 Functions here take a *session* (anything with ``execute``) so the event row
 lands inside the same transaction — and therefore the same Dolt commit — as the
 change it describes.
@@ -18,6 +23,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from tetramark.errors import LedgerError
+from tetramark.schema.ddl import REVERT_EVENT
 from tetramark.schema.model import SPEC_VERSION
 
 __all__ = [
@@ -26,17 +32,19 @@ __all__ = [
     "purge_events",
     "record_event",
     "require_spec7_event_columns",
+    "require_spec9_reversal_columns",
 ]
 
-#: Values allowed by the ``event`` ENUM in the core DDL.
-EVENT_TYPES: tuple[str, ...] = ("create", "use", "move", "status", "edit")
+#: Values allowed by the ``event`` ENUM in the core DDL.  ``revert_use`` (spec
+#: 9) is last, like in the ENUM: older ledgers keep their stored values.
+EVENT_TYPES: tuple[str, ...] = ("create", "use", "move", "status", "edit", REVERT_EVENT)
 
 
 class Executor(Protocol):
     """The part of a write session events need.
 
     ``ledger`` is :attr:`tetramark.core.ledger.WriteSession.ledger`; the
-    spec-7 guard reads its ``spec_version`` before the INSERT.
+    spec-7/spec-9 guards read its ``spec_version`` before the INSERT.
     """
 
     #: The ledger this session writes to (a ``WriteSession`` attribute).
@@ -54,6 +62,9 @@ class Event:
 
     aliquot_id: str
     event: str
+    #: Spec 9: the ``id`` of the ``use`` this ``revert_use`` undoes.  Exactly
+    #: the reversal kinds carry one (the DDL's CHECK enforces both directions).
+    reverts_event_id: int | None = None
     amount: Decimal | None = None
     unit: str | None = None
     from_box_id: str | None = None
@@ -75,6 +86,7 @@ class Event:
 _EVENT_COLUMNS = (
     "aliquot_id",
     "event",
+    "reverts_event_id",
     "amount",
     "unit",
     "from_box_id",
@@ -88,12 +100,17 @@ _EVENT_COLUMNS = (
     "message",
 )
 
-
 #: The spec that introduced ``aliquot_event.message`` (and dropped ``note``/
 #: ``purpose``).  A ledger below this still has the spec-6 event columns; the
 #: counter moves on (spec 8 dropped ``aliquot.notes``), so this guard compares
 #: against the spec that changed the event shape, never ``SPEC_VERSION``.
 EVENT_MESSAGE_SPEC = 7
+
+#: The spec that introduced ``aliquot_event.reverts_event_id`` and the
+#: ``revert_use`` kind.  A spec-8 ledger can still record every ordinary event
+#: (the column is simply absent from the INSERT), but it cannot record a
+#: reversal: the reference has nowhere to go.
+EVENT_REVERSAL_SPEC = 9
 
 
 def require_spec7_event_columns(ledger: Any) -> None:
@@ -129,14 +146,87 @@ def require_spec7_event_columns(ledger: Any) -> None:
     )
 
 
+def require_spec9_reversal_columns(ledger: Any) -> None:
+    """Refuse a reversal on a ledger that has no ``reverts_event_id`` column.
+
+    Spec 9 added the column, the ``revert_use`` kind and the self foreign key,
+    so a spec-8 ledger cannot store a reversal at all.  The guard is even more
+    targeted than the spec-7 one: an ordinary ``use``/``move``/``status`` event
+    still writes fine on a spec-8 ledger (that is the point of the nullable
+    column), and only :func:`record_event`'s reversal path calls this.  The
+    CLI reaches it through ``tm aliquot use --revert-last``, which is planned
+    **before** the interactive ``--yes`` question, so a spec-8 ledger is
+    refused with the upgrade text instead of a ``--yes`` hint.
+
+    Like :func:`require_spec7_event_columns`, a missing or unparseable counter
+    is not guarded: a very old ledger keeps its current behaviour, and the
+    INSERT itself reports the missing column.
+    """
+    from tetramark.core.ledger import META_SPEC_VERSION
+
+    raw = ledger.meta.get(META_SPEC_VERSION)
+    try:
+        stored = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return
+    if stored >= EVENT_REVERSAL_SPEC:
+        return
+    raise LedgerError(
+        f"ledger is spec {stored}, tm is spec {SPEC_VERSION}: aliquot_event "
+        "has no reversals (reverts_event_id, revert_use). Upgrade it with:\n"
+        f"uv run migration/spec/8-to-9/migrate.py --ledger {ledger.path}\n"
+        "(add --dry-run to preview; see migration/spec/8-to-9/README.md)"
+    )
+
+
+def _reversal_target(session: Executor, record: Event) -> None:
+    """Validate the ``use`` a ``revert_use`` names, inside the transaction.
+
+    The DDL already refuses a reference to a nonexistent row (self foreign key)
+    and lets a ``use`` be reversed once (UNIQUE).  What no constraint can say is
+    that the *named* row must be a ``use`` **of the same aliquot**, so that is
+    checked here, before the INSERT: the same transaction, the same commit, and
+    an error the operator can act on instead of a raw database failure.
+    """
+    assert record.reverts_event_id is not None
+    rows = session.query(
+        "SELECT `event`, `aliquot_id` FROM `aliquot_event` WHERE `id` = %s",
+        (record.reverts_event_id,),
+    )
+    if not rows:
+        raise LedgerError(
+            f"aliquot event {record.reverts_event_id} does not exist: a "
+            "reversal must name an existing use event"
+        )
+    target = rows[0]
+    if str(target["event"]) != "use":
+        raise LedgerError(
+            f"aliquot event {record.reverts_event_id} is a "
+            f"{target['event']!r} event, not a 'use': only a use can be "
+            "reversed"
+        )
+    if str(target["aliquot_id"]) != record.aliquot_id:
+        raise LedgerError(
+            f"aliquot event {record.reverts_event_id} belongs to "
+            f"{target['aliquot_id']}, not {record.aliquot_id}: a reversal must "
+            "undo a use of its own aliquot"
+        )
+
+
 def record_event(session: Executor, record: Event | None = None, **fields: Any) -> Event:
     """Append one event row to ``aliquot_event``.
 
     ``record_event(session, aliquot_id="x.1", event="move", ...)`` is the
     convenient form; passing an :class:`Event` is equivalent.  Returns the
     event that was written.  A spec-6 ledger is refused before the INSERT (see
-    :func:`require_spec7_event_columns`), so the write session aborts and
-    nothing is committed.
+    :func:`require_spec7_event_columns`), and a reversal on a spec-8 ledger is
+    refused by :func:`require_spec9_reversal_columns`: in both cases the write
+    session aborts and nothing is committed.
+
+    An ordinary event is inserted **without** the ``reverts_event_id`` column,
+    so a spec-7/8 ledger — where the column does not exist — keeps recording
+    ``create``/``use``/``move``/``status``/``edit`` exactly as before.  Only a
+    reversal names the column, and that path requires spec 9.
     """
     require_spec7_event_columns(session.ledger)
     if record is None:
@@ -149,10 +239,30 @@ def record_event(session: Executor, record: Event | None = None, **fields: Any) 
         )
     if not record.aliquot_id:
         raise LedgerError("an aliquot event needs an aliquot id")
+    if record.event == REVERT_EVENT:
+        if record.reverts_event_id is None:
+            raise LedgerError(
+                f"a {REVERT_EVENT!r} event must name the use event it reverses "
+                "(reverts_event_id); only a use can be reversed"
+            )
+        require_spec9_reversal_columns(session.ledger)
+        _reversal_target(session, record)
+    elif record.reverts_event_id is not None:
+        raise LedgerError(
+            f"only a {REVERT_EVENT!r} event carries reverts_event_id; "
+            f"{record.event!r} must leave it empty"
+        )
 
-    values = tuple(getattr(record, column) for column in _EVENT_COLUMNS)
-    columns_sql = ", ".join(f"`{column}`" for column in _EVENT_COLUMNS)
-    placeholders = ", ".join("%s" for _ in _EVENT_COLUMNS)
+    columns = _EVENT_COLUMNS
+    if record.reverts_event_id is None:
+        # Ordinary event: leave the spec-9 column out of the INSERT so a
+        # spec-7/8 ledger (no such column) keeps accepting these writes.
+        columns = tuple(
+            column for column in _EVENT_COLUMNS if column != "reverts_event_id"
+        )
+    values = tuple(getattr(record, column) for column in columns)
+    columns_sql = ", ".join(f"`{column}`" for column in columns)
+    placeholders = ", ".join("%s" for _ in columns)
     session.execute(
         f"INSERT INTO `aliquot_event` ({columns_sql}) VALUES ({placeholders})",
         values,
@@ -161,7 +271,12 @@ def record_event(session: Executor, record: Event | None = None, **fields: Any) 
 
 
 def purge_events(session: Executor, aliquot_id: str) -> int:
-    """Delete every event of an aliquot (only ``aliquot purge`` does this)."""
+    """Delete every event of an aliquot (only ``aliquot purge`` does this).
+
+    The spec-9 self foreign key is ``ON DELETE CASCADE``, so a reversal row
+    disappears with the ``use`` it points at when the whole aliquot's history
+    goes; the ``DELETE`` never has to delete children first.
+    """
     rows = session.query(
         "SELECT COUNT(*) AS `n` FROM `aliquot_event` WHERE `aliquot_id` = %s",
         (aliquot_id,),

@@ -144,6 +144,11 @@ class SchemaPlan:
     expected_tetramark_version: str = ""
     live_spec_version: str | None = None
     expected_spec_version: str = ""
+    #: True when the live event table already has the spec-9 reversal column.
+    #: A ledger whose shape is still spec 8 may only reach spec 9 through
+    #: ``migration/spec/8-to-9``, so a generic apply must not stamp the counter
+    #: (the step refuses a ledger that already claims 9).
+    reversal_shape_stored: bool = True
 
     # -- summaries ---------------------------------------------------------
     @property
@@ -163,11 +168,22 @@ class SchemaPlan:
         still has to record the new counter.  Comparing the counter keeps
         ``tm schema apply`` able to write it without a plan step, and without
         the runner recording a fingerprint the format does not own.
+
+        The counter does **not** move for a ledger whose shape is still spec 8
+        (``reversal_shape_stored`` is false): the generic plan cannot add the
+        spec-9 column, and ``migration/spec/8-to-9`` refuses a ledger that
+        already records 9, so stamping the counter here would strand it.  Such a
+        ledger keeps its stored counter until the supported step runs; only the
+        fingerprint and the tool version are refreshed.
         """
+        moved_counter = (
+            self.reversal_shape_stored
+            and self.live_spec_version != self.expected_spec_version
+        )
         return (
             self.live_fingerprint != self.expected_fingerprint
             or self.live_tetramark_version != self.expected_tetramark_version
-            or self.live_spec_version != self.expected_spec_version
+            or moved_counter
         )
 
     @property
@@ -426,6 +442,8 @@ class _DesiredForeignKey:
     columns: tuple[str, ...]
     target: str
     target_columns: tuple[str, ...]
+    #: The ``ON DELETE`` rule (``CASCADE`` for the spec-9 reversal), or None.
+    on_delete: str | None = None
 
 
 def _field_specs(fields: dict[str, Field]) -> dict[str, _Spec]:
@@ -545,6 +563,7 @@ def _desired_foreign_keys(schema: EffectiveSchema) -> list[_DesiredForeignKey]:
                 columns=tuple(statement.columns),
                 target=statement.target,
                 target_columns=tuple(statement.target_columns),
+                on_delete=statement.on_delete,
             )
         )
     return keys
@@ -670,12 +689,17 @@ _FOREIGN_KEYS_SQL = (
     "SELECT tc.table_name AS tbl, tc.constraint_name AS name, "
     "kcu.column_name AS col, kcu.ordinal_position AS pos, "
     "kcu.referenced_table_name AS ref_tbl, "
-    "kcu.referenced_column_name AS ref_col "
+    "kcu.referenced_column_name AS ref_col, "
+    "rc.delete_rule AS rule "
     "FROM information_schema.table_constraints AS tc "
     "JOIN information_schema.key_column_usage AS kcu "
     "  ON kcu.constraint_schema = tc.constraint_schema "
     " AND kcu.table_name = tc.table_name "
     " AND kcu.constraint_name = tc.constraint_name "
+    "LEFT JOIN information_schema.referential_constraints AS rc "
+    "  ON rc.constraint_schema = tc.constraint_schema "
+    " AND rc.table_name = tc.table_name "
+    " AND rc.constraint_name = tc.constraint_name "
     "WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'FOREIGN KEY' "
     "ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position"
 )
@@ -727,6 +751,8 @@ class _ForeignKey:
     columns: tuple[str, ...]
     target: str
     target_columns: tuple[str, ...]
+    #: The live ``ON DELETE`` rule, normalised by :func:`_fk_rule`.
+    on_delete: str | None = None
 
 
 @dataclass
@@ -890,6 +916,19 @@ def _checks_from(
     return checks
 
 
+def _fk_rule(value: Any) -> str | None:
+    """Normalise a live ``ON DELETE`` rule: only ``CASCADE`` is a difference.
+
+    Dolt reports the default as ``NO ACTION``; every generated key except the
+    spec-9 reversal self-reference has no ``ON DELETE`` clause, so those map to
+    ``None`` and compare equal to a desired key without a clause.
+    """
+    rule = " ".join(str(value or "").split()).upper()
+    if rule in ("", "NO ACTION", "RESTRICT"):
+        return None
+    return rule
+
+
 def _foreign_keys_from(
     rows: Sequence[Mapping[str, Any]],
 ) -> list[_ForeignKey]:
@@ -902,6 +941,7 @@ def _foreign_keys_from(
                 "columns": [],
                 "target": str(row["ref_tbl"]),
                 "target_columns": [],
+                "on_delete": _fk_rule(row.get("rule")),
             },
         )
         entry["columns"].append(str(row["col"]))
@@ -913,6 +953,7 @@ def _foreign_keys_from(
             columns=tuple(entry["columns"]),
             target=entry["target"],
             target_columns=tuple(entry["target_columns"]),
+            on_delete=entry["on_delete"],
         )
         for (table, name), entry in fk_parts.items()
     ]
@@ -1203,6 +1244,7 @@ def build_plan(
         expected_tetramark_version=__version__,
         live_spec_version=live.meta.get(META_SPEC_VERSION),
         expected_spec_version=str(SPEC_VERSION),
+        reversal_shape_stored=_has_reversal_column(live),
     )
     buckets = _Buckets()
 
@@ -1791,6 +1833,7 @@ def _translate_live(
                 target_columns=tuple(
                     target_mapping.get(col, col) for col in key.target_columns
                 ),
+                on_delete=key.on_delete,
             )
         )
 
@@ -2171,11 +2214,11 @@ def _diff_foreign_keys(
     renamed_kinds: Sequence[tuple[str, str, str, str, str]],
 ) -> None:
     desired_keys = {
-        (key.table, key.columns, key.target, key.target_columns)
+        (key.table, key.columns, key.target, key.target_columns, key.on_delete)
         for key in desired
     }
     live_keys = {
-        (key.table, key.columns, key.target, key.target_columns)
+        (key.table, key.columns, key.target, key.target_columns, key.on_delete)
         for key in live.foreign_keys
     }
     live_by_name = {(key.table, key.name): key for key in live.foreign_keys}
@@ -2183,7 +2226,9 @@ def _diff_foreign_keys(
 
     # A renamed kind must update both the parent and the child discriminator
     # values, so its (id, kind) foreign key has to be dropped and re-added.
-    forced: set[tuple[str, str, tuple[str, ...], str, tuple[str, ...]]] = set()
+    forced: set[
+        tuple[str, tuple[str, ...], str, tuple[str, ...], str | None]
+    ] = set()
     for core, _old, _new, _old_table, new_table in renamed_kinds:
         for key in live.foreign_keys:
             if (
@@ -2192,7 +2237,13 @@ def _diff_foreign_keys(
                 and key.target == core
             ):
                 forced.add(
-                    (key.table, key.columns, key.target, key.target_columns)
+                    (
+                        key.table,
+                        key.columns,
+                        key.target,
+                        key.target_columns,
+                        key.on_delete,
+                    )
                 )
 
     def managed(table: str) -> bool:
@@ -2202,10 +2253,43 @@ def _diff_foreign_keys(
             or table in created
         )
 
+    def planned_columns(table: str) -> set[str]:
+        prefix = f"{table}."
+        return {
+            step.name[len(prefix):]
+            for step in buckets.column_adds
+            if step.name.startswith(prefix)
+        }
+
+    def addable(table: str, columns: tuple[str, ...]) -> bool:
+        """Whether the key's columns exist, or the same plan adds them.
+
+        A table this plan creates carries its columns from ``CREATE TABLE``.
+        An existing table may still lack one: a pre-spec-9 ledger has no
+        ``aliquot_event.reverts_event_id``, and migration/spec/8-to-9 is the
+        supported way to add the column, the three constraints and their data
+        checks together (like the README-only spec bumps before it, the generic
+        plan stays quiet about the older format rather than adding a key over
+        a column that does not exist).
+        """
+        if table in created or table not in live.columns:
+            return True
+        live_columns = live.columns.get(table, {})
+        added = planned_columns(table)
+        return all(
+            column in live_columns or column in added for column in columns
+        )
+
     for key in live.foreign_keys:
         if key.table in dropped_tables or not managed(key.table):
             continue
-        semantic = (key.table, key.columns, key.target, key.target_columns)
+        semantic = (
+            key.table,
+            key.columns,
+            key.target,
+            key.target_columns,
+            key.on_delete,
+        )
         if semantic in desired_keys and semantic not in forced:
             continue
         if (key.table, key.name) in dropped_names:
@@ -2214,14 +2298,23 @@ def _diff_foreign_keys(
         dropped_names.add((key.table, key.name))
 
     for key in desired:
-        semantic = (key.table, key.columns, key.target, key.target_columns)
+        semantic = (
+            key.table,
+            key.columns,
+            key.target,
+            key.target_columns,
+            key.on_delete,
+        )
         if semantic in live_keys and semantic not in forced:
+            continue
+        if not addable(key.table, key.columns):
             continue
         current = live_by_name.get((key.table, key.name))
         if current is not None and (key.table, key.name) not in dropped_names:
             # Same constraint name, different definition: drop before add.
             buckets.fk_drops.append(_fk_drop_step(current))
             dropped_names.add((key.table, key.name))
+        tail = f" ON DELETE {key.on_delete}" if key.on_delete else ""
         buckets.fk_adds.append(
             _step(
                 "add_foreign_key",
@@ -2230,7 +2323,8 @@ def _diff_foreign_keys(
                 f"{_ident(key.name)} FOREIGN KEY "
                 f"({', '.join(_ident(column) for column in key.columns)}) "
                 f"REFERENCES {_ident(key.target)} "
-                f"({', '.join(_ident(column) for column in key.target_columns)})",
+                f"({', '.join(_ident(column) for column in key.target_columns)})"
+                f"{tail}",
                 object="foreign key",
                 name=f"{key.table}.{key.name}",
                 description=f"references {key.target}",
@@ -2351,7 +2445,7 @@ def apply(
     with ledger.write(summary, verb="apply", object="schema") as session:
         for step in current.steps:
             session.execute(step.sql)
-        _refresh_meta(session, ledger)
+        _refresh_meta(session, ledger, current)
         _install_generated_tests(ledger)
     commit_hash = session.commit_hash
 
@@ -2361,9 +2455,16 @@ def apply(
     )
 
 
-def _refresh_meta(session: Any, ledger: "Ledger") -> None:
-    """Write the fingerprint/preset versions/ledger.yaml copy after apply."""
-    values = _meta_values(ledger)
+def _refresh_meta(
+    session: Any, ledger: "Ledger", current: SchemaPlan | None = None
+) -> None:
+    """Write the fingerprint/preset versions/ledger.yaml copy after apply.
+
+    The spec counter follows the *shape* (:meth:`SchemaPlan.meta_stale`): a
+    ledger whose event table is still spec 8 keeps its stored counter, because
+    ``migration/spec/8-to-9`` refuses a ledger that already records 9.
+    """
+    values = _meta_values(ledger, current=current)
     for key, value in values.items():
         session.execute(
             "INSERT INTO `ledger_meta` (`key`, `value`) VALUES (%s, %s) "
@@ -2372,7 +2473,9 @@ def _refresh_meta(session: Any, ledger: "Ledger") -> None:
         )
 
 
-def _meta_values(ledger: "Ledger") -> dict[str, str]:
+def _meta_values(
+    ledger: "Ledger", *, current: SchemaPlan | None = None
+) -> dict[str, str]:
     # Local import: ``tetramark/__init__`` imports this package's dependencies.
     from tetramark import __version__
 
@@ -2380,8 +2483,15 @@ def _meta_values(ledger: "Ledger") -> dict[str, str]:
     ledger_yaml = (
         config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
     )
+    stored = ledger.meta.get(META_SPEC_VERSION)
+    keep_counter = current is not None and not current.reversal_shape_stored
+    spec_version = (
+        str(stored)
+        if keep_counter and stored is not None
+        else str(SPEC_VERSION)
+    )
     return {
-        META_SPEC_VERSION: str(SPEC_VERSION),
+        META_SPEC_VERSION: spec_version,
         # Refresh the writing-tool version; ``created_with`` stays frozen at
         # the value written by init/adopt.
         META_TETRAMARK_VERSION: __version__,
@@ -2394,5 +2504,34 @@ def _meta_values(ledger: "Ledger") -> dict[str, str]:
 
 
 def _install_generated_tests(ledger: "Ledger") -> None:
-    """Replace generated ``dolt_tests`` wholesale (spec §4) for ``schema apply``."""
-    install_tests(ledger.driver, ledger.schema)
+    """Replace generated ``dolt_tests`` wholesale (spec §4) for ``schema apply``.
+
+    The gate uses the ``spec_version`` the ledger **stored** before this write
+    (``ledger.meta`` is not updated in memory until ``read_meta``): ``schema
+    apply`` stamps the new counter itself, and a ledger still below spec 9 has
+    no ``reverts_event_id`` for the reversal tests to read.
+    """
+    install_tests(ledger.driver, ledger.schema, live_spec=_stored_spec(ledger))
+
+
+def _has_reversal_column(live: _LiveState) -> bool:
+    """True when the live ``aliquot_event`` carries ``reverts_event_id``.
+
+    A ledger without it is still spec 8 in shape, whatever its counter says, and
+    only ``migration/spec/8-to-9`` may move it: the step refuses a counter other
+    than 8, so stamping 9 here would strand the ledger.  An absent
+    ``aliquot_event`` table is the other case: the plan creates the current one,
+    column and constraints included, so the counter may move.
+    """
+    if "aliquot_event" not in live.columns:
+        return True
+    return "reverts_event_id" in live.columns["aliquot_event"]
+
+
+def _stored_spec(ledger: "Ledger") -> int | None:
+    """The ``spec_version`` in ``ledger.meta``, or ``None`` when unusable."""
+    raw = ledger.meta.get(META_SPEC_VERSION)
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None

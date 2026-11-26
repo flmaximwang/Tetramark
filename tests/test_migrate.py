@@ -35,10 +35,12 @@ from typer.testing import CliRunner
 
 from tetramark import __version__
 from tetramark.cli.app import app
+from tetramark.core.events import record_event
 from tetramark.core.ledger import Ledger, build_id_strategies, open as open_ledger
 from tetramark.errors import LedgerError, UsageError
 from tetramark.migrate import (
     SPEC4_ONLY_TESTS,
+    SPEC9_ONLY_TESTS,
     MigrationStep,
     counter,
     load_renames,
@@ -295,12 +297,16 @@ def expected_installed_tests(ledger: Ledger) -> int:
     """How many generated tests a step may install at this ledger's spec.
 
     The runner omits the spec-4-only rules on a ledger that stays below spec 4
-    (they read ``aliquot_event.forced``, which migration/spec/3-to-4 adds).
+    (they read ``aliquot_event.forced``, which migration/spec/3-to-4 adds) and
+    the spec-9-only rules below spec 9 (``aliquot_event.reverts_event_id``,
+    migration/spec/8-to-9).
     """
     spec = int(str(ledger.meta.get("spec_version") or 0))
     tests = generate_tests(ledger.schema)
     if spec < 4:
         tests = [test for test in tests if test.name not in SPEC4_ONLY_TESTS]
+    if spec < 9:
+        tests = [test for test in tests if test.name not in SPEC9_ONLY_TESTS]
     return len(tests)
 
 
@@ -5129,7 +5135,12 @@ def downgrade_to_spec6(
     tests pick the ambiguous (both) and damaged (neither) shapes from the same
     helper.  The counter and fingerprint are the spec-6 ones, so the ledger
     looks exactly like one written by 0.8.7.
+
+    The spec-9 reversal shape is stripped first: a spec-6 ledger predates it,
+    so it never carried ``reverts_event_id`` or its three constraints (the
+    second step then re-stamps the counter and fingerprint at spec 6).
     """
+    downgrade_to_spec8(ledger, name=name)
     statements: list[Any] = []
     if note and message:
         # The ambiguous hand-patched shape: both text columns exist.
@@ -5546,3 +5557,752 @@ def test_a_spec_6_ledger_keeps_the_warn_only_commands(
     for command in (("status",), ("schema", "plan"), ("aliquot", "list")):
         result = CliRunner().invoke(app, [*base_args(ledger), *command])
         assert result.exit_code == 0, (command, result.output)
+
+
+# ---------------------------------------------------------------------------
+# spec/8-to-9: revert_use and aliquot_event.reverts_event_id
+# ---------------------------------------------------------------------------
+
+SPEC_8_TO_9 = ROOT / "migration" / "spec" / "8-to-9" / "migrate.py"
+
+#: The spec-9 ``aliquot_event`` column order the step must produce.
+SPEC9_EVENT_COLUMNS = (
+    "id",
+    "aliquot_id",
+    "event",
+    "reverts_event_id",
+    "amount",
+    "unit",
+    "from_box_id",
+    "from_slot",
+    "to_box_id",
+    "to_slot",
+    "old_status",
+    "new_status",
+    "forced",
+    "actor",
+    "message",
+    "at",
+)
+
+#: The pre-spec-9 ENUM values, in their original order.
+SPEC8_EVENT_VALUES = ("create", "use", "move", "status", "edit")
+
+
+def spec8_fingerprint(ledger: Ledger) -> str:
+    """The fingerprint a spec-8 tool would have written (SPEC_VERSION=8)."""
+    saved = model.SPEC_VERSION
+    model.SPEC_VERSION = 8
+    try:
+        return ledger.schema.fingerprint()
+    finally:
+        model.SPEC_VERSION = saved
+
+
+def downgrade_to_spec8(
+    ledger: Ledger,
+    *,
+    column: bool = True,
+    enum: bool = True,
+    constraints: bool = True,
+    name: str = "spec8",
+) -> None:
+    """Turn a fresh spec-9 ledger into the spec-8 event shape.
+
+    ``column``/``enum``/``constraints`` say which pieces of the spec-9 shape the
+    fixture drops; the half-patched test keeps one of them to check that the
+    step only adds what is missing.  The counter and the fingerprint are the
+    spec-8 ones, so the ledger looks exactly like one written by 0.8.52.
+    """
+    statements: list[Any] = []
+    if constraints:
+        statements.extend(
+            [
+                "ALTER TABLE `aliquot_event` DROP FOREIGN KEY "
+                "`fk_aliquot_event_reverts_event_id`",
+                "ALTER TABLE `aliquot_event` DROP CONSTRAINT "
+                "`ck_aliquot_event_reverts_event_id`",
+                "ALTER TABLE `aliquot_event` DROP INDEX "
+                "`uq_aliquot_event_reverts_event_id`",
+            ]
+        )
+    if enum:
+        values = ", ".join(f"'{value}'" for value in SPEC8_EVENT_VALUES)
+        statements.append(
+            "ALTER TABLE `aliquot_event` MODIFY COLUMN `event` "
+            f"ENUM({values}) NOT NULL"
+        )
+    if column:
+        statements.append("ALTER TABLE `aliquot_event` DROP COLUMN `reverts_event_id`")
+    statements.extend(
+        [
+            # A spec-8 ledger never had the two generated reversal rules.
+            (
+                "DELETE FROM `dolt_tests` WHERE `test_name` IN "
+                "('core_revert_event_allowed', 'core_revert_event_unique')",
+                None,
+            ),
+            ("UPDATE `ledger_meta` SET `value` = '8' WHERE `key` = 'spec_version'", None),
+            (
+                "UPDATE `ledger_meta` SET `value` = '0.8.52' "
+                "WHERE `key` = 'tetramark_version'",
+                None,
+            ),
+            (
+                "UPDATE `ledger_meta` SET `value` = %s WHERE `key` = 'fingerprint'",
+                (spec8_fingerprint(ledger),),
+            ),
+        ]
+    )
+    ledger.driver.execute_many(statements)
+    ledger.driver.commit(f"test: simulate the spec-8 shape ({name})")
+    ledger.read_meta()
+
+
+def spec8_ledger(factory, *, name: str = "spec8", **shape: bool):
+    """A ledger with one stock, two tubes, and a spec-8 event table."""
+    ledger = factory([PRESETS / "base"], name=name, id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=2, quantity=10, unit="ul"
+    )
+    first, second = stock["aliquots"][:2]
+    downgrade_to_spec8(ledger, name=name, **shape)
+    return ledger, first, second
+
+
+def add_spec8_use(ledger: Ledger, alq: str, *, amount: int = 1) -> int:
+    """One hand-written ``use`` row in the spec-8 shape; returns its id."""
+    ledger.driver.execute(
+        "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, `amount`, `unit`) "
+        "VALUES (%s, 'use', %s, 'ul')",
+        (alq, amount),
+    )
+    rows = ledger.driver.query(
+        "SELECT MAX(`id`) AS `id` FROM `aliquot_event` WHERE `aliquot_id` = %s",
+        (alq,),
+    )
+    return int(rows[0]["id"])
+
+
+def event_rows(ledger: Ledger) -> list[dict[str, Any]]:
+    """Every event row, in id order, without the spec-9 column."""
+    return ledger.driver.query(
+        "SELECT `id`, `aliquot_id`, `event`, `amount`, `unit`, `from_box_id`, "
+        "`from_slot`, `to_box_id`, `to_slot`, `old_status`, `new_status`, "
+        "`forced`, `actor`, `message`, `at` FROM `aliquot_event` ORDER BY `id`"
+    )
+
+
+def constraint_names(ledger: Ledger, table: str) -> set[str]:
+    rows = ledger.driver.query(
+        "SELECT `constraint_name` AS `name` FROM "
+        "`information_schema`.`table_constraints` "
+        "WHERE `constraint_schema` = DATABASE() AND `table_name` = %s",
+        (table,),
+    )
+    return {str(row["name"]) for row in rows}
+
+
+def event_column_type(ledger: Ledger) -> str:
+    rows = ledger.driver.query(
+        "SELECT `column_type` AS `type` FROM `information_schema`.`columns` "
+        "WHERE `table_schema` = DATABASE() AND `table_name` = 'aliquot_event' "
+        "AND `column_name` = 'event'"
+    )
+    return str(rows[0]["type"])
+
+
+def test_spec_8_to_9_adds_the_reversal_shape_in_one_commit(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Apply: the column, the ENUM value, the three rules, one commit and a tag."""
+    ledger, alq, _other = spec8_ledger(ledger_factory, name="spec8-apply")
+    use_id = add_spec8_use(ledger, alq)
+    ledger.driver.commit("test: one use to reverse")
+    ledger.read_meta()
+    rows_before = event_rows(ledger)
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+    assert "reverts_event_id" not in column_names(ledger, "aliquot_event")
+    assert "revert_use" not in event_column_type(ledger)
+
+    applied = run_python(SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "migrate(ledger): spec 8 -> 9" in applied.stdout
+
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "9"
+    assert ledger.meta["tetramark_version"] == __version__
+    assert ledger.meta["fingerprint"] == ledger.schema.fingerprint()
+    assert event_columns_in_order(ledger) == list(SPEC9_EVENT_COLUMNS)
+    # `revert_use` is appended, so the older ENUM indices did not move.
+    assert event_column_type(ledger).index("'create'") < event_column_type(
+        ledger
+    ).index("'revert_use'")
+    assert {
+        "uq_aliquot_event_reverts_event_id",
+        "ck_aliquot_event_reverts_event_id",
+        "fk_aliquot_event_reverts_event_id",
+    } <= constraint_names(ledger, "aliquot_event")
+
+    # Acceptance: existing rows and their ids are exactly preserved.
+    assert event_rows(ledger) == rows_before
+    assert [row["id"] for row in event_rows(ledger)] == [
+        row["id"] for row in rows_before
+    ]
+    assert any(int(row["id"]) == use_id for row in rows_before)
+
+    assert commit_count(ledger) == commits_before + 1
+    assert commit_message(ledger, head(ledger)) == "migrate(ledger): spec 8 -> 9"
+    assert tags(ledger) == {"pre-migrate-spec-8": head_before}
+    assert row_count(ledger, "dolt_tests") == expected_installed_tests(ledger)
+
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+
+def test_spec_8_to_9_dry_run_writes_nothing(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """``--dry-run`` prints the plan; the plain run is the one that applies."""
+    ledger, _alq, _other = spec8_ledger(ledger_factory, name="spec8-dry")
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    dry = run_python(
+        SPEC_8_TO_9, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "migration: spec 8 -> 9" in dry.stdout
+    assert "ADD COLUMN `reverts_event_id` BIGINT AFTER `event`" in dry.stdout
+    assert "UNIQUE (`reverts_event_id`)" in dry.stdout
+    assert "ON DELETE CASCADE" in dry.stdout
+    assert "dry run:" in dry.stdout
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "8"
+    assert "reverts_event_id" not in column_names(ledger, "aliquot_event")
+
+    # Every step here except 6-to-7 writes by default: no flags means apply.
+    applied = run_python(SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "9"
+    assert "reverts_event_id" in column_names(ledger, "aliquot_event")
+
+
+def test_spec_8_to_9_refuses_a_spec_9_ledger_by_the_counter(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """A fresh (spec-9) ledger is not stepped twice."""
+    ledger = ledger_factory([PRESETS / "base"], name="already-spec9", id_prefix="77")
+    ledger.entities.add("item", name="alpha")
+    head_before = head(ledger)
+    commits_before = commit_count(ledger)
+
+    result = run_python(SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "spec_version 9, expected 8" in result.stdout + result.stderr
+    assert head(ledger) == head_before
+    assert commit_count(ledger) == commits_before
+    assert tags(ledger) == {}
+
+
+def test_spec_8_to_9_plans_only_the_missing_pieces(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """A half-patched ledger (column already there) is finished, not doubled."""
+    ledger, _alq, _other = spec8_ledger(
+        ledger_factory,
+        name="spec8-half",
+        enum=False,
+        column=False,
+    )
+    # The column and the wider ENUM exist; the three constraints do not.
+    assert "reverts_event_id" in column_names(ledger, "aliquot_event")
+    assert "revert_use" in event_column_type(ledger)
+
+    plan_text = run_python(
+        SPEC_8_TO_9, "--ledger", str(ledger.path), "--dry-run", env=script_env
+    )
+    assert plan_text.returncode == 0, plan_text.stdout + plan_text.stderr
+    assert "ADD COLUMN" not in plan_text.stdout
+    assert "MODIFY COLUMN `event`" not in plan_text.stdout
+    assert "`uq_aliquot_event_reverts_event_id` UNIQUE" in plan_text.stdout
+    assert "`ck_aliquot_event_reverts_event_id` CHECK" in plan_text.stdout
+    assert "`fk_aliquot_event_reverts_event_id`" in plan_text.stdout
+
+    applied = run_python(SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "9"
+    assert event_columns_in_order(ledger) == list(SPEC9_EVENT_COLUMNS)
+
+
+def test_spec_8_to_9_migrated_and_fresh_shapes_agree(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """The upgraded table has the same columns and constraints as a fresh one."""
+    fresh = ledger_factory([PRESETS / "base"], name="fresh-spec9", id_prefix="77")
+    fresh.entities.add("item", name="alpha")
+
+    upgraded, _alq, _other = spec8_ledger(ledger_factory, name="spec8-compare")
+    applied = run_python(SPEC_8_TO_9, "--ledger", str(upgraded.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+
+    assert event_columns_in_order(upgraded) == event_columns_in_order(fresh)
+    assert event_columns_in_order(upgraded) == list(SPEC9_EVENT_COLUMNS)
+    assert event_column_type(upgraded) == event_column_type(fresh)
+    assert constraint_names(upgraded, "aliquot_event") == constraint_names(
+        fresh, "aliquot_event"
+    )
+    upgraded.read_meta()
+    assert upgraded.meta["fingerprint"] == fresh.meta["fingerprint"]
+
+
+def test_spec_9_accepts_one_reversal_and_rejects_the_breaks(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """The upgraded schema holds the invariants acceptance criterion 2 names."""
+    ledger, alq, other = spec8_ledger(ledger_factory, name="spec8-rules")
+    use_id = add_spec8_use(ledger, alq)
+    other_use = add_spec8_use(ledger, other)
+    ledger.driver.commit("test: one use per tube")
+    ledger.read_meta()
+    applied = run_python(SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    ledger.read_meta()
+
+    # One reversal of a same-aliquot use is accepted...
+    with ledger.write("undo the use", verb="revert", object="aliquot") as session:
+        record_event(
+            session,
+            aliquot_id=alq,
+            event="revert_use",
+            reverts_event_id=use_id,
+            amount=1,
+            unit="ul",
+            message="wrong tube",
+        )
+    rows = ledger.driver.query(
+        "SELECT `id`, `event`, `reverts_event_id` FROM `aliquot_event` "
+        "WHERE `event` = 'revert_use'"
+    )
+    assert [int(row["reverts_event_id"]) for row in rows] == [use_id]
+
+    # ...a second reversal of the same use is not (UNIQUE, also under races).
+    with pytest.raises(LedgerError) as duplicate:
+        ledger.driver.execute(
+            "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, "
+            "`reverts_event_id`) VALUES (%s, 'revert_use', %s)",
+            (alq, use_id),
+        )
+    assert "duplicate" in str(duplicate.value).lower()
+
+    # A reference to no row at all is not (self foreign key)...
+    with pytest.raises(LedgerError) as missing:
+        ledger.driver.execute(
+            "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, "
+            "`reverts_event_id`) VALUES (%s, 'revert_use', 9999)",
+            (alq,),
+        )
+    assert "foreign key" in str(missing.value).lower()
+
+    # ...and neither is a non-use target or another aliquot's use (record_event).
+    with ledger.write("bad reversal", verb="revert", object="aliquot") as session:
+        with pytest.raises(LedgerError) as not_a_use:
+            record_event(
+                session,
+                aliquot_id=alq,
+                event="revert_use",
+                reverts_event_id=int(rows[0]["id"]),
+            )
+    assert "not a 'use'" in str(not_a_use.value)
+    with ledger.write("bad reversal", verb="revert", object="aliquot") as session:
+        with pytest.raises(LedgerError) as crossed:
+            record_event(
+                session,
+                aliquot_id=alq,
+                event="revert_use",
+                reverts_event_id=other_use,
+            )
+    assert "own aliquot" in str(crossed.value)
+
+    assert row_count(ledger, "aliquot_event") == len(event_rows(ledger))
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+
+
+def test_spec_9_reversal_survives_renumber_and_purge(ledger_factory) -> None:
+    """The self reference moves with neither renumber nor purge (acceptance 2)."""
+    ledger = ledger_factory(
+        [PRESETS / "base"], name="spec9-renumber", id_prefix="77"
+    )
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=2, quantity=10, unit="ul"
+    )
+    alq, other = stock["aliquots"][:2]
+    use_id = add_spec8_use(ledger, alq)
+    ledger.driver.commit("test: one use to reverse")
+    ledger.read_meta()
+    # Renumbering is the operation a composite self-FK would have broken.
+    stock_id = str(
+        ledger.driver.query(
+            "SELECT `stock_id` FROM `aliquot` WHERE `id` = %s", (alq,)
+        )[0]["stock_id"]
+    )
+    with ledger.write("undo the use", verb="revert", object="aliquot") as session:
+        record_event(
+            session,
+            aliquot_id=alq,
+            event="revert_use",
+            reverts_event_id=use_id,
+            amount=1,
+            unit="ul",
+            message="wrong tube",
+        )
+    event_ids = {
+        (str(row["event"]), int(row["id"]))
+        for row in ledger.driver.query(
+            "SELECT `id`, `event` FROM `aliquot_event` WHERE `aliquot_id` = %s",
+            (alq,),
+        )
+    }
+
+    payload = ledger.stocks.renumber([stock_id], auto=True)
+    new_stock = payload["mapping"][stock_id]
+    new_alq = payload["mapping"][alq]
+    # Event ids never move; only the aliquot id does, and the reversal still
+    # names the same use row (whose id did not change either).
+    rows = ledger.driver.query(
+        "SELECT `id`, `event`, `reverts_event_id` FROM `aliquot_event` "
+        "WHERE `aliquot_id` = %s ORDER BY `id`", (new_alq,)
+    )
+    assert {(str(row["event"]), int(row["id"])) for row in rows} == event_ids
+    reversal = next(row for row in rows if str(row["event"]) == "revert_use")
+    assert int(reversal["reverts_event_id"]) == use_id
+    assert ledger.driver.query(
+        "SELECT `id` FROM `aliquot_event` WHERE `id` = %s", (use_id,)
+    )
+
+    # Purging the other tube takes its own history only; the reversal row and
+    # the use it names belong to the renumbered tube and survive.
+    purged = ledger.aliquots.purge(other)
+    assert purged["events"] >= 1
+    assert ledger.driver.query(
+        "SELECT COUNT(*) AS `n` FROM `aliquot_event` WHERE `aliquot_id` = %s",
+        (payload["mapping"][other],),
+    )[0]["n"] == 0
+    assert int(
+        ledger.driver.query(
+            "SELECT COUNT(*) AS `n` FROM `aliquot_event` WHERE `event` = "
+            "'revert_use'"
+        )[0]["n"]
+    ) == 1
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+
+def spec9_guard_message(ledger: Ledger) -> str:
+    """The exact LedgerError text the reversal path must raise for spec 8."""
+    return (
+        "ledger is spec 8, tm is spec "
+        f"{model.SPEC_VERSION}: aliquot_event has no reversals "
+        "(reverts_event_id, revert_use). Upgrade it with:\n"
+        f"uv run migration/spec/8-to-9/migrate.py --ledger {ledger.path}\n"
+        "(add --dry-run to preview; see migration/spec/8-to-9/README.md)"
+    )
+
+
+def test_spec_9_check_reports_a_hand_patched_reversal(ledger_factory) -> None:
+    """The generated rules, not only the DDL, hold a ledger patched by hand."""
+    ledger = ledger_factory([PRESETS / "base"], name="spec9-hand-patched", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    stock = ledger.stocks.add("lot", entity=item["id"], aliquots=1, quantity=5, unit="ul")
+    alq = stock["aliquots"][0]
+    assert ledger.check().passed
+
+    # A `status` event is not a `use`: the CHECK and self FK accept the row
+    # (shape and existence are fine), so only the generated rule can report it.
+    ledger.aliquots.status(alq, "missing", message="lost")
+    status_id = int(
+        ledger.driver.query(
+            "SELECT MAX(`id`) AS `id` FROM `aliquot_event` "
+            "WHERE `aliquot_id` = %s AND `event` = 'status'", (alq,)
+        )[0]["id"]
+    )
+    ledger.driver.execute(
+        "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, "
+        "`reverts_event_id`, `message`) VALUES (%s, 'revert_use', %s, %s)",
+        (alq, status_id, "hand patched"),
+    )
+    ledger.driver.commit("test: a reversal that names a status event")
+    ledger.read_meta()
+
+    report = ledger.check(verbose=True)
+    assert not report.passed
+    failed = {result.name for result in report.results if result.failed}
+    assert "core_revert_event_allowed" in failed
+    assert "core_revert_event_unique" not in failed
+    detail = next(
+        result
+        for result in report.results
+        if result.name == "core_revert_event_allowed"
+    )
+    assert detail.detail_rows[0]["reverted_event"] == "status"
+
+    # A duplicate reversal violates the UNIQUE index, so the DDL refuses it; a
+    # ledger whose index went missing has to be caught by the second rule.
+    # The index backs the self FK, so the FK goes first; what is left is the
+    # generated rule, which is exactly the ledger this test wants to report.
+    ledger.driver.execute(
+        "ALTER TABLE `aliquot_event` DROP FOREIGN KEY "
+        "`fk_aliquot_event_reverts_event_id`"
+    )
+    ledger.driver.execute(
+        "ALTER TABLE `aliquot_event` DROP INDEX `uq_aliquot_event_reverts_event_id`"
+    )
+    use_id = add_spec8_use(ledger, alq)
+    for _attempt in range(2):
+        ledger.driver.execute(
+            "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, "
+            "`reverts_event_id`, `message`) VALUES (%s, 'revert_use', %s, %s)",
+            (alq, use_id, "hand patched"),
+        )
+    ledger.driver.commit("test: two reversals of one use")
+    ledger.read_meta()
+    report = ledger.check(verbose=True)
+    assert not report.passed
+    failed = {result.name for result in report.results if result.failed}
+    assert "core_revert_event_unique" in failed
+    duplicate = next(
+        result
+        for result in report.results
+        if result.name == "core_revert_event_unique"
+    )
+    assert duplicate.detail_rows[0]["use_event_id"] == use_id
+    assert int(duplicate.detail_rows[0]["reversals"]) == 2
+
+
+def test_spec_9_check_accepts_a_reversal_and_still_refuses_a_bad_status(
+    ledger_factory,
+) -> None:
+    """``tm check`` judges the reversal as a reversal, not as a forward status move."""
+    ledger = ledger_factory([PRESETS / "base"], name="spec9-status", id_prefix="77")
+    item = ledger.entities.add("item", name="alpha")
+    shelf = ledger.boxes.add("shelf", "SHELF")
+    stock = ledger.stocks.add(
+        "lot", entity=item["id"], aliquots=1, quantity=5, unit="ul", box="SHELF"
+    )
+    alq = stock["aliquots"][0]
+    assert ledger.check().passed
+
+    # A use empties the tube: stored -> consumed, position cleared, all in one
+    # event the transition rule accepts (`stored>consumed`).
+    used = ledger.aliquots.use(alq, "5", "ul", message="used it all")
+    use_id = int(
+        ledger.driver.query(
+            "SELECT MAX(`id`) AS `id` FROM `aliquot_event` "
+            "WHERE `aliquot_id` = %s AND `event` = 'use'", (alq,)
+        )[0]["id"]
+    )
+    assert used["status"] == "consumed"
+
+    # The reversal restores the old status *and* the placement; `tm check` must
+    # accept it even though `consumed>stored` is not a forward transition, and
+    # the restored row has to be in stock again (otherwise the position rule
+    # would fail: the test proves both sides of the restore).
+    with ledger.write("undo the use", verb="revert", object="aliquot") as session:
+        record_event(
+            session,
+            aliquot_id=alq,
+            event="revert_use",
+            reverts_event_id=use_id,
+            amount=5,
+            unit="ul",
+            from_box_id=None,
+            from_slot=None,
+            to_box_id=str(shelf["id"]),
+            to_slot=None,
+            old_status="consumed",
+            new_status="stored",
+            message="used the wrong tube",
+        )
+        session.execute(
+            "UPDATE `aliquot` SET `quantity` = 5, `unit` = 'ul', "
+            "`status` = 'stored', `box_id` = %s, `slot` = NULL WHERE `id` = %s",
+            (str(shelf["id"]), alq),
+        )
+    report = ledger.check()
+    assert report.passed
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+    # An ordinary unforced status event still has to follow the model: the
+    # reversal's exemption is its kind, not a blanket relaxation.
+    ledger.driver.execute(
+        "INSERT INTO `aliquot_event` (`aliquot_id`, `event`, `old_status`, "
+        "`new_status`) VALUES (%s, 'status', 'consumed', 'stored')",
+        (alq,),
+    )
+    ledger.driver.commit("test: an illegal forward transition")
+    ledger.read_meta()
+    report = ledger.check()
+    assert not report.passed
+    assert "core_status_event_allowed" in {
+        result.name for result in report.results if result.failed
+    }
+
+
+def test_schema_apply_on_a_spec_8_ledger_installs_no_reversal_tests(
+    ledger_factory,
+) -> None:
+    """``tm schema apply`` must not stamp 9 over a spec-8 event table."""
+    ledger, _alq, _other = spec8_ledger(ledger_factory, name="spec8-apply")
+    assert ledger.meta["spec_version"] == "8"
+    applied = CliRunner().invoke(app, [*base_args(ledger), "schema", "apply"])
+    assert applied.exit_code == 0, applied.output
+    ledger.read_meta()
+    # The generic plan cannot add the column, so it keeps the counter: the
+    # supported step refuses a ledger that already records 9, and stamping here
+    # would strand the ledger.  The install drops the two rules that would read
+    # the missing column, so the next check is a plain pass, not a parse error.
+    assert ledger.meta["spec_version"] == "8"
+    assert "reverts_event_id" not in column_names(ledger, "aliquot_event")
+    installed = {
+        str(row["test_name"])
+        for row in ledger.driver.query("SELECT `test_name` FROM `dolt_tests`")
+    }
+    assert installed
+    assert "core_revert_event_allowed" not in installed
+    assert "core_revert_event_unique" not in installed
+    checked = tm_check(ledger)
+    assert checked.exit_code == 0, checked.output
+    assert "FAIL" not in checked.output
+
+
+def test_schema_apply_keeps_a_spec_8_ledger_migratable(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """A generic apply, then the supported step: the two compose.
+
+    ``tm schema apply`` never adds the spec-9 column (``tm schema plan`` does not
+    diff core-table columns), so it must not record the counter either; if it
+    did, ``migration/spec/8-to-9`` would refuse with "spec_version 9, expected
+    8" and the ledger would have no supported way forward. The same command
+    must refuse the reversal before migration and restore the tube afterwards.
+    """
+    ledger, alq, other = spec8_ledger(ledger_factory, name="spec8-still-migratable")
+    ledger.aliquots.use(alq, "1", "ul", message="a pre-upgrade use")
+    with ledger.write("legacy inconsistent use", verb="use", object="aliquot") as session:
+        session.execute("UPDATE `aliquot` SET `quantity` = 8 WHERE `id` = %s", (other,))
+        record_event(
+            session,
+            aliquot_id=other,
+            event="use",
+            amount=1,
+            unit="ul",
+            old_status="pending",
+            new_status="pending",
+            message="a pre-upgrade use with conflicting evidence",
+        )
+    ledger.read_meta()
+    rows_before = event_rows(ledger)
+    use_id = next(
+        int(row["id"]) for row in rows_before
+        if row["event"] == "use" and row["aliquot_id"] == alq
+    )
+    revert_args = [*base_args(ledger), "aliquot", "use", alq, "--revert-last", "-m", "undo"]
+    head_before = head(ledger)
+    blocked = CliRunner().invoke(app, revert_args)
+    assert blocked.exit_code == 1, blocked.output
+    assert str(blocked.exception) == spec9_guard_message(ledger)
+    assert head(ledger) == head_before
+    assert event_rows(ledger) == rows_before
+
+    # 1. The generic apply: no DDL for the column, no counter move, a clean check.
+    applied = CliRunner().invoke(app, [*base_args(ledger), "schema", "apply"])
+    assert applied.exit_code == 0, applied.output
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "8"
+    assert "reverts_event_id" not in column_names(ledger, "aliquot_event")
+    assert tm_check(ledger).exit_code == 0
+
+    # 2. The supported step still runs (the counter is still 8), and lands the
+    #    shape, the counter and the two generated rules in one commit.
+    head_before = head(ledger)
+    applied = run_python(
+        SPEC_8_TO_9, "--ledger", str(ledger.path), env=script_env
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    ledger.read_meta()
+    assert ledger.meta["spec_version"] == "9"
+    assert event_columns_in_order(ledger) == list(SPEC9_EVENT_COLUMNS)
+    assert tags(ledger) == {"pre-migrate-spec-8": head_before}
+    installed = {
+        str(row["test_name"])
+        for row in ledger.driver.query("SELECT `test_name` FROM `dolt_tests`")
+    }
+    assert {"core_revert_event_allowed", "core_revert_event_unique"} <= installed
+    assert tm_check(ledger).exit_code == 0
+
+    # 3. The event that predates the upgrade is still reversible, and its row
+    #    is untouched: the reversal is a new row pointing at it.
+    reverted = CliRunner().invoke(app, [*revert_args, "--yes", "--json"])
+    assert reverted.exit_code == 0, reverted.output
+    result = json.loads(reverted.stdout)
+    assert result["reverts_event_id"] == use_id
+    assert result["quantity"] == "10.000000"
+    assert event_rows(ledger)[: len(rows_before)] == rows_before
+    assert tm_check(ledger).exit_code == 0
+
+    head_before = head(ledger)
+    events_before = event_rows(ledger)
+    ambiguous = CliRunner().invoke(
+        app, [*base_args(ledger), "aliquot", "use", other, "--revert-last", "-m", "undo", "--yes"]
+    )
+    assert ambiguous.exit_code == 1, ambiguous.output
+    assert "the use records 1 but the history shows 2 consumed" in str(ambiguous.exception)
+    assert head(ledger) == head_before
+    assert event_rows(ledger) == events_before
+    assert ledger.aliquots.show(other)["quantity"] == "8.000000"
+
+
+def test_the_spec9_reversal_guard_refuses_only_the_reversal(
+    ledger_factory, script_env: dict[str, str]
+) -> None:
+    """Ordinary event writes still work on spec 8; a reversal names the upgrade."""
+    ledger, alq, _other = spec8_ledger(ledger_factory, name="spec8-guard")
+    use_id = add_spec8_use(ledger, alq)
+    ledger.driver.commit("test: one use")
+    ledger.read_meta()
+    expected = spec9_guard_message(ledger)
+    before = commit_count(ledger)
+
+    # An ordinary event writes fine: the column is simply absent from the INSERT.
+    with ledger.write("ordinary event", verb="add", object="aliquot") as session:
+        record_event(session, aliquot_id=alq, event="edit", message="still spec 8")
+    assert commit_count(ledger) == before + 1
+
+    with ledger.write("bad reversal", verb="revert", object="aliquot") as session:
+        with pytest.raises(LedgerError) as refused:
+            record_event(
+                session,
+                aliquot_id=alq,
+                event="revert_use",
+                reverts_event_id=use_id,
+            )
+    assert str(refused.value) == expected
+    assert refused.value.exit_code == 1
+    # ...and the guard fires before any INSERT: the failed session wrote nothing.
+    assert row_count(ledger, "aliquot_event") == len(event_rows(ledger))
+    assert ledger.driver.query(
+        "SELECT COUNT(*) AS `n` FROM `aliquot_event` WHERE `event` = 'revert_use'"
+    )[0]["n"] == 0

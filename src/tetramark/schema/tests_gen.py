@@ -39,6 +39,7 @@ from tetramark.driver.base import Driver, Params, literal
 from tetramark.errors import LedgerError
 from tetramark.ops.portability import PORTABILITY_GROUP, absolute_file_urls
 from tetramark.schema.ddl import (
+    REVERT_EVENT,
     _in_stock_sql,
     box_view_statements,
     is_managed_view,
@@ -561,6 +562,7 @@ def core_tests(schema: EffectiveSchema) -> list[TestDefinition]:
     transitions = _status_transition_test(schema)
     if transitions is not None:
         tests.append(transitions)
+    tests.extend(_reversal_tests())
     return tests
 
 
@@ -731,6 +733,114 @@ def _transition_queries(condition: str) -> tuple[str, str]:
         f"ORDER BY e.{_q('id')}"
     )
     return body, detail
+
+
+# ---------------------------------------------------------------------------
+# Reversal (spec 9)
+# ---------------------------------------------------------------------------
+
+#: Generated tests that read a core-table column a later spec added, by the
+#: spec that added it.  :func:`install_tests` drops them when the ledger is
+#: still below that spec, so a spec-8 ledger that ran ``tm schema apply``
+#: (which stamps the counter before ``migration/spec/8-to-9`` adds
+#: ``aliquot_event.reverts_event_id``) keeps loading and ``tm check`` never
+#: runs SQL the database cannot parse.  Migration steps gate the same tests by
+#: spec through :data:`tetramark.migrate.SPEC9_ONLY_TESTS`; the two agree
+#: because both read the ledger's own ``spec_version``.
+SPEC_GATED_TESTS: dict[str, int] = {
+    "core_revert_event_allowed": 9,
+    "core_revert_event_unique": 9,
+}
+
+
+def _reversal_tests() -> list[TestDefinition]:
+    """``revert_use`` integrity the DDL cannot express on its own.
+
+    Spec 9 makes the reference *shape* a table CHECK and the target *existence*
+    a self foreign key, so those rows cannot exist at all.  What a CHECK cannot
+    say is **which** row the reference may name: the target has to be a ``use``
+    of the same aliquot, and a ``use`` may be reversed once.  The ``UNIQUE``
+    index covers the second rule for the rows a normal write produces; the
+    tests below repeat both rules for hand-written SQL and for a ledger whose
+    index went missing, and they are what ``tm check`` reports.
+    """
+    # A ``revert_use`` with no reference at all is broken too (the CHECK forbids
+    # it, but a ledger whose CHECK went missing has to be reported, not skipped
+    # silently): the left join finds no row for NULL, so ``r.id IS NULL``
+    # covers both "points nowhere" and "points at nothing".
+    broken = (
+        f"e.{_q('event')} = {_lit(REVERT_EVENT)} "
+        f"AND (r.{_q('id')} IS NULL "
+        f"OR r.{_q('event')} <> {_lit('use')} "
+        f"OR r.{_q('aliquot_id')} <> e.{_q('aliquot_id')})"
+    )
+    stray = (
+        f"e.{_q('event')} <> {_lit(REVERT_EVENT)} "
+        f"AND e.{_q('reverts_event_id')} IS NOT NULL"
+    )
+    joins = (
+        f"FROM {_q('aliquot_event')} e\n"
+        f"LEFT JOIN {_q('aliquot_event')} r "
+        f"ON r.{_q('id')} = e.{_q('reverts_event_id')}\n"
+    )
+    body = (
+        f"SELECT e.{_q('id')}\n{joins}WHERE ({broken})\n   OR ({stray})"
+    )
+    detail = (
+        f"SELECT e.{_q('id')} AS {_q('event_id')}, "
+        f"e.{_q('aliquot_id')} AS {_q('aliquot_id')}, "
+        f"e.{_q('event')} AS {_q('event')}, "
+        f"e.{_q('reverts_event_id')} AS {_q('reverts_event_id')}, "
+        f"r.{_q('event')} AS {_q('reverted_event')}, "
+        f"r.{_q('aliquot_id')} AS {_q('reverted_aliquot_id')}\n"
+        f"{joins}WHERE ({broken})\n   OR ({stray})\n"
+        f"ORDER BY e.{_q('id')}"
+    )
+    reversal_rows = (
+        f"FROM {_q('aliquot_event')} e\n"
+        f"WHERE e.{_q('event')} = {_lit(REVERT_EVENT)}\n"
+    )
+    # Group by the *target*: grouping by ``e.id`` (unique) would make
+    # ``HAVING COUNT(*) > 1`` impossible and the detail query useless.
+    unique_detail = (
+        f"SELECT e.{_q('reverts_event_id')} AS {_q('use_event_id')}, "
+        f"COUNT(*) AS {_q('reversals')}, "
+        f"MIN(e.{_q('aliquot_id')}) AS {_q('aliquot_id')}\n"
+        f"{reversal_rows}"
+        f"GROUP BY e.{_q('reverts_event_id')}\n"
+        f"HAVING COUNT(*) > 1\n"
+        f"ORDER BY e.{_q('reverts_event_id')}"
+    )
+    return [
+        TestDefinition(
+            name="core_revert_event_allowed",
+            group=CORE_GROUP,
+            query=_count(body),
+            detail=detail,
+            description=(
+                "every revert_use names a use of the same aliquot, and no "
+                "ordinary event carries a reversal reference"
+            ),
+        ),
+        TestDefinition(
+            name="core_revert_event_unique",
+            group=CORE_GROUP,
+            query=_count(
+                f"SELECT e.{_q('id')}\n"
+                f"{reversal_rows}"
+                f"AND 1 < (SELECT COUNT(*)\n"
+                f"          FROM {_q('aliquot_event')} d\n"
+                f"          WHERE d.{_q('reverts_event_id')} "
+                f"= e.{_q('reverts_event_id')})"
+            ),
+            detail=unique_detail,
+            description=(
+                "a use is reversed at most once (the DDL's UNIQUE index is the "
+                "concurrency-safe rule; this test reports a ledger whose index "
+                "went missing)"
+            ),
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +1052,7 @@ def install_tests(
     schema: EffectiveSchema,
     *,
     tests: Sequence[TestDefinition] | None = None,
+    live_spec: int | None = None,
 ) -> list[TestDefinition]:
     """Replace ``dolt_tests`` wholesale with ``schema``'s generated rows.
 
@@ -951,8 +1062,20 @@ def install_tests(
 
     ``tests`` overrides the generated list (the migration runner omits tests
     that depend on core tables a not-yet-upgraded ledger does not have).
+
+    ``live_spec`` is the ``spec_version`` the ledger stores at this moment.  A
+    test in :data:`SPEC_GATED_TESTS` whose spec is above it is dropped, so no
+    install path leaves ``tm check`` with SQL a pre-migration database cannot
+    parse.  Callers that are sure the shape is current (a fresh ``init``) pass
+    nothing and pay no extra read: the gate is a stored value, never a query.
     """
     definitions = list(tests) if tests is not None else generate_tests(schema)
+    if live_spec is not None:
+        definitions = [
+            definition
+            for definition in definitions
+            if SPEC_GATED_TESTS.get(definition.name, 0) <= live_spec
+        ]
     driver.execute("DELETE FROM `dolt_tests`")
     columns = ", ".join(_q(column) for column in TEST_COLUMNS)
     placeholders = ", ".join("%s" for _ in TEST_COLUMNS)

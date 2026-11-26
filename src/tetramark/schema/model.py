@@ -86,8 +86,12 @@ __all__ = [
 #: into the message).  v8 dropped the unused ``aliquot.notes`` column: an
 #: aliquot borrows its stock's note, and ``migration/spec/7-to-8/`` is a
 #: manual, README-only step because ``tm schema plan`` does not diff
-#: core-table columns.
-SPEC_VERSION = 8
+#: core-table columns.  v9 made a `use` reversible: ``aliquot_event.event``
+#: gained the ``revert_use`` value and the table gained the nullable
+#: ``reverts_event_id`` self-reference (``migration/spec/8-to-9/``), so a
+#: reversal names the exact ``use`` it undoes instead of describing it by
+#: coincidence of aliquot, amount and time.
+SPEC_VERSION = 9
 
 #: Views that exist for every ledger, independent of the selected kinds.
 #: ``box_name_problem`` reserves the ``v_box_*`` ones: a per-box view must never

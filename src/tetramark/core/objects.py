@@ -37,7 +37,8 @@ import datetime as _dt
 import re
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from decimal import Decimal, InvalidOperation
+from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,7 @@ from tetramark.core.events import (
     purge_events,
     record_event,
     require_spec7_event_columns,
+    require_spec9_reversal_columns,
 )
 from tetramark.core.filters import (
     Filter,
@@ -67,6 +69,7 @@ from tetramark.errors import (
 )
 from tetramark.schema.ddl import (
     CORE_COLUMNS,
+    REVERT_EVENT,
     box_view_name,
     box_view_statements,
     slot_rows,
@@ -88,6 +91,7 @@ __all__ = [
     "OBJECT_TYPES",
     "AliasOps",
     "AliquotOps",
+    "AliquotUsePlan",
     "BoxOps",
     "EntityOps",
     "StockOps",
@@ -96,6 +100,7 @@ __all__ = [
     "add_box",
     "add_entity",
     "add_stock",
+    "apply_aliquot_use",
     "box_kind_columns",
     "box_kind_from",
     "edit_aliquot",
@@ -110,6 +115,7 @@ __all__ = [
     "move_box",
     "note_object",
     "plain_decimal",
+    "plan_aliquot_use",
     "purge_aliquot",
     "purge_box",
     "purge_entity",
@@ -2819,130 +2825,1028 @@ def use_aliquot(
     A use is an action in the physical world that cannot simply be
     reversed, so ``message`` is required (spec §1, §6): it is trimmed,
     refused when empty, and stored in ``aliquot_event.message``.
+
+    The plan is built first (:func:`plan_aliquot_use`) and then written
+    (:func:`apply_aliquot_use`), which is what makes ``tm aliquot use
+    --revert-last`` able to preview the same write before confirming it.  The
+    returned dictionary keeps the historical shape.
     """
-    message_text = str(message).strip()
-    if not message_text:
+    plan = plan_aliquot_use(ledger, ref, amount, unit, message=message)
+    return apply_aliquot_use(ledger, plan)
+
+
+# ---------------------------------------------------------------------------
+# Use plans, previews and reversals (spec 9)
+# ---------------------------------------------------------------------------
+
+#: The scale ``aliquot.quantity`` stores (``DECIMAL(18,6)``).
+_QUANTITY_SCALE = Decimal("0.000001")
+
+#: The row fields a ``use`` changes: exactly what a reversal has to undo, and
+#: exactly what a later commit may not change (spec 9 §2).
+_USE_FIELDS: tuple[str, ...] = ("quantity", "unit", "status", "box_id", "slot")
+
+#: An ``edit`` event may change the ``quantity``/``unit`` of the row, which
+#: blocks a reversal; ``created_at`` is not a physical fact, so it does not.
+_BLOCKING_EDIT_FIELDS: frozenset[str] = frozenset({"quantity", "unit"})
+
+#: One ``field OLD -> NEW`` pair of an ``edit`` event's stored message, which
+#: :func:`_aliquot_changes_text` writes (``"; reason: TEXT"`` may follow).
+_EDIT_CHANGE_RE = re.compile(r"([A-Za-z_]+) (.+) -> (.+)$")
+
+
+def _quantize_quantity(value: Decimal) -> Decimal:
+    """Round a quantity to the six decimals ``aliquot.quantity`` stores."""
+    try:
+        return value.quantize(_QUANTITY_SCALE, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise UsageError(
+            f"quantity {plain_decimal(value)} does not fit the ledger's "
+            "DECIMAL(18,6) quantity columns"
+        ) from None
+
+
+def _quantity_or_none(value: Any) -> Decimal | None:
+    """A stored quantity as a Decimal (the driver may return text), or None."""
+    return None if value is None else Decimal(str(value).strip())
+
+
+def _as_text(value: Any) -> str | None:
+    """A stored column as text, or ``None`` when it is NULL."""
+    return None if value is None else str(value)
+
+
+def _field_list(fields: Sequence[str]) -> str:
+    """``quantity``, ``quantity and unit``, ``quantity, unit and status``."""
+    parts = list(fields)
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _target_branch(ledger: Ledger) -> str:
+    """The branch a write lands on: the session branch, else the checked-out one."""
+    selected = getattr(ledger, "branch", None)
+    if selected:
+        return str(selected)
+    try:
+        rows = ledger.driver.query("SELECT active_branch() AS `branch`")
+    except Exception:  # pragma: no cover - a dry run must not fail here
+        return ""
+    if not rows:
+        return ""
+    return _as_text(rows[0].get("branch")) or ""
+
+
+def _box_label(reader: Any, box_id: Any) -> str | None:
+    """A live box name, or ``None`` when the tube is unplaced or its box is gone."""
+    if box_id is None:
+        return None
+    rows = reader.query(
+        f"SELECT {_quote('name')} FROM {_quote('box')} WHERE {_quote('id')} = %s",
+        (str(box_id),),
+    )
+    return None if not rows else str(rows[0]["name"])
+
+
+def _use_message(message: Any) -> str:
+    """The required, trimmed reason of a use or its reversal (spec §1)."""
+    text = str(message).strip()
+    if not text:
         raise UsageError("a use message is required and must not be empty")
+    return text
+
+
+def _use_request(amount: Any, unit: Any) -> tuple[Decimal | None, str | None]:
+    """Validate the requested amount/unit pair: both, or neither."""
     if (amount is None) != (unit is None):
         raise UsageError(
             "amount and unit must be given together: pass both, or neither "
             "(without an amount the whole tube is used)"
         )
+    if amount is None:
+        return None, None
+    try:
+        used = Decimal(str(amount).strip())
+    except (InvalidOperation, ValueError):
+        raise UsageError(f"amount must be a decimal number (got {amount!r})") from None
+    if not used.is_finite() or used <= 0:
+        raise UsageError(f"amount must be a positive number (got {amount!r})")
+    text = str(unit).strip()
+    if not text:
+        raise UsageError("unit must not be empty")
+    return used, text
 
-    used: Decimal | None = None
-    unit_text: str | None = None
-    if amount is not None:
-        try:
-            used = Decimal(str(amount).strip())
-        except (InvalidOperation, ValueError):
-            raise UsageError(
-                f"amount must be a decimal number (got {amount!r})"
-            ) from None
-        if not used.is_finite() or used <= 0:
-            raise UsageError(f"amount must be a positive number (got {amount!r})")
-        unit_text = str(unit).strip()
-        if not unit_text:
-            raise UsageError("unit must not be empty")
 
-    existing = _resolve_core(ledger.driver, "aliquot", ref)
-    alq_id = str(existing["id"])
+def _state_from_row(row: Mapping[str, Any], prefix: str) -> dict[str, Any]:
+    """The five fields a use changes, from a row or a ``dolt_diff_*`` row."""
+    return {
+        "quantity": _quantity_or_none(row.get(f"{prefix}quantity")),
+        "unit": _as_text(row.get(f"{prefix}unit")),
+        "status": _as_text(row.get(f"{prefix}status")),
+        "box_id": _as_text(row.get(f"{prefix}box_id")),
+        "slot": _as_text(row.get(f"{prefix}slot")),
+    }
 
-    with ledger.write(alq_id, verb="use", object="aliquot") as session:
-        row = _resolve_core(session, "aliquot", alq_id)
-        old_status = str(row.get("status"))
-        if old_status == "consumed":
-            raise LedgerError(f"aliquot {alq_id!r} is already consumed")
-        stored_unit = row.get("unit")
-        stored_unit_text = None if stored_unit is None else str(stored_unit)
-        stored_quantity = row.get("quantity")
 
-        event_amount: Decimal | None
-        event_unit: str | None
-        remaining: Decimal | None
-        emptied: bool
-        if stored_quantity is None:
-            # A tube without a quantity can only be used whole: the event
-            # records a NULL amount and the tube is consumed.
-            if used is not None:
-                raise LedgerError(
-                    f"aliquot {alq_id!r} has no quantity: it can only be used "
-                    "whole (omit the amount)"
-                )
-            event_amount = None
-            event_unit = stored_unit_text
-            remaining = None
-            emptied = True
-        else:
-            current = Decimal(str(stored_quantity))
-            if used is None:
-                # "Use everything left": the event records the remaining
-                # quantity and unit, exactly like an explicit use of them.
-                used = current
-                unit_text = stored_unit_text
-            elif stored_unit_text is None or stored_unit_text != unit_text:
-                raise LedgerError(
-                    f"unit mismatch for aliquot {alq_id!r}: it holds "
-                    f"{stored_unit!r}, not {unit_text!r}"
-                )
-            remaining = current - used
-            if remaining < 0:
-                raise LedgerError(
-                    f"cannot use {used} {unit_text} from aliquot {alq_id!r}: "
-                    f"only {current} left"
-                )
-            event_amount = used
-            event_unit = unit_text
-            emptied = remaining == 0
+def _diff_rank(row: Mapping[str, Any]) -> tuple[int, int, str]:
+    """Order ``dolt_diff_aliquot`` rows by commit; the working set comes last."""
+    order = row.get("tm_order")
+    if order is None:
+        return (1, 0, "")
+    return (0, int(order), str(row.get("to_commit") or ""))
 
-        new_status = old_status
-        #: ``(from_box_id, from_slot)`` of a position this use clears (spec 5).
-        cleared_from: tuple[Any, Any] = (None, None)
-        if emptied:
-            stock_row = _fetch_core(session, "stock", str(row["stock_id"]))
-            assert stock_row is not None  # FK guarantees it
-            kind_name = str(stock_row["kind"])
-            status_set = aliquot_status_set(ledger, kind_name)
-            if status_set.has("consumed"):
-                ensure_status_change(ledger, kind_name, old_status, "consumed")
-                new_status = "consumed"
-                # A consumed aliquot is not in stock, so it is not in a box:
-                # clear the position in the same write; the event keeps it.
-                if not status_is_in_stock(status_set, new_status):
-                    cleared_from = (row.get("box_id"), row.get("slot"))
-        updates: dict[str, Any] = {"status": new_status}
-        if remaining is not None:
-            updates["quantity"] = remaining
-        if cleared_from != (None, None):
-            updates["box_id"] = None
-            updates["slot"] = None
-        _update(session, "aliquot", {"id": alq_id}, updates)
-        record_event(
-            session,
-            aliquot_id=alq_id,
-            event="use",
-            amount=event_amount,
-            unit=event_unit,
-            from_box_id=cleared_from[0],
-            from_slot=cleared_from[1],
-            to_box_id=None,
-            to_slot=None,
-            old_status=old_status,
-            new_status=new_status,
-            actor=ledger.actor,
-            message=message_text,
+
+def _commit_label(row: Mapping[str, Any]) -> str:
+    """How a commit reads in a diagnostic: its hash prefix or the working set."""
+    commit = str(row["to_commit"])
+    if commit == "WORKING":
+        return "the uncommitted working set"
+    return f"commit {commit[:8]}"
+
+
+def _edited_fields(message: str) -> frozenset[str] | None:
+    """The row fields an ``edit`` event's stored message says it changed.
+
+    :func:`_aliquot_changes_text` writes ``field OLD -> NEW`` pairs separated
+    by ``"; "``, followed by ``"; reason: TEXT"``.  An imported or hand-written
+    message may not follow that shape, and then ``None`` says so: the caller
+    refuses rather than guesses which fields moved.
+    """
+    changes = message.split("; reason: ", 1)[0]
+    fields: list[str] = []
+    for part in changes.split("; "):
+        text = part.strip()
+        if not text:
+            continue
+        match = _EDIT_CHANGE_RE.fullmatch(text)
+        if match is None:
+            return None
+        fields.append(match.group(1))
+    return frozenset(fields) if fields else None
+
+
+def _aliquot_event_rows(reader: Any, aliquot_id: str) -> list[dict[str, Any]]:
+    """Every event of one tube, in the audit order ``at`` then ``id``."""
+    return [
+        dict(row)
+        for row in reader.query(
+            f"SELECT e.* FROM {_quote('aliquot_event')} e "
+            f"WHERE e.{_quote('aliquot_id')} = %s "
+            f"ORDER BY e.{_quote('at')}, e.{_quote('id')}",
+            (aliquot_id,),
         )
-        return {
-            "object": "aliquot",
-            "id": alq_id,
-            "used_amount": (
-                None if event_amount is None else plain_decimal(event_amount)
-            ),
-            "used_unit": event_unit,
-            "quantity": None if remaining is None else str(remaining),
-            "unit": event_unit,
-            "status": new_status,
-            "message": message_text,
-        }
+    ]
+
+
+def _latest_use(events: Sequence[Mapping[str, Any]], aliquot_id: str) -> dict[str, Any]:
+    """The latest original ``use`` of the tube (spec 9 §1, ordered ``at`` then ``id``)."""
+    target: dict[str, Any] | None = None
+    for event in events:
+        if str(event["event"]) == "use":
+            target = dict(event)
+    if target is None:
+        raise LedgerError(f"aliquot {aliquot_id!r} has no recorded use to revert")
+    return target
+
+
+def _check_not_reverted(
+    events: Sequence[Mapping[str, Any]], aliquot_id: str, target: Mapping[str, Any]
+) -> None:
+    """A use is reversed once, and a reversal never steps back to an earlier use."""
+    target_id = int(target["id"])
+    for event in events:
+        if str(event["event"]) != REVERT_EVENT:
+            continue
+        reference = event.get("reverts_event_id")
+        if reference is not None and int(reference) == target_id:
+            raise LedgerError(
+                f"aliquot {aliquot_id!r}: the latest use (event {target_id}) has "
+                f"already been reverted by event {int(event['id'])}; a revert "
+                "only undoes the latest use, never an earlier one"
+            )
+
+
+def _check_no_later_change(
+    events: Sequence[Mapping[str, Any]], aliquot_id: str, target: Mapping[str, Any]
+) -> None:
+    """A later move, status change or quantity/unit edit blocks the reversal.
+
+    The event trail is the physical record, and it also catches a later change
+    that was undone again before any commit: ``dolt_diff`` tables compare the
+    working set with ``HEAD``, so a change-and-restore of the same value leaves
+    no diff row, but it leaves two ``edit`` events here (spec 9 §2).  Label and
+    alias changes write no event at all (``set_aliquot_label`` keeps the old
+    label as an alias), and a ``created_at`` edit is not a physical fact, so
+    neither blocks.
+    """
+    target_id = int(target["id"])
+    index = next(
+        position
+        for position, event in enumerate(events)
+        if int(event["id"]) == target_id
+    )
+    for event in events[index + 1 :]:
+        kind = str(event["event"])
+        event_id = int(event["id"])
+        at = str(event["at"])
+        detail: str | None = None
+        if kind == "edit":
+            fields = _edited_fields(str(event["message"] or ""))
+            if fields is None:
+                detail = (
+                    f"a later edit (event {event_id} at {at}) does not record "
+                    "which fields it changed"
+                )
+            else:
+                blocked = sorted(fields & _BLOCKING_EDIT_FIELDS)
+                if blocked:
+                    detail = (
+                        f"a later edit (event {event_id} at {at}) changed the "
+                        f"{_field_list(blocked)}"
+                    )
+        elif kind == "move":
+            detail = f"a later move (event {event_id} at {at}) changed the placement"
+        elif kind == "status":
+            detail = (
+                f"a later status change (event {event_id} at {at}) set the status "
+                f"to {_as_text(event.get('new_status'))!r}"
+            )
+        if detail is not None:
+            raise LedgerError(
+                f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: "
+                f"{detail}; only label and alias changes may follow a use (spec 9)"
+            )
+
+
+def _use_evidence(
+    reader: Any, aliquot_id: str, target: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The row state before and after one use, proven by Dolt's diff trail.
+
+    The commit that recorded the use (``dolt_diff_aliquot_event``) carries the
+    row change (``dolt_diff_aliquot``): its ``from_*`` columns are the state the
+    use started from and its ``to_*`` columns the state it left.  A quantity or
+    unit that was unknown (NULL) stays unknown.  Any later commit — or the
+    uncommitted working set — that changed one of the five fields is a conflict
+    even when it changed the value back, because the reversal would otherwise
+    replay a use over a different physical history (spec 9 §2, §3).
+    """
+    target_id = int(target["id"])
+    commits = reader.query(
+        f"SELECT {_quote('to_commit')} AS {_quote('commit')} "
+        f"FROM {_quote('dolt_diff_aliquot_event')} "
+        f"WHERE {_quote('to_id')} = %s AND {_quote('to_event')} = 'use' "
+        f"AND {_quote('diff_type')} = 'added'",
+        (target_id,),
+    )
+    if len(commits) != 1:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"Dolt history holds {len(commits)} records of that event (expected "
+            "one), so the ledger cannot establish what it changed (refusing to "
+            "guess)"
+        )
+    commit = str(commits[0]["commit"])
+    # One commit can record several events of the same tube (a command that
+    # writes twice in one transaction): then its single row change cannot be
+    # attributed to this use.
+    recorded = reader.query(
+        f"SELECT {_quote('to_id')} AS {_quote('id')} "
+        f"FROM {_quote('dolt_diff_aliquot_event')} "
+        f"WHERE {_quote('to_commit')} = %s AND {_quote('to_aliquot_id')} = %s "
+        f"AND {_quote('diff_type')} = 'added' "
+        f"ORDER BY {_quote('to_id')}",
+        (commit, aliquot_id),
+    )
+    if len(recorded) != 1 or int(recorded[0]["id"]) != target_id:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: "
+            f"commit {commit[:8]} recorded {len(recorded)} events of that tube, "
+            "so its row change cannot be attributed to one use (refusing to "
+            "guess)"
+        )
+    rows = reader.query(
+        f"SELECT d.*, l.{_quote('commit_order')} AS {_quote('tm_order')} "
+        f"FROM {_quote('dolt_diff_aliquot')} d "
+        f"LEFT JOIN {_quote('dolt_log')} l "
+        f"ON l.{_quote('commit_hash')} = d.{_quote('to_commit')} "
+        f"WHERE d.{_quote('to_id')} = %s OR d.{_quote('from_id')} = %s",
+        (aliquot_id, aliquot_id),
+    )
+    use_row = next(
+        (
+            dict(row)
+            for row in rows
+            if str(row["to_commit"]) == commit
+            and str(row["to_id"]) == aliquot_id
+        ),
+        None,
+    )
+    if use_row is None:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            "commit that recorded the use changed no row of the tube, so the "
+            "ledger cannot establish what that use changed (refusing to guess)"
+        )
+    before = _state_from_row(use_row, "from_")
+    after = _state_from_row(use_row, "to_")
+    use_rank = _diff_rank(use_row)
+    # Walk the later rows in commit order, chaining each row's ``from_*`` to the
+    # previous row's ``to_*``: a merge edge can present an older "from" state
+    # whose ``to_*`` already equals the selected ``after``, and then comparing
+    # only ``to_*`` would miss the change it represents.
+    previous = after
+    later_rows = sorted(
+        (
+            dict(row)
+            for row in rows
+            if _diff_rank(row) > use_rank and str(row["to_id"]) == aliquot_id
+        ),
+        key=_diff_rank,
+    )
+    for row in later_rows:
+        start = _state_from_row(row, "from_")
+        end = _state_from_row(row, "to_")
+        changed = [
+            field
+            for field in _USE_FIELDS
+            if end[field] != after[field] or start[field] != previous[field]
+        ]
+        if changed:
+            raise LedgerError(
+                f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: "
+                f"{_commit_label(row)} changed the {_field_list(changed)} after "
+                "that use; only label and alias changes may follow a use (spec 9)"
+            )
+        previous = end
+    return before, after
+
+
+
+def _check_use_evidence(
+    aliquot_id: str,
+    target: Mapping[str, Any],
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> Decimal | None:
+    """Cross-check the use event against its row history; return what it took.
+
+    The event and the diff trail must tell the same story.  Where they do not —
+    an amount that is not the quantity the row lost, a status or position the
+    event does not record — the history is ambiguous and the reversal is
+    refused instead of guessed (spec 9 §2, §3).
+    """
+    target_id = int(target["id"])
+
+    def disagree(what: str) -> LedgerError:
+        return LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: "
+            f"{what}, so the use event and the row history do not agree "
+            "(refusing to guess what that use changed)"
+        )
+
+    if before["status"] != _as_text(target.get("old_status")):
+        raise disagree(
+            f"the history has status {before['status']!r} before the use but "
+            f"the event records {_as_text(target.get('old_status'))!r}"
+        )
+    if after["status"] != _as_text(target.get("new_status")):
+        raise disagree(
+            f"the history has status {after['status']!r} after the use but the "
+            f"event records {_as_text(target.get('new_status'))!r}"
+        )
+    if before["unit"] != _as_text(target.get("unit")):
+        raise disagree(
+            f"the history has unit {before['unit']!r} before the use but the "
+            f"event records {_as_text(target.get('unit'))!r}"
+        )
+    if after["unit"] != before["unit"]:
+        raise disagree("the history changed the unit in a use")
+
+    before_quantity = before["quantity"]
+    after_quantity = after["quantity"]
+    amount = _quantity_or_none(target.get("amount"))
+    if (before_quantity is None) != (after_quantity is None):
+        raise disagree("the history records a quantity on one side of the use only")
+    if before_quantity is not None and after_quantity is not None:
+        if before_quantity < after_quantity:
+            raise disagree("the use increased the quantity")
+        lost = before_quantity - after_quantity
+        if amount is not None and lost != amount:
+            raise disagree(
+                f"the use records {plain_decimal(amount)} but the history shows "
+                f"{plain_decimal(lost)} consumed"
+            )
+
+    from_box = _as_text(target.get("from_box_id"))
+    if from_box is not None:
+        if before["box_id"] != from_box or before["slot"] != _as_text(
+            target.get("from_slot")
+        ):
+            raise disagree(
+                "the event records clearing a position the history does not "
+                "place the tube in"
+            )
+        if after["box_id"] is not None:
+            raise disagree(
+                "the history still places the tube after a use that records "
+                "clearing its position"
+            )
+    elif (before["box_id"], before["slot"]) != (after["box_id"], after["slot"]):
+        raise disagree("the history changed the placement in a use that records none")
+
+    if before_quantity is None:
+        return None
+    assert after_quantity is not None
+    restored = before_quantity - after_quantity
+    if restored < 0:
+        raise disagree("the use increased the quantity")
+    if (
+        restored == 0
+        and before["status"] == after["status"]
+        and (before["box_id"], before["slot"]) == (after["box_id"], after["slot"])
+    ):
+        raise disagree("the history shows no change at all for that use")
+    # A zero-quantity use is real when it consumed or moved the tube: the
+    # reversal still has to be recorded (spec 9 §3, "a quantity that was
+    # unknown before use remains unknown" does not forbid a known zero).
+    return restored
+
+
+def _check_live_row(
+    aliquot_id: str,
+    target: Mapping[str, Any],
+    row: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> None:
+    """Compare the live row with the state the use left (spec 9 §2).
+
+    The diff trail already refuses a later commit, but the live row is the one
+    fact the trail can miss: an uncommitted change made outside Dolt's commit
+    graph, or a merge edge, can leave the row somewhere else.  The five fields
+    must still read exactly as the use left them, or the reversal would replay
+    a use over different physical history.
+    """
+    target_id = int(target["id"])
+    live = _state_from_row(row, "")
+    changed = [
+        field for field in _USE_FIELDS if live[field] != after[field]
+    ]
+    if changed:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"row no longer matches the state that use left (the "
+            f"{_field_list(changed)}); only label and alias changes may follow a "
+            "use (spec 9)"
+        )
+
+
+def _check_restored_state(
+    ledger: Ledger,
+    reader: Any,
+    row: Mapping[str, Any],
+    aliquot_id: str,
+    target: Mapping[str, Any],
+    before: Mapping[str, Any],
+) -> None:
+    """Validate the row a reversal restores, before any write (spec 9 §4).
+
+    The restored row must satisfy the rules a new placement does (status in the
+    set, a position exactly when in stock, a live box, an existing and free
+    slot).  A position that somebody else took is named, and nothing is
+    written: the caller can retry the same reversal once the position is free.
+    """
+    target_id = int(target["id"])
+    stock_row = _fetch_core(reader, "stock", str(row["stock_id"]))
+    assert stock_row is not None  # the aliquot FK guarantees it
+    kind_name = str(stock_row["kind"])
+    status_set = aliquot_status_set(ledger, kind_name)
+    status = before["status"]
+    if status is None or not status_set.has(status):
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"status {status!r} it held before the use is not in the status set "
+            f"of stock kind {kind_name!r} ({_statuses_text(status_set.names)}), "
+            "so the ledger cannot establish a status to restore (refusing to "
+            "guess)"
+        )
+    in_stock = status_is_in_stock(status_set, status)
+    box_id = before["box_id"]
+    slot = before["slot"]
+    if in_stock and box_id is None:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"history has status {status!r} (in stock) but no box before that "
+            "use, and the restored tube must be placed"
+        )
+    if not in_stock and (box_id is not None or slot is not None):
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"history has status {status!r} (not in stock) but a box position "
+            "before that use, and a tube out of stock must not be placed"
+        )
+    if box_id is None:
+        return
+    box_row = _fetch_core(reader, "box", box_id)
+    if box_row is None:
+        raise LedgerError(
+            f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: the "
+            f"box {box_id!r} that held it before that use no longer exists, so "
+            "its position cannot be restored"
+        )
+    label = f"{box_row['name']}"
+    if slot is not None:
+        occupant = reader.query(
+            f"SELECT {_quote('id')} FROM {_quote('aliquot')} "
+            f"WHERE {_quote('box_id')} = %s AND {_quote('slot')} = %s "
+            f"AND {_quote('id')} <> %s",
+            (box_id, slot, aliquot_id),
+        )
+        if occupant:
+            raise LedgerError(
+                f"cannot revert use event {target_id} for aliquot {aliquot_id!r}: "
+                f"slot {slot!r} in box {label!r} is now occupied by aliquot "
+                f"{str(occupant[0]['id'])!r}; move that tube and rerun the revert"
+            )
+    # The general placement rules: the slot exists, holds no child box, and is
+    # not full (the tube itself is excluded, it stood there before).
+    _check_aliquot_placement(
+        reader, ledger, box_row, slot, exclude_aliquot=aliquot_id
+    )
+
+
+@dataclass(frozen=True)
+class AliquotUsePlan:
+    """One reviewed ``use`` (or its reversal), ready to be written.
+
+    :func:`plan_aliquot_use` builds it in one read and
+    :func:`apply_aliquot_use` writes it, re-deriving it inside the write session
+    first.  Every field is one line of the preview the operator confirms, or
+    (``target_*``) the original ``use`` a reversal undoes.  ``is_revert``
+    distinguishes the two operations: an ordinary use consumes ``amount`` of
+    the tube, a reversal restores the whole state the target use started from.
+    """
+
+    object: str
+    id: str
+    #: The reference the caller passed (an id, an alias or an id prefix).
+    ref: str
+    #: ``"use"`` or ``"revert_use"``.
+    operation: str
+    message: str
+    #: The quantity the use takes, or the quantity a reversal restores.
+    amount: Decimal | None
+    unit: str | None
+    quantity_before: Decimal | None
+    unit_before: str | None
+    status_before: str | None
+    box_before: str | None
+    #: The live name of ``box_before`` for the preview (a renamed box reads new).
+    box_name_before: str | None
+    slot_before: str | None
+    quantity_after: Decimal | None
+    unit_after: str | None
+    status_after: str | None
+    box_after: str | None
+    box_name_after: str | None
+    slot_after: str | None
+    #: The ``use`` event a reversal undoes, with its own record and values.
+    target_event_id: int | None
+    target_event_at: str | None
+    target_event_message: str | None
+    target_amount: Decimal | None
+    target_unit: str | None
+    #: The branch the preview was made on; a write on another one is refused.
+    branch: str
+    #: What the caller asked for, kept so the apply can re-plan it unchanged.
+    requested_amount: Decimal | None = None
+    requested_unit: str | None = None
+
+    @property
+    def is_revert(self) -> bool:
+        return self.operation == REVERT_EVENT
+
+
+def _ordinary_plan(
+    ledger: Ledger,
+    reader: Any,
+    ref: str,
+    row: Mapping[str, Any],
+    used: Decimal | None,
+    unit_text: str | None,
+    message_text: str,
+) -> AliquotUsePlan:
+    """Validate one ordinary use and describe the row it writes."""
+    alq_id = str(row["id"])
+    #: What the caller literally asked for: a reversal of this plan must not
+    #: re-plan a different request.
+    requested: tuple[Decimal | None, str | None] = (used, unit_text)
+    old_status = str(row["status"])
+    if old_status == "consumed":
+        raise LedgerError(f"aliquot {alq_id!r} is already consumed")
+    stored_unit = row.get("unit")
+    stored_unit_text = _as_text(stored_unit)
+    stored_quantity = row.get("quantity")
+
+    amount: Decimal | None
+    quantity_after: Decimal | None
+    emptied: bool
+    if stored_quantity is None:
+        # A tube without a quantity can only be used whole: the event records
+        # a NULL amount and the tube is consumed.
+        if used is not None:
+            raise LedgerError(
+                f"aliquot {alq_id!r} has no quantity: it can only be used "
+                "whole (omit the amount)"
+            )
+        amount = None
+        quantity_after = None
+        unit_text = stored_unit_text
+        emptied = True
+    else:
+        current = _quantity_or_none(stored_quantity)
+        assert current is not None
+        if used is None:
+            # "Use everything left": the event records the remaining quantity
+            # and unit, exactly like an explicit use of them.
+            used = current
+            unit_text = stored_unit_text
+        elif stored_unit_text is None or stored_unit_text != unit_text:
+            raise LedgerError(
+                f"unit mismatch for aliquot {alq_id!r}: it holds "
+                f"{stored_unit!r}, not {unit_text!r}"
+            )
+        still_there = current - used
+        if still_there < 0:
+            raise LedgerError(
+                f"cannot use {used} {unit_text} from aliquot {alq_id!r}: "
+                f"only {current} left"
+            )
+        quantity_after = _quantize_quantity(still_there)
+        # The event records what the row actually loses: rounding to the six
+        # stored decimals can differ from the requested amount by less than one
+        # unit, and the audit has to agree with the row (spec 9 §5).
+        amount = _quantize_quantity(current) - quantity_after
+        emptied = still_there == 0
+
+    new_status = old_status
+    cleared = False
+    if emptied:
+        stock_row = _fetch_core(reader, "stock", str(row["stock_id"]))
+        assert stock_row is not None  # the aliquot FK guarantees it
+        kind_name = str(stock_row["kind"])
+        status_set = aliquot_status_set(ledger, kind_name)
+        if status_set.has("consumed"):
+            ensure_status_change(ledger, kind_name, old_status, "consumed")
+            new_status = "consumed"
+            # A consumed aliquot is not in stock, so it is not in a box: clear
+            # the position in the same write; the event keeps it.
+            if not status_is_in_stock(status_set, new_status):
+                cleared = True
+    box_before = _as_text(row.get("box_id"))
+    slot_before = _as_text(row.get("slot"))
+    box_after = None if cleared else box_before
+    slot_after = None if cleared else slot_before
+    name = _box_label(reader, box_before)
+    return AliquotUsePlan(
+        object="aliquot",
+        id=alq_id,
+        ref=str(ref),
+        operation="use",
+        message=message_text,
+        amount=amount,
+        unit=unit_text,
+        quantity_before=_quantity_or_none(stored_quantity),
+        unit_before=stored_unit_text,
+        status_before=old_status,
+        box_before=box_before,
+        box_name_before=name,
+        slot_before=slot_before,
+        quantity_after=quantity_after,
+        unit_after=unit_text,
+        status_after=new_status,
+        box_after=box_after,
+        box_name_after=None if cleared else name,
+        slot_after=slot_after,
+        target_event_id=None,
+        target_event_at=None,
+        target_event_message=None,
+        target_amount=None,
+        target_unit=None,
+        branch=_target_branch(ledger),
+        requested_amount=requested[0],
+        requested_unit=requested[1],
+    )
+
+
+def _revert_plan(
+    ledger: Ledger,
+    reader: Any,
+    ref: str,
+    row: Mapping[str, Any],
+    message_text: str,
+) -> AliquotUsePlan:
+    """Select the use a reversal undoes and describe the row it restores."""
+    alq_id = str(row["id"])
+    events = _aliquot_event_rows(reader, alq_id)
+    target = _latest_use(events, alq_id)
+    _check_not_reverted(events, alq_id, target)
+    _check_no_later_change(events, alq_id, target)
+    before, after = _use_evidence(reader, alq_id, target)
+    restored = _check_use_evidence(alq_id, target, before, after)
+    _check_live_row(alq_id, target, row, after)
+    _check_restored_state(ledger, reader, row, alq_id, target, before)
+    box_before = _as_text(row.get("box_id"))
+    slot_before = _as_text(row.get("slot"))
+    return AliquotUsePlan(
+        object="aliquot",
+        id=alq_id,
+        ref=str(ref),
+        operation=REVERT_EVENT,
+        message=message_text,
+        amount=restored,
+        unit=before["unit"],
+        quantity_before=_quantity_or_none(row.get("quantity")),
+        unit_before=_as_text(row.get("unit")),
+        status_before=str(row["status"]),
+        box_before=box_before,
+        box_name_before=_box_label(reader, box_before),
+        slot_before=slot_before,
+        quantity_after=before["quantity"],
+        unit_after=before["unit"],
+        status_after=before["status"],
+        box_after=before["box_id"],
+        box_name_after=_box_label(reader, before["box_id"]),
+        slot_after=before["slot"],
+        target_event_id=int(target["id"]),
+        target_event_at=_as_text(target.get("at")),
+        target_event_message=_as_text(target.get("message")),
+        target_amount=_quantity_or_none(target.get("amount")),
+        target_unit=_as_text(target.get("unit")),
+        branch=_target_branch(ledger),
+    )
+
+
+def _build_use_plan(
+    ledger: Ledger,
+    reader: Any,
+    ref: str,
+    amount: Any,
+    unit: Any,
+    *,
+    message: Any,
+    revert_last: bool,
+) -> AliquotUsePlan:
+    """The one planner behind both the preview and the write."""
+    message_text = _use_message(message)
+    used, unit_text = _use_request(amount, unit)
+    if revert_last and (used is not None or unit_text is not None):
+        raise UsageError("revert_last cannot be combined with amount or unit")
+    # The guards run before the preview, so a ledger whose event table lacks
+    # the columns (spec 6) or the reversal column (spec 8) is refused before
+    # the caller is asked to confirm, and nothing is written.
+    require_spec7_event_columns(ledger)
+    if revert_last:
+        require_spec9_reversal_columns(ledger)
+    row = _resolve_core(reader, "aliquot", ref)
+    if revert_last:
+        return _revert_plan(ledger, reader, ref, row, message_text)
+    return _ordinary_plan(ledger, reader, ref, row, used, unit_text, message_text)
+
+
+def _plan_difference(reviewed: AliquotUsePlan, current: AliquotUsePlan) -> list[str]:
+    """The previewed fields a fresh plan no longer matches (empty = safe)."""
+    pairs: list[tuple[str, Any, Any]] = [
+        ("id", reviewed.id, current.id),
+        ("operation", reviewed.operation, current.operation),
+        ("amount", reviewed.amount, current.amount),
+        ("unit", reviewed.unit, current.unit),
+        ("quantity_before", reviewed.quantity_before, current.quantity_before),
+        ("unit_before", reviewed.unit_before, current.unit_before),
+        ("status_before", reviewed.status_before, current.status_before),
+        ("box_before", reviewed.box_before, current.box_before),
+        ("box_name_before", reviewed.box_name_before, current.box_name_before),
+        ("slot_before", reviewed.slot_before, current.slot_before),
+        ("quantity_after", reviewed.quantity_after, current.quantity_after),
+        ("unit_after", reviewed.unit_after, current.unit_after),
+        ("status_after", reviewed.status_after, current.status_after),
+        ("box_after", reviewed.box_after, current.box_after),
+        ("box_name_after", reviewed.box_name_after, current.box_name_after),
+        ("slot_after", reviewed.slot_after, current.slot_after),
+        ("target_event_id", reviewed.target_event_id, current.target_event_id),
+        ("target_event_at", reviewed.target_event_at, current.target_event_at),
+        (
+            "target_event_message",
+            reviewed.target_event_message,
+            current.target_event_message,
+        ),
+        ("target_amount", reviewed.target_amount, current.target_amount),
+        ("target_unit", reviewed.target_unit, current.target_unit),
+    ]
+    return [name for name, old, new in pairs if old != new]
+
+
+def plan_aliquot_use(
+    ledger: Ledger,
+    ref: str,
+    amount: Any = None,
+    unit: str | None = None,
+    *,
+    message: str,
+    revert_last: bool = False,
+) -> AliquotUsePlan:
+    """The reviewed plan of one use, or of ``revert_last``'s latest use.
+
+    Everything a preview shows is decided here, in one read of the ledger: the
+    canonical tube id, the operation and reason, the quantity/status/box before
+    and after, and — for a reversal — the ``use`` event it undoes with its own
+    timestamp and original message.  A refusal (unknown tube, occupied slot,
+    ambiguous history, a later change, a ledger below the required spec) is
+    raised here, before the caller asks for confirmation, so a confirmed plan
+    is the only thing :func:`apply_aliquot_use` ever writes.
+
+    ``revert_last`` resolves the latest ``use`` event on the ledger's branch
+    (ordered by ``at`` then ``id``), proves the row state it started from in
+    Dolt's own diff trail, and refuses when that trail and the event disagree:
+    the ledger never guesses a quantity, unit, status or position (spec 9 §3).
+    """
+    return _build_use_plan(
+        ledger,
+        ledger.driver,
+        ref,
+        amount,
+        unit,
+        message=message,
+        revert_last=revert_last,
+    )
+
+
+def _replan_for_apply(
+    ledger: Ledger, session: Any, plan: AliquotUsePlan
+) -> AliquotUsePlan:
+    """Re-derive the plan inside the write session, or tell the caller to rerun.
+
+    Every refusal here means the state moved between the preview and the write
+    (the slot was taken, the tube was consumed, the tube disappeared, the
+    history changed), so the original diagnostic is kept and the rerun advice
+    is appended: the operator confirms a fresh preview, never this one.
+    """
+    try:
+        return _build_use_plan(
+            ledger,
+            session,
+            plan.ref,
+            plan.requested_amount,
+            plan.requested_unit,
+            message=plan.message,
+            revert_last=plan.is_revert,
+        )
+    except UsageError:
+        raise
+    except LedgerError as error:
+        raise LedgerError(
+            f"{error}; nothing was written: rerun the command to preview the "
+            "current state"
+        ) from error
+
+
+def apply_aliquot_use(ledger: Ledger, plan: AliquotUsePlan) -> dict[str, Any]:
+    """Write the reviewed plan, revalidating it inside the write session.
+
+    The write session holds the ledger's write lock and one transaction, so the
+    plan is re-derived between the lock and the first statement: if the tube,
+    the target event or the row moved since the preview, nothing is written and
+    the error says to rerun the command (spec 9 §6).  The row update and the
+    event insert commit together — one Dolt commit — and either both happen or
+    neither does (spec 9 §5).
+    """
+    if not isinstance(plan, AliquotUsePlan):
+        raise UsageError(
+            "apply_aliquot_use needs the plan returned by plan_aliquot_use"
+        )
+    branch = _target_branch(ledger)
+    if plan.branch and branch and plan.branch != branch:
+        raise LedgerError(
+            f"the ledger's branch changed from {plan.branch!r} to {branch!r} "
+            "after the preview; rerun the command"
+        )
+    with ledger.write(
+        plan.id,
+        verb=REVERT_EVENT if plan.is_revert else "use",
+        object="aliquot",
+    ) as session:
+        current = _replan_for_apply(ledger, session, plan)
+        changed = _plan_difference(plan, current)
+        if changed:
+            raise LedgerError(
+                f"aliquot {plan.id!r} changed after the preview (the "
+                f"{_field_list(changed)}); nothing was written: rerun the "
+                "command to preview the current state"
+            )
+        if plan.is_revert:
+            return _write_revert(session, ledger, current)
+        return _write_use(session, ledger, current)
+
+
+def _write_use(session: Any, ledger: Ledger, plan: AliquotUsePlan) -> dict[str, Any]:
+    """The ``UPDATE`` + ``use`` event of one ordinary use (one transaction)."""
+    updates: dict[str, Any] = {"status": plan.status_after}
+    if plan.quantity_after is not None:
+        updates["quantity"] = plan.quantity_after
+    if (plan.box_after, plan.slot_after) != (plan.box_before, plan.slot_before):
+        updates["box_id"] = plan.box_after
+        updates["slot"] = plan.slot_after
+    _update(session, "aliquot", {"id": plan.id}, updates)
+    cleared = plan.box_before is not None and plan.box_after is None
+    record_event(
+        session,
+        aliquot_id=plan.id,
+        event="use",
+        amount=plan.amount,
+        unit=plan.unit,
+        from_box_id=plan.box_before if cleared else None,
+        from_slot=plan.slot_before if cleared else None,
+        to_box_id=None,
+        to_slot=None,
+        old_status=plan.status_before,
+        new_status=plan.status_after,
+        actor=ledger.actor,
+        message=plan.message,
+    )
+    # Preserve the ordinary use result's arithmetic. The preview and event
+    # describe the values representable in the ledger's decimal columns.
+    used = plan.requested_amount if plan.requested_amount is not None else plan.quantity_before
+    remaining = plan.quantity_before
+    if remaining is not None and used is not None:
+        remaining -= used
+    return {
+        "object": "aliquot",
+        "id": plan.id,
+        "used_amount": None if used is None else plain_decimal(used),
+        "used_unit": plan.unit,
+        "quantity": None if remaining is None else str(remaining),
+        "unit": plan.unit,
+        "status": plan.status_after,
+        "message": plan.message,
+    }
+
+
+def _write_revert(
+    session: Any, ledger: Ledger, plan: AliquotUsePlan
+) -> dict[str, Any]:
+    """The ``UPDATE`` + ``revert_use`` event that restores one use's state."""
+    _update(
+        session,
+        "aliquot",
+        {"id": plan.id},
+        {
+            "quantity": plan.quantity_after,
+            "unit": plan.unit_after,
+            "status": plan.status_after,
+            "box_id": plan.box_after,
+            "slot": plan.slot_after,
+        },
+    )
+    moved = (plan.box_before, plan.slot_before) != (plan.box_after, plan.slot_after)
+    record_event(
+        session,
+        aliquot_id=plan.id,
+        event=REVERT_EVENT,
+        reverts_event_id=plan.target_event_id,
+        amount=plan.amount,
+        unit=plan.unit,
+        from_box_id=plan.box_before if moved else None,
+        from_slot=plan.slot_before if moved else None,
+        to_box_id=plan.box_after if moved else None,
+        to_slot=plan.slot_after if moved else None,
+        old_status=plan.status_before,
+        new_status=plan.status_after,
+        actor=ledger.actor,
+        message=plan.message,
+    )
+    return {
+        "object": "aliquot",
+        "id": plan.id,
+        "reverts_event_id": int(plan.target_event_id),
+        "message": plan.message,
+        "old_status": plan.status_before,
+        "status": plan.status_after,
+        "quantity": (
+            None if plan.quantity_after is None else str(plan.quantity_after)
+        ),
+        "unit": plan.unit_after,
+        "box_id": plan.box_after,
+        "slot": plan.slot_after,
+        "restored_amount": (
+            None if plan.amount is None else plain_decimal(plan.amount)
+        ),
+        "target_amount": (
+            None if plan.target_amount is None else plain_decimal(plan.target_amount)
+        ),
+        "target_unit": plan.target_unit,
+        "target_event_at": plan.target_event_at,
+    }
 
 
 def set_aliquot_status(
@@ -3908,31 +4812,17 @@ def _aliquot_events_sql(id_sql: str) -> str:
     is part of the same single show batch, so resolution adds no query.
     """
     return (
-        "SELECT "
-        f"e.{_quote('id')} AS {_quote('id')}, "
-        f"e.{_quote('event')} AS {_quote('event')}, "
-        f"e.{_quote('at')} AS {_quote('at')}, "
-        f"e.{_quote('amount')} AS {_quote('amount')}, "
-        f"e.{_quote('unit')} AS {_quote('unit')}, "
-        f"e.{_quote('from_box_id')} AS {_quote('from_box_id')}, "
+        "SELECT e.*, "
         f"COALESCE(fb.{_quote('name')}, e.{_quote('from_box_id')}) "
         f"AS {_quote('from_box')}, "
         f"CASE WHEN e.{_quote('from_box_id')} IS NULL THEN NULL "
         f"WHEN fb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
         f"AS {_quote('from_box_resolved')}, "
-        f"e.{_quote('from_slot')} AS {_quote('from_slot')}, "
-        f"e.{_quote('to_box_id')} AS {_quote('to_box_id')}, "
         f"COALESCE(tb.{_quote('name')}, e.{_quote('to_box_id')}) "
         f"AS {_quote('to_box')}, "
         f"CASE WHEN e.{_quote('to_box_id')} IS NULL THEN NULL "
         f"WHEN tb.{_quote('id')} IS NOT NULL THEN 1 ELSE 0 END "
-        f"AS {_quote('to_box_resolved')}, "
-        f"e.{_quote('to_slot')} AS {_quote('to_slot')}, "
-        f"e.{_quote('old_status')} AS {_quote('old_status')}, "
-        f"e.{_quote('new_status')} AS {_quote('new_status')}, "
-        f"e.{_quote('forced')} AS {_quote('forced')}, "
-        f"e.{_quote('actor')} AS {_quote('actor')}, "
-        f"e.{_quote('message')} AS {_quote('message')} "
+        f"AS {_quote('to_box_resolved')} "
         f"FROM {_quote('aliquot_event')} e "
         f"LEFT JOIN {_quote('box')} fb "
         f"ON fb.{_quote('id')} = e.{_quote('from_box_id')} "
@@ -3979,6 +4869,11 @@ def _event_record(row: Mapping[str, Any]) -> dict[str, Any]:
         "forced": bool(row["forced"]),
         "actor": row["actor"],
         "message": row["message"],
+        **(
+            {"reverts_event_id": int(row["reverts_event_id"])}
+            if row.get("reverts_event_id") is not None
+            else {}
+        ),
     }
 
 

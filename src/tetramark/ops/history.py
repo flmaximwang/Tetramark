@@ -516,6 +516,10 @@ def history(ledger: "Ledger", ref: str) -> dict[str, Any]:
 
     events = [dict(row) for row in batch.rows(results, f"events:{object_type}:{source}")]
     for event in events:
+        if event.get("reverts_event_id") is None:
+            event.pop("reverts_event_id", None)
+        else:
+            event["reverts_event_id"] = int(event["reverts_event_id"])
         for side in ("from", "to"):
             resolved = f"{side}_box_resolved"
             event[resolved] = _resolved_flag(event.get(resolved))
@@ -709,6 +713,10 @@ def event_line(event: dict[str, Any]) -> str:
         str(event.get("event") or ""),
         str(event.get("aliquot_id") or ""),
     ]
+    if event.get("event") in {"use", "revert_use"} and event.get("id") is not None:
+        parts.append(f"id={event['id']}")
+    if event.get("reverts_event_id") is not None:
+        parts.append(f"reverts_event_id={event['reverts_event_id']}")
     amount = event.get("amount")
     if amount is not None:
         unit = event.get("unit")

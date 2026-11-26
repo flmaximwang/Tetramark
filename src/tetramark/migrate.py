@@ -355,6 +355,20 @@ _SPEC4 = 4
 #: ``aliquot_event.forced`` column that migration/spec/3-to-4 adds.
 SPEC4_ONLY_TESTS: frozenset[str] = frozenset({"core_status_event_allowed"})
 
+#: First spec whose core tables carry ``aliquot_event.reverts_event_id``.
+_SPEC9 = 9
+
+#: Generated tests that read the spec-9 core shape, for the same reason as
+#: :data:`SPEC4_ONLY_TESTS`: on a ledger older than spec 9 they would query the
+#: ``reverts_event_id`` column that migration/spec/8-to-9 adds.  ``tm check``
+#: is protected twice, because ``tm schema apply`` installs tests without going
+#: through here: :func:`tetramark.schema.tests_gen.install_tests` also drops a
+#: test whose spec gate is above the counter the ledger still stores
+#: (:data:`tetramark.schema.tests_gen.SPEC_GATED_TESTS`).
+SPEC9_ONLY_TESTS: frozenset[str] = frozenset(
+    {"core_revert_event_allowed", "core_revert_event_unique"}
+)
+
 
 def _ledger_spec_version(ledger: Ledger) -> int:
     """The ledger's stored ``spec_version`` (0 when it cannot be read)."""
@@ -383,11 +397,15 @@ def _generated_tests_for(
     A step that declares ``schema=`` regenerates ``dolt_tests`` from the target
     schema in its own commit.  When the ledger stays older than spec 4, the
     spec-4-only tests are omitted: they would reference the
-    ``aliquot_event.forced`` column that migration/spec/3-to-4 adds.
+    ``aliquot_event.forced`` column that migration/spec/3-to-4 adds.  The
+    spec-9 tests are omitted the same way below spec 9, for
+    ``aliquot_event.reverts_event_id`` (migration/spec/8-to-9).
     """
     tests = generate_tests(target_schema)
     if spec_version < _SPEC4:
         tests = [test for test in tests if test.name not in SPEC4_ONLY_TESTS]
+    if spec_version < _SPEC9:
+        tests = [test for test in tests if test.name not in SPEC9_ONLY_TESTS]
     return tests
 
 

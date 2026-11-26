@@ -1274,5 +1274,166 @@ def test_box_views_replace_the_kind_views_in_a_real_ledger(
         assert f"v_box_{kind_name}" not in lowered
 
 
+# ---------------------------------------------------------------------------
+# Real Dolt: reversible use (spec 9)
+# ---------------------------------------------------------------------------
+
+
+def _install_event_ledger(run: Any, repo: Path) -> None:
+    """The full schema plus one empty aliquot to hang events on."""
+    install(run, repo, schema_statements(full_schema()))
+    _insert_entity(run, repo, "ENT-1", "Item")
+    _insert_stock(run, repo, "STK-1", "ENT-1")
+    execute(
+        run,
+        repo,
+        "INSERT INTO aliquot (id, stock_id, seq, status) VALUES "
+        "('STK-1.1', 'STK-1', 1, 'stored')",
+    )
+
+
+def _insert_use(run: Any, repo: Path, event_id: str, aliquot_id: str) -> None:
+    execute(
+        run,
+        repo,
+        "INSERT INTO aliquot_event (id, aliquot_id, event, amount, unit) "
+        f"VALUES ({literal(event_id)}, {literal(aliquot_id)}, 'use', 1, 'ul')",
+    )
+
+
+def test_spec_9_event_columns_and_constraints() -> None:
+    """The generated shape: nullable reference after `event`, then the three rules."""
+    statements = schema_statements(full_schema())
+    create = next(
+        statement.sql
+        for statement in statements
+        if statement.object == "table" and statement.name == "aliquot_event"
+    )
+    assert "`reverts_event_id` BIGINT" in create
+    assert "`reverts_event_id` BIGINT NOT NULL" not in create
+    # `revert_use` is appended last, so older ENUM indices do not move.
+    assert "ENUM('create', 'use', 'move', 'status', 'edit', 'revert_use')" in create
+    assert "CONSTRAINT `uq_aliquot_event_reverts_event_id` UNIQUE" in create
+    assert (
+        "CONSTRAINT `ck_aliquot_event_reverts_event_id` CHECK "
+        "((`event` = 'revert_use') = (`reverts_event_id` IS NOT NULL))"
+    ) in create
+    foreign_keys = [s.sql for s in statements if s.object == "fk"]
+    assert (
+        "ALTER TABLE `aliquot_event` ADD CONSTRAINT "
+        "`fk_aliquot_event_reverts_event_id` FOREIGN KEY (`reverts_event_id`) "
+        "REFERENCES `aliquot_event` (`id`) ON DELETE CASCADE"
+    ) in foreign_keys
+
+
+def test_spec_9_event_shape_in_a_real_ledger(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """The column lands after `event` and the ENUM keeps its older values."""
+    _install_event_ledger(dolt_run, dolt_repo)
+    columns = [
+        row["name"]
+        for row in query(
+            dolt_run,
+            dolt_repo,
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = 'aliquot_event' "
+            "ORDER BY ordinal_position",
+        )
+    ]
+    assert columns.index("reverts_event_id") == columns.index("event") + 1
+    event_type = query(
+        dolt_run,
+        dolt_repo,
+        "SELECT column_type AS type FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() AND table_name = 'aliquot_event' "
+        "AND column_name = 'event'",
+    )[0]["type"]
+    # `revert_use` is appended last: the older values keep their index.
+    assert event_type.index("'create'") < event_type.index("'edit'")
+    assert event_type.index("'edit'") < event_type.index("'revert_use'")
+
+
+def test_spec_9_unique_rejects_a_second_reversal(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """One `use` is reversed once — the UNIQUE index is the racing-safe rule."""
+    _install_event_ledger(dolt_run, dolt_repo)
+    _insert_use(dolt_run, dolt_repo, "1", "STK-1.1")
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot_event (id, aliquot_id, event, reverts_event_id) "
+        "VALUES (2, 'STK-1.1', 'revert_use', 1)",
+    )
+    reject(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot_event (id, aliquot_id, event, reverts_event_id) "
+        "VALUES (3, 'STK-1.1', 'revert_use', 1)",
+        "duplicate",
+    )
+
+
+def test_spec_9_check_rejects_a_stray_or_missing_reference(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """The reference is present exactly on `revert_use` rows."""
+    _install_event_ledger(dolt_run, dolt_repo)
+    _insert_use(dolt_run, dolt_repo, "1", "STK-1.1")
+    reject(
+        dolt_run,
+        dolt_repo,
+        # a reversal that names nothing
+        "INSERT INTO aliquot_event (id, aliquot_id, event) "
+        "VALUES (2, 'STK-1.1', 'revert_use')",
+        "check constraint",
+    )
+    reject(
+        dolt_run,
+        dolt_repo,
+        # an ordinary event that carries a reversal reference
+        "INSERT INTO aliquot_event (id, aliquot_id, event, reverts_event_id) "
+        "VALUES (3, 'STK-1.1', 'use', 1)",
+        "check constraint",
+    )
+
+
+def test_spec_9_self_fk_rejects_a_missing_target(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """A reversal must point at a row that exists."""
+    _install_event_ledger(dolt_run, dolt_repo)
+    reject(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot_event (id, aliquot_id, event, reverts_event_id) "
+        "VALUES (2, 'STK-1.1', 'revert_use', 99)",
+        "foreign key",
+    )
+
+
+def test_spec_9_purge_order_is_safe_with_the_self_fk(
+    dolt_repo: Path, dolt_run: Any
+) -> None:
+    """`aliquot purge` deletes all events at once: the cascade takes the child."""
+    _install_event_ledger(dolt_run, dolt_repo)
+    _insert_use(dolt_run, dolt_repo, "1", "STK-1.1")
+    execute(
+        dolt_run,
+        dolt_repo,
+        "INSERT INTO aliquot_event (id, aliquot_id, event, reverts_event_id) "
+        "VALUES (2, 'STK-1.1', 'revert_use', 1)",
+    )
+    execute(
+        dolt_run,
+        dolt_repo,
+        "DELETE FROM aliquot_event WHERE aliquot_id = 'STK-1.1'",
+    )
+    assert query(
+        dolt_run, dolt_repo, "SELECT id FROM aliquot_event WHERE id IN (1, 2)"
+    ) == []
+
+
 # This module intentionally keeps the embedded-driver path covered.
 pytestmark = pytest.mark.embedded

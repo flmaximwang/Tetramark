@@ -77,7 +77,7 @@ Full flags, filters and `tm find -E`: `references/commands.md`. Multi-step flows
 tm entity add plasmid --name pZET035 --set backbone=pZET035 --set resistance=kan --alias p035
 tm stock add bacterial_glycerol --entity p035 --set strain='BL21(DE3)' --set medium=LB \
   --box WFL-12-01 --slot A1 --quantity 500 --unit ul
-tm aliquot use 1226KO02.1 500 ml -m purification   # decrements; zero = consumed
+tm aliquot use 1226KO02.1 500 ml -m purification --yes   # decrements; zero = consumed
 tm box move WFL-12-02 --in shelf-1
 tm aliquot move 1226KO01.2 --box WFL-12-03 --slot C3 -m "moved to WFL-12-03"
 tm lineage p035 --up                                      # lineage:true edges + core links
