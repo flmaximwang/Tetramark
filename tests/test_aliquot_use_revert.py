@@ -399,6 +399,23 @@ def test_revert_restores_an_unknown_quantity_tube(ledger_factory) -> None:
     assert ledger.check().passed
 
 
+def test_a_known_audit_amount_conflicts_with_an_unknown_quantity(ledger_factory) -> None:
+    ledger, _box, stock_id, _tubes = build(ledger_factory, name="unknown-amount", tubes=1)
+    unknown = tube(ledger, stock_id, box="BOX", slots=["A9"])
+    ledger.aliquots.use(unknown, message="used it all")
+    with ledger.write("patch use amount", verb="edit", object="aliquot") as session:
+        session.execute(
+            "UPDATE `aliquot_event` SET `amount` = 1 WHERE `aliquot_id` = %s AND `event` = 'use'",
+            (unknown,),
+        )
+
+    before = commit_count(ledger)
+    with pytest.raises(LedgerError, match="records an amount for a tube with unknown quantity"):
+        plan_aliquot_use(ledger, unknown, message="undo", revert_last=True)
+    assert commit_count(ledger) == before
+    assert row(ledger, unknown)["status"] == "consumed"
+
+
 def test_a_whole_use_of_an_empty_tube_is_still_used_and_reversible(ledger_factory) -> None:
     """A known zero can be used whole; its reversal restores the placement.
 

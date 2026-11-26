@@ -3229,6 +3229,8 @@ def _check_use_evidence(
     amount = _quantity_or_none(target.get("amount"))
     if (before_quantity is None) != (after_quantity is None):
         raise disagree("the history records a quantity on one side of the use only")
+    if before_quantity is None and amount is not None:
+        raise disagree("the use records an amount for a tube with unknown quantity")
     if before_quantity is not None and after_quantity is not None:
         if before_quantity < after_quantity:
             raise disagree("the use increased the quantity")
